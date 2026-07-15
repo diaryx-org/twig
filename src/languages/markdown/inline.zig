@@ -391,16 +391,16 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                     i += 1;
                 }
             },
-            'h', 'w' => {
+            'h', 'f', 'w' => {
                 // GFM extended autolinks (`self.options.autolinks`): bare
-                // `http(s)://...`/`www...` URLs in ordinary text, as opposed
-                // to Phase 2's CommonMark-core `<scheme:...>` form (which
-                // stays on unconditionally via the `<` case above,
-                // regardless of this flag). See `tryExtHttpAutolink`/
+                // `http(s)://...`/`ftp://...`/`www...` URLs in ordinary text,
+                // as opposed to Phase 2's CommonMark-core `<scheme:...>` form
+                // (which stays on unconditionally via the `<` case above,
+                // regardless of this flag). See `tryExtUrlAutolink`/
                 // `tryExtWwwAutolink` for the word-boundary and trailing-
                 // punctuation-trimming rules approximated here.
                 const auto_end: ?usize = if (sc.options.autolinks)
-                    (if (c == 'h') try tryExtHttpAutolink(sc, text, i) else try tryExtWwwAutolink(sc, text, i))
+                    (if (c == 'w') try tryExtWwwAutolink(sc, text, i) else try tryExtUrlAutolink(sc, text, i))
                 else
                     null;
                 if (auto_end) |end| {
@@ -1473,26 +1473,46 @@ fn scanInlineMath(text: []const u8, at: usize) ?MathSpan {
 }
 
 // ── Phase 3: GFM extended autolinks (`self.options.autolinks`) ─────────
-// Bare `http(s)://`/`www.`/email URLs in ordinary text -- as opposed to
-// Phase 2's CommonMark-core `<scheme:...>`/`<email>` form (the `'<'` case
-// above), which stays on unconditionally regardless of this flag. This is a
-// documented APPROXIMATION of GFM's own "extended autolinks" grammar (GFM
-// spec appendix, and cmark-gfm's `extensions/autolink.c`), not a byte-exact
-// port: word-boundary detection is "the previous byte isn't alphanumeric/`_`"
-// (GFM's own rule is close to this but not identical for all Unicode input),
-// and trailing-punctuation trimming (`trimTrailingAutolinkPunct`) covers the
-// common ASCII punctuation set plus balanced-paren trimming, but skips GFM's
-// extra carve-out for a trailing `&entity;`-shaped suffix.
+// Bare `http(s)://`/`ftp://`/`www.`/email URLs in ordinary text -- as opposed
+// to Phase 2's CommonMark-core `<scheme:...>`/`<email>` form (the `'<'` case
+// above), which stays on unconditionally regardless of this flag. Covered by
+// `languages/markdown/gfm_conformance.zig` (the spec's whole Autolinks-
+// extension section), including the full trailing-punctuation rules
+// (`trimTrailingAutolinkPunct`: the ASCII punct set, balanced-paren trimming,
+// and the `&entity;`-shaped-suffix carve-out) and the email domain grammar
+// (`scanExtEmailDomain`).
+//
+// One documented APPROXIMATION remains against GFM's own grammar (GFM spec's
+// Autolinks-extension section, and cmark-gfm's `extensions/autolink.c`):
+// word-boundary detection is "the previous byte isn't alphanumeric/`_`",
+// where GFM's own rule is "beginning of line, after whitespace, or after one
+// of `*`, `_`, `~`, `(`" -- close, but not identical for all Unicode input.
+// Neither is the spec's "[valid domain]" production enforced for the `www.`/
+// url forms (segments of alphanumerics/`_`/`-` separated by `.`, at least one
+// `.`, and no `_` in the last two segments); the body is simply scanned to
+// the next space/`<`. The email form DOES enforce its own domain rule, since
+// the spec makes the trailing-`-`/`_` check load-bearing there (see
+// `scanExtEmailDomain`).
 
 fn isWordChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
-/// Trim trailing punctuation off an autolink candidate per GFM's rule:
-/// `?!.,:*_~'";` are always trimmed (repeatedly, so e.g. `".") trims both);
-/// a trailing `)` is only trimmed while it's unbalanced against `(` earlier
-/// in `s` (so `(see http://example.com/a(b))` keeps the inner `)` but drops
-/// the outer one). Stops at the first byte that's neither.
+/// Trim trailing punctuation off an autolink candidate per GFM's "extended
+/// autolink path validation" (spec's Autolinks-extension section, mirroring
+/// cmark-gfm `extensions/autolink.c`'s `autolink_delim`):
+///   - `?!.,:*_~'"` are always trimmed, repeatedly (so e.g. `".` trims both).
+///   - A trailing `)` is only trimmed while it's unbalanced against `(`
+///     earlier in `s`, so `(see http://example.com/a(b))` keeps the inner `)`
+///     but drops the outer one. When the parens are balanced this stops,
+///     leaving an interior-only case like `?q=(business))+ok` untouched.
+///   - A trailing `;` is special-cased: if what precedes it looks like an
+///     entity reference (`&` + one or more ASCII letters, e.g. `&hl;`), the
+///     WHOLE `&...;` run is excluded from the autolink rather than just the
+///     `;` — so `www.google.com/search?q=commonmark&hl;` links only
+///     `...?q=commonmark` and leaves `&hl;` as text. Otherwise just the `;`
+///     is trimmed and trimming continues.
+/// Stops at the first byte that matches none of the above.
 fn trimTrailingAutolinkPunct(s: []const u8) []const u8 {
     var end = s.len;
     while (end > 0) {
@@ -1510,8 +1530,20 @@ fn trimTrailingAutolinkPunct(s: []const u8) []const u8 {
             }
             break;
         }
+        if (c == ';') {
+            // Walk back over the letters preceding the `;`; if they're
+            // introduced by an `&`, drop the entity-shaped run entirely.
+            var k = end - 1;
+            while (k > 0 and std.ascii.isAlphabetic(s[k - 1])) k -= 1;
+            if (k < end - 1 and k > 0 and s[k - 1] == '&') {
+                end = k - 1;
+            } else {
+                end -= 1;
+            }
+            continue;
+        }
         switch (c) {
-            '?', '!', '.', ',', ':', '*', '_', '~', '\'', '"', ';' => {
+            '?', '!', '.', ',', ':', '*', '_', '~', '\'', '"' => {
                 end -= 1;
                 continue;
             },
@@ -1530,16 +1562,19 @@ fn scanExtAutolinkBody(text: []const u8, start: usize) usize {
     return j;
 }
 
-/// `text[at] == 'h'`. `http://`/`https://` not preceded by a word character.
-/// Maps to a plain `url` node (destination == displayed text, matching how
-/// Phase 2 already renders `<scheme:...>` autolinks), since the text IS
-/// already a valid href with no prefixing needed.
-fn tryExtHttpAutolink(sc: *Scanner, text: []const u8, i: usize) Allocator.Error!?usize {
+/// `text[at] == 'h'` or `'f'`. One of GFM's three extended-url-autolink
+/// schemes — `http://`, `https://`, `ftp://` — not preceded by a word
+/// character. Maps to a plain `url` node (destination == displayed text,
+/// matching how Phase 2 already renders `<scheme:...>` autolinks), since the
+/// text IS already a valid href with no prefixing needed.
+fn tryExtUrlAutolink(sc: *Scanner, text: []const u8, i: usize) Allocator.Error!?usize {
     if (i > 0 and isWordChar(text[i - 1])) return null;
     const prefix: []const u8 = if (std.mem.startsWith(u8, text[i..], "https://"))
         "https://"
     else if (std.mem.startsWith(u8, text[i..], "http://"))
         "http://"
+    else if (std.mem.startsWith(u8, text[i..], "ftp://"))
+        "ftp://"
     else
         return null;
     const raw_end = scanExtAutolinkBody(text, i + prefix.len);
@@ -1584,14 +1619,62 @@ fn isExtEmailLocalChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '.' or c == '+' or c == '-' or c == '_';
 }
 
+/// One segment of an extended-email-autolink domain: a nonempty run of
+/// alphanumerics, `-`, or `_`. Advances `i` past it and reports whether it
+/// matched anything.
+fn scanExtEmailSegment(text: []const u8, i: *usize) bool {
+    const start = i.*;
+    while (i.* < text.len and (std.ascii.isAlphanumeric(text[i.*]) or text[i.*] == '-' or text[i.*] == '_')) i.* += 1;
+    return i.* > start;
+}
+
+/// GFM's extended-email-autolink domain grammar (the spec's Autolinks-
+/// extension section): one or more `scanExtEmailSegment`s separated by `.`,
+/// with at least one `.`, and a last character that is NOT `-` or `_`.
+/// Returns the domain's end offset, or `null` if `text[start..]` doesn't
+/// begin with a valid one.
+///
+/// Deliberately NOT `scanEmailDomainLabel` (Phase 2's CommonMark `<email>`
+/// grammar), because the two specs genuinely disagree and sharing one scanner
+/// would regress the CommonMark suite: CommonMark forbids `_` in a domain and
+/// tolerates a trailing `-` by backing up to the last alphanumeric, whereas
+/// GFM allows `_` and treats a trailing `-`/`_` as DISQUALIFYING the whole
+/// autolink rather than as something to trim back to -- per the spec's own
+/// examples, `a.b-c_d@a.b-` and `a.b-c_d@a.b_` are not links at all, where
+/// backing-up would have wrongly produced one for `a.b-c_d@a.b`.
+///
+/// A trailing `.` is left unconsumed (so `a.b-c_d@a.b.` links `a.b-c_d@a.b`
+/// and leaves the sentence's period as text), which is also why the caller
+/// needs no `trimTrailingAutolinkPunct` pass: every domain this accepts
+/// already ends in an alphanumeric.
+fn scanExtEmailDomain(text: []const u8, start: usize) ?usize {
+    var j = start;
+    if (!scanExtEmailSegment(text, &j)) return null;
+    var has_dot = false;
+    while (j < text.len and text[j] == '.') {
+        const save = j;
+        j += 1;
+        if (!scanExtEmailSegment(text, &j)) {
+            j = save;
+            break;
+        }
+        has_dot = true;
+    }
+    if (!has_dot) return null;
+    const last = text[j - 1];
+    if (last == '-' or last == '_') return null;
+    return j;
+}
+
 /// `text[at] == '@'`. Unlike the `http`/`www` forms, the LOCAL part of an
 /// extended email autolink is already-scanned plain text sitting in
 /// `sc.buf` by the time `@` is reached (there's no lookahead for it), so
 /// this reaches BACKWARD into `buf` to claim its trailing run of valid
 /// local-part characters, then scans FORWARD from `@` for a dot-separated
-/// domain (reusing `scanEmailDomainLabel`, the same domain-label grammar
-/// Phase 2's `<email>` autolink uses), requiring at least two labels (i.e.
-/// at least one `.`) so a bare `user@host` doesn't autolink. On success,
+/// domain (`scanExtEmailDomain`, GFM's own domain grammar -- deliberately
+/// not Phase 2's CommonMark `<email>` one; see that function's doc comment),
+/// requiring at least two labels (i.e. at least one `.`) so a bare
+/// `user@host` doesn't autolink. On success,
 /// `buf`'s claimed suffix is dropped (so it isn't ALSO flushed as plain
 /// text) and an `email` leaf is appended in its place.
 ///
@@ -1609,23 +1692,7 @@ fn tryExtEmailAutolink(sc: *Scanner, text: []const u8, at: usize) Allocator.Erro
     while (local_start < buf.len and !std.ascii.isAlphanumeric(buf[local_start])) local_start += 1;
     if (local_start == buf.len) return null;
 
-    var j = at + 1;
-    if (!scanEmailDomainLabel(text, &j)) return null;
-    var has_dot = false;
-    while (j < text.len and text[j] == '.') {
-        const save = j;
-        j += 1;
-        if (!scanEmailDomainLabel(text, &j)) {
-            j = save;
-            break;
-        }
-        has_dot = true;
-    }
-    if (!has_dot) return null;
-
-    const domain_trimmed = trimTrailingAutolinkPunct(text[at + 1 .. j]);
-    if (domain_trimmed.len == 0) return null;
-    const final_end = at + 1 + domain_trimmed.len;
+    const final_end = scanExtEmailDomain(text, at + 1) orelse return null;
 
     var email = std.ArrayList(u8).empty;
     defer email.deinit(sc.b.allocator);

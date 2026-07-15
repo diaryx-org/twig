@@ -109,7 +109,7 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\  --directives           enable generic directives (:name, ::name, :::name)
         \\  --math                 enable $…$ / $$…$$ math
         \\  --commonmark           strict CommonMark (all extensions off)
-        \\  --gfm                  the GFM extension set
+        \\  --gfm                  the GFM dialect (extensions + GFM's HTML output)
         \\
         \\Input format is normally inferred from the file extension
         \\(.dj/.djot, .md/.markdown, .xml, .html/.htm). Pass `-` as the file to read from

@@ -32,15 +32,58 @@ pub const serializeNodeOpts = serializer_mod.serializeNodeOpts;
 pub const serializeAlloc = serializer_mod.serializeAlloc;
 pub const serializeAllocOpts = serializer_mod.serializeAllocOpts;
 
-/// The HTML render conventions CommonMark's reference output uses (XHTML
-/// void self-close + `src`-before-`alt` image attributes). The markdown
-/// path renders with these; djot keeps the defaults. See `RenderOptions`.
+// Twig prints three markdown-family dialects DISTINCTLY, and these two presets
+// (plus this struct's bare defaults, which are djot's) are where that lives:
+//
+//   djot       — djot.js's conventions: bare `<tr>`, `style="text-align:"`,
+//                `<ul class="task-list">`. The defaults; see `RenderOptions`.
+//   markdown   — `commonmark_render_options`: CommonMark's core conventions,
+//                plus well-formed `<thead>`/`<tbody>` tables.
+//   GFM        — `gfm_render_options`: the above, plus cmark-gfm's own
+//                extension spellings.
+//
+// The split matters because strict CommonMark has NO tables, task lists, or
+// strikethrough — they exist only as extensions — so its spec says nothing
+// about printing them, and its 652-example suite never renders one. Anything
+// those constructs need is therefore a deliberate choice here rather than
+// something the CommonMark suite can pin down. `languages/markdown/html.zig`
+// maps a document's `ParseOptions.dialect` onto these.
+
+/// The HTML render conventions twig-markdown uses: CommonMark's reference
+/// output (XHTML void self-close + `src`-before-`alt` image attributes,
+/// `"`-escaping, percent-encoded destinations, CommonMark list framing), plus
+/// `<thead>`/`<tbody>` table sectioning. Both markdown dialects render with
+/// these as a base; djot keeps the defaults. See `RenderOptions`.
+///
+/// `table_sections` being on here is safe for the CommonMark conformance
+/// suite by construction, not by luck: that suite's 652 examples produce zero
+/// parsed tables (its five `<table>`s are raw HTML the spec author typed
+/// literally), so this flag can never change a byte of its output.
 pub const commonmark_render_options: RenderOptions = .{
     .xhtml_void = true,
     .commonmark_image_attrs = true,
     .commonmark_lists = true,
     .escape_text_quotes = true,
     .percent_encode_urls = true,
+    .table_sections = true,
+};
+
+/// GFM's render conventions: everything twig-markdown's are (GFM is defined
+/// as CommonMark plus extensions, and cmark-gfm renders the core identically),
+/// plus the three spellings its extensions insist on — presentational `align=`
+/// cell attributes, cmark-gfm's own task-list `<input>`, and the Disallowed
+/// Raw HTML tagfilter.
+///
+/// Kept as a SUPERSET of `commonmark_render_options` rather than a hand-copied
+/// literal so the two can't drift: a future CommonMark render-convention fix
+/// lands in GFM automatically, which is exactly right, since GFM *is*
+/// CommonMark plus extensions. See `languages/markdown/gfm_conformance.zig`.
+pub const gfm_render_options: RenderOptions = blk: {
+    var o = commonmark_render_options;
+    o.gfm_cell_align_attr = true;
+    o.gfm_task_list_items = true;
+    o.tagfilter = true;
+    break :blk o;
 };
 
 /// Parse forgiving HTML into the shared generic-markup AST.  This is a

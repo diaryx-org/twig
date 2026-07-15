@@ -2315,6 +2315,65 @@ pub const Parser = struct {
         return true;
     }
 
+    /// GFM: a `\|` inside a table cell is an ESCAPED pipe — it doesn't split
+    /// the row (`splitTableRow` already skips over it) and it must reach
+    /// inline parsing as a bare `|`. The ordinary inline backslash-escape
+    /// path can't do this job, because it doesn't run inside every inline
+    /// construct: `` `\|` `` would come out as `<code>\|</code>` where GFM
+    /// wants `<code>|</code>` (the spec's own Tables example), since a code
+    /// span's content is verbatim. So the unescape happens HERE, rewriting
+    /// the cell's text up front — which is what cmark-gfm does too.
+    ///
+    /// The rewritten text is no longer a contiguous slice of `self.source`,
+    /// so this also builds the `Segment` LIST mapping it back: one segment
+    /// per run between dropped backslashes, leaving spans (and therefore
+    /// `edit`) accurate across the rewrite. Appends to caller-owned scratch;
+    /// `addDeferredTextNode` dupes both, so both can be freed straight after.
+    fn unescapeCellPipes(
+        self: *Parser,
+        cell: []const u8,
+        out: *std.ArrayList(u8),
+        segs: *std.ArrayList(Segment),
+    ) Allocator.Error!void {
+        const src_base = @intFromPtr(cell.ptr) - @intFromPtr(self.source.ptr);
+        // Flush `cell[run_start..end]` as one segment; `run_start` resumes at
+        // the `|` itself, so only the `\` is ever dropped.
+        var run_start: usize = 0;
+        var i: usize = 0;
+        while (i < cell.len) {
+            if (cell[i] == '\\' and i + 1 < cell.len and cell[i + 1] == '|') {
+                try self.appendCellRun(cell, run_start, i, src_base, out, segs);
+                run_start = i + 1;
+                i += 2;
+                continue;
+            }
+            i += 1;
+        }
+        try self.appendCellRun(cell, run_start, cell.len, src_base, out, segs);
+    }
+
+    /// Append `cell[from..to]` to `out` and record the `Segment` mapping it
+    /// back to source. An empty run (a cell starting with `\|`, or two
+    /// adjacent escapes) contributes nothing and is skipped rather than
+    /// recorded as a zero-length segment.
+    fn appendCellRun(
+        self: *Parser,
+        cell: []const u8,
+        from: usize,
+        to: usize,
+        src_base: usize,
+        out: *std.ArrayList(u8),
+        segs: *std.ArrayList(Segment),
+    ) Allocator.Error!void {
+        if (to == from) return;
+        try segs.append(self.allocator, .{
+            .buf_offset = out.items.len,
+            .src_offset = src_base + from,
+            .len = to - from,
+        });
+        try out.appendSlice(self.allocator, cell[from..to]);
+    }
+
     /// Build one `row` node with exactly `aligns.len` `cell` children,
     /// pulling text from `cells[i]` when present or `""` for a ragged
     /// row's missing trailing cells (extra `cells` entries beyond
@@ -2329,9 +2388,23 @@ pub const Parser = struct {
             // sub-slice, never copy -- so, like an ATX heading's content,
             // one `singleSegment` maps it directly; a ragged row's missing
             // trailing cell (`""`) just gets an empty (harmless) mapping.
+            // A cell carrying an escaped `\|` is the one exception: its text
+            // has to be REWRITTEN before inline parsing, so it takes
+            // `unescapeCellPipes`' segment LIST instead (see there for why
+            // the ordinary inline backslash-escape path can't do this job).
             const text = if (i < cells.len) cells[i] else "";
-            const seg = self.singleSegment(text);
-            const cell_id = try self.addDeferredTextNode(.{ .cell = .{ .head = head, .alignment = al } }, text, &seg, start_line, end_line);
+            const kind: Node.Kind = .{ .cell = .{ .head = head, .alignment = al } };
+            const cell_id = if (std.mem.indexOf(u8, text, "\\|") == null) blk: {
+                const seg = self.singleSegment(text);
+                break :blk try self.addDeferredTextNode(kind, text, &seg, start_line, end_line);
+            } else blk: {
+                var out = std.ArrayList(u8).empty;
+                defer out.deinit(self.allocator);
+                var segs = std.ArrayList(Segment).empty;
+                defer segs.deinit(self.allocator);
+                try self.unescapeCellPipes(text, &out, &segs);
+                break :blk try self.addDeferredTextNode(kind, out.items, segs.items, start_line, end_line);
+            };
             try cell_ids.append(self.allocator, cell_id);
         }
         const row_id = try self.builder.addContainer(.{ .row = .{ .head = head } }, cell_ids.items);

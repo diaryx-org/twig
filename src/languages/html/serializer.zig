@@ -115,6 +115,38 @@ pub const RenderOptions = struct {
     /// defaults off and the markdown path opts in. (`<p>` suppression in
     /// tight lists is independent of this flag — see the `para` branch.)
     commonmark_lists: bool = false,
+    /// Group a table's rows into `<thead>`/`<tbody>` sections rather than
+    /// emitting bare `<tr>`s directly under `<table>`. Sections follow each
+    /// `row`'s own `head` flag, so a header-only table closes right after
+    /// `</thead>` with no empty `<tbody>`.
+    ///
+    /// Unlike this struct's other flags, this one isn't a format's arbitrary
+    /// house style — it's just well-formed HTML, and BOTH markdown dialects
+    /// opt in. Only djot stays out, because djot.js's reference output
+    /// genuinely omits the sections and its conformance suite is byte-exact
+    /// against it.
+    table_sections: bool = false,
+    /// Render a cell's alignment as GFM's presentational `align="center"`
+    /// attribute rather than the `style="text-align: center;"` that djot and
+    /// twig-markdown both use. Purely a spelling disagreement between
+    /// reference renderers; the `alignment` value is identical either way.
+    /// The GFM path opts in.
+    gfm_cell_align_attr: bool = false,
+    /// Render task list items GFM's way: a plain `<ul>` (no `class="task-list"`),
+    /// and an `<input>` spelled exactly as cmark-gfm's tasklist extension emits
+    /// it — attributes in alphabetical order, NOT self-closed even under
+    /// `xhtml_void` (the extension writes a literal string rather than going
+    /// through cmark's void-element path), followed by one space before the
+    /// item's content. Items otherwise hug their content like
+    /// `commonmark_lists`. Defaults to djot's shape; the GFM path opts in.
+    gfm_task_list_items: bool = false,
+    /// GFM's "Disallowed Raw HTML" extension: in raw HTML output, escape the
+    /// leading `<` of a blacklisted tag (`title`, `textarea`, `style`, `xmp`,
+    /// `iframe`, `noembed`, `noframes`, `script`, `plaintext`) to `&lt;`, so
+    /// it renders as text instead of taking effect. Off by default (djot and
+    /// strict CommonMark both pass raw HTML through verbatim); the GFM path
+    /// opts in. See `writeRawHtml`.
+    tagfilter: bool = false,
 };
 
 /// Djot-shaped render-time side tables, supplied by whatever language module
@@ -411,6 +443,13 @@ pub const Renderer = struct {
     }
 
     /// Render one `<li>` the CommonMark way (see `RenderOptions.commonmark_lists`).
+    fn renderCommonMarkListItem(self: *Renderer, id: Node.Id) RenderError!void {
+        return self.renderCommonMarkListItemPrefixed(id, "");
+    }
+
+    /// Render one `<li>` the CommonMark way, writing `prefix` immediately after
+    /// the `<li>` and before the item's own content.
+    ///
     /// `self.tight` is the enclosing list's tightness, set by the parent list's
     /// `renderChildren` before this item is reached. A tight paragraph hugs the
     /// content (rendered inline, no `<p>`, no surrounding newline); every other
@@ -418,8 +457,15 @@ pub const Renderer = struct {
     /// a single separating newline only when the cursor isn't already at line
     /// start — mirroring cmark's `cr()`. This tracks line-start structurally
     /// (from child kinds) rather than by inspecting the output buffer.
-    fn renderCommonMarkListItem(self: *Renderer, id: Node.Id) RenderError!void {
+    ///
+    /// `prefix` exists for GFM task list items (`gfm_task_list_items`), whose
+    /// rendering is precisely a CommonMark list item with a checkbox `<input>`
+    /// spliced in at the front — including the tight-paragraph hug and the
+    /// single newline before a nested list, which is why it's a parameter here
+    /// rather than a second, near-duplicate renderer.
+    fn renderCommonMarkListItemPrefixed(self: *Renderer, id: Node.Id, prefix: []const u8) RenderError!void {
         try self.writer.writeAll("<li>");
+        try self.writer.writeAll(prefix);
         var at_line_start = false;
         var it = self.ast.children(id);
         while (it.next()) |child| {
@@ -435,6 +481,95 @@ pub const Renderer = struct {
             }
         }
         try self.writer.writeAll("</li>\n");
+    }
+
+    /// The tag names GFM's "Disallowed Raw HTML" extension refuses to let
+    /// through as live markup (`tagfilter`). Verbatim from cmark-gfm's
+    /// `extensions/tagfilter.c`; matched case-insensitively.
+    const tagfilter_blacklist = [_][]const u8{
+        "title",   "textarea", "style",  "xmp",       "iframe",
+        "noembed", "noframes", "script", "plaintext",
+    };
+
+    /// Whether `text[at] == '<'` opens a blacklisted tag: an optional `/`,
+    /// one of `tagfilter_blacklist` (case-insensitive), then a delimiter
+    /// (`>`, `/`, whitespace, or end of text). The delimiter check is what
+    /// keeps `<titlepage>` — merely a blacklisted name as a PREFIX — live.
+    fn isFilteredTag(text: []const u8, at: usize) bool {
+        var i = at + 1;
+        if (i < text.len and text[i] == '/') i += 1;
+        for (tagfilter_blacklist) |name| {
+            if (text.len - i < name.len) continue;
+            if (!std.ascii.eqlIgnoreCase(text[i .. i + name.len], name)) continue;
+            const j = i + name.len;
+            if (j == text.len or text[j] == '>' or text[j] == '/' or std.ascii.isWhitespace(text[j])) return true;
+        }
+        return false;
+    }
+
+    /// Write raw HTML through, applying GFM's tagfilter when it's on. Only the
+    /// leading `<` of a blacklisted tag becomes `&lt;` — the rest of the tag
+    /// (including its `>`) stays as-is, which is exactly what GFM's reference
+    /// output shows (`<title>` -> `&lt;title>`, not `&lt;title&gt;`).
+    fn writeRawHtml(self: *Renderer, text: []const u8) RenderError!void {
+        if (!self.options.tagfilter) return self.writer.writeAll(text);
+        var i: usize = 0;
+        var flushed: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, text, i, '<')) |lt| {
+            if (isFilteredTag(text, lt)) {
+                try self.writer.writeAll(text[flushed..lt]);
+                try self.writer.writeAll("&lt;");
+                flushed = lt + 1;
+            }
+            i = lt + 1;
+        }
+        try self.writer.writeAll(text[flushed..]);
+    }
+
+    /// A table's rows grouped into `<thead>`/`<tbody>` sections
+    /// (`table_sections`). Each section opens at the first `row` whose `head`
+    /// flag differs from the previous one's and closes when that run ends, so
+    /// a header-only table emits no empty `<tbody>` — matching GFM's
+    /// reference output for `| abc | def |` / `| --- | --- |`. Grouping by run
+    /// rather than assuming "exactly one head row, then the rest" keeps this
+    /// honest for any table the AST can hold, not just the one shape GFM's
+    /// own parser produces. Non-`row` children (the `caption`) render in
+    /// place, outside any section.
+    fn renderSectionedTable(self: *Renderer, id: Node.Id) RenderError!void {
+        try self.renderTag("table", id, &.{});
+        try self.writer.writeByte('\n');
+        var section: Section = .none;
+        var it = self.ast.children(id);
+        while (it.next()) |child| {
+            switch (self.ast.nodes[child.id].kind) {
+                .row => |v| {
+                    const want: Section = if (v.head) .head else .body;
+                    if (section != want) {
+                        try self.closeTableSection(section);
+                        try self.writer.writeAll(if (want == .head) "<thead>\n" else "<tbody>\n");
+                        section = want;
+                    }
+                    try self.renderNode(child.id);
+                },
+                else => try self.renderNode(child.id),
+            }
+        }
+        try self.closeTableSection(section);
+        try self.renderCloseTag("table");
+        try self.writer.writeByte('\n');
+    }
+
+    /// Which `<thead>`/`<tbody>` run `renderSectionedTable` currently has open
+    /// (`.none` before the first row, and for a table of only non-`row`
+    /// children).
+    const Section = enum { none, head, body };
+
+    fn closeTableSection(self: *Renderer, section: Section) RenderError!void {
+        switch (section) {
+            .none => {},
+            .head => try self.writer.writeAll("</thead>\n"),
+            .body => try self.writer.writeAll("</tbody>\n"),
+        }
     }
 
     /// Write a raw-text element's children literally (no escaping). The parser
@@ -576,7 +711,17 @@ pub const Renderer = struct {
                 try self.renderCommonMarkListItem(id)
             else
                 try self.inTags("li", id, 2, &.{}),
-            .task_list_item => |v| {
+            .task_list_item => |v| if (self.options.gfm_task_list_items)
+                // cmark-gfm's tasklist extension writes this `<input>` as a
+                // literal string: attributes alphabetical, and NOT self-closed
+                // even though the rest of GFM's output is XHTML-ish under
+                // `xhtml_void` (it never goes through cmark's void-element
+                // path). Reproduce it verbatim rather than deriving it.
+                try self.renderCommonMarkListItemPrefixed(id, if (v.checked)
+                    "<input checked=\"\" disabled=\"\" type=\"checkbox\"> "
+                else
+                    "<input disabled=\"\" type=\"checkbox\"> ")
+            else {
                 try self.writer.writeAll("<li>\n");
                 if (v.checked) {
                     try self.writer.writeAll("<input disabled=\"\" type=\"checkbox\" checked=\"\"/>\n");
@@ -592,7 +737,15 @@ pub const Renderer = struct {
             .term => try self.inTags("dt", id, 1, &.{}),
             .definition_list => try self.inTags("dl", id, 2, &.{}),
             .bullet_list => try self.inTags("ul", id, 2, &.{}),
-            .task_list => try self.inTags("ul", id, 2, &.{.{ .key = "class", .value = "task-list" }}),
+            .task_list => {
+                // GFM's own output is a plain `<ul>`; djot marks it up with a
+                // `task-list` class.
+                const extra: []const KV = if (self.options.gfm_task_list_items)
+                    &.{}
+                else
+                    &.{.{ .key = "class", .value = "task-list" }};
+                try self.inTags("ul", id, 2, extra);
+            },
             .ordered_list => |v| {
                 var buf: [16]u8 = undefined;
                 var extra: [2]KV = undefined;
@@ -637,7 +790,10 @@ pub const Renderer = struct {
                 try self.writer.print("{d}", .{idx});
                 try self.writer.writeAll("</sup></a>");
             },
-            .table => try self.inTags("table", id, 2, &.{}),
+            .table => if (self.options.table_sections)
+                try self.renderSectionedTable(id)
+            else
+                try self.inTags("table", id, 2, &.{}),
             .caption => {
                 var it = self.ast.children(id);
                 if (it.next() != null) try self.inTags("caption", id, 1, &.{});
@@ -647,7 +803,10 @@ pub const Renderer = struct {
                 var extra: [1]KV = undefined;
                 var n: usize = 0;
                 if (v.alignment != .default) {
-                    extra[0] = .{ .key = "style", .value = alignStyle(v.alignment) };
+                    extra[0] = if (self.options.gfm_cell_align_attr)
+                        .{ .key = "align", .value = alignName(v.alignment) }
+                    else
+                        .{ .key = "style", .value = alignStyle(v.alignment) };
                     n = 1;
                 }
                 try self.inTags(if (v.head) "th" else "td", id, 1, extra[0..n]);
@@ -671,7 +830,7 @@ pub const Renderer = struct {
                 try self.writer.writeByte('\n');
             },
             .raw_block => |v| {
-                if (std.mem.eql(u8, v.format, "html")) try self.writer.writeAll(v.text);
+                if (std.mem.eql(u8, v.format, "html")) try self.writeRawHtml(v.text);
             },
             .metadata => |v| {
                 // Raw-text refusal guard. `<script>` content is verbatim with
@@ -744,7 +903,7 @@ pub const Renderer = struct {
                 try self.renderCloseTag("code");
             },
             .raw_inline => |v| {
-                if (std.mem.eql(u8, v.format, "html")) try self.writer.writeAll(v.text);
+                if (std.mem.eql(u8, v.format, "html")) try self.writeRawHtml(v.text);
             },
             .soft_break => try self.writer.writeByte('\n'),
             .hard_break => try self.writer.writeAll(if (self.options.xhtml_void) "<br />\n" else "<br>\n"),
@@ -842,6 +1001,17 @@ pub const Renderer = struct {
             .left => "text-align: left;",
             .right => "text-align: right;",
             .center => "text-align: center;",
+            .default => "",
+        };
+    }
+
+    /// The bare alignment keyword GFM's presentational `align` attribute
+    /// takes (`gfm_cell_align_attr`), as opposed to `alignStyle`'s CSS.
+    fn alignName(a: AST.Alignment) []const u8 {
+        return switch (a) {
+            .left => "left",
+            .right => "right",
+            .center => "center",
             .default => "",
         };
     }

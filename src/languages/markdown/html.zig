@@ -50,10 +50,16 @@ fn contextFor(doc: *const Document) Html.Context {
 /// printer's own `RenderOptions` -- mirrors `Djot.html.render` exactly.
 pub fn render(allocator: Allocator, doc: *const Document, writer: *Writer, options: RenderOptions) RenderError!void {
     const ctx = contextFor(doc);
-    // CommonMark output is XHTML (`<br />`, `<img src=... alt=...>`); route
-    // through the shared printer with those conventions plus this call's
-    // `warn` hook. See `Html.commonmark_render_options`.
-    var render_opts = Html.commonmark_render_options;
+    // Route through the shared printer with this dialect's conventions plus
+    // this call's `warn` hook. The dialect comes from the document itself
+    // (`doc.options.dialect`, recorded at parse time) rather than from this
+    // call, so a caller can't render a GFM document with CommonMark's
+    // conventions by forgetting to say so twice. See `ParseOptions.dialect`
+    // and `Html.commonmark_render_options`/`Html.gfm_render_options`.
+    var render_opts = switch (doc.options.dialect) {
+        .commonmark => Html.commonmark_render_options,
+        .gfm => Html.gfm_render_options,
+    };
     render_opts.warn = options.warn;
     var r = Html.Renderer.init(allocator, &doc.ast, writer, &ctx, render_opts);
     defer r.deinit();
@@ -76,6 +82,56 @@ pub fn renderAlloc(allocator: Allocator, doc: *const Document, options: RenderOp
 }
 
 const testing = std.testing;
+
+test "dialect: the same table prints twig-markdown-shaped by default and GFM-shaped under .gfm" {
+    // The contract this file exists to enforce: twig prints djot, markdown,
+    // and GFM DISTINCTLY. Both dialects parse this to the same
+    // `table`/`row`/`cell` nodes; only the printing differs, and the dialect
+    // rides along on the Document rather than being re-supplied at render
+    // time. (Djot's third spelling — bare `<tr>`, no sections — is pinned by
+    // `languages/djot/conformance.zig`.)
+    const src = "| a |\n| :-: |\n| 1 |\n";
+
+    var md_doc = try markdown.parse(testing.allocator, src, .{ .tables = true });
+    defer md_doc.deinit();
+    const md_out = try renderAlloc(testing.allocator, &md_doc, .{});
+    defer testing.allocator.free(md_out);
+
+    var gfm_doc = try markdown.parse(testing.allocator, src, markdown.ParseOptions.gfm);
+    defer gfm_doc.deinit();
+    const gfm_out = try renderAlloc(testing.allocator, &gfm_doc, .{});
+    defer testing.allocator.free(gfm_out);
+
+    // Both section their rows — that's well-formed HTML, not a GFM quirk.
+    try testing.expect(std.mem.indexOf(u8, md_out, "<thead>") != null);
+    try testing.expect(std.mem.indexOf(u8, gfm_out, "<thead>") != null);
+    // They disagree only on how a cell's alignment is spelled.
+    try testing.expect(std.mem.indexOf(u8, md_out, "<th style=\"text-align: center;\">a</th>") != null);
+    try testing.expect(std.mem.indexOf(u8, gfm_out, "<th align=\"center\">a</th>") != null);
+    try testing.expect(std.mem.indexOf(u8, md_out, "align=\"center\"") == null);
+    try testing.expect(std.mem.indexOf(u8, gfm_out, "text-align") == null);
+}
+
+test "dialect: tagfilter is GFM-only, so default markdown passes raw <title> through" {
+    // Unlike the table spellings above, the tagfilter changes what the HTML
+    // DOES rather than how it's spelled, so it stays scoped to the dialect
+    // that actually specifies it.
+    const src = "<strong> <title>\n";
+
+    var md_doc = try markdown.parse(testing.allocator, src, .{});
+    defer md_doc.deinit();
+    const md_out = try renderAlloc(testing.allocator, &md_doc, .{});
+    defer testing.allocator.free(md_out);
+    try testing.expect(std.mem.indexOf(u8, md_out, "<title>") != null);
+
+    var gfm_doc = try markdown.parse(testing.allocator, src, markdown.ParseOptions.gfm);
+    defer gfm_doc.deinit();
+    const gfm_out = try renderAlloc(testing.allocator, &gfm_doc, .{});
+    defer testing.allocator.free(gfm_out);
+    try testing.expect(std.mem.indexOf(u8, gfm_out, "&lt;title>") != null);
+    // `<strong>` isn't blacklisted, so it stays live in both.
+    try testing.expect(std.mem.indexOf(u8, gfm_out, "<strong>") != null);
+}
 
 test "renders a simple paragraph with emphasis" {
     var doc = try markdown.parse(testing.allocator, "hello *world*\n", .{});

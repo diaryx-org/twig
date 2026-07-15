@@ -83,6 +83,16 @@ pub const Parser = block.Parser;
 pub const Document = struct {
     ast: AST,
 
+    /// The options this document was parsed with. Retained so RENDERING can
+    /// recover the dialect (`ParseOptions.dialect`) without the caller having
+    /// to supply the flavor a second time — `html.zig` maps it to the shared
+    /// printer's conventions. Every field defaults, so a `Document` assembled
+    /// from a bare AST rather than by `parse` (`serializer.zig`'s
+    /// `serializeAstAlloc`) simply gets twig's default flavor, which is what
+    /// that path wants: it serializes back to Markdown source and never
+    /// consults a render convention.
+    options: ParseOptions = .{},
+
     /// Label (normalized: trimmed, internal whitespace collapsed, ASCII
     /// lowercased — see `block.zig`'s `normalizeLabel`) -> the `reference`
     /// node holding that link reference definition's destination (and, as
@@ -125,7 +135,12 @@ pub const Document = struct {
 /// string it needs) and must be freed with `doc.deinit()`.
 pub fn parse(allocator: Allocator, source: []const u8, options: ParseOptions) Allocator.Error!Document {
     const result = try block.parse(allocator, source, options);
-    return .{ .ast = result.ast, .link_references = result.link_references, .footnotes = result.footnotes };
+    return .{
+        .ast = result.ast,
+        .options = options,
+        .link_references = result.link_references,
+        .footnotes = result.footnotes,
+    };
 }
 
 /// Whether `angled` — a whole `<…>` run, brackets included — spells a
@@ -153,6 +168,7 @@ test {
     _ = block;
     _ = @import("html.zig");
     _ = @import("conformance.zig");
+    _ = @import("gfm_conformance.zig");
 }
 
 const testing = std.testing;

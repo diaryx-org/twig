@@ -209,9 +209,14 @@ fn argFail(
 ///   --directives / --no-directives   the generic-directives extension
 ///   --math / --no-math                `$…$`/`$$…$$` math
 ///   --commonmark                      strict CommonMark (every extension off)
-///   --gfm                             the GFM extension set
+///   --gfm                             the GFM dialect
 /// A preset (`--commonmark`/`--gfm`) followed by an individual flag composes
 /// left-to-right, so `--gfm --directives` is GFM plus directives.
+///
+/// The two presets select a DIALECT, not just a set of extensions: each also
+/// carries the HTML conventions its flavor renders with (`Options.dialect`),
+/// so `--gfm` prints GFM's tables/task lists rather than twig-markdown's.
+/// Composition preserves that — `--gfm --math` is still the GFM dialect.
 fn applyExtFlag(arg: []const u8, cfg: *format.ParseConfig) bool {
     if (std.mem.eql(u8, arg, "--directives")) {
         cfg.markdown.directives = true;
