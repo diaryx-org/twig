@@ -137,14 +137,13 @@ typedef struct TwigFlatNode {
 // TwigFlatNode.head for a node that is neither a row nor a cell.
 #define TWIG_HEAD_NONE (-1)
 
-// TwigFlatNode.alignment codes. NONE means the node isn't a cell at all; the
-// delimiter row (|:--|--:|) that spells the alignment out is consumed by the
-// parser and has no node, so this is the only way to recover it.
+// TwigFlatNode.alignment for a node that isn't a cell. The other four codes are
+// the TwigAlignment enumerators below; this one is deliberately not among them,
+// because TwigAlignment is also twig_builder_add_cell's parameter type and
+// "not a cell" is not an alignment you can build with. The delimiter row
+// (|:--|--:|) that spells a column's alignment out is consumed by the parser and
+// has no node, so TwigFlatNode.alignment is the only way to recover it.
 #define TWIG_ALIGN_NONE (-1)
-#define TWIG_ALIGN_DEFAULT 0
-#define TWIG_ALIGN_LEFT 1
-#define TWIG_ALIGN_RIGHT 2
-#define TWIG_ALIGN_CENTER 3
 
 // The C ABI contract version (see the "ABI stability contract" above); compare
 // against the TWIG_ABI_VERSION you compiled with to detect a layout mismatch.

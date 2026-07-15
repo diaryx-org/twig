@@ -111,9 +111,35 @@ pub fn build(b: *std.Build) void {
     });
     const run_bench_tests = b.addRunArtifact(bench_tests);
 
+    // `bindings/c/include/twig.h` is hand-written and installed verbatim, so
+    // nothing above ever runs a C compiler over it — the Zig and Rust sides
+    // both hand-maintain their own view of the ABI. This test compiles the
+    // header as C and links it against c_lib, which is the only thing that
+    // catches a header that isn't valid C (it once wasn't: TWIG_ALIGN_* were
+    // both macros and TwigAlignment enumerators) or codes that drift from what
+    // the library returns. Skipped for wasm, which has no host C runner.
+    const c_header_tests = b.addExecutable(.{
+        .name = "twig-c-header-test",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    c_header_tests.root_module.addCSourceFile(.{
+        .file = b.path("bindings/c/test/header_test.c"),
+        .flags = &.{ "-std=c99", "-Wall", "-Wextra", "-Werror", "-pedantic" },
+    });
+    c_header_tests.root_module.addIncludePath(b.path("bindings/c/include"));
+    c_header_tests.root_module.linkLibrary(c_lib);
+    const run_c_header_tests = b.addRunArtifact(c_header_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_c_lib_tests.step);
     test_step.dependOn(&run_bench_tests.step);
+    if (!target.result.cpu.arch.isWasm()) {
+        test_step.dependOn(&run_c_header_tests.step);
+    }
 }
