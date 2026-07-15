@@ -2291,6 +2291,27 @@ fn linkCovering(
     return null;
 }
 
+/// The innermost autolink — the `<https://x.dev>` / `<a@b.dev>` form — on the
+/// chain. Callers pass a chain built at a CARET; see `twig_editor_insert_link`
+/// for why a selection doesn't consult this.
+///
+/// Both node kinds are matched in both formats because the split is not the one
+/// the names suggest — it follows the FORMAT, not just the destination.
+/// `<mailto:a@b.dev>` parses as a `url` in Markdown and an `email` in djot, so
+/// picking one kind per format would miss half the autolinks it was meant to
+/// catch.
+fn autolinkCovering(ast: *const twig.AST, chain: []const twig.AST.Node.Id) ?twig.AST.Node.Id {
+    var i = chain.len;
+    while (i > 0) {
+        i -= 1;
+        switch (std.meta.activeTag(ast.nodes[chain[i]].kind)) {
+            .url, .email => return chain[i],
+            else => {},
+        }
+    }
+    return null;
+}
+
 /// Link `[start, end)` to `destination`, or repoint the link already there.
 ///
 /// Decisions, all visible in `twig.h`:
@@ -2298,6 +2319,19 @@ fn linkCovering(
 ///     text kept. Re-linking is the common gesture (fix a URL), and it keeps the
 ///     op idempotent instead of nesting `[[t](a)](b)`. Removing a link is
 ///     already `twig_editor_unwrap`, which peels a node to its interior.
+///   * A CARET in an existing autolink re-points it the same way, but there is
+///     no text to keep: an autolink's text IS its destination, so the node is
+///     respelled whole for the new one (canonically — see below — so a `<url>`
+///     re-pointed at a relative path becomes `[dest](dest)`, not a broken `<>`).
+///     Without this the op reads the URL as ordinary text and splices a link
+///     into the middle of it: `<https<https://y.dev>://x.dev>`.
+///
+///     Only a caret, never a selection. A selection carries text of its own to
+///     link, and can straddle the autolink's edges, where "re-point" means
+///     nothing; a caret is the unambiguous gesture. And a caret inside BOTH
+///     (`[<https://x.dev>](d)`) re-points the link, not the autolink: a link's
+///     text is separable from its destination, so re-pointing it keeps text that
+///     re-pointing the autolink would discard.
 ///   * A link with NO TEXT gets the canonical spelling for the destination it
 ///     was given, never `[](dest)`: a childless link has nothing to render, so
 ///     consumers fall back to showing the destination and the caret has nowhere
@@ -2343,10 +2377,19 @@ pub export fn twig_editor_insert_link(
     // splice (see `ast/editor.zig`'s module doc).
     var text: []const u8 = src[start..end];
     var target = twig.Span.init(start, end);
-    if (linkCovering(ast, chain.items, start, end)) |id| {
+    var repoint = linkCovering(ast, chain.items, start, end);
+    if (repoint == null and start == end) repoint = autolinkCovering(ast, chain.items);
+    if (repoint) |id| {
         const node = ast.nodes[id];
         if (node.span.start == 0 and node.span.end == 0) return .not_editable;
-        text = if (node.content_span) |cs| src[cs.start..cs.end] else "";
+        // An autolink has no `[text]` half: the text it shows is the OLD
+        // destination, so keeping it would spell the new link with the URL it
+        // was meant to replace. Empty text sends it through the canonical
+        // spelling below, exactly as a caret on bare text goes.
+        text = switch (std.meta.activeTag(node.kind)) {
+            .url, .email => "",
+            else => if (node.content_span) |cs| src[cs.start..cs.end] else "",
+        };
         target = node.span;
     }
 
@@ -3651,6 +3694,23 @@ fn expectNoNodeOfKind(fx: *EditorFixture, kind: []const u8) !void {
     }
 }
 
+/// That `needle` survives in no node's payload. A node replaced WHOLE leaves no
+/// trace of its old destination; one the op spliced INTO leaves the halves
+/// behind as `str` siblings, which the kind assertions alone would not notice.
+fn expectNoTextMatching(fx: *EditorFixture, needle: []const u8) !void {
+    var nptr: ?[*]const TwigFlatNode = null;
+    var nlen: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nptr, &nlen));
+    for (nptr.?[0..nlen]) |n| {
+        if (n.text_ptr) |t| {
+            if (std.mem.indexOf(u8, t[0..n.text_len], needle) != null) return error.TextFound;
+        }
+        if (n.destination_ptr) |d| {
+            if (std.mem.indexOf(u8, d[0..n.destination_len], needle) != null) return error.TextFound;
+        }
+    }
+}
+
 /// A `link`'s VISIBLE text: its `str` children joined. Djot splits an escaped
 /// run into several `str` nodes, so a single-child check would miss.
 fn expectLinkText(fx: *EditorFixture, expected: []const u8) !void {
@@ -3834,6 +3894,108 @@ test "insert_link: re-pointing a text-less link also gets the canonical spelling
     try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 3, 3, "https://x.dev"));
     try fx.expectSource("a <https://x.dev> b\n");
     try expectSpelled(&fx, "url", "https://x.dev");
+}
+
+// An autolink re-points too, and it is the case the empty-text spelling made
+// reachable: before, the op read `<https://x.dev>` as ordinary text and spliced
+// a link into the middle of the URL — `see <https<https://y.dev>://x.dev> ok`.
+
+test "insert_link: a caret in an autolink re-points it, not its URL text" {
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("see <https://x.dev> ok\n", fmt);
+        defer fx.deinit();
+        // Offset 10 is mid-URL, inside the `url` node's span.
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 10, 10, "https://y.dev"));
+        try fx.expectSource("see <https://y.dev> ok\n");
+        try expectSpelled(&fx, "url", "https://y.dev");
+        // The corruption left the old URL's halves behind as text; a re-point
+        // takes the whole node, so no fragment of `x.dev` survives anywhere.
+        try expectNoNodeOfKind(&fx, "link");
+        try expectNoTextMatching(&fx, "x.dev");
+    }
+}
+
+test "insert_link: re-pointing an autolink RESPELLS it for the new destination" {
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("see <https://x.dev> ok\n", fmt);
+        defer fx.deinit();
+        // `<./notes.md>` is not an autolink in either format — carrying the old
+        // node's spelling over would leave raw HTML (Markdown) or literal text.
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 10, 10, "./notes.md"));
+        // Asserted through the AST, not the bytes: the formats spell this text
+        // differently (djot escapes the `.` against smart punctuation), and it
+        // is the reparse, not the spelling, that has to agree.
+        try expectLinkDest(&fx, "./notes.md");
+        try expectLinkText(&fx, "./notes.md");
+        try expectNoNodeOfKind(&fx, "url");
+    }
+}
+
+test "insert_link: an `email` autolink re-points like a `url` one" {
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("see <a@b.dev> ok\n", fmt);
+        defer fx.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 8, 8, "c@d.dev"));
+        try fx.expectSource("see <c@d.dev> ok\n");
+        try expectSpelled(&fx, "email", "c@d.dev");
+    }
+}
+
+test "insert_link: a `mailto:` autolink re-points though the formats disagree on its kind" {
+    // The node kind is not a property of the destination: djot calls this an
+    // `email`, Markdown a `url`. Matching one kind per format would leave the
+    // other format's `<mailto:…>` to be corrupted exactly as before.
+    var dj = try EditorFixture.initFmt("see <mailto:a@b.dev> ok\n", .djot);
+    defer dj.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&dj, 10, 10, "mailto:c@d.dev"));
+    try dj.expectSource("see <mailto:c@d.dev> ok\n");
+    try expectSpelled(&dj, "email", "mailto:c@d.dev");
+
+    var md = try EditorFixture.initFmt("see <mailto:a@b.dev> ok\n", .markdown);
+    defer md.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&md, 10, 10, "mailto:c@d.dev"));
+    try md.expectSource("see <mailto:c@d.dev> ok\n");
+    try expectSpelled(&md, "url", "mailto:c@d.dev");
+}
+
+test "insert_link: an autolink's boundaries read like a link's — start in, end out" {
+    // The chain's own half-open rule, so both re-point paths agree: a caret AT
+    // `span.start` is inside the node, one at `span.end` belongs to the next
+    // sibling and means "a new link here".
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var at_start = try EditorFixture.initFmt("see <https://x.dev> ok\n", fmt);
+        defer at_start.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&at_start, 4, 4, "https://y.dev"));
+        try at_start.expectSource("see <https://y.dev> ok\n");
+
+        var at_end = try EditorFixture.initFmt("see <https://x.dev> ok\n", fmt);
+        defer at_end.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&at_end, 19, 19, "https://y.dev"));
+        try at_end.expectSource("see <https://x.dev><https://y.dev> ok\n");
+    }
+}
+
+test "insert_link: a SELECTION overlapping an autolink still wraps, never re-points" {
+    // A selection carries its own text to link, so it takes the wrap path
+    // whether or not an autolink is under it — the re-point is a caret gesture.
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("see <https://x.dev> ok\n", fmt);
+        defer fx.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 4, 19, "https://y.dev"));
+        try fx.expectSource("see [<https://x.dev>](https://y.dev) ok\n");
+    }
+}
+
+test "insert_link: a caret in an autolink INSIDE a link re-points the link" {
+    // Both are on the chain. The link wins: its text is separable from its
+    // destination, so re-pointing it keeps text the autolink path would drop.
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("see [<https://x.dev>](old) ok\n", fmt);
+        defer fx.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 10, 10, "https://y.dev"));
+        try fx.expectSource("see [<https://x.dev>](https://y.dev) ok\n");
+        try expectLinkDest(&fx, "https://y.dev");
+    }
 }
 
 test "insert_link re-points an existing link instead of nesting one" {

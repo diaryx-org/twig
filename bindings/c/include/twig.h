@@ -584,6 +584,15 @@ TwigStatus twig_editor_toggle_block_container(
 //     text kept — re-linking is the common gesture, and it keeps the op from
 //     nesting `[[t](a)](b)`. To unlink, use twig_editor_unwrap, which peels a
 //     node down to its interior.
+//   * A CARET in an existing autolink (`<https://x.dev>`, `<a@b.dev>`) re-points
+//     it the same way, but there is no text to keep: an autolink's text IS its
+//     destination, so the node is replaced WHOLE, spelled canonically for the
+//     new destination (below) — a `<url>` re-pointed at a relative path becomes
+//     `[dest](dest)`. Only a caret: a selection carries text of its own to link,
+//     and one straddling the autolink's edges has no re-point to mean, so it
+//     wraps as usual. A caret inside BOTH an autolink and a link
+//     (`[<https://x.dev>](d)`) re-points the LINK, whose text is separable from
+//     its destination and so survives.
 //   * A link with NO TEXT — an empty range, or re-pointing an existing
 //     `[](old)` — is spelled canonically for the destination given, never as
 //     `[](destination)`: a childless link has nothing to render, so consumers

@@ -699,6 +699,15 @@ impl Editor {
     /// its text kept, so re-linking fixes a URL instead of nesting
     /// `[[t](a)](b)`; to unlink, use [`Editor::unwrap_node`].
     ///
+    /// A **caret in an existing autolink** (`<https://x.dev>`) re-points it the
+    /// same way, but there is no text to keep — an autolink's text *is* its
+    /// destination — so the node is replaced whole, respelled canonically for the
+    /// new destination. Only a caret: a selection carries text of its own to
+    /// link, and one straddling the autolink's edges has no re-point to mean, so
+    /// it wraps as usual. A caret inside both an autolink and a link
+    /// (`[<https://x.dev>](d)`) re-points the link, whose text is separable from
+    /// its destination and so survives.
+    ///
     /// A link with **no text** — an empty range, or re-pointing an existing
     /// `[](old)` — is spelled canonically for the destination given, never as
     /// `[](destination)`: a childless link has nothing to render, so consumers
@@ -1761,6 +1770,28 @@ mod tests {
         // A caret inside the existing link re-points it rather than nesting.
         ed.insert_link(3, 7, "http://y.dev").expect("re-point");
         assert_eq!(ed.source_str().unwrap(), "a [word](http://y.dev) b\n");
+    }
+
+    #[test]
+    fn editor_insert_link_repoints_an_autolink() {
+        // The regression: an autolink is a `url`/`email` node whose text IS its
+        // destination. Read as ordinary text, a caret inside it spliced a whole
+        // new link into the middle of the old URL —
+        // `see <https<https://y.dev>://x.dev> ok`.
+        for format in [Format::Markdown, Format::Djot] {
+            let mut ed = Editor::new_str("see <https://x.dev> ok\n", format).expect("editor");
+            ed.insert_link(10, 10, "https://y.dev").expect("re-point");
+            assert_eq!(ed.source_str().unwrap(), "see <https://y.dev> ok\n");
+
+            // Source that looks right can still parse wrong: assert the reparse.
+            let nodes = ed.nodes().expect("nodes");
+            let url = nodes
+                .iter()
+                .find(|n| n.kind == "url")
+                .expect("still an autolink");
+            assert_eq!(url.text.as_deref(), Some("https://y.dev"));
+            assert!(!nodes.iter().any(|n| n.kind == "link"));
+        }
     }
 
     #[test]
