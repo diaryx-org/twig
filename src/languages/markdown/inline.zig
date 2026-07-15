@@ -1514,21 +1514,28 @@ fn isWordChar(c: u8) bool {
 ///     is trimmed and trimming continues.
 /// Stops at the first byte that matches none of the above.
 fn trimTrailingAutolinkPunct(s: []const u8) []const u8 {
+    // Count the parens ONCE, then decrement `close` per trimmed `)` — the
+    // same bookkeeping cmark's `autolink_delim` does, and what keeps this
+    // linear (recounting inside the loop is O(n^2) on a candidate ending in a
+    // long `)` run). The running counts stay equal to the counts over
+    // `s[0..end]`, which is what the balance test actually needs, because
+    // nothing else in the loop can move a paren out of that range: `(` is
+    // never trimmed (it falls to the `else` and stops the loop), and neither
+    // the punctuation set nor an `&entity;` run can contain one.
+    var open: usize = 0;
+    var close: usize = 0;
+    for (s) |ch| {
+        if (ch == '(') open += 1;
+        if (ch == ')') close += 1;
+    }
     var end = s.len;
     while (end > 0) {
         const c = s[end - 1];
         if (c == ')') {
-            var open: usize = 0;
-            var close: usize = 0;
-            for (s[0..end]) |ch| {
-                if (ch == '(') open += 1;
-                if (ch == ')') close += 1;
-            }
-            if (close > open) {
-                end -= 1;
-                continue;
-            }
-            break;
+            if (close <= open) break;
+            close -= 1;
+            end -= 1;
+            continue;
         }
         if (c == ';') {
             // Walk back over the letters preceding the `;`; if they're
