@@ -12,7 +12,8 @@ extern "C" {
 // minor release, never a breaking one:
 //
 //   - Enum-like code spaces (TWIG_FORMAT_*, TwigStatus, TwigNodeKind,
-//     TwigInlineKind, TwigBlockKind, and the builder enums) only ever gain new
+//     TwigInlineKind, TwigBlockKind, TwigBlockContainerKind, and the builder
+//     enums) only ever gain new
 //     values appended at the end. An existing value is NEVER renumbered or
 //     reused — so a new document format is TWIG_FORMAT_* = <next int>, leaving
 //     every prior code untouched.
@@ -390,6 +391,15 @@ typedef enum TwigBlockKind {
     TWIG_BLOCK_HEADING = 1,
 } TwigBlockKind;
 
+// Container kinds for twig_editor_toggle_block_container. Where a TwigBlockKind
+// is a marker on ONE block, a container prefixes every line of a range and nests.
+// (The integer values are the wire contract — do not renumber.)
+typedef enum TwigBlockContainerKind {
+    TWIG_CONTAINER_BLOCK_QUOTE = 0,
+    TWIG_CONTAINER_BULLET_LIST = 1,
+    TWIG_CONTAINER_ORDERED_LIST = 2,
+} TwigBlockContainerKind;
+
 // ── Offset-addressed editing & read-back ──────────────────────────────────────
 // The rich-text-editor surface: a caret speaks byte offsets, not locator
 // strings. edit_range is the raw splice a keystroke maps onto; node_at /
@@ -520,6 +530,76 @@ TwigStatus twig_editor_set_block(
     size_t offset,
     int block_kind,
     uint32_t level,
+    TwigChange *out_change
+);
+
+// Toggle a block container (quote / bullet list / ordered list) over the blocks
+// that [start, end) covers. `container_kind` is a TwigBlockContainerKind. Djot and
+// Markdown only — both spell these `> `, `- `, `1. ` and nest quotes `> > ` —
+// else TWIG_STATUS_UNSUPPORTED_FORMAT. TWIG_STATUS_INVALID_ARGUMENT for a bad
+// range or kind code; TWIG_STATUS_NOT_FOUND if the range covers no block; a
+// reparse-breaking result rolls back to TWIG_STATUS_EDIT_CONFLICT. Fills
+// out_change on success if non-NULL.
+//
+// The range is always widened to WHOLE LINES of the blocks it touches — you
+// cannot quote half a paragraph — and the prefix is applied at column 0, so a
+// container wraps the outermost structure on those lines (quoting inside a list
+// item quotes the item: `- a` -> `> - a`).
+//
+// ON vs OFF is decided from the AST, not by looking for a `>` in the source (a
+// `>` inside a code block is not a quote). The op walks the ancestors of `start`
+// for a container of `container_kind` and toggles OFF only when the range covers
+// every block that container holds; otherwise it toggles ON. So:
+//
+//   * A fully covered container is REMOVED, one level only: `> > a` -> `> a`.
+//   * A PARTLY covered one NESTS instead, because unquoting it would drag its
+//     uncovered siblings out too. Selecting the first paragraph of
+//     `> a\n>\n> b\n` gives `> > a\n>\n> b\n`.
+//   * Toggling a list kind while in the OTHER list kind CONVERTS in place
+//     (`- a` -> `1. a`) rather than nesting a list inside a list.
+//
+// Each covered block becomes one list item, so an ordered list numbers a
+// multi-block range 1., 2., 3.… A blank line between blocks is marked (`>`) for a
+// quote, which would otherwise end at it, and left bare for a list, where it only
+// makes the list loose. Removing a list INSERTS a blank line between items that
+// lacked one: a tight `- a\n- b\n` stripped to `a\nb\n` would be one paragraph,
+// not two — the items' block structure is what is preserved, not the tightness.
+//
+TwigStatus twig_editor_toggle_block_container(
+    TwigEditor *editor,
+    size_t start,
+    size_t end,
+    int container_kind,
+    TwigChange *out_change
+);
+
+// Link [start, end) to `destination` — `[text](destination)`. Djot and Markdown
+// only, else TWIG_STATUS_UNSUPPORTED_FORMAT. TWIG_STATUS_INVALID_ARGUMENT for a
+// bad range, a NULL destination with a non-zero length, or a destination holding
+// a newline (neither format can carry one: Djot strips it, Markdown's `<…>` form
+// forbids it — refusing beats silently rewriting the caller's URL). Fills
+// out_change on success if non-NULL.
+//
+//   * An EXISTING link covering the range has its destination REPLACED and its
+//     text kept — re-linking is the common gesture, and it keeps the op from
+//     nesting `[[t](a)](b)`. To unlink, use twig_editor_unwrap, which peels a
+//     node down to its interior.
+//   * An EMPTY range gives `[](destination)` — empty but well-formed, matching
+//     twig_editor_wrap_range, which likewise wraps nothing into `****`. What text
+//     to invent for a bare caret is the frontend's policy, not twig's.
+//
+// The destination is escaped for the target format, so a `)` or a space in it
+// cannot break the markup. This differs BY FORMAT, and not cosmetically:
+// Markdown ends a destination at the first space (`[t](a b)` is not a link at
+// all), so a destination with whitespace moves into the `<…>` form; Djot takes
+// spaces literally and gives `<…>` no meaning, so `[t](<a b>)` there would link
+// to the literal text `<a b>`. Parens and backslashes are backslash-escaped.
+TwigStatus twig_editor_insert_link(
+    TwigEditor *editor,
+    size_t start,
+    size_t end,
+    const uint8_t *destination,
+    size_t destination_len,
     TwigChange *out_change
 );
 

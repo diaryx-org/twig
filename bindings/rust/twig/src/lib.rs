@@ -151,6 +151,28 @@ impl BlockKind {
     }
 }
 
+/// A block container for [`Editor::toggle_block_container`] — the toolbar's
+/// Quote / Bulleted list / Numbered list buttons. Where a [`BlockKind`] rewrites
+/// one block's leading marker, a container prefixes every line of a range and
+/// nests. Djot and Markdown spell all three; other formats yield
+/// [`Error::UnsupportedFormat`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockContainerKind {
+    BlockQuote,
+    BulletList,
+    OrderedList,
+}
+
+impl BlockContainerKind {
+    fn to_c(self) -> c_int {
+        match self {
+            BlockContainerKind::BlockQuote => 0,
+            BlockContainerKind::BulletList => 1,
+            BlockContainerKind::OrderedList => 2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Version {
     pub major: u8,
@@ -631,6 +653,73 @@ impl Editor {
         let (block_kind, level) = kind.to_c();
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_set_block(ed, offset, block_kind, level, out)
+        })
+    }
+
+    /// Toggle a block container over the blocks `[start, end)` covers — the
+    /// toolbar's Quote / Bulleted list / Numbered list buttons. Djot and Markdown
+    /// only, else [`Error::UnsupportedFormat`]; [`Error::NotFound`] if the range
+    /// covers no block; [`Error::InvalidArgument`] for a bad range.
+    ///
+    /// The range widens to whole lines of the blocks it touches (you cannot quote
+    /// half a paragraph), and the prefix lands at column 0, so a container wraps
+    /// the outermost structure on those lines.
+    ///
+    /// Whether this adds or removes is decided from the **AST** — the ancestors
+    /// of `start` — not by looking for a `>` in the source. It removes the
+    /// container only when the range covers every block that container holds, and
+    /// then only one level (`> > a` → `> a`). A partly covered container **nests**
+    /// instead, since removing it would drag its uncovered siblings out with it:
+    /// selecting the first paragraph of `> a\n>\n> b\n` gives `> > a\n>\n> b\n`.
+    /// Toggling one list kind while inside the other **converts** in place
+    /// (`- a` → `1. a`) rather than nesting.
+    ///
+    /// Each covered block becomes one item, so an ordered list numbers a
+    /// multi-block range `1.`, `2.`, `3.`… Removing a list inserts a blank line
+    /// between items that lacked one, keeping them separate blocks (a tight
+    /// `- a\n- b\n` stripped bare would be a single two-line paragraph).
+    pub fn toggle_block_container(
+        &mut self,
+        start: usize,
+        end: usize,
+        kind: BlockContainerKind,
+    ) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_toggle_block_container(ed, start, end, kind.to_c(), out)
+        })
+    }
+
+    /// Link `[start, end)` to `destination` — `[text](destination)`. Djot and
+    /// Markdown only, else [`Error::UnsupportedFormat`];
+    /// [`Error::InvalidArgument`] for a bad range or a destination containing a
+    /// newline (neither format can carry one, and quietly rewriting the URL would
+    /// be worse than refusing).
+    ///
+    /// An existing link covering the range has its destination **replaced** and
+    /// its text kept, so re-linking fixes a URL instead of nesting
+    /// `[[t](a)](b)`; to unlink, use [`Editor::unwrap_node`]. An empty range yields
+    /// `[](destination)`, mirroring [`Editor::wrap_range`] on an empty range.
+    ///
+    /// The destination is escaped for the format, so a `)` or a space in it
+    /// cannot break the markup — and the two formats genuinely differ: Markdown
+    /// ends a destination at the first space (`[t](a b)` is not a link at all) so
+    /// whitespace moves it into the `<…>` form, while Djot takes spaces literally
+    /// and would read `<a b>` as the URL itself.
+    pub fn insert_link(
+        &mut self,
+        start: usize,
+        end: usize,
+        destination: &str,
+    ) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_insert_link(
+                ed,
+                start,
+                end,
+                destination.as_ptr(),
+                destination.len(),
+                out,
+            )
         })
     }
 
@@ -1594,6 +1683,102 @@ mod tests {
 
         let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
         assert_eq!(xml.set_block(1, BlockKind::Heading(1)), Err(Error::UnsupportedFormat));
+    }
+
+    #[test]
+    fn editor_toggle_block_container_round_trips() {
+        let mut ed = Editor::new_str("a\n", Format::Djot).expect("editor");
+
+        let c = ed
+            .toggle_block_container(0, 1, BlockContainerKind::BlockQuote)
+            .expect("quote on");
+        assert_eq!(ed.source_str().unwrap(), "> a\n");
+        assert_eq!(&ed.source_str().unwrap()[c.new.clone()], "> a\n");
+
+        ed.toggle_block_container(2, 3, BlockContainerKind::BlockQuote)
+            .expect("quote off");
+        assert_eq!(ed.source_str().unwrap(), "a\n");
+    }
+
+    #[test]
+    fn editor_toggle_block_container_nests_a_partial_selection() {
+        let mut ed = Editor::new_str("> a\n>\n> b\n", Format::Djot).expect("editor");
+
+        // Only the first paragraph is covered, so the quote is not fully
+        // selected: nest rather than drag `b` out of the quote too.
+        ed.toggle_block_container(2, 3, BlockContainerKind::BlockQuote)
+            .expect("nest");
+        assert_eq!(ed.source_str().unwrap(), "> > a\n>\n> b\n");
+
+        // Peel the inner level back off, leaving the outer quote intact.
+        ed.toggle_block_container(4, 5, BlockContainerKind::BlockQuote)
+            .expect("peel");
+        assert_eq!(ed.source_str().unwrap(), "> a\n>\n> b\n");
+    }
+
+    #[test]
+    fn editor_toggle_block_container_numbers_and_converts_lists() {
+        let mut ed = Editor::new_str("a\n\nb\n", Format::Djot).expect("editor");
+
+        // Each covered block becomes its own numbered item.
+        ed.toggle_block_container(0, 4, BlockContainerKind::OrderedList)
+            .expect("ordered on");
+        assert_eq!(ed.source_str().unwrap(), "1. a\n\n2. b\n");
+
+        // The other list kind converts in place instead of nesting.
+        ed.toggle_block_container(3, 9, BlockContainerKind::BulletList)
+            .expect("convert");
+        assert_eq!(ed.source_str().unwrap(), "- a\n\n- b\n");
+    }
+
+    #[test]
+    fn editor_toggle_block_container_rejects_unspellable_format() {
+        let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+        assert_eq!(
+            xml.toggle_block_container(3, 5, BlockContainerKind::BlockQuote),
+            Err(Error::UnsupportedFormat)
+        );
+    }
+
+    #[test]
+    fn editor_insert_link_wraps_and_repoints() {
+        let mut ed = Editor::new_str("a word b\n", Format::Djot).expect("editor");
+
+        ed.insert_link(2, 6, "http://x.dev").expect("link");
+        assert_eq!(ed.source_str().unwrap(), "a [word](http://x.dev) b\n");
+
+        // A caret inside the existing link re-points it rather than nesting.
+        ed.insert_link(3, 7, "http://y.dev").expect("re-point");
+        assert_eq!(ed.source_str().unwrap(), "a [word](http://y.dev) b\n");
+    }
+
+    #[test]
+    fn editor_insert_link_escapes_the_destination() {
+        // Unescaped, the `)` would close the link early and spill `b` into the
+        // paragraph as literal text.
+        let mut dj = Editor::new_str("w\n", Format::Djot).expect("editor");
+        dj.insert_link(0, 1, "a)b").expect("link");
+        assert_eq!(dj.source_str().unwrap(), "[w](a\\)b)\n");
+
+        // Whitespace is where the formats part ways: Markdown needs the angle
+        // form (a bare space ends the destination and kills the link outright),
+        // Djot must NOT use it (it would link to the literal text `<a b>`).
+        let mut md = Editor::new_str("w\n", Format::Markdown).expect("editor");
+        md.insert_link(0, 1, "a b").expect("link");
+        assert_eq!(md.source_str().unwrap(), "[w](<a b>)\n");
+
+        let mut dj2 = Editor::new_str("w\n", Format::Djot).expect("editor");
+        dj2.insert_link(0, 1, "a b").expect("link");
+        assert_eq!(dj2.source_str().unwrap(), "[w](a b)\n");
+    }
+
+    #[test]
+    fn editor_insert_link_rejects_a_newline_destination() {
+        let mut ed = Editor::new_str("w\n", Format::Djot).expect("editor");
+        assert_eq!(ed.insert_link(0, 1, "a\nb"), Err(Error::InvalidArgument));
+
+        let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+        assert_eq!(xml.insert_link(3, 5, "u"), Err(Error::UnsupportedFormat));
     }
 
     #[test]

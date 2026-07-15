@@ -1579,6 +1579,713 @@ pub export fn twig_editor_set_block(
     return .ok;
 }
 
+// ── Block containers (quote / lists) ─────────────────────────────────────────
+// `set_block` rewrites the leading marker of ONE block at one offset. A block
+// container is a different animal: it prefixes EVERY line of a possibly
+// multi-block range, it nests, and a list numbers its items — so it gets its own
+// op rather than another `TwigBlockKind`. Everything below is line surgery over
+// the covered blocks, spliced in one shot through `replaceAtSpan`; the format
+// table lives here beside `inlineDelims`, and the engine stays language-agnostic.
+
+/// The container kinds `twig_editor_toggle_block_container` toggles (C ABI enum;
+/// values are the wire contract, mirrored by `TwigBlockContainerKind` in
+/// `twig.h`).
+const TwigBlockContainerKind = enum(c_int) {
+    block_quote = 0,
+    bullet_list = 1,
+    ordered_list = 2,
+};
+
+/// Map a raw C `int` to a `TwigBlockContainerKind`, or `null` if it names none.
+fn blockContainerKindFromInt(v: c_int) ?TwigBlockContainerKind {
+    return switch (v) {
+        0 => .block_quote,
+        1 => .bullet_list,
+        2 => .ordered_list,
+        else => null,
+    };
+}
+
+/// The `Node.Kind` tag a container kind detects as.
+fn containerKindTag(kind: TwigBlockContainerKind) twig.Editor.KindTag {
+    return switch (kind) {
+        .block_quote => .block_quote,
+        .bullet_list => .bullet_list,
+        .ordered_list => .ordered_list,
+    };
+}
+
+/// How a format spells a container's per-line prefix. Blank fields mean "build
+/// it per item" (an ordered list's ordinal) or "leave the line alone".
+const ContainerSpelling = struct {
+    /// Opens the container on the first line of each covered block.
+    marker: []const u8,
+    /// Holds a block's continuation lines inside the container.
+    cont: []const u8,
+    /// A blank line INSIDE the container. A blank line separates list items (it
+    /// merely makes the list loose) but BREAKS a quote in two, so a quote has to
+    /// mark its blanks and a list must not.
+    blank: []const u8,
+    /// The marker is a per-item ordinal (`1. `, `2. `…), built at emit time.
+    numbered: bool = false,
+};
+
+/// The source prefixes that spell `kind` in `format`, or `null` when the format
+/// has no line-prefixed spelling for block containers at all (XML and HTML mark
+/// structure with elements, not line markers). Djot and Markdown happen to agree
+/// on all three — `> ` (with a bare `>` carrying a quote across a blank line),
+/// `- `, `1. `, and `> > ` to nest — but they are listed per format rather than
+/// shared, because the agreement is a coincidence of these two formats and not a
+/// property a third one would inherit (their link destinations already diverge;
+/// see `writeLinkDestination`).
+fn containerSpelling(format: TwigFormat, kind: TwigBlockContainerKind) ?ContainerSpelling {
+    return switch (format) {
+        .djot, .markdown => switch (kind) {
+            .block_quote => .{ .marker = "> ", .cont = "> ", .blank = ">" },
+            .bullet_list => .{ .marker = "- ", .cont = "  ", .blank = "" },
+            .ordered_list => .{ .marker = "", .cont = "", .blank = "", .numbered = true },
+        },
+        else => null,
+    };
+}
+
+/// True for a node whose children are blocks — the level a container op works
+/// at. Everything else (a `para`, a `heading`) holds inlines.
+fn isBlockParent(tag: twig.Editor.KindTag) bool {
+    return switch (tag) {
+        .doc, .block_quote, .list_item, .task_list_item, .div, .section => true,
+        else => false,
+    };
+}
+
+/// True for the three container kinds a toggle targets.
+fn isBlockContainer(tag: twig.Editor.KindTag) bool {
+    return switch (tag) {
+        .block_quote, .bullet_list, .ordered_list => true,
+        else => false,
+    };
+}
+
+/// The start of the line `at` sits on.
+fn lineStartAt(src: []const u8, at: usize) usize {
+    var i = @min(at, src.len);
+    while (i > 0 and src[i - 1] != '\n') i -= 1;
+    return i;
+}
+
+/// One past the newline terminating the line `at` sits on (or `src.len` at an
+/// unterminated last line).
+fn lineEndAt(src: []const u8, at: usize) usize {
+    var i = @min(at, src.len);
+    while (i < src.len and src[i] != '\n') i += 1;
+    return if (i < src.len) i + 1 else i;
+}
+
+/// `line` without its trailing `\r\n` / `\n`.
+fn lineBody(line: []const u8) []const u8 {
+    var e = line.len;
+    if (e > 0 and line[e - 1] == '\n') e -= 1;
+    if (e > 0 and line[e - 1] == '\r') e -= 1;
+    return line[0..e];
+}
+
+/// Only spaces/tabs (or nothing) — a line that separates blocks.
+fn isBlankLine(body: []const u8) bool {
+    for (body) |c| {
+        if (c != ' ' and c != '\t') return false;
+    }
+    return true;
+}
+
+/// The chain of node ids from the root down to the deepest node containing
+/// `offset` — the ancestor walk `toggle_block_container` detects containers with
+/// (`Node` carries no parent link, so the chain is rebuilt by descending).
+fn ancestorChain(
+    allocator: Allocator,
+    ast: *const twig.AST,
+    offset: usize,
+    source_len: usize,
+    out: *std.ArrayList(twig.AST.Node.Id),
+) !void {
+    var cur = ast.root;
+    try out.append(allocator, cur);
+    while (childContaining(ast, cur, offset, source_len)) |child| {
+        cur = child;
+        try out.append(allocator, cur);
+    }
+}
+
+/// The blocks `[start, end)` touches: sibling `first`…`last` under the nearest
+/// ancestor whose children are blocks. You cannot quote half a paragraph, so a
+/// container op always widens to whole blocks first.
+const BlockRange = struct {
+    first: twig.AST.Node.Id,
+    last: twig.AST.Node.Id,
+    /// The ancestor chain down to `start`, reused for container detection.
+    chain: []const twig.AST.Node.Id,
+};
+
+/// Advance past one `>` quote marker — its optional indent, the `>`, and the one
+/// optional space after it — or `null` if `line[i..]` doesn't start one.
+fn skipQuoteMarker(line: []const u8, i: usize) ?usize {
+    var j = i;
+    var indent: usize = 0;
+    while (j < line.len and line[j] == ' ' and indent < 3) : (indent += 1) j += 1;
+    if (j >= line.len or line[j] != '>') return null;
+    j += 1;
+    if (j < line.len and line[j] == ' ') j += 1;
+    return j;
+}
+
+/// The `[start, end)` of a list marker on `line` — `start` at the bullet/first
+/// digit (so the indent before it stays put, keeping an enclosing container's
+/// prefix intact) and `end` past the marker's trailing spaces. `null` if the
+/// line doesn't open a list item.
+fn listMarkerAt(line: []const u8) ?struct { start: usize, end: usize } {
+    var j: usize = 0;
+    while (j < line.len and (line[j] == ' ' or line[j] == '\t')) j += 1;
+    const start = j;
+    if (j >= line.len) return null;
+    if (line[j] == '-' or line[j] == '*' or line[j] == '+') {
+        j += 1;
+    } else {
+        if (line[j] == '(') j += 1;
+        var digits: usize = 0;
+        while (j < line.len and line[j] >= '0' and line[j] <= '9') : (digits += 1) j += 1;
+        if (digits == 0) return null;
+        if (j >= line.len or (line[j] != '.' and line[j] != ')')) return null;
+        j += 1;
+    }
+    // A marker must be followed by whitespace (or end the line): `-x` is a
+    // paragraph starting with a hyphen, not a bullet.
+    if (j < line.len and line[j] != ' ' and line[j] != '\n' and line[j] != '\r') return null;
+    while (j < line.len and line[j] == ' ') j += 1;
+    return .{ .start = start, .end = j };
+}
+
+const container_indent = " " ** 24;
+
+/// Wrap every line of `[region_start, region_end)` in `kind`'s prefix, one item
+/// per covered block. The lines already carry any enclosing container's prefix,
+/// so prefixing at column 0 nests naturally (`> a` -> `> > a`).
+fn buildContainerAdd(
+    allocator: Allocator,
+    src: []const u8,
+    ast: *const twig.AST,
+    blocks: BlockRange,
+    region_start: usize,
+    region_end: usize,
+    sp: ContainerSpelling,
+    out: *std.ArrayList(u8),
+) !void {
+    var ordinal: u32 = 1;
+    var cont: []const u8 = sp.cont;
+    var line_start = region_start;
+    while (line_start < region_end) {
+        const line_end = lineEndAt(src, line_start);
+        const line = src[line_start..line_end];
+        const body = lineBody(line);
+
+        if (isBlankLine(body)) {
+            // A blank line inside the region: mark it for a quote (else the
+            // quote ends here), leave it bare for a list (it separates items).
+            if (sp.blank.len > 0) {
+                try out.appendSlice(allocator, sp.blank);
+                try out.appendSlice(allocator, line[body.len..]);
+            } else {
+                try out.appendSlice(allocator, line);
+            }
+            line_start = line_end;
+            continue;
+        }
+
+        if (blockStartsOnLine(ast, blocks, line_start, line_end)) {
+            var num_buf: [24]u8 = undefined;
+            const marker = if (sp.numbered)
+                std.fmt.bufPrint(&num_buf, "{d}. ", .{ordinal}) catch unreachable
+            else
+                sp.marker;
+            if (sp.numbered) cont = container_indent[0..@min(marker.len, container_indent.len)];
+            try out.appendSlice(allocator, marker);
+            try out.appendSlice(allocator, line);
+            ordinal += 1;
+        } else {
+            try out.appendSlice(allocator, cont);
+            try out.appendSlice(allocator, line);
+        }
+        line_start = line_end;
+    }
+}
+
+/// True if one of the covered blocks begins on `[line_start, line_end)` — the
+/// test for "this line opens a new list item". Djot starts a quoted block at its
+/// text (after `> `), Markdown at the line start; either way it lands on the
+/// block's first line, which is all this asks.
+fn blockStartsOnLine(
+    ast: *const twig.AST,
+    blocks: BlockRange,
+    line_start: usize,
+    line_end: usize,
+) bool {
+    var cur: ?twig.AST.Node.Id = blocks.first;
+    while (cur) |id| {
+        const s = ast.nodes[id].span.start;
+        if (s >= line_start and s < line_end) return true;
+        if (id == blocks.last) break;
+        cur = ast.nodes[id].next_sibling;
+    }
+    return false;
+}
+
+/// Strip the quote marker `target` contributes from each of its lines, leaving
+/// any outer quote levels untouched: `depth` is how many quotes enclose it, so
+/// the marker removed is the `depth`-th + 1 on every line. That's what makes
+/// toggling off a nested quote peel exactly one level (`> > a` -> `> a`).
+fn buildQuoteStrip(
+    allocator: Allocator,
+    src: []const u8,
+    region_start: usize,
+    region_end: usize,
+    depth: usize,
+    out: *std.ArrayList(u8),
+) !void {
+    var line_start = region_start;
+    while (line_start < region_end) {
+        const line_end = lineEndAt(src, line_start);
+        const line = src[line_start..line_end];
+
+        var keep: usize = 0;
+        var d: usize = 0;
+        while (d < depth) : (d += 1) keep = skipQuoteMarker(line, keep) orelse break;
+        if (d == depth) {
+            if (skipQuoteMarker(line, keep)) |after| {
+                try out.appendSlice(allocator, line[0..keep]);
+                try out.appendSlice(allocator, line[after..]);
+                line_start = line_end;
+                continue;
+            }
+        }
+        // A line with no marker at this level (a lazy continuation) is already
+        // outside the level being removed — pass it through untouched.
+        try out.appendSlice(allocator, line);
+        line_start = line_end;
+    }
+}
+
+/// Rewrite the list `target`'s item markers: `new_marker` empty removes the list
+/// (toggle off), otherwise it converts one list kind to the other in place. The
+/// text before a marker (an enclosing quote's `> `, a nesting indent) is kept
+/// verbatim; a block's continuation lines are re-indented to the new marker's
+/// width so they stay attached to their item.
+///
+/// Removing a list has to keep its items separate BLOCKS: a tight `- a\n- b\n`
+/// would strip to `a\nb\n`, which is one two-line paragraph, not two. So a blank
+/// line is injected between items that had none — the structure the items had is
+/// what survives, not their tightness.
+fn buildListRewrite(
+    allocator: Allocator,
+    src: []const u8,
+    ast: *const twig.AST,
+    target: twig.AST.Node.Id,
+    region_start: usize,
+    region_end: usize,
+    sp: ?ContainerSpelling,
+    out: *std.ArrayList(u8),
+) !void {
+    var ordinal: u32 = 1;
+    var old_width: usize = 0;
+    var new_width: usize = 0;
+    var seen_item = false;
+    var last_blank = true;
+    var line_start = region_start;
+    while (line_start < region_end) {
+        const line_end = lineEndAt(src, line_start);
+        const line = src[line_start..line_end];
+        const body = lineBody(line);
+
+        if (isBlankLine(body)) {
+            try out.appendSlice(allocator, line);
+            last_blank = true;
+            line_start = line_end;
+            continue;
+        }
+
+        if (itemStartsOnLine(ast, target, line_start, line_end)) {
+            // Only when the list is going away: a conversion keeps the items as
+            // items, so it must not loosen a tight list.
+            if (sp == null and seen_item and !last_blank) try out.append(allocator, '\n');
+            const m = listMarkerAt(line) orelse {
+                try out.appendSlice(allocator, line);
+                line_start = line_end;
+                continue;
+            };
+            var num_buf: [24]u8 = undefined;
+            const marker: []const u8 = if (sp) |s|
+                (if (s.numbered)
+                    std.fmt.bufPrint(&num_buf, "{d}. ", .{ordinal}) catch unreachable
+                else
+                    s.marker)
+            else
+                "";
+            try out.appendSlice(allocator, line[0..m.start]);
+            try out.appendSlice(allocator, marker);
+            try out.appendSlice(allocator, line[m.end..]);
+            old_width = m.end - m.start;
+            new_width = marker.len;
+            ordinal += 1;
+            seen_item = true;
+            last_blank = false;
+        } else {
+            // A continuation line: swap the old marker's indent for the new
+            // one's so the line stays inside its item.
+            var j: usize = 0;
+            while (j < line.len and j < old_width and line[j] == ' ') j += 1;
+            try out.appendSlice(allocator, container_indent[0..@min(new_width, container_indent.len)]);
+            try out.appendSlice(allocator, line[j..]);
+            last_blank = false;
+        }
+        line_start = line_end;
+    }
+}
+
+/// True if one of `list`'s items begins on `[line_start, line_end)`.
+fn itemStartsOnLine(
+    ast: *const twig.AST,
+    list: twig.AST.Node.Id,
+    line_start: usize,
+    line_end: usize,
+) bool {
+    var it = ast.children(list);
+    while (it.next()) |item| {
+        const s = item.span.start;
+        if (s >= line_start and s < line_end) return true;
+    }
+    return false;
+}
+
+/// Toggle a block container (quote / bullet list / ordered list) over the blocks
+/// `[start, end)` covers. See `twig.h` for the full semantics; in short: the
+/// already-in-container test walks the AST ancestors of `start` for a container
+/// of `container_kind`, and the toggle turns OFF only when the range covers
+/// every block that container holds — otherwise it turns ON, which is what makes
+/// a partial selection inside a quote nest (`> >`) instead of dragging the
+/// container's uncovered siblings out with it. Toggling a list kind while inside
+/// the other list kind converts in place rather than nesting.
+pub export fn twig_editor_toggle_block_container(
+    ed: ?*TwigEditor,
+    start: usize,
+    end: usize,
+    container_kind: c_int,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    if (start > end or end > handle.editor.sourceBytes().len) return .invalid_argument;
+    const ck = blockContainerKindFromInt(container_kind) orelse return .invalid_argument;
+    const sp = containerSpelling(handle.format, ck) orelse return .unsupported_format;
+
+    const allocator = activeAllocator();
+    const src = handle.editor.sourceBytes();
+    const ast = handle.editor.astView();
+
+    const blocks = coveredBlocks(allocator, ast, src, start, end) catch |err| switch (err) {
+        error.OutOfMemory => return .out_of_memory,
+        else => return .not_found,
+    };
+    defer allocator.free(blocks.chain);
+
+    const region_start = lineStartAt(src, ast.nodes[blocks.first].span.start);
+    const region_end = lineEndAt(src, ast.nodes[blocks.last].span.end -| 1);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+
+    // The toggle-off / convert / nest decision, all from the ancestor chain.
+    if (innermostContainerIn(ast, blocks.chain, containerKindTag(ck))) |target| {
+        if (containerFullyCovered(ast, src, target, region_start, region_end)) {
+            const t = ast.nodes[target].span;
+            // The container's own lines, not the range's: its span can reach
+            // past the last covered block (a quote's trailing `>` line).
+            const splice_start = lineStartAt(src, t.start);
+            const splice_end = lineEndAt(src, t.end -| 1);
+            switch (ck) {
+                .block_quote => buildQuoteStrip(
+                    allocator,
+                    src,
+                    splice_start,
+                    splice_end,
+                    quoteDepthAbove(ast, blocks.chain, target),
+                    &out,
+                ) catch return .out_of_memory,
+                .bullet_list, .ordered_list => buildListRewrite(
+                    allocator,
+                    src,
+                    ast,
+                    target,
+                    splice_start,
+                    splice_end,
+                    null,
+                    &out,
+                ) catch return .out_of_memory,
+            }
+            return commitSplice(handle, splice_start, splice_end, out.items, out_change);
+        }
+    }
+    if (ck == .bullet_list or ck == .ordered_list) {
+        const other: twig.Editor.KindTag = if (ck == .bullet_list) .ordered_list else .bullet_list;
+        if (innermostContainerIn(ast, blocks.chain, other)) |target| {
+            if (containerFullyCovered(ast, src, target, region_start, region_end)) {
+                const t = ast.nodes[target].span;
+                const splice_start = lineStartAt(src, t.start);
+                const splice_end = lineEndAt(src, t.end -| 1);
+                buildListRewrite(allocator, src, ast, target, splice_start, splice_end, sp, &out) catch
+                    return .out_of_memory;
+                return commitSplice(handle, splice_start, splice_end, out.items, out_change);
+            }
+        }
+    }
+
+    buildContainerAdd(allocator, src, ast, blocks, region_start, region_end, sp, &out) catch
+        return .out_of_memory;
+    return commitSplice(handle, region_start, region_end, out.items, out_change);
+}
+
+/// Splice rebuilt source in over `[start, end)`, mapping the editor's errors the
+/// way the rest of the toolbar does.
+fn commitSplice(
+    handle: *EditorHandle,
+    start: usize,
+    end: usize,
+    text: []const u8,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    handle.editor.replaceAtSpan(twig.Span.init(start, end), text) catch |err| switch (err) {
+        error.OutOfMemory => return .out_of_memory,
+        else => return .edit_conflict,
+    };
+    if (out_change) |slot| slot.* = changeC(handle.editor.last_change.?);
+    return .ok;
+}
+
+/// True when the range's lines cover every block `target` holds — the condition
+/// for toggling the container OFF rather than nesting inside it.
+///
+/// The test is "are all its blocks covered?", NOT "is its span inside the
+/// region?": a container's span can run past its last block, because the blank
+/// `>` line continuing a quote belongs to the quote and to no paragraph in it
+/// (Djot spans `> > a\n>\n` as the inner quote, ending two bytes past its only
+/// paragraph). Comparing spans there reads a fully-covered quote as partial and
+/// nests forever.
+fn containerFullyCovered(
+    ast: *const twig.AST,
+    src: []const u8,
+    target: twig.AST.Node.Id,
+    region_start: usize,
+    region_end: usize,
+) bool {
+    const first = ast.nodes[target].first_child orelse return false;
+    var last = first;
+    var cur: ?twig.AST.Node.Id = first;
+    while (cur) |c| {
+        last = c;
+        cur = ast.nodes[c].next_sibling;
+    }
+    const lo = lineStartAt(src, ast.nodes[first].span.start);
+    const hi = lineEndAt(src, ast.nodes[last].span.end -| 1);
+    return region_start <= lo and region_end >= hi;
+}
+
+/// The deepest node of `tag` on the ancestor chain — the "is the range already
+/// in one of these?" test, answered from the AST rather than by sniffing the
+/// source for a `>`; a `>` inside a code block or a verbatim run isn't a quote,
+/// and the parser is the only thing that knows that.
+fn innermostContainerIn(
+    ast: *const twig.AST,
+    chain: []const twig.AST.Node.Id,
+    tag: twig.Editor.KindTag,
+) ?twig.AST.Node.Id {
+    var i = chain.len;
+    while (i > 0) {
+        i -= 1;
+        if (std.meta.activeTag(ast.nodes[chain[i]].kind) == tag) return chain[i];
+    }
+    return null;
+}
+
+/// How many quotes enclose `target` on the chain — the number of `>` markers to
+/// step over before the one that belongs to `target`.
+fn quoteDepthAbove(
+    ast: *const twig.AST,
+    chain: []const twig.AST.Node.Id,
+    target: twig.AST.Node.Id,
+) usize {
+    var depth: usize = 0;
+    for (chain) |id| {
+        if (id == target) break;
+        if (std.meta.activeTag(ast.nodes[id].kind) == .block_quote) depth += 1;
+    }
+    return depth;
+}
+
+/// Resolve `[start, end)` to the sibling blocks it touches. `end` is pulled back
+/// off a trailing newline first: a block's span stops at its text in Markdown, so
+/// a selection ending on the line break would otherwise resolve above the block
+/// and drag the whole document in.
+fn coveredBlocks(
+    allocator: Allocator,
+    ast: *const twig.AST,
+    src: []const u8,
+    start: usize,
+    end: usize,
+) !BlockRange {
+    var last_off = if (end > start) end - 1 else start;
+    while (last_off > start and (src[last_off] == '\n' or src[last_off] == '\r')) last_off -= 1;
+
+    var chain_a: std.ArrayList(twig.AST.Node.Id) = .empty;
+    errdefer chain_a.deinit(allocator);
+    try ancestorChain(allocator, ast, start, src.len, &chain_a);
+
+    var chain_b: std.ArrayList(twig.AST.Node.Id) = .empty;
+    defer chain_b.deinit(allocator);
+    try ancestorChain(allocator, ast, last_off, src.len, &chain_b);
+
+    var i: usize = 0;
+    while (i + 1 < chain_a.items.len and i + 1 < chain_b.items.len and
+        chain_a.items[i + 1] == chain_b.items[i + 1]) : (i += 1)
+    {}
+    // Climb to the nearest ancestor that holds blocks: the deepest shared node
+    // may be an inline (a `str`), and a container wraps blocks, not words.
+    var p = i;
+    while (p > 0 and !isBlockParent(std.meta.activeTag(ast.nodes[chain_a.items[p]].kind))) p -= 1;
+
+    if (p + 1 >= chain_a.items.len) return error.NoBlock;
+    const first = chain_a.items[p + 1];
+    const last = if (p + 1 < chain_b.items.len) chain_b.items[p + 1] else first;
+    return .{
+        .first = first,
+        .last = last,
+        .chain = try chain_a.toOwnedSlice(allocator),
+    };
+}
+
+// ── Links ────────────────────────────────────────────────────────────────────
+// `toggle_inline` can't spell a link: its delimiters are a fixed `(open, close)`
+// pair, and a link's closing half carries a payload (`](dest)`). Hence a
+// dedicated op with a destination argument — and with the escaping that payload
+// needs.
+
+/// Write `dest` into `out` spelled so `format` parses it back byte-for-byte.
+///
+/// This is the sharp edge of the whole op, and it is NOT one escape table:
+///
+///   * Markdown ends a destination at the first space — `[t](a b)` is not a
+///     link at all, it is literal text — so a destination holding whitespace has
+///     to move into the `<…>` form, where `<`/`>`/`\` are what need escaping.
+///   * Djot takes spaces literally and gives `<…>` NO meaning: `[t](<a b>)`
+///     links to the seven characters `<a b>`. Wrapping there would corrupt the
+///     URL rather than protect it.
+///
+/// Both honour a backslash escape inside the destination, which is what keeps an
+/// unbalanced `)` from closing the link early. Inside Markdown's `<…>` form the
+/// parens need no escape — the destination ends at the `>` — so escaping them
+/// there would put a literal backslash in the URL.
+fn writeLinkDestination(
+    allocator: Allocator,
+    format: TwigFormat,
+    dest: []const u8,
+    out: *std.ArrayList(u8),
+) !void {
+    const angle = format == .markdown and std.mem.indexOfAny(u8, dest, " \t") != null;
+    if (angle) try out.append(allocator, '<');
+    const escapes: []const u8 = if (angle) "\\<>" else "\\()";
+    for (dest) |c| {
+        if (std.mem.indexOfScalar(u8, escapes, c) != null) try out.append(allocator, '\\');
+        try out.append(allocator, c);
+    }
+    if (angle) try out.append(allocator, '>');
+}
+
+/// The innermost `link` on the chain that wholly contains `[start, end)`.
+fn linkCovering(
+    ast: *const twig.AST,
+    chain: []const twig.AST.Node.Id,
+    start: usize,
+    end: usize,
+) ?twig.AST.Node.Id {
+    var i = chain.len;
+    while (i > 0) {
+        i -= 1;
+        const node = ast.nodes[chain[i]];
+        if (std.meta.activeTag(node.kind) != .link) continue;
+        if (node.span.start <= start and node.span.end >= end) return chain[i];
+    }
+    return null;
+}
+
+/// Link `[start, end)` to `destination`, or repoint the link already there.
+///
+/// Decisions, all visible in `twig.h`:
+///   * An EXISTING link covering the range has its destination REPLACED, its
+///     text kept. Re-linking is the common gesture (fix a URL), and it keeps the
+///     op idempotent instead of nesting `[[t](a)](b)`. Removing a link is
+///     already `twig_editor_unwrap`, which peels a node to its interior.
+///   * An EMPTY range yields `[](dest)` — an empty but well-formed link, matching
+///     `twig_editor_wrap_range`, which likewise wraps nothing into `****`. What
+///     text to invent for a bare caret is the frontend's policy, not twig's.
+///   * A destination is escaped per format (see `writeLinkDestination`); a
+///     newline in one is `invalid_argument`, since neither format can hold it
+///     (Djot strips it, Markdown's `<…>` form forbids it) and silently changing
+///     the caller's URL is worse than refusing.
+pub export fn twig_editor_insert_link(
+    ed: ?*TwigEditor,
+    start: usize,
+    end: usize,
+    destination_ptr: ?[*]const u8,
+    destination_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    if (start > end or end > handle.editor.sourceBytes().len) return .invalid_argument;
+    switch (handle.format) {
+        .markdown, .djot => {},
+        else => return .unsupported_format,
+    }
+    const dest = sliceOf(destination_ptr, destination_len) orelse return .invalid_argument;
+    if (std.mem.indexOfAny(u8, dest, "\r\n") != null) return .invalid_argument;
+
+    const allocator = activeAllocator();
+    const src = handle.editor.sourceBytes();
+    const ast = handle.editor.astView();
+
+    var chain: std.ArrayList(twig.AST.Node.Id) = .empty;
+    defer chain.deinit(allocator);
+    ancestorChain(allocator, ast, start, src.len, &chain) catch return .out_of_memory;
+
+    // The text to sit in the brackets, and the span the rebuilt link replaces.
+    // Re-pointing an existing link rebuilds the whole node: a destination is a
+    // string payload with no span of its own, so there is nothing smaller to
+    // splice (see `ast/editor.zig`'s module doc).
+    var text: []const u8 = src[start..end];
+    var target = twig.Span.init(start, end);
+    if (linkCovering(ast, chain.items, start, end)) |id| {
+        const node = ast.nodes[id];
+        if (node.span.start == 0 and node.span.end == 0) return .not_editable;
+        text = if (node.content_span) |cs| src[cs.start..cs.end] else "";
+        target = node.span;
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    out.append(allocator, '[') catch return .out_of_memory;
+    out.appendSlice(allocator, text) catch return .out_of_memory;
+    out.appendSlice(allocator, "](") catch return .out_of_memory;
+    writeLinkDestination(allocator, handle.format, dest, &out) catch return .out_of_memory;
+    out.append(allocator, ')') catch return .out_of_memory;
+
+    return commitSplice(handle, target.start, target.end, out.items, out_change);
+}
+
 // ── Builder ──────────────────────────────────────────────────────────────────
 // Programmatic construction of a document, the write-path mirror of `twig_parse`
 // (which reads a document from source). Wraps `twig.AST.Builder`: build the tree
@@ -2637,6 +3344,273 @@ test "twig_editor: ast_json and query reflect the current tree" {
     var jlen: usize = 0;
     try std.testing.expectEqual(TwigStatus.ok, twig_editor_ast_json(fx.ed, &jptr, &jlen));
     try std.testing.expect(std.mem.indexOf(u8, jptr.?[0..jlen], "\"kind\": \"doc\"") != null);
+}
+
+// ── block-container tests ───────────────────────────────────────────────────
+// Djot and Markdown both, because their spans differ in exactly the places this
+// op reads them: Djot starts a quoted block AT its text (`> a` -> para at 2) and
+// a nested quote at its own `>`, Markdown starts both at column 0 — so a rule
+// derived from one format's spans silently breaks on the other.
+
+fn toggleContainer(fx: *EditorFixture, start: usize, end: usize, kind: TwigBlockContainerKind) TwigStatus {
+    return twig_editor_toggle_block_container(fx.ed, start, end, @intFromEnum(kind), null);
+}
+
+test "toggle_block_container: quote on, then off, round-trips (djot)" {
+    var fx = try EditorFixture.initFmt("a\n", .djot);
+    defer fx.deinit();
+
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 0, 1, .block_quote));
+    try fx.expectSource("> a\n");
+
+    // "a" now sits at [2,3); the range covers the whole quote -> toggle off.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 2, 3, .block_quote));
+    try fx.expectSource("a\n");
+}
+
+test "toggle_block_container: quote on, then off, round-trips (markdown)" {
+    var fx = try EditorFixture.initFmt("a\n", .markdown);
+    defer fx.deinit();
+
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 0, 1, .block_quote));
+    try fx.expectSource("> a\n");
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 2, 3, .block_quote));
+    try fx.expectSource("a\n");
+}
+
+test "toggle_block_container: a multi-block range becomes one quote, blanks marked" {
+    var fx = try EditorFixture.initFmt("a\n\nb\n", .djot);
+    defer fx.deinit();
+
+    // The blank line between the paragraphs must carry a `>` too, or the result
+    // is two quotes instead of one.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 0, 4, .block_quote));
+    try fx.expectSource("> a\n>\n> b\n");
+
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 2, 9, .block_quote));
+    try fx.expectSource("a\n\nb\n");
+}
+
+test "toggle_block_container: quoting inside a quote nests, and off peels one level" {
+    var fx = try EditorFixture.initFmt("> a\n>\n> b\n", .djot);
+    defer fx.deinit();
+
+    // Only the first paragraph is selected, so the enclosing quote is NOT fully
+    // covered: the toggle nests rather than unquoting `b` along with it.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 2, 3, .block_quote));
+    try fx.expectSource("> > a\n>\n> b\n");
+
+    // "a" is now at [4,5); toggling again peels the inner level only.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 4, 5, .block_quote));
+    try fx.expectSource("> a\n>\n> b\n");
+}
+
+test "toggle_block_container: a nested quote peels one level (markdown)" {
+    var fx = try EditorFixture.initFmt("> > a\n", .markdown);
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 4, 5, .block_quote));
+    try fx.expectSource("> a\n");
+}
+
+test "toggle_block_container: each covered block becomes its own list item" {
+    var fx = try EditorFixture.initFmt("a\n\nb\n", .djot);
+    defer fx.deinit();
+
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 0, 4, .bullet_list));
+    try fx.expectSource("- a\n\n- b\n");
+}
+
+test "toggle_block_container: an ordered list numbers a multi-item range" {
+    var fx = try EditorFixture.initFmt("a\n\nb\n\nc\n", .djot);
+    defer fx.deinit();
+
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 0, 7, .ordered_list));
+    try fx.expectSource("1. a\n\n2. b\n\n3. c\n");
+}
+
+test "toggle_block_container: unlisting keeps the items as separate blocks" {
+    var fx = try EditorFixture.initFmt("- a\n- b\n", .djot);
+    defer fx.deinit();
+
+    // A tight list stripped to `a\nb\n` would be ONE paragraph; the blank line
+    // is what keeps the two items two blocks.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 2, 7, .bullet_list));
+    try fx.expectSource("a\n\nb\n");
+}
+
+test "toggle_block_container: toggling the other list kind converts in place" {
+    var fx = try EditorFixture.initFmt("- a\n- b\n", .djot);
+    defer fx.deinit();
+
+    // Not a nest (`1. - a`): a list asked to become the other list kind rewrites
+    // its own markers.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 2, 7, .ordered_list));
+    try fx.expectSource("1. a\n2. b\n");
+
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 3, 9, .bullet_list));
+    try fx.expectSource("- a\n- b\n");
+}
+
+test "toggle_block_container: a list's continuation lines follow the new marker width" {
+    var fx = try EditorFixture.initFmt("- a\n  b\n", .djot);
+    defer fx.deinit();
+
+    // `1. ` is a byte wider than `- `, so the second line has to re-indent or it
+    // falls out of the item.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 2, 7, .ordered_list));
+    try fx.expectSource("1. a\n   b\n");
+}
+
+test "toggle_block_container: a `>` inside a code block is not a quote" {
+    var fx = try EditorFixture.initFmt("```\n> a\n```\n", .djot);
+    defer fx.deinit();
+
+    // The AST has no block_quote here — the `> a` is code_block TEXT. Detection
+    // by string-matching the line prefix would "toggle off" a quote that was
+    // never there and corrupt the code; the AST walk quotes the block instead.
+    try std.testing.expectEqual(TwigStatus.ok, toggleContainer(&fx, 4, 7, .block_quote));
+    try fx.expectSource("> ```\n> > a\n> ```\n");
+}
+
+test "toggle_block_container: a range covering no block is not_found" {
+    var fx = try EditorFixture.initFmt("a\n\nb\n", .djot);
+    defer fx.deinit();
+    // Offset 2 is the blank line between the paragraphs: no block owns it.
+    try std.testing.expectEqual(TwigStatus.not_found, toggleContainer(&fx, 2, 2, .block_quote));
+}
+
+test "toggle_block_container: rejects formats with no line-marker spelling" {
+    var fx = try EditorFixture.init("<a>hi</a>");
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.unsupported_format, toggleContainer(&fx, 3, 5, .block_quote));
+}
+
+test "toggle_block_container: rejects a bad kind code and a bad range" {
+    var fx = try EditorFixture.initFmt("a\n", .djot);
+    defer fx.deinit();
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_editor_toggle_block_container(fx.ed, 0, 1, 99, null),
+    );
+    try std.testing.expectEqual(TwigStatus.invalid_argument, toggleContainer(&fx, 1, 0, .block_quote));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, toggleContainer(&fx, 0, 99, .block_quote));
+}
+
+// ── link tests ──────────────────────────────────────────────────────────────
+
+fn insertLink(fx: *EditorFixture, start: usize, end: usize, dest: []const u8) TwigStatus {
+    return twig_editor_insert_link(fx.ed, start, end, dest.ptr, dest.len, null);
+}
+
+/// The destination the parser reads back out of the EDITED source — the only
+/// thing that proves an escape worked. Source that merely looks right can still
+/// have ended the link early, leaving the tail as literal text.
+fn expectLinkDest(fx: *EditorFixture, expected: []const u8) !void {
+    var nptr: ?[*]const TwigFlatNode = null;
+    var nlen: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nptr, &nlen));
+    for (nptr.?[0..nlen]) |n| {
+        if (!std.mem.eql(u8, std.mem.span(n.kind), "link")) continue;
+        const dest = n.destination_ptr orelse return error.NoDestination;
+        try std.testing.expectEqualStrings(expected, dest[0..n.destination_len]);
+        return;
+    }
+    return error.NoLink;
+}
+
+test "insert_link wraps a range as link text" {
+    var fx = try EditorFixture.initFmt("a word b\n", .djot);
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 2, 6, "http://x.dev"));
+    try fx.expectSource("a [word](http://x.dev) b\n");
+}
+
+test "insert_link on an empty range yields an empty but well-formed link" {
+    var fx = try EditorFixture.initFmt("ab\n", .djot);
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 1, 1, "u"));
+    try fx.expectSource("a[](u)b\n");
+}
+
+test "insert_link re-points an existing link instead of nesting one" {
+    var fx = try EditorFixture.initFmt("a [word](old) b\n", .djot);
+    defer fx.deinit();
+    // A caret inside the link text, not a selection of the whole node.
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 4, 6, "new"));
+    try fx.expectSource("a [word](new) b\n");
+    try expectLinkDest(&fx, "new");
+}
+
+test "insert_link escapes parens so the destination survives (djot)" {
+    var fx = try EditorFixture.initFmt("w\n", .djot);
+    defer fx.deinit();
+    // Unescaped, the `)` closes the link early and `b(c` spills out as literal
+    // text — the whole reason this op escapes at all.
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 0, 1, "a)b(c"));
+    try fx.expectSource("[w](a\\)b\\(c)\n");
+    try expectLinkDest(&fx, "a)b(c");
+}
+
+test "insert_link escapes parens so the destination survives (markdown)" {
+    var fx = try EditorFixture.initFmt("w\n", .markdown);
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 0, 1, "a)b(c"));
+    try expectLinkDest(&fx, "a)b(c");
+}
+
+test "insert_link carries whitespace per format: djot literal, markdown angled" {
+    // Djot has no angle form — it would read `<a b>` as the URL itself.
+    var dj = try EditorFixture.initFmt("w\n", .djot);
+    defer dj.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&dj, 0, 1, "a b"));
+    try dj.expectSource("[w](a b)\n");
+    try expectLinkDest(&dj, "a b");
+
+    // Markdown ends the destination at the space, so without `<…>` there is no
+    // link at all.
+    var md = try EditorFixture.initFmt("w\n", .markdown);
+    defer md.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&md, 0, 1, "a b"));
+    try md.expectSource("[w](<a b>)\n");
+    try expectLinkDest(&md, "a b");
+}
+
+test "insert_link escapes the angle form's own delimiters (markdown)" {
+    var fx = try EditorFixture.initFmt("w\n", .markdown);
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 0, 1, "a >b< c"));
+    try expectLinkDest(&fx, "a >b< c");
+}
+
+test "insert_link handles whitespace and a paren together (markdown)" {
+    var fx = try EditorFixture.initFmt("w\n", .markdown);
+    defer fx.deinit();
+    // The space forces the angle form, where `)` is ALREADY safe — the
+    // destination ends at `>`, so escaping the paren here would put a literal
+    // backslash in the URL.
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 0, 1, "a b)c"));
+    try fx.expectSource("[w](<a b)c>)\n");
+    try expectLinkDest(&fx, "a b)c");
+}
+
+test "insert_link round-trips a backslash in the destination" {
+    var fx = try EditorFixture.initFmt("w\n", .djot);
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 0, 1, "a\\b"));
+    try expectLinkDest(&fx, "a\\b");
+}
+
+test "insert_link rejects a newline in the destination and an unspellable format" {
+    var fx = try EditorFixture.initFmt("w\n", .djot);
+    defer fx.deinit();
+    // Djot silently strips a newline out of a destination; refusing beats
+    // handing back a URL the caller never asked for.
+    try std.testing.expectEqual(TwigStatus.invalid_argument, insertLink(&fx, 0, 1, "a\nb"));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, insertLink(&fx, 1, 0, "u"));
+
+    var xml = try EditorFixture.init("<a>hi</a>");
+    defer xml.deinit();
+    try std.testing.expectEqual(TwigStatus.unsupported_format, insertLink(&xml, 3, 5, "u"));
 }
 
 // ── builder tests ─────────────────────────────────────────────────────────────

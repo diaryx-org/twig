@@ -356,6 +356,21 @@ unsafe extern "C" {
         level: u32,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_toggle_block_container(
+        editor: *mut TwigEditor,
+        start: usize,
+        end: usize,
+        container_kind: c_int,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    pub fn twig_editor_insert_link(
+        editor: *mut TwigEditor,
+        start: usize,
+        end: usize,
+        destination: *const u8,
+        destination_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
 
     pub fn twig_builder_create(out_builder: *mut *mut TwigBuilder) -> TwigStatus;
     pub fn twig_builder_destroy(builder: *mut TwigBuilder);
