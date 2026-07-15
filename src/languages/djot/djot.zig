@@ -19,6 +19,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const block = @import("block.zig");
+const inline_mod = @import("inline.zig");
 const parser = @import("parser.zig");
 
 pub const AST = @import("../../ast/ast.zig");
@@ -102,6 +103,14 @@ pub fn isBlock(kind: AST.Node.Kind) bool {
 pub fn isInline(kind: AST.Node.Kind) bool {
     return inline_tags.contains(std.meta.activeTag(kind));
 }
+
+pub const AutolinkKind = inline_mod.InlineParser.AutolinkKind;
+
+/// What `<dest>` (given here WITHOUT its angle brackets) would spell if it
+/// appeared in a djot document — `null` if djot would leave it literal text.
+/// The inline scanner's own classifier, so a caller asking "may I spell this
+/// destination as an autolink?" gets the answer the reparse will give.
+pub const autolinkKindOf = inline_mod.InlineParser.autolinkKindOf;
 
 test {
     _ = @import("event.zig");

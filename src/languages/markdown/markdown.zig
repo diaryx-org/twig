@@ -128,6 +128,24 @@ pub fn parse(allocator: Allocator, source: []const u8, options: ParseOptions) Al
     return .{ .ast = result.ast, .link_references = result.link_references, .footnotes = result.footnotes };
 }
 
+/// Whether `angled` — a whole `<…>` run, brackets included — spells a
+/// CommonMark autolink (an absolute URI or an email) rather than raw HTML or
+/// literal text. The inline scanner's own two recognizers, asked in the order
+/// the scanner itself dispatches them, so a caller choosing how to spell a
+/// destination gets the answer a reparse will give. Unlike djot's classifier
+/// this needs the brackets: CommonMark's grammar is defined over the whole
+/// `<…>` run, and the recognizers report where it ends.
+///
+/// Nothing this accepts can be misread as an HTML block when it lands alone in
+/// a paragraph: every accepted form has a `:` or `@` inside the first token,
+/// and no HTML block start condition admits either in a tag name.
+pub fn spellsAutolink(angled: []const u8) bool {
+    if (angled.len < 2 or angled[0] != '<') return false;
+    if (inline_mod.scanAutolinkUri(angled, 0)) |end| if (end == angled.len) return true;
+    if (inline_mod.scanAutolinkEmail(angled, 0)) |end| if (end == angled.len) return true;
+    return false;
+}
+
 test {
     _ = @import("entities.zig");
     _ = @import("attributes.zig");

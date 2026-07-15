@@ -584,16 +584,26 @@ TwigStatus twig_editor_toggle_block_container(
 //     text kept — re-linking is the common gesture, and it keeps the op from
 //     nesting `[[t](a)](b)`. To unlink, use twig_editor_unwrap, which peels a
 //     node down to its interior.
-//   * An EMPTY range gives `[](destination)` — empty but well-formed, matching
-//     twig_editor_wrap_range, which likewise wraps nothing into `****`. What text
-//     to invent for a bare caret is the frontend's policy, not twig's.
+//   * A link with NO TEXT — an empty range, or re-pointing an existing
+//     `[](old)` — is spelled canonically for the destination given, never as
+//     `[](destination)`: a childless link has nothing to render, so consumers
+//     fall back to showing the destination and a caret has nowhere to sit.
+//     A destination the format can autolink (an absolute URL or an email, by
+//     that format's own rules) gives `<destination>`; anything else gives
+//     `[destination](destination)`, the destination doubling as the text so it
+//     stays visible and editable. Which destinations autolink is NOT a caller
+//     decision: `<foo>` is raw HTML in Markdown, and a relative path degrades to
+//     literal text in both. The formats also disagree — `<mailto:a@b.dev>` is a
+//     url in Markdown but an email in Djot — so each is asked its own parser.
 //
 // The destination is escaped for the target format, so a `)` or a space in it
 // cannot break the markup. This differs BY FORMAT, and not cosmetically:
 // Markdown ends a destination at the first space (`[t](a b)` is not a link at
 // all), so a destination with whitespace moves into the `<…>` form; Djot takes
 // spaces literally and gives `<…>` no meaning, so `[t](<a b>)` there would link
-// to the literal text `<a b>`. Parens and backslashes are backslash-escaped.
+// to the literal text `<a b>`. Parens and backslashes are backslash-escaped, as
+// is each format's other destination-ending byte (`<` in Markdown; `[` and a
+// backtick in Djot, whose destination is still scanned for inline openers).
 TwigStatus twig_editor_insert_link(
     TwigEditor *editor,
     size_t start,

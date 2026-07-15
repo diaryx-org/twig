@@ -1359,7 +1359,7 @@ fn skipWs(text: []const u8, start: usize) usize {
 /// `text[at] == '<'`. An absolute-URI autolink: `<scheme:rest>` where
 /// `scheme` is 2-32 characters (a letter, then letters/digits/`+`/`-`/`.`)
 /// and `rest` contains no ASCII control characters, space, `<`, or `>`.
-fn scanAutolinkUri(text: []const u8, at: usize) ?usize {
+pub fn scanAutolinkUri(text: []const u8, at: usize) ?usize {
     var i = at + 1;
     if (i >= text.len or !std.ascii.isAlphabetic(text[i])) return null;
     const scheme_start = i;
@@ -1404,7 +1404,7 @@ fn scanEmailDomainLabel(text: []const u8, i: *usize) bool {
 /// `text[at] == '<'`. An email autolink per CommonMark's (deliberately
 /// restrictive, not RFC 5322) grammar: a nonempty local part, `@`, and one
 /// or more dot-separated domain labels.
-fn scanAutolinkEmail(text: []const u8, at: usize) ?usize {
+pub fn scanAutolinkEmail(text: []const u8, at: usize) ?usize {
     var i = at + 1;
     const local_start = i;
     while (i < text.len and isEmailLocalChar(text[i])) i += 1;

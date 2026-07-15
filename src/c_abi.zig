@@ -2189,6 +2189,20 @@ fn coveredBlocks(
 /// unbalanced `)` from closing the link early. Inside Markdown's `<…>` form the
 /// parens need no escape — the destination ends at the `>` — so escaping them
 /// there would put a literal backslash in the URL.
+///
+/// The parens are not the only byte that ends the scan, though, and the rest of
+/// that set is per-format too: Markdown reads a `<` as the START of the angle
+/// form even mid-destination (`[w](<)` is no link at all), while djot's
+/// destination is still scanned for inline openers, so a `[` or a `` ` `` there
+/// swallows the `)` into a bracket run or a verbatim span. Each of those is a
+/// destination that silently stops being a link, which is the same class of bug
+/// as the unbalanced paren.
+///
+/// Markdown also DECODES entity references in a destination, in both forms — an
+/// `a&amp;b` handed in would come back out as `a&b` — so its `&` is escaped
+/// whether or not the angle form is in play. That one corrupts the URL rather
+/// than breaking the link, which is the quieter failure of the two. Djot has no
+/// entities and leaves `&` alone.
 fn writeLinkDestination(
     allocator: Allocator,
     format: TwigFormat,
@@ -2197,12 +2211,67 @@ fn writeLinkDestination(
 ) !void {
     const angle = format == .markdown and std.mem.indexOfAny(u8, dest, " \t") != null;
     if (angle) try out.append(allocator, '<');
-    const escapes: []const u8 = if (angle) "\\<>" else "\\()";
+    const escapes: []const u8 = if (angle) "\\<>&" else switch (format) {
+        .markdown => "\\()<&",
+        .djot => "\\()[`",
+        else => "\\()",
+    };
     for (dest) |c| {
         if (std.mem.indexOfScalar(u8, escapes, c) != null) try out.append(allocator, '\\');
         try out.append(allocator, c);
     }
     if (angle) try out.append(allocator, '>');
+}
+
+/// Whether `angled` — a `<dest>` run, brackets included — spells an autolink,
+/// asked of the format's OWN scanner (the one its parser dispatches on) rather
+/// than re-derived here, so this cannot drift from what a reparse will see.
+///
+/// There is no shared rule to hoist: the formats genuinely disagree. Markdown
+/// wants an absolute URI (a 2-32 character `scheme:`) or a CommonMark email,
+/// and silently reads anything else as raw HTML (`<foo>` is a tag!) or literal
+/// text. Djot classifies on content alone — an `@` not preceded by `:` is an
+/// email, else a `letter:` is a url — which is why `mailto:a@b.dev` is a `url`
+/// in Markdown but an `email` in djot. Both refuse a relative path.
+fn spellsAutolink(format: TwigFormat, angled: []const u8) bool {
+    return switch (format) {
+        .markdown => twig.Markdown.spellsAutolink(angled),
+        .djot => twig.Djot.autolinkKindOf(angled[1 .. angled.len - 1]) != null,
+        else => false,
+    };
+}
+
+/// The bytes a link's TEXT position must have backslash-escaped for the text to
+/// reparse as the literal string handed in. Each one either opens a construct
+/// that swallows the text — `*`/`_`/`` ` ``/`~`/`^` emphasis-ish runs, djot's
+/// `{…}` attributes and `"`/`'`/`-`/`.`/`:` smart punctuation, Markdown's `<…>`
+/// raw HTML and `&…;` entities — or breaks the brackets outright (`[`/`]`/`\`).
+///
+/// The sets differ because the metacharacters do: djot has attributes and no
+/// entities, Markdown the reverse. Both read `\` + ASCII punctuation as that
+/// literal character, so an escape here is always safe, never a stray backslash.
+///
+/// This is NOT `writeLinkDestination`'s set: that one guards the `(…)` position,
+/// where parens end the destination and emphasis means nothing.
+fn linkTextEscapes(format: TwigFormat) []const u8 {
+    return switch (format) {
+        .markdown => "\\[]*_^`~<>&",
+        .djot => "\\[]*_^`~\"'-.:{}",
+        else => "",
+    };
+}
+
+fn writeLinkText(
+    allocator: Allocator,
+    format: TwigFormat,
+    text: []const u8,
+    out: *std.ArrayList(u8),
+) !void {
+    const escapes = linkTextEscapes(format);
+    for (text) |c| {
+        if (std.mem.indexOfScalar(u8, escapes, c) != null) try out.append(allocator, '\\');
+        try out.append(allocator, c);
+    }
 }
 
 /// The innermost `link` on the chain that wholly contains `[start, end)`.
@@ -2229,9 +2298,15 @@ fn linkCovering(
 ///     text kept. Re-linking is the common gesture (fix a URL), and it keeps the
 ///     op idempotent instead of nesting `[[t](a)](b)`. Removing a link is
 ///     already `twig_editor_unwrap`, which peels a node to its interior.
-///   * An EMPTY range yields `[](dest)` — an empty but well-formed link, matching
-///     `twig_editor_wrap_range`, which likewise wraps nothing into `****`. What
-///     text to invent for a bare caret is the frontend's policy, not twig's.
+///   * A link with NO TEXT gets the canonical spelling for the destination it
+///     was given, never `[](dest)`: a childless link has nothing to render, so
+///     consumers fall back to showing the destination and the caret has nowhere
+///     correct to sit. Where the format can spell an autolink it gets `<dest>`;
+///     where it can't it gets `[dest](dest)`, the destination doubling as text
+///     so it stays visible and editable. Which destinations autolink, and how
+///     each format spells one, is twig's knowledge — a consumer guessing would
+///     turn `<foo>` into raw HTML (Markdown) or literal text (both). See
+///     `spellsAutolink`.
 ///   * A destination is escaped per format (see `writeLinkDestination`); a
 ///     newline in one is `invalid_argument`, since neither format can hold it
 ///     (Djot strips it, Markdown's `<…>` form forbids it) and silently changing
@@ -2277,8 +2352,30 @@ pub export fn twig_editor_insert_link(
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
+
+    // Keyed on the TEXT being empty, not the range: re-pointing an existing
+    // `[](old)` is an empty range too, and it has the same childless link to
+    // avoid. A non-empty range always carries text, so it never lands here.
+    if (text.len == 0) {
+        out.append(allocator, '<') catch return .out_of_memory;
+        out.appendSlice(allocator, dest) catch return .out_of_memory;
+        out.append(allocator, '>') catch return .out_of_memory;
+        // Ask about the exact bytes we would emit, so the test and the output
+        // cannot disagree about what was spelled.
+        if (spellsAutolink(handle.format, out.items))
+            return commitSplice(handle, target.start, target.end, out.items, out_change);
+        out.clearRetainingCapacity();
+    }
+
     out.append(allocator, '[') catch return .out_of_memory;
-    out.appendSlice(allocator, text) catch return .out_of_memory;
+    if (text.len == 0) {
+        // `dest` is a raw string being repurposed as text, so it needs escaping
+        // for that position — unlike `text`, which is already source the author
+        // (or a prior parse) spelled and which must be copied through verbatim.
+        writeLinkText(allocator, handle.format, dest, &out) catch return .out_of_memory;
+    } else {
+        out.appendSlice(allocator, text) catch return .out_of_memory;
+    }
     out.appendSlice(allocator, "](") catch return .out_of_memory;
     writeLinkDestination(allocator, handle.format, dest, &out) catch return .out_of_memory;
     out.append(allocator, ')') catch return .out_of_memory;
@@ -3525,11 +3622,218 @@ test "insert_link wraps a range as link text" {
     try fx.expectSource("a [word](http://x.dev) b\n");
 }
 
-test "insert_link on an empty range yields an empty but well-formed link" {
-    var fx = try EditorFixture.initFmt("ab\n", .djot);
+/// The node KIND the parser reads back out of the EDITED source, with its
+/// payload (a `link`'s destination, an autolink's text). Kind is the whole
+/// point here: `<foo>` and `[foo](foo)` both "look like" a link in the source
+/// but reparse as raw HTML and a link respectively.
+fn expectSpelled(fx: *EditorFixture, kind: []const u8, payload: []const u8) !void {
+    var nptr: ?[*]const TwigFlatNode = null;
+    var nlen: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nptr, &nlen));
+    for (nptr.?[0..nlen]) |n| {
+        if (!std.mem.eql(u8, std.mem.span(n.kind), kind)) continue;
+        if (n.destination_ptr) |d| {
+            try std.testing.expectEqualStrings(payload, d[0..n.destination_len]);
+        } else if (n.text_ptr) |t| {
+            try std.testing.expectEqualStrings(payload, t[0..n.text_len]);
+        } else return error.NoPayload;
+        return;
+    }
+    return error.KindNotFound;
+}
+
+fn expectNoNodeOfKind(fx: *EditorFixture, kind: []const u8) !void {
+    var nptr: ?[*]const TwigFlatNode = null;
+    var nlen: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nptr, &nlen));
+    for (nptr.?[0..nlen]) |n| {
+        if (std.mem.eql(u8, std.mem.span(n.kind), kind)) return error.UnexpectedKind;
+    }
+}
+
+/// A `link`'s VISIBLE text: its `str` children joined. Djot splits an escaped
+/// run into several `str` nodes, so a single-child check would miss.
+fn expectLinkText(fx: *EditorFixture, expected: []const u8) !void {
+    var nptr: ?[*]const TwigFlatNode = null;
+    var nlen: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nptr, &nlen));
+    const nodes = nptr.?[0..nlen];
+    const link = for (nodes) |n| {
+        if (std.mem.eql(u8, std.mem.span(n.kind), "link")) break n;
+    } else return error.NoLink;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    for (nodes) |n| {
+        if (n.parent != link.id) continue;
+        // Anything other than a `str` under the text means the destination
+        // grew emphasis / raw HTML / an entity on the way through.
+        if (!std.mem.eql(u8, std.mem.span(n.kind), "str")) return error.TextNotLiteral;
+        if (n.text_ptr) |t| try buf.appendSlice(std.testing.allocator, t[0..n.text_len]);
+    }
+    try std.testing.expectEqualStrings(expected, buf.items);
+}
+
+// The autolinkable/not split, across both formats. A childless `[](dest)` has
+// no text to render or put a caret in, so an empty range spells the destination
+// canonically instead — and only the reparsed KIND proves which spelling landed.
+
+test "insert_link: an empty range autolinks an absolute URL (both formats)" {
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("ab\n", fmt);
+        defer fx.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 1, 1, "https://x.dev"));
+        try fx.expectSource("a<https://x.dev>b\n");
+        try expectSpelled(&fx, "url", "https://x.dev");
+        try expectNoNodeOfKind(&fx, "link");
+    }
+}
+
+test "insert_link: an empty range autolinks a bare email (both formats)" {
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("ab\n", fmt);
+        defer fx.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 1, 1, "a@b.dev"));
+        try fx.expectSource("a<a@b.dev>b\n");
+        try expectSpelled(&fx, "email", "a@b.dev");
+    }
+}
+
+test "insert_link: the formats disagree on what a `mailto:` autolink IS" {
+    // Same spelling, different node: Markdown sees the `mailto:` scheme and
+    // calls it a url; djot classifies on the `@` and calls it an email. Both
+    // autolink, which is all the caller asked for — but this is exactly why the
+    // decision can't be hoisted out of the per-format scanners.
+    var dj = try EditorFixture.initFmt("ab\n", .djot);
+    defer dj.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&dj, 1, 1, "mailto:a@b.dev"));
+    try dj.expectSource("a<mailto:a@b.dev>b\n");
+    try expectSpelled(&dj, "email", "mailto:a@b.dev");
+
+    var md = try EditorFixture.initFmt("ab\n", .markdown);
+    defer md.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&md, 1, 1, "mailto:a@b.dev"));
+    try md.expectSource("a<mailto:a@b.dev>b\n");
+    try expectSpelled(&md, "url", "mailto:a@b.dev");
+}
+
+test "insert_link: a bare word is NOT autolinkable — `<foo>` would be raw HTML" {
+    // The hazard that motivates the whole split: Markdown reads `<foo>` as an
+    // HTML tag and djot as literal text, so neither may spell it as an autolink.
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("ab\n", fmt);
+        defer fx.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 1, 1, "foo"));
+        try fx.expectSource("a[foo](foo)b\n");
+        try expectSpelled(&fx, "link", "foo");
+        try expectLinkText(&fx, "foo");
+        try expectNoNodeOfKind(&fx, "raw_inline");
+    }
+}
+
+test "insert_link: a relative path is NOT autolinkable — it would go literal" {
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        var fx = try EditorFixture.initFmt("ab\n", fmt);
+        defer fx.deinit();
+        try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 1, 1, "./rel/path.md"));
+        try expectSpelled(&fx, "link", "./rel/path.md");
+        // Visible and editable, which a childless link never was.
+        try expectLinkText(&fx, "./rel/path.md");
+    }
+}
+
+test "insert_link: a destination with a space falls back, escaped per format" {
+    // `<x dev>` is an autolink in neither format (the space ends the scan), so
+    // this lands on `[dest](dest)` — where Markdown still needs its angle form
+    // for the destination itself.
+    var dj = try EditorFixture.initFmt("ab\n", .djot);
+    defer dj.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&dj, 1, 1, "x dev"));
+    try dj.expectSource("a[x dev](x dev)b\n");
+    try expectSpelled(&dj, "link", "x dev");
+    try expectLinkText(&dj, "x dev");
+
+    var md = try EditorFixture.initFmt("ab\n", .markdown);
+    defer md.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&md, 1, 1, "x dev"));
+    try md.expectSource("a[x dev](<x dev>)b\n");
+    try expectSpelled(&md, "link", "x dev");
+    try expectLinkText(&md, "x dev");
+}
+
+test "insert_link: the doubled destination is escaped for the TEXT position too" {
+    // The `(…)` escaping `writeLinkDestination` does is not enough once the
+    // destination also sits in the brackets: a `]` closes the text early, and
+    // the emphasis/attribute/raw-HTML metacharacters rewrite what's visible.
+    var dj = try EditorFixture.initFmt("\n", .djot);
+    defer dj.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&dj, 0, 0, "a]b[c*d*{e}"));
+    try expectSpelled(&dj, "link", "a]b[c*d*{e}");
+    try expectLinkText(&dj, "a]b[c*d*{e}");
+
+    var md = try EditorFixture.initFmt("\n", .markdown);
+    defer md.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&md, 0, 0, "a]b[c*d*<e>&f;"));
+    try expectSpelled(&md, "link", "a]b[c*d*<e>&f;");
+    try expectLinkText(&md, "a]b[c*d*<e>&f;");
+}
+
+/// The destination the parser reads back, whichever spelling the op chose: a
+/// `link`'s destination, or an autolink's text (which IS its destination).
+fn expectDestRoundTrip(fx: *EditorFixture, expected: []const u8) !void {
+    var nptr: ?[*]const TwigFlatNode = null;
+    var nlen: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nptr, &nlen));
+    for (nptr.?[0..nlen]) |n| {
+        const kind = std.mem.span(n.kind);
+        const payload = if (std.mem.eql(u8, kind, "link"))
+            (n.destination_ptr orelse return error.NoDestination)[0..n.destination_len]
+        else if (std.mem.eql(u8, kind, "url") or std.mem.eql(u8, kind, "email"))
+            (n.text_ptr orelse return error.NoText)[0..n.text_len]
+        else
+            continue;
+        try std.testing.expectEqualStrings(expected, payload);
+        return;
+    }
+    return error.NoLinkOfAnyKind;
+}
+
+test "insert_link: an empty range round-trips any destination, both formats" {
+    // The property both escape sets exist to hold: whichever spelling the op
+    // picks, the destination the parser reads back is the one handed in. Every
+    // ASCII metacharacter either format has an opinion about is in here.
+    const dests = [_][]const u8{
+        "https://x.dev",  "mailto:a@b.dev",   "a@b.dev", "foo",
+        "./rel/path.md",  "x dev",            "a)b(c",   "a[b",
+        "a`b",            "a<b",              "a>b",     "#anchor",
+        "../up.md",       "path/to/f (1).md", "a\\b",    "a{b}c",
+        "a*b*c",          "a_b_c",            "a]b",     "a&amp;b",
+        "a b)c",          "a~b",              "a^b",     "a\"b",
+        "a'b",            "a--b",             "a...b",   "a:b",
+        "a$b",            "a!b",              "a|b",     "a%20b",
+        "a b<c>d",        "a=b+c",            "https://x.dev?a=1&b=2#f",
+    };
+    for ([_]TwigFormat{ .djot, .markdown }) |fmt| {
+        for (dests) |d| {
+            var fx = try EditorFixture.initFmt("ab\n", fmt);
+            defer fx.deinit();
+            try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 1, 1, d));
+            expectDestRoundTrip(&fx, d) catch |err| {
+                std.debug.print("\nfmt={s} dest=\"{s}\": {s}\n", .{ @tagName(fmt), d, @errorName(err) });
+                return err;
+            };
+        }
+    }
+}
+
+test "insert_link: re-pointing a text-less link also gets the canonical spelling" {
+    // Keyed on the TEXT being empty, not the range — a `[](old)` left by an
+    // older twig has the same childless-link problem a bare caret does.
+    var fx = try EditorFixture.initFmt("a [](old) b\n", .djot);
     defer fx.deinit();
-    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 1, 1, "u"));
-    try fx.expectSource("a[](u)b\n");
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 3, 3, "https://x.dev"));
+    try fx.expectSource("a <https://x.dev> b\n");
+    try expectSpelled(&fx, "url", "https://x.dev");
 }
 
 test "insert_link re-points an existing link instead of nesting one" {
@@ -3591,6 +3895,51 @@ test "insert_link handles whitespace and a paren together (markdown)" {
     try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 0, 1, "a b)c"));
     try fx.expectSource("[w](<a b)c>)\n");
     try expectLinkDest(&fx, "a b)c");
+}
+
+test "insert_link escapes the non-paren bytes that also end a destination" {
+    // A destination stops being a link for more reasons than an unbalanced
+    // paren, and the rest of the set is per-format. Each of these reparses as
+    // plain text (or a verbatim span) without its escape.
+    var dj = try EditorFixture.initFmt("w\n", .djot);
+    defer dj.deinit();
+    // Djot keeps scanning inline openers inside `(…)`: `[` starts a bracket run
+    // and `` ` `` a verbatim span, either of which eats the closing paren.
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&dj, 0, 1, "a[b`c"));
+    try dj.expectSource("[w](a\\[b\\`c)\n");
+    try expectLinkDest(&dj, "a[b`c");
+
+    var md = try EditorFixture.initFmt("w\n", .markdown);
+    defer md.deinit();
+    // Markdown reads `<` as the start of the angle form even mid-destination.
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&md, 0, 1, "a<b"));
+    try md.expectSource("[w](a\\<b)\n");
+    try expectLinkDest(&md, "a<b");
+}
+
+test "insert_link escapes an entity so markdown can't decode the destination" {
+    // The quiet one: this doesn't break the link, it silently hands back a
+    // DIFFERENT URL than the caller asked for. Markdown decodes entities in a
+    // destination, so an unescaped `a&amp;b` reparses as `a&b`.
+    var fx = try EditorFixture.initFmt("w\n", .markdown);
+    defer fx.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&fx, 0, 1, "a&amp;b"));
+    try fx.expectSource("[w](a\\&amp;b)\n");
+    try expectLinkDest(&fx, "a&amp;b");
+
+    // ...including inside the angle form the whitespace forces.
+    var sp = try EditorFixture.initFmt("w\n", .markdown);
+    defer sp.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&sp, 0, 1, "a&amp; b"));
+    try sp.expectSource("[w](<a\\&amp; b>)\n");
+    try expectLinkDest(&sp, "a&amp; b");
+
+    // Djot has no entities; a `&` there is already literal.
+    var dj = try EditorFixture.initFmt("w\n", .djot);
+    defer dj.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, insertLink(&dj, 0, 1, "a&amp;b"));
+    try dj.expectSource("[w](a&amp;b)\n");
+    try expectLinkDest(&dj, "a&amp;b");
 }
 
 test "insert_link round-trips a backslash in the destination" {

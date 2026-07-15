@@ -697,8 +697,19 @@ impl Editor {
     ///
     /// An existing link covering the range has its destination **replaced** and
     /// its text kept, so re-linking fixes a URL instead of nesting
-    /// `[[t](a)](b)`; to unlink, use [`Editor::unwrap_node`]. An empty range yields
-    /// `[](destination)`, mirroring [`Editor::wrap_range`] on an empty range.
+    /// `[[t](a)](b)`; to unlink, use [`Editor::unwrap_node`].
+    ///
+    /// A link with **no text** — an empty range, or re-pointing an existing
+    /// `[](old)` — is spelled canonically for the destination given, never as
+    /// `[](destination)`: a childless link has nothing to render, so consumers
+    /// fall back to showing the destination and a caret has nowhere to sit. A
+    /// destination the format can autolink (an absolute URL or an email, by that
+    /// format's own rules) yields `<destination>`; anything else yields
+    /// `[destination](destination)`, the destination doubling as the text so it
+    /// stays visible and editable. Which destinations autolink is not the
+    /// caller's to guess — `<foo>` is raw HTML in Markdown, a relative path goes
+    /// literal in both, and the formats disagree (`<mailto:a@b.dev>` is a url in
+    /// Markdown, an email in Djot), so each is asked its own parser.
     ///
     /// The destination is escaped for the format, so a `)` or a space in it
     /// cannot break the markup — and the two formats genuinely differ: Markdown

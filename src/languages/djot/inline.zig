@@ -612,6 +612,29 @@ pub const InlineParser = struct {
         return null;
     }
 
+    pub const AutolinkKind = enum { url, email };
+
+    /// What `<content>` spells, per djot's rule that an autolink is classified
+    /// by its content alone: an `@` not preceded by `:` makes it an email (so
+    /// `<mailto:a@b.dev>` is an *email*, not a url — the `mailto:` is part of
+    /// the address), else a `letter:` anywhere makes it a url. Anything else is
+    /// not an autolink at all and stays literal text.
+    ///
+    /// Split out of `matchAutolink` so a caller needing to know whether a string
+    /// *would* spell an autolink — the C ABI's `insert_link`, choosing how to
+    /// spell a link with no text — asks the scanner itself rather than
+    /// re-deriving the rule and drifting from it.
+    pub fn autolinkKindOf(content: []const u8) ?AutolinkKind {
+        if (content.len == 0) return null;
+        // The delimiters and any whitespace would have ended the scan below
+        // before the classification ran, so they can't appear in a content
+        // `matchAutolink` would accept.
+        for (content) |c| if (c == '<' or c == '>' or isWsByte(c)) return null;
+        if (containsNonColonAt(content)) return .email;
+        if (containsSchemeColon(content)) return .url;
+        return null;
+    }
+
     fn matchAutolink(self: *InlineParser, allocator: Allocator, pos: usize, endpos: usize) Allocator.Error!?usize {
         const s = self.subject;
         if (self.byteAt(pos) != '<') return null;
@@ -624,18 +647,19 @@ pub const InlineParser = struct {
         const endurl = p;
         const starturl = pos;
 
-        if (containsNonColonAt(content)) {
-            try self.addMatch(allocator, starturl, starturl, .email_open);
-            try self.addMatch(allocator, starturl + 1, endurl -| 1, .str);
-            try self.addMatch(allocator, endurl, endurl, .email_close);
-            return endurl + 1;
-        } else if (containsSchemeColon(content)) {
-            try self.addMatch(allocator, starturl, starturl, .url_open);
-            try self.addMatch(allocator, starturl + 1, endurl -| 1, .str);
-            try self.addMatch(allocator, endurl, endurl, .url_close);
-            return endurl + 1;
+        switch (autolinkKindOf(content) orelse return null) {
+            .email => {
+                try self.addMatch(allocator, starturl, starturl, .email_open);
+                try self.addMatch(allocator, starturl + 1, endurl -| 1, .str);
+                try self.addMatch(allocator, endurl, endurl, .email_close);
+            },
+            .url => {
+                try self.addMatch(allocator, starturl, starturl, .url_open);
+                try self.addMatch(allocator, starturl + 1, endurl -| 1, .str);
+                try self.addMatch(allocator, endurl, endurl, .url_close);
+            },
         }
-        return null;
+        return endurl + 1;
     }
 
     fn isWsByte(c: u8) bool {
