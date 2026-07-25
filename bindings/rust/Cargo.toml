@@ -3,7 +3,7 @@ resolver = "3"
 members = ["twig", "twig-sys", "twig-sys-*"]
 
 [workspace.package]
-version = "2.4.0"
+version = "2.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -12,9 +12,9 @@ license = "MIT OR Apache-2.0"
 # `version = "…"` fields in lockstep with `[workspace.package]` above (and
 # `--check` fails CI on drift), so the version lives in exactly one place.
 [workspace.dependencies]
-twig-sys = { path = "twig-sys", version = "2.4.0" }
-twig-sys-macos-arm64 = { path = "twig-sys-macos-arm64", version = "2.4.0" }
-twig-sys-linux-x64-gnu = { path = "twig-sys-linux-x64-gnu", version = "2.4.0" }
-twig-sys-linux-arm64-gnu = { path = "twig-sys-linux-arm64-gnu", version = "2.4.0" }
-twig-sys-windows-x64-msvc = { path = "twig-sys-windows-x64-msvc", version = "2.4.0" }
-twig-sys-wasm32 = { path = "twig-sys-wasm32", version = "2.4.0" }
+twig-sys = { path = "twig-sys", version = "2.5.0" }
+twig-sys-macos-arm64 = { path = "twig-sys-macos-arm64", version = "2.5.0" }
+twig-sys-linux-x64-gnu = { path = "twig-sys-linux-x64-gnu", version = "2.5.0" }
+twig-sys-linux-arm64-gnu = { path = "twig-sys-linux-arm64-gnu", version = "2.5.0" }
+twig-sys-windows-x64-msvc = { path = "twig-sys-windows-x64-msvc", version = "2.5.0" }
+twig-sys-wasm32 = { path = "twig-sys-wasm32", version = "2.5.0" }
