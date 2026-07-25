@@ -132,6 +132,12 @@ pub const TwigFlatNode = extern struct {
     /// invalidates them too.
     attrs_ptr: ?[*]const TwigKeyVal,
     attrs_len: usize,
+    /// A `directive`'s surface form (`TWIG_DIRECTIVE_*`), `TWIG_DIRECTIVE_NONE`
+    /// for every other kind. All three forms report `kind == "directive"` and
+    /// carry their type in `name`, so this is the only thing distinguishing an
+    /// inline `:name[x]` from a block `::name{…}` or a `:::name` fence — and a
+    /// consumer must render them differently.
+    directive_form: c_int,
 };
 
 /// `TwigFlatNode.head` for a node that is neither a `row` nor a `cell`.
@@ -144,6 +150,15 @@ pub const TWIG_ALIGN_DEFAULT: c_int = 0;
 pub const TWIG_ALIGN_LEFT: c_int = 1;
 pub const TWIG_ALIGN_RIGHT: c_int = 2;
 pub const TWIG_ALIGN_CENTER: c_int = 3;
+
+/// `TwigFlatNode.directive_form` for a node that isn't a `directive`. The three
+/// real forms are the `TwigDirectiveForm` enumerators below (the colon counts of
+/// the generic-directives proposal: `:name[x]` text, `::name{…}` leaf,
+/// `:::name{…}` … `:::` container). This one is deliberately not among them,
+/// for the same reason `TWIG_ALIGN_NONE` isn't a `TwigAlignment`: that enum is
+/// also `twig_builder_add_directive`'s parameter type, and "not a directive" is
+/// not a form you can build with.
+pub const TWIG_DIRECTIVE_NONE: c_int = -1;
 
 pub const TwigDocument = opaque {};
 
@@ -232,7 +247,12 @@ pub export fn twig_version_string() [*:0]const u8 {
 /// 3: `TwigFlatNode` grew `name`/`attrs` (104 → 136 bytes) — an `element`'s tag
 /// name and a node's `(key, value)` attributes on the read path. Same
 /// append-only shape, same reason it's still a bump.
-pub const TWIG_ABI_VERSION: u32 = 3;
+/// 4: `TwigFlatNode` grew `directive_form` (136 → 144 bytes), and `name` now
+/// also reports a `directive`'s type — the two halves of a directive's
+/// identity, which `kind` ("directive") carries neither of. Filling an
+/// existing field for a kind that used to report NULL is source-compatible;
+/// the appended field is what makes it a bump.
+pub const TWIG_ABI_VERSION: u32 = 4;
 
 pub export fn twig_abi_version() u32 {
     return TWIG_ABI_VERSION;
@@ -268,7 +288,7 @@ comptime {
         assert(@offsetOf(TwigChange, "old") == 0);
         assert(@offsetOf(TwigChange, "new") == 16);
 
-        assert(@sizeOf(TwigFlatNode) == 136);
+        assert(@sizeOf(TwigFlatNode) == 144);
         assert(@offsetOf(TwigFlatNode, "id") == 0);
         assert(@offsetOf(TwigFlatNode, "parent") == 4);
         assert(@offsetOf(TwigFlatNode, "first_child") == 8);
@@ -288,6 +308,7 @@ comptime {
         assert(@offsetOf(TwigFlatNode, "name_len") == 112);
         assert(@offsetOf(TwigFlatNode, "attrs_ptr") == 120);
         assert(@offsetOf(TwigFlatNode, "attrs_len") == 128);
+        assert(@offsetOf(TwigFlatNode, "directive_form") == 136);
 
         assert(@sizeOf(TwigKeyVal) == 32);
         assert(@offsetOf(TwigKeyVal, "key") == 0);
@@ -989,14 +1010,34 @@ fn kindName(node: *const twig.AST.Node) [*:0]const u8 {
     return @tagName(std.meta.activeTag(node.kind)).ptr;
 }
 
-/// A generic `element`'s tag name (`"picture"`, `"source"`, `"div"`, …), or
-/// `null` for every semantic kind — the tag is the only thing distinguishing
-/// one `element` from another, and `kindName` reports them all as `"element"`.
-/// Borrows the AST-owned name payload.
+/// The name a kind carries in its own payload rather than in `kind`: a generic
+/// `element`'s tag (`"picture"`, `"source"`, `"div"`, …) and a `directive`'s
+/// type (`"note"`, `"embed"`, `"vis"`, …, no leading colons). `null` for every
+/// other kind, whose identity is `kind` alone. Both are cases of the same thing
+/// — `kindName` reports every element as `"element"` and every directive as
+/// `"directive"`, so without this a consumer cannot tell a `::embed` from a
+/// `::toc`. Borrows the AST-owned name payload.
 fn kindElementName(node: *const twig.AST.Node) ?[]const u8 {
     return switch (node.kind) {
         .element => |e| e.name,
+        .directive => |d| d.name,
         else => null,
+    };
+}
+
+/// A `directive`'s surface form as a `TWIG_DIRECTIVE_*` code, or
+/// `TWIG_DIRECTIVE_NONE` for every other kind. Pairs with `kindElementName`:
+/// the name says *which* directive, this says *how it was written*, and a
+/// consumer needs both — the same `embed` type is a span inline, a standalone
+/// block as a leaf, and a wrapper as a container.
+fn kindDirectiveForm(node: *const twig.AST.Node) c_int {
+    return switch (node.kind) {
+        .directive => |d| @intFromEnum(switch (d.form) {
+            .text => TwigDirectiveForm.text,
+            .leaf => TwigDirectiveForm.leaf,
+            .container => TwigDirectiveForm.container,
+        }),
+        else => TWIG_DIRECTIVE_NONE,
     };
 }
 
@@ -1537,6 +1578,7 @@ fn flatNodeOf(node: *const twig.AST.Node, id: u32, parent: u32, first_child: u32
         // buffer the individual node struct can't own); NULL until then.
         .attrs_ptr = null,
         .attrs_len = 0,
+        .directive_form = kindDirectiveForm(node),
     };
 }
 

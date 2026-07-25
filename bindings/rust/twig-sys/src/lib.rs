@@ -13,7 +13,7 @@ use std::os::raw::{c_char, c_int};
 /// The C ABI contract version this binding is written against; see
 /// `twig_abi_version`. Must match the value baked into the linked library
 /// (asserted at runtime by the `abi_version_matches` test in `lib.rs`).
-pub const TWIG_ABI_VERSION: u32 = 3;
+pub const TWIG_ABI_VERSION: u32 = 4;
 
 // Freeze the canonical 64-bit layout of every `#[repr(C)]` mirror below so it
 // can never silently drift from the Zig `extern struct` it shadows. These are
@@ -41,7 +41,7 @@ const _: () = {
     assert!(offset_of!(TwigChange, old_span) == 0);
     assert!(offset_of!(TwigChange, new_span) == 16);
 
-    assert!(size_of::<TwigFlatNode>() == 136);
+    assert!(size_of::<TwigFlatNode>() == 144);
     assert!(offset_of!(TwigFlatNode, id) == 0);
     assert!(offset_of!(TwigFlatNode, parent) == 4);
     assert!(offset_of!(TwigFlatNode, first_child) == 8);
@@ -61,6 +61,7 @@ const _: () = {
     assert!(offset_of!(TwigFlatNode, name_len) == 112);
     assert!(offset_of!(TwigFlatNode, attrs_ptr) == 120);
     assert!(offset_of!(TwigFlatNode, attrs_len) == 128);
+    assert!(offset_of!(TwigFlatNode, directive_form) == 136);
 
     assert!(size_of::<TwigKeyVal>() == 32);
     assert!(offset_of!(TwigKeyVal, key) == 0);
@@ -163,7 +164,9 @@ pub struct TwigChange {
 /// borrow the current parse's payloads (NULL when the kind carries none).
 /// `head`/`alignment` carry a `row`/`cell` payload, each `-1` for a kind that
 /// has none (see [`TWIG_HEAD_NONE`] / [`TWIG_ALIGN_NONE`]). `name_ptr` is a
-/// generic element's tag name (NULL for every other kind); `attrs_ptr` points at
+/// generic element's tag name — or a `directive`'s type — and NULL for every
+/// other kind; `directive_form` is a [`TWIG_DIRECTIVE_NONE`]-defaulted code for
+/// which of the three surface forms a directive took; `attrs_ptr` points at
 /// `attrs_len` [`TwigKeyVal`]s (NULL/0 when the node has no attributes). Both
 /// borrow the current parse's payloads with the same lifetime as `text_ptr`.
 #[repr(C)]
@@ -188,6 +191,7 @@ pub struct TwigFlatNode {
     pub name_len: usize,
     pub attrs_ptr: *const TwigKeyVal,
     pub attrs_len: usize,
+    pub directive_form: c_int,
 }
 
 /// `TwigFlatNode::head` for a node that is neither a `row` nor a `cell`.
@@ -202,6 +206,17 @@ pub const TWIG_ALIGN_DEFAULT: c_int = 0;
 pub const TWIG_ALIGN_LEFT: c_int = 1;
 pub const TWIG_ALIGN_RIGHT: c_int = 2;
 pub const TWIG_ALIGN_CENTER: c_int = 3;
+
+/// `TwigFlatNode::directive_form` codes — the generic-directives proposal's
+/// three spellings: `:name[x]` (text), `::name{…}` (leaf), `:::name{…}` … `:::`
+/// (container). These double as `twig_builder_add_directive`'s `form` argument.
+/// `NONE` means the node isn't a `directive` at all; like [`TWIG_ALIGN_NONE`] it
+/// is a read-path-only code, never something you can build with.
+#[allow(dead_code)]
+pub const TWIG_DIRECTIVE_NONE: c_int = -1;
+pub const TWIG_DIRECTIVE_TEXT: c_int = 0;
+pub const TWIG_DIRECTIVE_LEAF: c_int = 1;
+pub const TWIG_DIRECTIVE_CONTAINER: c_int = 2;
 
 // `op` codes for `twig_editor_table_edit` — mirror of `TwigTableOp` in twig.h.
 pub const TWIG_TABLE_INSERT_ROW: c_int = 0;

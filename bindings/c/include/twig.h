@@ -30,7 +30,10 @@ extern "C" {
 //    layout a consumer strides an array with — hence the bump.
 // 3: TwigFlatNode grew name/attrs (104 -> 136 bytes) — an element's tag name
 //    and a node's (key, value) attributes on the read path. Appended, same as 2.
-#define TWIG_ABI_VERSION 3
+// 4: TwigFlatNode grew directive_form (136 -> 144 bytes), and name_ptr now also
+//    reports a directive's type — the two halves of a directive's identity,
+//    neither of which `kind` ("directive") carries. Appended, same as 2.
+#define TWIG_ABI_VERSION 4
 
 #define TWIG_FORMAT_DJOT 1
 #define TWIG_FORMAT_MARKDOWN 2
@@ -134,8 +137,14 @@ typedef struct TwigKeyVal {
 // not `level`'s 0-means-absent trick, because a cell's TWIG_ALIGN_DEFAULT is
 // itself a meaningful value.
 //
-// name_ptr is a generic element's tag name ("picture", "source", ...) — NULL
-// for every non-element kind, since `kind` reports them all as "element". attrs
+// name_ptr is the name a kind carries in its own payload: a generic element's
+// tag ("picture", "source", ...) or a directive's type ("note", "embed", ...,
+// no leading colons) — NULL for every other kind, since `kind` reports them all
+// as "element" / "directive". directive_form (TWIG_DIRECTIVE_*, or
+// TWIG_DIRECTIVE_NONE for a non-directive) says which of the three surface
+// forms a directive was written in; a consumer needs both, since the same type
+// renders as a span inline, a standalone block as a leaf, and a wrapper as a
+// container. attrs
 // is the node's (key, value) attributes in source order (attrs_len of them), or
 // NULL/0 for a node with none. Both borrow the node's payload with the same
 // lifetime as text_ptr/destination_ptr (invalid after the next successful edit);
@@ -161,6 +170,7 @@ typedef struct TwigFlatNode {
     size_t name_len;
     const TwigKeyVal *attrs_ptr;
     size_t attrs_len;
+    int directive_form;
 } TwigFlatNode;
 
 // TwigFlatNode.head for a node that is neither a row nor a cell.
@@ -173,6 +183,16 @@ typedef struct TwigFlatNode {
 // (|:--|--:|) that spells a column's alignment out is consumed by the parser and
 // has no node, so TwigFlatNode.alignment is the only way to recover it.
 #define TWIG_ALIGN_NONE (-1)
+
+// TwigFlatNode.directive_form for a node that isn't a directive. The three real
+// forms are the TwigDirectiveForm enumerators below — :name[x] inline (TEXT),
+// ::name{...} as a standalone block with no body (LEAF), :::name{...} ... :::
+// around blocks (CONTAINER) — and this one is deliberately not among them, for
+// the same reason TWIG_ALIGN_NONE isn't a TwigAlignment: that enum is also
+// twig_builder_add_directive's parameter type, and "not a directive" is not a
+// form you can build with. All three real forms report kind == "directive" and
+// carry their type in name_ptr.
+#define TWIG_DIRECTIVE_NONE (-1)
 
 // The C ABI contract version (see the "ABI stability contract" above); compare
 // against the TWIG_ABI_VERSION you compiled with to detect a layout mismatch.

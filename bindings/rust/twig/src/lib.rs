@@ -105,11 +105,21 @@ pub struct FlatNode {
     /// [`Alignment::Default`] is a real, unspecified alignment (a bare `---`) —
     /// distinct from the `None` a non-cell node reports.
     pub alignment: Option<Alignment>,
-    /// A generic `element`'s tag name (`"picture"`, `"source"`, …); `None` for
-    /// every semantic kind (whose identity is `kind` alone). With this an
+    /// The name a kind carries in its own payload rather than in `kind`: a
+    /// generic `element`'s tag (`"picture"`, `"source"`, …) or a `directive`'s
+    /// type (`"note"`, `"embed"`, `"vis"`, …, no leading colons). `None` for
+    /// every semantic kind, whose identity is `kind` alone. With this an
     /// `html_elements` parse's `<picture>`/`<source>` are distinguishable — both
-    /// report `kind == "element"`.
+    /// report `kind == "element"` — and so are a `::embed` and a `::toc`, both
+    /// of which report `kind == "directive"`.
     pub name: Option<String>,
+    /// Which of the three surface forms a `directive` was written in; `None` for
+    /// every other kind. Pairs with [`name`](Self::name): the name says *which*
+    /// directive, this says *how it was written*, and a renderer needs both —
+    /// the same type is a span inline ([`DirectiveForm::Text`]), a standalone
+    /// block with no body ([`DirectiveForm::Leaf`]), and a wrapper around blocks
+    /// ([`DirectiveForm::Container`]).
+    pub directive_form: Option<DirectiveForm>,
     /// The node's `{...}` / HTML attributes as `(key, value)` pairs in source
     /// order (empty when it has none). A bare attribute (HTML `disabled`, or a
     /// `<source media=…>` used as a flag) has a `None` value.
@@ -1142,6 +1152,7 @@ fn flat_node_from_ffi(n: &ffi::TwigFlatNode) -> Result<FlatNode, Error> {
         },
         alignment: Alignment::from_c(n.alignment),
         name: borrowed_bytes(n.name_ptr, n.name_len),
+        directive_form: DirectiveForm::from_c(n.directive_form),
         attrs: borrowed_attrs(n.attrs_ptr, n.attrs_len),
     })
 }
@@ -1418,9 +1429,21 @@ pub enum DirectiveForm {
 impl DirectiveForm {
     fn to_c(self) -> c_int {
         match self {
-            DirectiveForm::Text => 0,
-            DirectiveForm::Leaf => 1,
-            DirectiveForm::Container => 2,
+            DirectiveForm::Text => ffi::TWIG_DIRECTIVE_TEXT,
+            DirectiveForm::Leaf => ffi::TWIG_DIRECTIVE_LEAF,
+            DirectiveForm::Container => ffi::TWIG_DIRECTIVE_CONTAINER,
+        }
+    }
+
+    /// The inverse of [`DirectiveForm::to_c`]; `None` for
+    /// [`ffi::TWIG_DIRECTIVE_NONE`] (the node isn't a directive) or any code
+    /// this binding doesn't know.
+    fn from_c(v: c_int) -> Option<Self> {
+        match v {
+            ffi::TWIG_DIRECTIVE_TEXT => Some(DirectiveForm::Text),
+            ffi::TWIG_DIRECTIVE_LEAF => Some(DirectiveForm::Leaf),
+            ffi::TWIG_DIRECTIVE_CONTAINER => Some(DirectiveForm::Container),
+            _ => None,
         }
     }
 }
@@ -1792,6 +1815,44 @@ mod tests {
         if let Some(s) = picture_kids_str {
             assert!(s.name.is_none() && s.attrs.is_empty());
         }
+    }
+
+    #[test]
+    fn flat_nodes_expose_directive_name_and_form() {
+        // All three surface forms report `kind == "directive"`, so the snapshot
+        // has to carry both halves of a directive's identity: which type it is
+        // (`name`) and how it was written (`directive_form`). Without them a
+        // renderer can't tell an `::embed` from a `::toc`, nor an inline span
+        // from a standalone block.
+        let src = ":::note{.warning}\nBody\n:::\n\n::embed{src=\"demo.html\"}\n\nSee :abbr[HTML]{title=\"HyperText\"} inline.\n";
+        let mut ed = Editor::new_ext(
+            src.as_bytes(),
+            Format::Markdown,
+            MarkdownExtensions { directives: true, ..Default::default() },
+        )
+        .expect("editor");
+        let nodes = ed.nodes().expect("nodes");
+
+        let forms: Vec<(Option<&str>, Option<DirectiveForm>)> = nodes
+            .iter()
+            .filter(|n| n.kind == "directive")
+            .map(|n| (n.name.as_deref(), n.directive_form))
+            .collect();
+        assert_eq!(
+            forms,
+            vec![
+                (Some("note"), Some(DirectiveForm::Container)),
+                (Some("embed"), Some(DirectiveForm::Leaf)),
+                (Some("abbr"), Some(DirectiveForm::Text)),
+            ]
+        );
+
+        // The attributes still ride the ordinary side-table, and a non-directive
+        // reports no form at all.
+        let embed = nodes.iter().find(|n| n.name.as_deref() == Some("embed")).expect("embed");
+        assert_eq!(embed.attrs, vec![("src".to_string(), Some("demo.html".to_string()))]);
+        let para = nodes.iter().find(|n| n.kind == "para").expect("a para");
+        assert!(para.directive_form.is_none() && para.name.is_none());
     }
 
     #[test]
