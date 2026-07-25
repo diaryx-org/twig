@@ -3113,6 +3113,37 @@ test "span: an inline node straddling a line-join gets the accurate source range
     try testing.expectEqualStrings("*b\nc*", Span.of(u8, r.ast.nodes[em].span, src));
 }
 
+test "span: a text directive's label is mapped even when it straddles a line-join" {
+    // The multi-segment path of `buildTextDirective`'s label rebase: the label
+    // is a slice of a paragraph assembled from two source lines, so the scan's
+    // segments (one per line) must be clipped to the label AND rebased onto it.
+    // Taking only the first segment would leave everything past the join
+    // unmapped; forgetting the rebase would shift every child by the label's
+    // own offset.
+    const src = "x :abbr[a *b*\nc] y\n";
+    var r = try parse(testing.allocator, src, .{ .directives = true });
+    defer r.ast.deinit();
+    defer r.link_references.deinit(testing.allocator);
+    defer r.footnotes.deinit(testing.allocator);
+    const para = r.ast.nodes[r.ast.root].first_child.?;
+    const lead = r.ast.nodes[para].first_child.?; // "x "
+    const dir = r.ast.nodes[lead].next_sibling.?;
+    try testing.expect(r.ast.nodes[dir].kind == .directive);
+
+    // Before the join: exact bytes on line 1.
+    const first = r.ast.nodes[dir].first_child.?;
+    try testing.expectEqualStrings("a ", Span.of(u8, r.ast.nodes[first].span, src));
+    const em = r.ast.nodes[first].next_sibling.?;
+    try testing.expect(r.ast.nodes[em].kind == .emph);
+    try testing.expectEqualStrings("*b*", Span.of(u8, r.ast.nodes[em].span, src));
+    // The join itself, then line 2's byte — which only the second (rebased)
+    // segment maps, and which is the half a first-segment-only clip would lose.
+    const brk = r.ast.nodes[em].next_sibling.?;
+    try testing.expect(r.ast.nodes[brk].kind == .soft_break);
+    const tail = r.ast.nodes[brk].next_sibling.?;
+    try testing.expectEqualStrings("c", Span.of(u8, r.ast.nodes[tail].span, src));
+}
+
 test "span/content_span: a verbatim code span broken across two lines is mapped" {
     // The regression this guards: a multi-line inline code span used to be left
     // unset `(0,0)`, so an editor rendering from `content_span` (or splicing at
@@ -4088,3 +4119,4 @@ test "span: a block quote's span covers all its lines" {
     const sp = r.ast.nodes[bq].span;
     try testing.expectEqualStrings("> line one\n> line two", src[sp.start..sp.end]);
 }
+

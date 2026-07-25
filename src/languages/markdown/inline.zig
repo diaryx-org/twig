@@ -1565,15 +1565,50 @@ fn scanTextDirective(allocator: Allocator, text: []const u8, at: usize) Allocato
     return .{ .name = name, .label = label, .attrs = attrs, .end = i };
 }
 
+/// The scanner's segments restricted to `text[start..end)` and rebased so
+/// offset 0 is `start` — the mapping a nested `parseInline` over that slice
+/// needs to give its nodes true source spans.
+///
+/// A nested parse gets a slice of the scan's `text` as its whole world, so its
+/// offsets count from that slice's start; `Scanner.segments` count from the
+/// enclosing buffer's. Without the rebase the sub-parse has no mapping at all
+/// and every node it builds keeps the unset `(0,0)` span, which is not merely
+/// missing but *wrong* downstream: a consumer that trusts a span reads those
+/// nodes as sitting at the very start of the document.
+///
+/// Caller owns the result. Empty when the scanner itself has no mapping (a
+/// `parseInline` called without segments), which correctly propagates "no
+/// mapping available" rather than inventing one.
+fn labelSegments(allocator: Allocator, segments: []const Segment, start: usize, end: usize) Allocator.Error![]Segment {
+    var out: std.ArrayList(Segment) = .empty;
+    errdefer out.deinit(allocator);
+    for (segments) |seg| {
+        // The part of this segment covered by the label, in buffer offsets.
+        const lo = @max(seg.buf_offset, start);
+        const hi = @min(seg.buf_offset + seg.len, end);
+        if (lo >= hi) continue;
+        try out.append(allocator, .{
+            .buf_offset = lo - start,
+            .src_offset = seg.src_offset + (lo - seg.buf_offset),
+            .len = hi - lo,
+        });
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 /// Build the `directive` node for a scanned text directive: parse its label as
 /// inline children, attach the shorthand attributes, and free the transient
 /// `TextDirective.attrs`.
 fn buildTextDirective(sc: *Scanner, d: TextDirective) Allocator.Error!Node.Id {
     const b = sc.b;
-    const children: []Node.Id = if (d.label) |lab|
-        try parseInline(b, lab.text, &.{}, sc.link_refs, sc.options)
-    else
-        &.{};
+    const children: []Node.Id = if (d.label) |lab| blk: {
+        // The label is parsed as its own slice, so it needs the enclosing
+        // scan's source mapping rebased onto it — otherwise every node inside
+        // a `:name[label]` reports a span of `(0,0)`.
+        const segs = try labelSegments(b.allocator, sc.segments, lab.start, lab.end);
+        defer b.allocator.free(segs);
+        break :blk try parseInline(b, lab.text, segs, sc.link_refs, sc.options);
+    } else &.{};
     defer if (children.len > 0) b.allocator.free(children);
 
     const id = try b.addContainer(.{ .directive = .{ .form = .text, .name = d.name } }, children);
@@ -2827,6 +2862,32 @@ test "span: emphasis covers the delimiters, content_span covers just the interio
     try testing.expect(ast.nodes[em].kind == .emph);
     try testing.expectEqualStrings("*abc*", Span.of(u8, ast.nodes[em].span, s));
     try testing.expectEqualStrings("abc", Span.of(u8, ast.nodes[em].content_span.?, s));
+}
+
+test "span: a text directive's label children address the true source bytes" {
+    // The label is parsed as its own slice, so it needs the enclosing scan's
+    // segments rebased onto it. Without that the sub-parse has no mapping and
+    // every node inside the label keeps the unset `(0,0)` span — which a
+    // consumer that trusts spans reads as "at the start of the document",
+    // putting a caret or a click on the wrong bytes entirely.
+    const s = "x :abbr[a *b* c] y";
+    var ast = try parseAndFinishMapped(s, directives_on);
+    defer ast.deinit();
+
+    const lead = ast.nodes[ast.root].first_child.?;
+    const dir = ast.nodes[lead].next_sibling.?;
+    try testing.expect(ast.nodes[dir].kind == .directive);
+    try testing.expectEqualStrings(":abbr[a *b* c]", Span.of(u8, ast.nodes[dir].span, s));
+    try testing.expectEqualStrings("a *b* c", Span.of(u8, ast.nodes[dir].content_span.?, s));
+
+    const first = ast.nodes[dir].first_child.?;
+    try testing.expectEqualStrings("a ", Span.of(u8, ast.nodes[first].span, s));
+    const emph = ast.nodes[first].next_sibling.?;
+    try testing.expect(ast.nodes[emph].kind == .emph);
+    try testing.expectEqualStrings("*b*", Span.of(u8, ast.nodes[emph].span, s));
+    try testing.expectEqualStrings("b", Span.of(u8, ast.nodes[emph].content_span.?, s));
+    const last = ast.nodes[emph].next_sibling.?;
+    try testing.expectEqualStrings(" c", Span.of(u8, ast.nodes[last].span, s));
 }
 
 test "span: strong emphasis covers its own delimiters" {
