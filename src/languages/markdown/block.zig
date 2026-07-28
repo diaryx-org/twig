@@ -385,14 +385,14 @@ fn tryTaskListMarker(after_marker: []const u8) ?TaskMarker {
 /// matchers `tryStartBlocks` itself uses, rather than a separate/looser
 /// heuristic, so "does this line start a new block" means the same thing in
 /// both places.
-fn looksLikeNewBlockStart(s: []const u8) bool {
+fn looksLikeNewBlockStart(s: []const u8, media_blocks: bool) bool {
     if (s.len == 0) return false;
     if (s[0] == '>') return true;
     if (isThematicBreak(s)) return true;
     if (tryAtxHeading(s) != null) return true;
     if (tryFenceOpen(s) != null) return true;
     if (tryListMarker(s) != null) return true;
-    if (s.len > 0 and s[0] == '<' and detectHtmlBlockStart(s) != null) return true;
+    if (s.len > 0 and s[0] == '<' and detectHtmlBlockStart(s, media_blocks) != null) return true;
     return false;
 }
 
@@ -503,6 +503,30 @@ fn parseDelimiterRow(allocator: Allocator, s: []const u8) Allocator.Error!?[]AST
 
 const html_type1_tags = [_][]const u8{ "script", "pre", "style", "textarea" };
 
+/// Block-level media elements CommonMark's type-6 list doesn't name, added to it
+/// only under `options.html_elements`.
+///
+/// The type-6 list is fixed by the spec and predates all three of these, so a
+/// `<video src=... controls></video>` written on one line falls through to type
+/// 7 -- which requires the tag to END the line -- and, failing that, parses as a
+/// paragraph of raw inline HTML. No element node, no attributes, nothing for a
+/// reader to address: the tags come out the far end as text. The multi-line
+/// spelling only works by accident of the closing tag being on its own line.
+///
+/// `html_elements` already means "promote HTML blocks into semantic/generic
+/// nodes rather than keeping them opaque", so a caller who asked for that wants
+/// these three recognised. A caller who didn't gets stock CommonMark, unchanged
+/// -- which is why this is a separate map and not three more entries above.
+///
+/// Deliberately NOT here: `img`. A bare `<img src=...>` already opens a type-7
+/// block (the tag ends the line), while `text <img> text` must stay an inline
+/// image inside its paragraph -- which is exactly what falling through does.
+/// `source` is likewise absent: it only appears inside a `<picture>`/`<video>`
+/// that has already opened a block around it.
+const html_media_tags = std.StaticStringMap(void).initComptime(.{
+    .{"video"}, .{"audio"}, .{"picture"},
+});
+
 const html_type6_tags = std.StaticStringMap(void).initComptime(.{
     .{"address"},    .{"article"},  .{"aside"},   .{"base"},     .{"basefont"},
     .{"blockquote"}, .{"body"},     .{"caption"}, .{"center"},   .{"col"},
@@ -593,7 +617,10 @@ fn parseCompleteTag(s: []const u8, closing: bool, name_end: usize) ?usize {
 
 /// `s` is already indent-stripped (<=3 columns) and starts with `<`.
 /// Returns the HTML block type (1-7) it begins, or `null`.
-fn detectHtmlBlockStart(s: []const u8) ?u8 {
+/// `media_blocks` is `options.html_elements`: it widens the type-6 tag list by
+/// `html_media_tags`. See that map for why the extra tags are gated rather than
+/// simply added.
+fn detectHtmlBlockStart(s: []const u8, media_blocks: bool) ?u8 {
     if (s.len == 0 or s[0] != '<') return null;
     if (std.mem.startsWith(u8, s, "<!--")) return 2;
     if (std.mem.startsWith(u8, s, "<?")) return 3;
@@ -620,7 +647,7 @@ fn detectHtmlBlockStart(s: []const u8) ?u8 {
 
     var lower_buf: [32]u8 = undefined;
     if (lowerInto(&lower_buf, name)) |lname| {
-        if (html_type6_tags.has(lname)) {
+        if (html_type6_tags.has(lname) or (media_blocks and html_media_tags.has(lname))) {
             if (i == s.len) return 6;
             const c = s[i];
             if (c == ' ' or c == '\t' or c == '>') return 6;
@@ -1774,7 +1801,7 @@ pub const Parser = struct {
         // that context (`tryStartFootnoteDef`'s own `!interrupting` gate).
         if (self.options.footnotes and self.isInsideFootnoteDef() and tryFootnoteDefMarker(s) != null) return true;
         if (s.len > 0 and s[0] == '<') {
-            if (detectHtmlBlockStart(s)) |t| {
+            if (detectHtmlBlockStart(s, self.options.html_elements)) |t| {
                 if (t != 7) return true;
             }
         }
@@ -2100,7 +2127,7 @@ pub const Parser = struct {
                 }
 
                 if (s.len > 0 and s[0] == '<') {
-                    if (detectHtmlBlockStart(s)) |t| {
+                    if (detectHtmlBlockStart(s, self.options.html_elements)) |t| {
                         if (!interrupting or t != 7) {
                             if (interrupting) try self.closeLeaf(idx);
                             try self.maybeCloseTopList(idx, null);
@@ -2393,7 +2420,7 @@ pub const Parser = struct {
             if (isBlankLine(row_remainder)) break;
             if (indentCols(row_remainder, .{}) >= 4) break;
             const row_s = stripUpTo3Indent(row_remainder);
-            if (looksLikeNewBlockStart(row_s)) break;
+            if (looksLikeNewBlockStart(row_s, self.options.html_elements)) break;
 
             const raw_cells = try splitTableRow(self.allocator, row_s);
             defer self.allocator.free(raw_cells);
@@ -2617,7 +2644,7 @@ pub const Parser = struct {
                     if (isBlankLine(crem)) break;
                     const cs = stripUpTo3Indent(crem);
                     if (isDefinitionMarkerLine(cs)) break;
-                    if (looksLikeNewBlockStart(cs)) break;
+                    if (looksLikeNewBlockStart(cs, self.options.html_elements)) break;
                     try self.appendUnmappedByte(&content, '\n');
                     try self.appendMappedSource(&content, &content_segs, trimLeadingWs(crem));
                     def_end = scan;
@@ -2657,7 +2684,7 @@ pub const Parser = struct {
             const trem = tl[tm.cur.pos..];
             if (isBlankLine(trem) or indentCols(trem, .{}) >= 4) break;
             const ts = stripUpTo3Indent(trem);
-            if (isDefinitionMarkerLine(ts) or looksLikeNewBlockStart(ts)) break;
+            if (isDefinitionMarkerLine(ts) or looksLikeNewBlockStart(ts, self.options.html_elements)) break;
 
             const dl2 = self.lines[next_idx + 1];
             const dm2 = self.matchContainers(dl2);
@@ -3409,6 +3436,83 @@ test "html_elements: the fig.md <picture> block parses into heading > picture > 
 
     const img = findFirstKind(&r.ast, picture, .image).?;
     try testing.expectEqualStrings("assets/fig-banner.svg", r.ast.nodes[img].kind.image.destination.?);
+}
+
+test "html_elements: a one-line <video> is a block, not a paragraph of raw HTML" {
+    // The spelling everyone actually writes. CommonMark's type-7 rule wants the
+    // tag to end the line, so `...></video>` misses it, and `video` isn't in the
+    // fixed type-6 list -- leaving this a paragraph of raw inline HTML with no
+    // element node at all. `html_media_tags` is what makes it a block.
+    const src = "<video src=\"clip.mp4\" poster=\"still.png\" controls></video>\n";
+    var r = try parse(testing.allocator, src, .{ .html_elements = true });
+    defer r.ast.deinit();
+    defer r.link_references.deinit(testing.allocator);
+    defer r.footnotes.deinit(testing.allocator);
+
+    const video = findFirstKind(&r.ast, r.ast.root, .element).?;
+    try testing.expectEqualStrings("video", r.ast.nodes[video].kind.element.name);
+    try testing.expectEqualStrings("clip.mp4", r.ast.attrsOf(video).get("src").?);
+    try testing.expectEqualStrings("still.png", r.ast.attrsOf(video).get("poster").?);
+}
+
+test "html_elements: a one-line <audio> is a block too" {
+    const src = "<audio src=\"take.mp3\" controls></audio>\n";
+    var r = try parse(testing.allocator, src, .{ .html_elements = true });
+    defer r.ast.deinit();
+    defer r.link_references.deinit(testing.allocator);
+    defer r.footnotes.deinit(testing.allocator);
+
+    const audio = findFirstKind(&r.ast, r.ast.root, .element).?;
+    try testing.expectEqualStrings("audio", r.ast.nodes[audio].kind.element.name);
+    try testing.expectEqualStrings("take.mp3", r.ast.attrsOf(audio).get("src").?);
+}
+
+test "html_elements: a one-line <picture> is a block, with its source and img" {
+    // `<picture>` had the same gap as `<video>`; it only ever worked because the
+    // conventional spelling puts the closing tag on its own line.
+    const src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\">" ++
+        "<img src=\"l.svg\" alt=\"banner\"></picture>\n";
+    var r = try parse(testing.allocator, src, .{ .html_elements = true });
+    defer r.ast.deinit();
+    defer r.link_references.deinit(testing.allocator);
+    defer r.footnotes.deinit(testing.allocator);
+
+    const picture2 = findFirstKind(&r.ast, r.ast.root, .element).?;
+    try testing.expectEqualStrings("picture", r.ast.nodes[picture2].kind.element.name);
+    const source2 = findElementNamed(&r.ast, picture2, "source").?;
+    try testing.expectEqualStrings("d.svg", r.ast.attrsOf(source2).get("srcset").?);
+    const banner = findFirstKind(&r.ast, picture2, .image).?;
+    try testing.expectEqualStrings("l.svg", r.ast.nodes[banner].kind.image.destination.?);
+}
+
+test "html_elements OFF: a one-line <video> keeps stock CommonMark parsing" {
+    // The gate. Without the extension the type-6 list is exactly the spec's, so
+    // this stays what CommonMark says it is -- a paragraph, not a block.
+    const src = "<video src=\"clip.mp4\" controls></video>\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.ast.deinit();
+    defer r.link_references.deinit(testing.allocator);
+    defer r.footnotes.deinit(testing.allocator);
+
+    const first = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[first].kind == .para);
+    try testing.expect(findFirstKind(&r.ast, r.ast.root, .element) == null);
+}
+
+test "html_elements: an <img> amid prose stays an inline image" {
+    // The reason `img` is not in `html_media_tags`. A line that merely CONTAINS
+    // an `<img>` must stay a paragraph with an inline image -- putting `img` in
+    // the type-6 list would only affect lines that START with the tag, and those
+    // already open a type-7 block, so adding it buys nothing and risks this.
+    const src = "see <img src=\"a.svg\" alt=\"x\"> here\n";
+    var r = try parse(testing.allocator, src, .{ .html_elements = true });
+    defer r.ast.deinit();
+    defer r.link_references.deinit(testing.allocator);
+    defer r.footnotes.deinit(testing.allocator);
+
+    const para2 = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[para2].kind == .para);
+    try testing.expect(findFirstKind(&r.ast, para2, .image) != null);
 }
 
 test "paragraph with a code span and a hard break" {
