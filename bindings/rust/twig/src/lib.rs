@@ -991,6 +991,44 @@ impl Editor {
         })
     }
 
+    /// Spell `[start, end)` as an image pointing at `destination` —
+    /// `![alt](destination)`, the selected source becoming the alt text.
+    ///
+    /// The destination is escaped exactly as [`insert_link`](Self::insert_link)
+    /// escapes one, because it is the same grammar production: Markdown moves a
+    /// destination holding whitespace into the `<…>` form, Djot leaves it bare
+    /// because `<…>` there would read as the URL itself. That is the reason this
+    /// exists rather than being a `format!` at the call site — `![](my file.png)`
+    /// is not an image in Markdown at all, and no caller can fix that without
+    /// reproducing twig's per-format escape table.
+    ///
+    /// Two ways it is simpler than a link. An empty range stays empty:
+    /// `![](destination)` is a perfectly good image, where the childless
+    /// `[](destination)` that `insert_link` works to avoid has nothing to render
+    /// or put a caret in. And there is no autolink or re-point reasoning — an
+    /// image has no bare-URL spelling, and re-pointing an existing one is a read
+    /// of its destination plus an insert, above this op.
+    ///
+    /// Returns [`Error::InvalidArgument`] for a destination holding a newline and
+    /// [`Error::UnsupportedFormat`] for a parse-only format (XML, HTML).
+    pub fn insert_image(
+        &mut self,
+        start: usize,
+        end: usize,
+        destination: &str,
+    ) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_insert_image(
+                ed,
+                start,
+                end,
+                destination.as_ptr(),
+                destination.len(),
+                out,
+            )
+        })
+    }
+
     /// Insert `text` at `offset` as a literal run: every byte the format reads as
     /// markup is backslash-escaped so the run reparses as exactly `text` — a typed
     /// `*`, `#` or `` ` `` stays that character rather than opening emphasis, a
@@ -2292,6 +2330,42 @@ mod tests {
         let mut dj2 = Editor::new_str("w\n", Format::Djot).expect("editor");
         dj2.insert_link(0, 1, "a b").expect("link");
         assert_eq!(dj2.source_str().unwrap(), "[w](a b)\n");
+    }
+
+    #[test]
+    fn editor_insert_image_escapes_the_destination_per_format() {
+        // The whole point of the op: a caller's `![](my cat.png)` is not an image
+        // in Markdown, and the correct repair differs by format.
+        let mut md = Editor::new_str("w\n", Format::Markdown).expect("editor");
+        md.insert_image(0, 1, "my cat.png").expect("image");
+        assert_eq!(md.source_str().unwrap(), "![w](<my cat.png>)\n");
+
+        let mut dj = Editor::new_str("w\n", Format::Djot).expect("editor");
+        dj.insert_image(0, 1, "my cat.png").expect("image");
+        assert_eq!(dj.source_str().unwrap(), "![w](my cat.png)\n");
+
+        // A `)` would close the image early and spill the rest as literal text.
+        let mut paren = Editor::new_str("w\n", Format::Djot).expect("editor");
+        paren.insert_image(0, 1, "a)b.png").expect("image");
+        assert_eq!(paren.source_str().unwrap(), "![w](a\\)b.png)\n");
+    }
+
+    #[test]
+    fn editor_insert_image_keeps_an_empty_alt_empty() {
+        // Unlike a link, where an empty range spells an autolink or doubles the
+        // destination as text — an image with no alt is ordinary.
+        let mut ed = Editor::new_str("ab\n", Format::Markdown).expect("editor");
+        ed.insert_image(1, 1, "cat.png").expect("image");
+        assert_eq!(ed.source_str().unwrap(), "a![](cat.png)b\n");
+    }
+
+    #[test]
+    fn editor_insert_image_rejects_a_newline_destination() {
+        let mut ed = Editor::new_str("w\n", Format::Djot).expect("editor");
+        assert_eq!(ed.insert_image(0, 1, "a\nb.png"), Err(Error::InvalidArgument));
+
+        let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+        assert_eq!(xml.insert_image(3, 5, "x.png"), Err(Error::UnsupportedFormat));
     }
 
     #[test]

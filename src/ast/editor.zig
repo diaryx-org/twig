@@ -563,6 +563,48 @@ pub const Editor = struct {
         return self.commitSplice(target.start, target.end, out.items);
     }
 
+    /// Spell `[start, end)` as an image pointing at `dest` — `![alt](dest)`, the
+    /// selected source becoming the alt text.
+    ///
+    /// Shares `insertLink`'s destination spelling, which is the whole reason this
+    /// belongs here rather than in a caller's format string: an image destination
+    /// is the *same grammar production* as a link's, so it needs the same
+    /// per-format treatment — Markdown moving a destination that holds whitespace
+    /// into the `<…>` form, Djot taking it bare because `<…>` means nothing there
+    /// and would link the literal characters. A caller spelling `![](my file.png)`
+    /// by hand writes something Markdown does not read as an image at all, and
+    /// cannot fix without reproducing `writeLinkDestination`.
+    ///
+    /// Simpler than a link in two ways. There is no autolink form to prefer and no
+    /// re-point reasoning: an image has no bare-URL spelling, and re-pointing an
+    /// existing one is `imageDestinationAt`-then-insert above this op rather than a
+    /// shape to detect here. And empty text stays empty — `![](dest)` is a perfectly
+    /// good image, where the `[](dest)` that `insertLink` works to avoid is a link
+    /// with nothing to click.
+    pub fn insertImage(self: *Editor, span: Span, dest: []const u8) Error!void {
+        try self.checkRange(span.start, span.end);
+        if (self.syntax.link_text_escapes == null) return error.UnsupportedFormat;
+        if (self.syntax.link_dest_escapes == null) return error.UnsupportedFormat;
+        if (std.mem.indexOfAny(u8, dest, "\r\n") != null) return error.InvalidDestination;
+
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+        // Already-parsed source, copied verbatim — the same distinction
+        // `insertLink` draws between a span of the document and a raw argument.
+        const text = src[span.start..span.end];
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        try out.appendSlice(allocator, "![");
+        try out.appendSlice(allocator, text);
+        try out.appendSlice(allocator, "](");
+        try writeLinkDestination(allocator, self.syntax, dest, &out);
+        try out.append(allocator, ')');
+
+        return self.commitSplice(span.start, span.end, out.items);
+    }
+
     // ── Literal text ─────────────────────────────────────────────────────────
 
     /// Insert `text` at `offset` as a LITERAL run: every byte the format reads as

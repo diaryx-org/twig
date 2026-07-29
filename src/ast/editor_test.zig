@@ -139,6 +139,10 @@ fn insertLink(fx: *Fixture, start: usize, end: usize, dest: []const u8) !void {
     return fx.ed.insertLink(Span.init(start, end), dest);
 }
 
+fn insertImage(fx: *Fixture, start: usize, end: usize, dest: []const u8) !void {
+    return fx.ed.insertImage(Span.init(start, end), dest);
+}
+
 fn insertLiteral(fx: *Fixture, offset: usize, text: []const u8) !void {
     return fx.ed.insertLiteral(offset, text);
 }
@@ -887,6 +891,67 @@ test "insert_link rejects a newline in the destination and an unspellable format
     var xml = try Fixture.init("<r>ab</r>", .xml);
     defer xml.deinit();
     try testing.expectError(error.UnsupportedFormat, insertLink(&xml, 3, 5, "http://x.dev"));
+}
+
+// ── images ─────────────────────────────────────────────────────────────────
+// An image destination is the same grammar production as a link's, so these
+// mirror the link-destination cases above. The point of the op existing at all is
+// that a caller cannot spell them: the correct answer differs per format, and
+// getting it wrong yields text rather than an image.
+
+test "insert_image spells an image with the selection as alt text" {
+    var fx = try Fixture.init("a word b\n", .djot);
+    defer fx.deinit();
+    try insertImage(&fx, 2, 6, "cat.png");
+    try fx.expectSource("a ![word](cat.png) b\n");
+    try fx.expectSpelled(.image, "cat.png");
+}
+
+test "insert_image: an empty range is a perfectly good image" {
+    // Unlike a link, where `[](dest)` has nothing to click and `insert_link`
+    // therefore spells an autolink instead.
+    var fx = try Fixture.init("ab\n", .markdown);
+    defer fx.deinit();
+    try insertImage(&fx, 1, 1, "cat.png");
+    try fx.expectSource("a![](cat.png)b\n");
+    try fx.expectSpelled(.image, "cat.png");
+}
+
+test "insert_image: whitespace in the destination takes the format's spelling" {
+    // The bug this op exists to make impossible. Markdown ends a destination at
+    // the first space, so `![](my cat.png)` is not an image at all; djot gives
+    // `<…>` no meaning, so wrapping there would point at the literal characters.
+    var md = try Fixture.init("w\n", .markdown);
+    defer md.deinit();
+    try insertImage(&md, 0, 1, "my cat.png");
+    try md.expectSource("![w](<my cat.png>)\n");
+    try md.expectSpelled(.image, "my cat.png");
+
+    var dj = try Fixture.init("w\n", .djot);
+    defer dj.deinit();
+    try insertImage(&dj, 0, 1, "my cat.png");
+    try dj.expectSource("![w](my cat.png)\n");
+    try dj.expectSpelled(.image, "my cat.png");
+}
+
+test "insert_image: a paren in the destination is escaped, not left to close early" {
+    var fx = try Fixture.init("w\n", .djot);
+    defer fx.deinit();
+    try insertImage(&fx, 0, 1, "a)b.png");
+    try fx.expectSource("![w](a\\)b.png)\n");
+    try fx.expectSpelled(.image, "a)b.png");
+}
+
+test "insert_image refuses a newline destination and a parse-only format" {
+    var fx = try Fixture.init("ab\n", .djot);
+    defer fx.deinit();
+    try testing.expectError(error.InvalidDestination, insertImage(&fx, 0, 2, "a\nb.png"));
+    try testing.expectError(error.InvalidDestination, insertImage(&fx, 0, 2, "a\rb.png"));
+    try fx.expectSource("ab\n");
+
+    var xml = try Fixture.init("<r>ab</r>", .xml);
+    defer xml.deinit();
+    try testing.expectError(error.UnsupportedFormat, insertImage(&xml, 3, 5, "cat.png"));
 }
 
 // ── literal text ─────────────────────────────────────────────────────────────

@@ -817,6 +817,33 @@ TwigStatus twig_editor_insert_link(
     TwigChange *out_change
 );
 
+// Spell `[start, end)` as an IMAGE pointing at `destination` — `![alt](dest)`,
+// the selected source becoming the alt text.
+//
+// The destination is escaped exactly as twig_editor_insert_link escapes one (see
+// the paragraph above it), because it is the same grammar production: Markdown
+// moves a destination holding whitespace into the `<…>` form, Djot leaves it bare
+// because `<…>` means nothing there. That is why this op exists rather than being
+// a caller's sprintf — `![](my file.png)` is not an image in Markdown at all, and
+// a caller cannot fix it without reproducing twig's per-format escape table.
+//
+// Two ways it is simpler than a link. An empty range stays empty: `![](dest)` is
+// a perfectly good image, where the childless `[](dest)` that insert_link works to
+// avoid has nothing to render or put a caret in. And there is no autolink or
+// re-point reasoning — an image has no bare-URL spelling, and re-pointing an
+// existing one is a read of its destination plus an insert, above this op.
+//
+// TWIG_STATUS_INVALID_DESTINATION when `destination` holds a newline;
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a parse-only format (XML, HTML).
+TwigStatus twig_editor_insert_image(
+    TwigEditor *editor,
+    size_t start,
+    size_t end,
+    const uint8_t *destination,
+    size_t destination_len,
+    TwigChange *out_change
+);
+
 // Insert `text` at `offset` as a LITERAL run: every byte the format would read as
 // markup is backslash-escaped so the run reparses as exactly `text` — a typed
 // `*`, `#` or backtick stays that character instead of opening emphasis, a

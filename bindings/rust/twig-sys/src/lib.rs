@@ -464,6 +464,14 @@ unsafe extern "C" {
         destination_len: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_insert_image(
+        editor: *mut TwigEditor,
+        start: usize,
+        end: usize,
+        destination: *const u8,
+        destination_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
 
     pub fn twig_editor_insert_literal(
         editor: *mut TwigEditor,

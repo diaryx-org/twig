@@ -1920,6 +1920,28 @@ pub export fn twig_editor_insert_link(
     return .ok;
 }
 
+/// Spell `[start, end)` as an image pointing at `destination`. See `twig.h` for
+/// the semantics and `twig.Editor.insertImage` for the implementation and its
+/// rationale — in particular why the destination spelling is not the caller's to
+/// reproduce.
+pub export fn twig_editor_insert_image(
+    ed: ?*TwigEditor,
+    start: usize,
+    end: usize,
+    destination_ptr: ?[*]const u8,
+    destination_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const dest = sliceOf(destination_ptr, destination_len) orelse return .invalid_argument;
+
+    handle.editor.insertImage(twig.Span.init(start, end), dest) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
 // ── Literal text ───────────────────────────────────────────────────────────────
 // The engine — the per-format `text_escapes`/`block_start_escapes` alphabets and
 // the positional escape walk — is `twig.Editor.insertLiteral`.
@@ -3145,6 +3167,30 @@ test "toolbar: the wire codes reach the right gesture" {
         twig_editor_insert_link(fx.ed, 6, 7, "x.dev", 5, null),
     );
     try fx.expectSource("> ## *[a](x.dev)*\n");
+}
+
+test "insert_image: the wire reaches the gesture and escapes for the format" {
+    var fx = try EditorFixture.initFmt("w\n", .markdown);
+    defer fx.deinit();
+    // A space in the destination is what a caller cannot spell; the op moves it
+    // into Markdown's angle form.
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_insert_image(fx.ed, 0, 1, "my cat.png", 10, null),
+    );
+    try fx.expectSource("![w](<my cat.png>)\n");
+
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_editor_insert_image(null, 0, 0, "x.png", 5, null),
+    );
+
+    var xml = try EditorFixture.init("<a>hi</a>");
+    defer xml.deinit();
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_editor_insert_image(xml.ed, 3, 5, "x.png", 5, null),
+    );
 }
 
 test "insert_literal: the wire reaches the gesture and escapes for the format" {
