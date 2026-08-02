@@ -430,6 +430,41 @@ test "exactly djot and markdown are authorable" {
     try std.testing.expect(!syntaxFor(.html).authorable());
 }
 
+// ── cross-format round-trips ───────────────────────────────────────────────
+//
+// Markdown -> Djot -> HTML is where a serializer gap shows up as silent data
+// loss rather than an error: a construct the Djot serializer can't spell is
+// written as something that reparses into a DIFFERENT node, and only rendering
+// the reparse catches it. Asserting on the Djot text alone would not — the
+// output looks like a plausible document either way.
+
+/// Markdown source -> Djot text -> reparsed as Djot -> HTML.
+fn markdownThroughDjotToHtml(allocator: Allocator, source: []const u8) ![]u8 {
+    var md = try Markdown.parse(allocator, source, .{});
+    defer md.deinit();
+    const djot_src = try djot_serializer.serializeAstAlloc(allocator, &md.ast);
+    defer allocator.free(djot_src);
+    var dj = try Djot.parse(allocator, djot_src);
+    defer dj.deinit();
+    return Djot.html.renderAlloc(allocator, &dj, .{});
+}
+
+test "round-trip: a Markdown table's header row survives the Djot leg" {
+    const out = try markdownThroughDjotToHtml(std.testing.allocator, "| a | b |\n| --- | --- |\n| 1 | 2 |\n");
+    defer std.testing.allocator.free(out);
+    // Djot marks a header by the separator line under it, so dropping the
+    // separator on the way out turns every `<th>` back into a `<td>`.
+    try std.testing.expect(std.mem.indexOf(u8, out, "<th>a</th>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<td>1</td>") != null);
+}
+
+test "round-trip: column alignment survives the Djot leg" {
+    const out = try markdownThroughDjotToHtml(std.testing.allocator, "| a | b |\n| :-- | --: |\n| 1 | 2 |\n");
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<th style=\"text-align: left;\">a</th>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<td style=\"text-align: right;\">2</td>") != null);
+}
+
 test "format names and extensions resolve" {
     try std.testing.expectEqual(Format.djot, parseFormatName("dj").?);
     try std.testing.expectEqual(Format.markdown, parseFormatName("markdown").?);

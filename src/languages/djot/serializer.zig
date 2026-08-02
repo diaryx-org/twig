@@ -173,6 +173,46 @@ const Renderer = struct {
         try self.renderBlocks(item_id, item_ctx, !tight);
     }
 
+    fn rowHasAlignment(self: *Renderer, row_id: Node.Id) bool {
+        var it = self.ast.children(row_id);
+        while (it.next()) |cell| {
+            switch (self.ast.nodes[cell.id].kind) {
+                .cell => |c| if (c.alignment != .default) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    /// `|---|:--|` — the separator line that marks the row above it as a header
+    /// and sets the alignment of the columns below it.
+    ///
+    /// Written without padding spaces (`|---|`, not `| --- |`) because djot.js
+    /// — the reference implementation — only recognises dashes that abut the
+    /// bar: its `parseTableRow` steps a single byte past the `|` before
+    /// matching, so `| --- |` is read as an ordinary data row. The unspaced
+    /// spelling is the one every implementation reads back as a separator.
+    fn writeTableSeparator(self: *Renderer, row_id: Node.Id, ctx: Ctx) Writer.Error!void {
+        if (self.ast.nodes[row_id].first_child == null) return; // `|` alone isn't a row
+        try self.writePrefix(ctx);
+        try self.writer.writeByte('|');
+        var it = self.ast.children(row_id);
+        while (it.next()) |cell| {
+            const alignment = switch (self.ast.nodes[cell.id].kind) {
+                .cell => |c| c.alignment,
+                else => .default,
+            };
+            try self.writer.writeAll(switch (alignment) {
+                .default => "---",
+                .left => ":--",
+                .right => "--:",
+                .center => ":-:",
+            });
+            try self.writer.writeByte('|');
+        }
+        try self.writer.writeByte('\n');
+    }
+
     fn renderDetachedDefinitions(self: *Renderer) Writer.Error!void {
         var wrote_any = false;
         for (self.ast.nodes) |n| {
@@ -346,8 +386,20 @@ const Renderer = struct {
             },
             .table => {
                 var row_it = self.ast.children(id);
+                var is_first = true;
                 while (row_it.next()) |row| {
                     if (self.ast.nodes[row.id].kind == .caption) continue;
+                    const head = switch (self.ast.nodes[row.id].kind) {
+                        .row => |r| r.head,
+                        else => false,
+                    };
+                    // Alignment on a table that opens with a body row can only
+                    // be spelled as a leading separator — one with no row above
+                    // it sets the columns for the rows that follow without
+                    // making any of them a header.
+                    if (is_first and !head and self.rowHasAlignment(row.id))
+                        try self.writeTableSeparator(row.id, ctx);
+                    is_first = false;
                     try self.writePrefix(ctx);
                     try self.writer.writeByte('|');
                     var cell_it = self.ast.children(row.id);
@@ -357,6 +409,11 @@ const Renderer = struct {
                         try self.writer.writeAll(" |");
                     }
                     try self.writer.writeByte('\n');
+                    // Djot has no per-row header marker: a row is a header
+                    // because a separator line follows it. Without this the
+                    // `head` flag is dropped on the way out and every cell
+                    // reparses as a body cell.
+                    if (head) try self.writeTableSeparator(row.id, ctx);
                 }
             },
             .reference => {},
@@ -571,6 +628,37 @@ test "serializeAlloc includes detached reference definitions" {
     const out = try serializeAlloc(testing.allocator, &doc);
     defer testing.allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "[a]: /u") != null);
+}
+
+test "serializeAlloc: a header row is written back with the separator line that makes it one" {
+    var doc = try djot.parse(testing.allocator, "|a|b|\n|---|---|\n|c|d|\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("| a | b |\n|---|---|\n| c | d |\n", out);
+}
+
+test "serializeAlloc: each header in a multi-header table gets its own separator" {
+    // Djot allows a table to switch headers mid-way; every `head` row needs its
+    // own separator, not just the first.
+    var doc = try djot.parse(testing.allocator, "|a|b|\n|:-|---:|\n|c|d|\n|cc|dd|\n|-:|:-:|\n|e|f|\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(
+        "| a | b |\n|:--|--:|\n| c | d |\n| cc | dd |\n|--:|:-:|\n| e | f |\n",
+        out,
+    );
+}
+
+test "serializeAlloc: a table that opens with a separator keeps its alignment" {
+    // No header here — a leading separator sets the columns for the rows below
+    // it, and is the only way to spell that alignment in djot.
+    var doc = try djot.parse(testing.allocator, "|:--|---:|\n| x | 2 |\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("|:--|--:|\n| x | 2 |\n", out);
 }
 
 test "serializeAlloc: a loose bullet list's first paragraph starts on the marker's line, not a bare marker + newline" {
