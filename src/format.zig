@@ -465,6 +465,24 @@ test "round-trip: column alignment survives the Djot leg" {
     try std.testing.expect(std.mem.indexOf(u8, out, "<td style=\"text-align: right;\">2</td>") != null);
 }
 
+test "round-trip: raw inline HTML survives the Djot leg" {
+    const out = try markdownThroughDjotToHtml(std.testing.allocator, "x <sub>y</sub> z\n");
+    defer std.testing.allocator.free(out);
+    // Written as bare text, the tags reparse as ordinary characters and come
+    // back escaped (`&lt;sub&gt;`) with no error raised anywhere.
+    try std.testing.expect(std.mem.indexOf(u8, out, "<p>x <sub>y</sub> z</p>") != null);
+}
+
+test "round-trip: a raw HTML block survives the Djot leg" {
+    const out = try markdownThroughDjotToHtml(std.testing.allocator, "<div>\nhi\n</div>\n");
+    defer std.testing.allocator.free(out);
+    // Spelled as a language (` ```html `) rather than djot's raw form
+    // (` ```=html `), this reparses as a code block and renders as escaped
+    // text inside `<pre>`.
+    try std.testing.expect(std.mem.indexOf(u8, out, "<div>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<pre>") == null);
+}
+
 test "format names and extensions resolve" {
     try std.testing.expectEqual(Format.djot, parseFormatName("dj").?);
     try std.testing.expectEqual(Format.markdown, parseFormatName("markdown").?);

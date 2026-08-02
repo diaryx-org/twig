@@ -23,6 +23,18 @@ const Ctx = struct {
     prefix: ?*const Prefix = null,
 };
 
+/// Djot strips one space adjacent to a backtick at each end of verbatim text
+/// (`parser.zig`'s `trimVerbatim`), so text that starts or ends with a backtick
+/// has to be padded on that side to survive a reparse: a lone backtick would
+/// otherwise be written as three in a row, which reads back as an unterminated
+/// opener rather than as a one-backtick span.
+fn verbatimPad(text: []const u8) struct { left: bool, right: bool } {
+    return .{
+        .left = text.len > 0 and text[0] == '`',
+        .right = text.len > 0 and text[text.len - 1] == '`',
+    };
+}
+
 fn fenceTicks(text: []const u8, min: usize) usize {
     var best = min;
     var i: usize = 0;
@@ -125,14 +137,34 @@ const Renderer = struct {
         try self.writer.writeAll(rest);
     }
 
-    fn writeCodeFence(self: *Renderer, ctx: Ctx, info: ?[]const u8, text: []const u8) Writer.Error!void {
+    /// A backtick-delimited inline span: verbatim text, and the `` `…` `` half
+    /// of a raw inline (`` `<br>`{=html} ``). The run is widened past any
+    /// backtick run in `text` and padded per `verbatimPad`.
+    fn writeTickFenced(self: *Renderer, text: []const u8) Writer.Error!void {
+        const ticks = fenceTicks(text, 1);
+        const pad = verbatimPad(text);
+        var i: usize = 0;
+        while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+        if (pad.left) try self.writer.writeByte(' ');
+        try self.writer.writeAll(text);
+        if (pad.right) try self.writer.writeByte(' ');
+        i = 0;
+        while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+    }
+
+    /// `info` is the fence's info string; `raw` writes it as djot's raw-block
+    /// form (`` ```=html ``) rather than a language (`` ```html ``). The two
+    /// are different nodes on the way back in — a raw block spelled as a
+    /// language reparses as a `code_block` and gets HTML-escaped.
+    fn writeCodeFence(self: *Renderer, ctx: Ctx, info: ?[]const u8, text: []const u8, raw: bool) Writer.Error!void {
         const ticks = fenceTicks(text, 3);
         try self.writePrefix(ctx);
         var i: usize = 0;
         while (i < ticks) : (i += 1) try self.writer.writeByte('`');
-        // The language directly abuts the fence (` ```fig`, not ` ``` fig`) —
+        // The info string directly abuts the fence (` ```fig`, not ` ``` fig`) —
         // the canonical form, and a byte-identical round-trip of the usual
         // hand-written spelling. (djot strips a leading space either way.)
+        if (raw) try self.writer.writeByte('=');
         if (info) |lang| {
             if (lang.len > 0) try self.writer.writeAll(lang);
         }
@@ -295,8 +327,10 @@ const Renderer = struct {
                 try self.writePrefix(ctx);
                 try self.writer.writeAll(":::\n");
             },
-            .code_block => |cb| try self.writeCodeFence(ctx, cb.lang, cb.text),
-            .raw_block => |rb| try self.writeCodeFence(ctx, rb.format, rb.text),
+            .code_block => |cb| try self.writeCodeFence(ctx, cb.lang, cb.text, false),
+            // A formatless raw block has no `=`-form to write, so it falls
+            // back to a bare fence rather than emitting an empty `` ```= ``.
+            .raw_block => |rb| try self.writeCodeFence(ctx, rb.format, rb.text, rb.format.len > 0),
             .metadata => |m| {
                 // Front/end matter: `---<lang>` … `---` (bare `---` for yaml).
                 try self.writePrefix(ctx);
@@ -444,15 +478,15 @@ const Renderer = struct {
             },
             .non_breaking_space => try self.writer.writeAll("\\ "),
             .symb => |s| try self.writer.print(":{s}:", .{s}),
-            .verbatim => |v| {
-                const ticks = fenceTicks(v, 1);
-                var i: usize = 0;
-                while (i < ticks) : (i += 1) try self.writer.writeByte('`');
-                try self.writer.writeAll(v);
-                i = 0;
-                while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+            .verbatim => |v| try self.writeTickFenced(v),
+            // Djot spells raw inline content `` `<br>`{=html} ``. Writing the
+            // bare text instead loses the raw-ness silently: it reparses as
+            // ordinary characters and comes back HTML-escaped. A formatless
+            // raw inline has no `{=…}` to write, so it degrades to verbatim.
+            .raw_inline => |r| {
+                try self.writeTickFenced(r.text);
+                if (r.format.len > 0) try self.writer.print("{{={s}}}", .{r.format});
             },
-            .raw_inline => |r| try self.writer.writeAll(r.text),
             .inline_math => |m| try self.writer.print("${s}$", .{m}),
             .display_math => |m| try self.writer.print("$$\n{s}\n$$", .{m}),
             .url => |u| try self.writer.print("<{s}>", .{u}),
@@ -659,6 +693,43 @@ test "serializeAlloc: a table that opens with a separator keeps its alignment" {
     const out = try serializeAlloc(testing.allocator, &doc);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("|:--|--:|\n| x | 2 |\n", out);
+}
+
+test "serializeAlloc: raw inline keeps djot's raw spelling, not bare text" {
+    var doc = try djot.parse(testing.allocator, "x `<sub>`{=html}y`</sub>`{=html} z\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("x `<sub>`{=html}y`</sub>`{=html} z\n", out);
+}
+
+test "serializeAlloc: a raw block keeps its `=` form and doesn't decay to a code block" {
+    var doc = try djot.parse(testing.allocator, "``` =html\n<hr>\n```\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    // The info string abuts the fence, as it does for a code block's language.
+    try testing.expectEqualStrings("```=html\n<hr>\n```\n", out);
+}
+
+test "serializeAlloc: backtick-edged verbatim and raw text are space-padded" {
+    // Djot strips one space next to a backtick at each end, so content that
+    // starts or ends with one must be padded — otherwise the delimiters and the
+    // content run together into a single unterminated backtick run.
+    {
+        var doc = try djot.parse(testing.allocator, "`` ` ``\n");
+        defer doc.deinit();
+        const out = try serializeAlloc(testing.allocator, &doc);
+        defer testing.allocator.free(out);
+        try testing.expectEqualStrings("`` ` ``\n", out);
+    }
+    {
+        var doc = try djot.parse(testing.allocator, "`` `x` ``{=html}\n");
+        defer doc.deinit();
+        const out = try serializeAlloc(testing.allocator, &doc);
+        defer testing.allocator.free(out);
+        try testing.expectEqualStrings("`` `x` ``{=html}\n", out);
+    }
 }
 
 test "serializeAlloc: a loose bullet list's first paragraph starts on the marker's line, not a bare marker + newline" {
