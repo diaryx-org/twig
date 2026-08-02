@@ -465,6 +465,23 @@ test "round-trip: column alignment survives the Djot leg" {
     try std.testing.expect(std.mem.indexOf(u8, out, "<td style=\"text-align: right;\">2</td>") != null);
 }
 
+test "round-trip: a table survives Djot -> HTML -> Djot" {
+    // The other direction: HTML is a real input format, so a table has to
+    // survive being read back out of the printer's own output — row groups,
+    // header, alignment, caption and all.
+    const source = "| a | b |\n|:--|--:|\n| 1 | 2 |\n^ Cap\n";
+    var dj = try Djot.parse(std.testing.allocator, source);
+    defer dj.deinit();
+    const rendered = try Djot.html.renderAlloc(std.testing.allocator, &dj, .{});
+    defer std.testing.allocator.free(rendered);
+
+    var page = try Html.parse(std.testing.allocator, rendered);
+    defer page.deinit();
+    const back = try djot_serializer.serializeAstAlloc(std.testing.allocator, &page);
+    defer std.testing.allocator.free(back);
+    try std.testing.expectEqualStrings(source, back);
+}
+
 test "round-trip: raw inline HTML survives the Djot leg" {
     const out = try markdownThroughDjotToHtml(std.testing.allocator, "x <sub>y</sub> z\n");
     defer std.testing.allocator.free(out);

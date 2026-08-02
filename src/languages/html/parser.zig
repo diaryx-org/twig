@@ -18,12 +18,20 @@ pub const Parser = struct {
     source: []const u8,
     pos: usize = 0,
     builder: AST.Builder,
+    /// Reusable buffer for the one child-list rewrite that GROWS the list —
+    /// splicing a `<tbody>`'s rows into its table (see `flattenRowGroups`).
+    /// Every other rewrite here shrinks in place. Safe to share across tables,
+    /// nested ones included: `parseElement` hands the slice straight to
+    /// `addContainer`, which copies the ids out before any other element's
+    /// `semanticKind` runs.
+    row_scratch: std.ArrayList(Node.Id) = .empty,
 
     pub fn init(allocator: Allocator, source: []const u8) Parser {
         return .{ .allocator = allocator, .source = source, .builder = AST.Builder.init(allocator) };
     }
 
     pub fn deinit(self: *Parser) void {
+        self.row_scratch.deinit(self.allocator);
         self.builder.deinit();
     }
 
@@ -273,6 +281,29 @@ pub const Parser = struct {
             try self.wrapListItemInParagraph(children);
             return .list_item;
         }
+        if (std.mem.eql(u8, name, "table")) {
+            children.* = self.dropFormattingWhitespace(children.*);
+            try self.flattenRowGroups(children);
+            return .table;
+        }
+        if (std.mem.eql(u8, name, "caption")) {
+            children.* = self.dropFormattingWhitespace(children.*);
+            return .caption;
+        }
+        if (std.mem.eql(u8, name, "tr")) {
+            children.* = self.dropFormattingWhitespace(children.*);
+            // The shared model carries `head` on the row as well as its cells;
+            // in HTML the row has no marker of its own, so it follows from the
+            // cells being `<th>`.
+            return .{ .row = .{ .head = self.rowIsHead(children.*) } };
+        }
+        if (std.mem.eql(u8, name, "th") or std.mem.eql(u8, name, "td")) {
+            children.* = self.dropFormattingWhitespace(children.*);
+            return .{ .cell = .{
+                .head = std.mem.eql(u8, name, "th"),
+                .alignment = cellAlignment(attrs),
+            } };
+        }
         if (std.mem.eql(u8, name, "em") or std.mem.eql(u8, name, "i")) return .emph;
         if (std.mem.eql(u8, name, "strong") or std.mem.eql(u8, name, "b")) return .strong;
         if (std.mem.eql(u8, name, "mark")) return .mark;
@@ -317,6 +348,85 @@ pub const Parser = struct {
             }
         }
         return .{ .element = .{ .name = name } };
+    }
+
+    /// `<thead>`/`<tbody>`/`<tfoot>` have no counterpart in the shared table
+    /// model, which is `table -> caption?, row*` — and Twig's own Markdown
+    /// renderer emits them, so a table that went out through HTML has to come
+    /// back through here. Splice each group's rows into the table and drop the
+    /// wrapper, which is left unreferenced exactly as dropped whitespace is.
+    fn flattenRowGroups(self: *Parser, children: *[]Node.Id) ParseError!void {
+        var found = false;
+        for (children.*) |id| {
+            if (self.isRowGroup(id)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return;
+        self.row_scratch.clearRetainingCapacity();
+        for (children.*) |id| {
+            if (!self.isRowGroup(id)) {
+                try self.row_scratch.append(self.allocator, id);
+                continue;
+            }
+            var child = self.builder.nodes.items[id].first_child;
+            while (child) |cid| : (child = self.builder.nodes.items[cid].next_sibling)
+                try self.row_scratch.append(self.allocator, cid);
+        }
+        // The wrapper is a generic element, so the layout whitespace INSIDE it
+        // was never dropped — it arrives here still interleaved with the rows,
+        // where each blank text node would serialize as an empty `|` row.
+        children.* = self.dropFormattingWhitespace(self.row_scratch.items);
+    }
+
+    fn isRowGroup(self: *const Parser, id: Node.Id) bool {
+        return switch (self.builder.nodes.items[id].kind) {
+            .element => |e| std.mem.eql(u8, e.name, "thead") or
+                std.mem.eql(u8, e.name, "tbody") or
+                std.mem.eql(u8, e.name, "tfoot"),
+            else => false,
+        };
+    }
+
+    fn rowIsHead(self: *const Parser, children: []const Node.Id) bool {
+        var saw_cell = false;
+        for (children) |id| switch (self.builder.nodes.items[id].kind) {
+            .cell => |c| {
+                if (!c.head) return false;
+                saw_cell = true;
+            },
+            else => {},
+        };
+        return saw_cell;
+    }
+
+    /// Twig's HTML renderer spells alignment `style="text-align: left;"`, which
+    /// is the form that has to round-trip; `align="left"` is read too, since
+    /// it's what hand-written and legacy HTML uses.
+    fn cellAlignment(attrs: []const AST.KeyVal) AST.Alignment {
+        if (attrValue(attrs, "style")) |style| {
+            if (std.mem.indexOf(u8, style, "text-align")) |at| {
+                var rest = style[at + "text-align".len ..];
+                rest = std.mem.trimStart(u8, rest, " \t");
+                if (rest.len > 0 and rest[0] == ':') {
+                    rest = std.mem.trimStart(u8, rest[1..], " \t");
+                    const end = std.mem.indexOfAny(u8, rest, "; \t") orelse rest.len;
+                    if (alignmentFromName(rest[0..end])) |alignment| return alignment;
+                }
+            }
+        }
+        if (attrValue(attrs, "align")) |value| {
+            if (alignmentFromName(value)) |alignment| return alignment;
+        }
+        return .default;
+    }
+
+    fn alignmentFromName(name: []const u8) ?AST.Alignment {
+        if (std.ascii.eqlIgnoreCase(name, "left")) return .left;
+        if (std.ascii.eqlIgnoreCase(name, "right")) return .right;
+        if (std.ascii.eqlIgnoreCase(name, "center")) return .center;
+        return null;
     }
 
     fn attrValue(attrs: []const AST.KeyVal, key: []const u8) ?[]const u8 {
@@ -647,6 +757,75 @@ test "HTML parser maps block markup and decodes character references" {
     try testing.expectEqualStrings("x", ast.attrsOf(div).get("class").?);
     try testing.expect(ast.attrsOf(div).find("disabled").?.value == null);
     try testing.expectEqualStrings("Hi & 🙂", ast.nodes[text].kind.str);
+}
+
+test "HTML parser maps tables to the shared table vocabulary" {
+    var parser = Parser.init(testing.allocator, "<table><caption>C</caption><tr><th>a</th></tr><tr><td>1</td></tr></table>");
+    defer parser.deinit();
+    var ast = try parser.parse();
+    defer ast.deinit();
+    const table = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[table].kind == .table);
+    const caption = ast.nodes[table].first_child.?;
+    try testing.expect(ast.nodes[caption].kind == .caption);
+    const head_row = ast.nodes[caption].next_sibling.?;
+    const body_row = ast.nodes[head_row].next_sibling.?;
+    // A row has no header marker of its own in HTML; `head` follows from `<th>`.
+    try testing.expect(ast.nodes[head_row].kind.row.head);
+    try testing.expect(!ast.nodes[body_row].kind.row.head);
+    try testing.expect(ast.nodes[ast.nodes[head_row].first_child.?].kind.cell.head);
+    try testing.expect(!ast.nodes[ast.nodes[body_row].first_child.?].kind.cell.head);
+}
+
+test "HTML parser splices row groups into the table, whitespace and all" {
+    // Twig's own Markdown renderer emits `<thead>`/`<tbody>`, so this is the
+    // shape a table takes on the way back in. The shared model has no row
+    // group, and the whitespace inside a wrapper was never dropped — left in,
+    // each blank text node serializes as an empty `|` row.
+    const source =
+        \\<table>
+        \\<thead>
+        \\<tr>
+        \\<th>a</th>
+        \\</tr>
+        \\</thead>
+        \\<tbody>
+        \\<tr>
+        \\<td>1</td>
+        \\</tr>
+        \\</tbody>
+        \\</table>
+    ;
+    var parser = Parser.init(testing.allocator, source);
+    defer parser.deinit();
+    var ast = try parser.parse();
+    defer ast.deinit();
+    const table = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[table].kind == .table);
+    var rows: usize = 0;
+    var child = ast.nodes[table].first_child;
+    while (child) |id| : (child = ast.nodes[id].next_sibling) {
+        try testing.expect(ast.nodes[id].kind == .row);
+        rows += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), rows);
+}
+
+test "HTML parser reads cell alignment from style and from the legacy attribute" {
+    var parser = Parser.init(testing.allocator, "<table><tr><td style=\"text-align: right;\">a</td><td align=\"CENTER\">b</td><td style=\"color: red\">c</td></tr></table>");
+    defer parser.deinit();
+    var ast = try parser.parse();
+    defer ast.deinit();
+    const row = ast.nodes[ast.nodes[ast.root].first_child.?].first_child.?;
+    const first = ast.nodes[row].first_child.?;
+    const second = ast.nodes[first].next_sibling.?;
+    const third = ast.nodes[second].next_sibling.?;
+    // `style` is what Twig's printer emits, so it's the one that must survive;
+    // `align` is read for hand-written HTML, case-insensitively.
+    try testing.expectEqual(AST.Alignment.right, ast.nodes[first].kind.cell.alignment);
+    try testing.expectEqual(AST.Alignment.center, ast.nodes[second].kind.cell.alignment);
+    // An unrelated style declaration is not an alignment.
+    try testing.expectEqual(AST.Alignment.default, ast.nodes[third].kind.cell.alignment);
 }
 
 test "HTML parser closes li and p implicitly and keeps script raw" {
