@@ -419,6 +419,19 @@ const Renderer = struct {
                 }
             },
             .table => {
+                // Djot writes the caption as a `^ ` block AFTER the table, so
+                // it has to be found before the rows are walked. The parser
+                // hoists it to the front of the children and leaves an empty
+                // one behind when there is no caption, so an emptied node here
+                // means "no caption" rather than "an empty one".
+                var caption_id: ?Node.Id = null;
+                var cap_it = self.ast.children(id);
+                while (cap_it.next()) |child| {
+                    if (self.ast.nodes[child.id].kind == .caption and self.ast.nodes[child.id].first_child != null) {
+                        caption_id = child.id;
+                        break;
+                    }
+                }
                 var row_it = self.ast.children(id);
                 var is_first = true;
                 while (row_it.next()) |row| {
@@ -448,6 +461,19 @@ const Renderer = struct {
                     // `head` flag is dropped on the way out and every cell
                     // reparses as a body cell.
                     if (head) try self.writeTableSeparator(row.id, ctx);
+                }
+                if (caption_id) |cid| {
+                    // Directly after the last row, with no blank line between.
+                    // A caption opens on `^ ` alone (djot.js gates it on
+                    // nothing else), and the blank line the corpus examples
+                    // happen to show would have to carry the block prefix to
+                    // stay inside a quote or list item — an unprefixed one ends
+                    // the container, stranding the caption in a block of its
+                    // own.
+                    try self.writePrefix(ctx);
+                    try self.writer.writeAll("^ ");
+                    try self.renderInlineChildren(cid, ctx);
+                    try self.writer.writeByte('\n');
                 }
             },
             .reference => {},
@@ -683,6 +709,43 @@ test "serializeAlloc: each header in a multi-header table gets its own separator
         "| a | b |\n|:--|--:|\n| c | d |\n| cc | dd |\n|--:|:-:|\n| e | f |\n",
         out,
     );
+}
+
+test "serializeAlloc: a table caption is written back after the table" {
+    var doc = try djot.parse(testing.allocator, "| a |\n|---|\n\n^ With a _caption_\nand another line.\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("| a |\n|---|\n^ With a _caption_\nand another line.\n", out);
+}
+
+test "serializeAlloc: a captionless table gets no stray `^` line" {
+    // The parser leaves an empty `caption` child on every table, so emitting
+    // one unconditionally would append a bare `^ ` to every table in existence.
+    var doc = try djot.parse(testing.allocator, "| a |\n|---|\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("| a |\n|---|\n", out);
+}
+
+test "serializeAlloc: a nested table's caption keeps its block prefix" {
+    var doc = try djot.parse(testing.allocator, "> | a |\n> |---|\n>\n> ^ Cap\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("> | a |\n> |---|\n> ^ Cap\n", out);
+
+    // The shape matters more than the bytes: an unprefixed line between the
+    // table and the `^` would end the quote, leaving the caption in a block
+    // quote of its own attached to no table at all — which still LOOKS like
+    // reasonable djot, so only the reparse catches it.
+    var again = try djot.parse(testing.allocator, out);
+    defer again.deinit();
+    const rendered = try @import("html.zig").renderAlloc(testing.allocator, &again, .{});
+    defer testing.allocator.free(rendered);
+    try testing.expect(std.mem.indexOf(u8, rendered, "<caption>Cap</caption>") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "<blockquote>\n</blockquote>") == null);
 }
 
 test "serializeAlloc: a table that opens with a separator keeps its alignment" {
