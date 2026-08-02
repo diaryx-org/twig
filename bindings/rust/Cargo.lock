@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "twig-doc"
-version = "2.6.0"
+version = "2.7.0"
 dependencies = [
  "twig-sys",
 ]
 
 [[package]]
 name = "twig-sys"
-version = "2.6.0"
+version = "2.7.0"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -22,20 +22,20 @@ dependencies = [
 
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
-version = "2.6.0"
+version = "2.7.0"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
-version = "2.6.0"
+version = "2.7.0"
 
 [[package]]
 name = "twig-sys-macos-arm64"
-version = "2.6.0"
+version = "2.7.0"
 
 [[package]]
 name = "twig-sys-wasm32"
-version = "2.6.0"
+version = "2.7.0"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
-version = "2.6.0"
+version = "2.7.0"
