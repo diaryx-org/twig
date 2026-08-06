@@ -1,11 +1,15 @@
 name: Homebrew
 # Release the `twig` CLI to Homebrew. Mirrors fig's homebrew.yml (twig is a
-# sister project, also built with Zig). Three jobs:
+# sister project, also built with Zig). Four jobs:
 # 1. build separate macOS binaries (arm64, x86_64) and
 # 2. separate Linux binaries (x86_64, aarch64), both with the pinned Zig
 #    toolchain, and attach them to this repo's GitHub Release, then
 # 3. render the formula (inlined below, in the `bump-formula` job) with the
 #    release's version + checksums, and push it to the tap repo.
+# 4. build a wasm32-wasi binary and attach it to the same Release. Not part of
+#    the Homebrew formula (brew doesn't run wasm) — just a portable download
+#    for any WASI runtime (wasmtime, wasmer, ...), so it doesn't block or feed
+#    `bump-formula`.
 #
 # Per-arch (not universal/lipo'd) binaries: smaller downloads per user, and it
 # keeps macOS and Linux symmetric — both platforms resolve arch the same way in
@@ -80,6 +84,23 @@ jobs:
         files: |
           twig-linux-x86_64.tar.gz
           twig-linux-aarch64.tar.gz
+  wasi-binary:
+    name: Build + attach WASI binary
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+    - uses: actions/checkout@v7
+    - uses: mlugg/setup-zig@v2
+      with: { version: "0.16.0" }
+    - name: Build wasm32-wasi
+      run: |
+        zig build -Doptimize=ReleaseFast -Dtarget=wasm32-wasi --prefix zig-out/wasi
+        cp zig-out/wasi/bin/twig.wasm twig-wasi.wasm
+    - name: Attach to the GitHub Release
+      uses: softprops/action-gh-release@v3
+      with:
+        tag_name: ${{ github.ref_name }}
+        files: twig-wasi.wasm
   bump-formula:
     name: Bump tap formula
     runs-on: ubuntu-latest
