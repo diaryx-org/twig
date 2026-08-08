@@ -555,7 +555,7 @@ fn buildQueryMatches(
             else
                 .{ .start = 0, .end = 0 },
             .has_content_span = if (m.content_span != null) 1 else 0,
-            .kind = @tagName(std.meta.activeTag(ast.nodes[m.id].kind)).ptr,
+            .kind = kindNameZ(ast.nodes[m.id].kind),
         };
     }
     return buf;
@@ -1007,7 +1007,7 @@ fn changeC(c: twig.Splicer.Change) TwigChange {
 
 /// The node's static kind-tag name, matching `TwigQueryMatch.kind`.
 fn kindName(node: *const twig.AST.Node) [*:0]const u8 {
-    return @tagName(std.meta.activeTag(node.kind)).ptr;
+    return kindNameZ(node.kind);
 }
 
 /// The name a kind carries in its own payload rather than in `kind`: a generic
@@ -1017,10 +1017,28 @@ fn kindName(node: *const twig.AST.Node) [*:0]const u8 {
 /// — `kindName` reports every element as `"element"` and every directive as
 /// `"directive"`, so without this a consumer cannot tell a `::embed` from a
 /// `::toc`. Borrows the AST-owned name payload.
+/// The node's kind name as a NUL-terminated C string.
+///
+/// Not `@tagName(activeTag(kind))`: the nine `InlineMark`s share the
+/// `inline_mark` tag, and the ABI's published vocabulary says `"emph"` /
+/// `"strong"`. The nested switch keeps both `@tagName` results sentinel-
+/// terminated literals (so `.ptr` is a valid `[*:0]const u8`) and stays
+/// exhaustive, so a tenth mark fails this build too.
+fn kindNameZ(kind: twig.AST.Node.Kind) [*:0]const u8 {
+    return switch (kind) {
+        .inline_mark => |m| switch (m) {
+            inline else => |mm| @tagName(mm).ptr,
+        },
+        .text_leaf => |l| switch (l.kind) {
+            inline else => |lk| @tagName(lk).ptr,
+        },
+        inline else => |_, tag| @tagName(tag).ptr,
+    };
+}
+
 fn kindElementName(node: *const twig.AST.Node) ?[]const u8 {
     return switch (node.kind) {
-        .element => |e| e.name,
-        .directive => |d| d.name,
+        .container => |c| c.name,
         else => null,
     };
 }
@@ -1032,11 +1050,11 @@ fn kindElementName(node: *const twig.AST.Node) ?[]const u8 {
 /// block as a leaf, and a wrapper as a container.
 fn kindDirectiveForm(node: *const twig.AST.Node) c_int {
     return switch (node.kind) {
-        .directive => |d| @intFromEnum(switch (d.form) {
-            .text => TwigDirectiveForm.text,
-            .leaf => TwigDirectiveForm.leaf,
-            .container => TwigDirectiveForm.container,
-        }),
+        .container => |c| if (c.form) |f| @intFromEnum(switch (f) {
+            .inline_text => TwigDirectiveForm.text,
+            .block_leaf => TwigDirectiveForm.leaf,
+            .block_fenced => TwigDirectiveForm.container,
+        }) else TWIG_DIRECTIVE_NONE,
         else => TWIG_DIRECTIVE_NONE,
     };
 }
@@ -1079,7 +1097,8 @@ fn kindAlignment(node: *const twig.AST.Node) c_int {
 /// or `null` for kinds that carry none. Borrows the AST-owned payload.
 fn kindText(node: *const twig.AST.Node) ?[]const u8 {
     return switch (node.kind) {
-        .str, .symb, .verbatim, .inline_math, .display_math, .url, .email, .footnote_reference => |s| s,
+        .str => |s| s,
+        .text_leaf => |l| l.text,
         .comment, .doctype, .cdata => |s| s,
         // Each payload is a distinct anonymous struct type, so Zig can't merge
         // these captures into one prong — but each exposes a `.text` field.
@@ -2156,7 +2175,10 @@ fn voidKind(kind: c_int) ?twig.AST.Node.Kind {
         @intFromEnum(TwigNodeKind.para) => .para,
         @intFromEnum(TwigNodeKind.thematic_break) => .thematic_break,
         @intFromEnum(TwigNodeKind.section) => .section,
-        @intFromEnum(TwigNodeKind.div) => .div,
+        // `div`/`span` are no longer kinds of their own; the legacy codes
+        // still build what they always built, now spelled as a `container`.
+        @intFromEnum(TwigNodeKind.div) => .{ .container = .{ .name = "div", .form = .block_fenced } },
+        @intFromEnum(TwigNodeKind.span) => .{ .container = .{ .name = "span", .form = .inline_text } },
         @intFromEnum(TwigNodeKind.block_quote) => .block_quote,
         @intFromEnum(TwigNodeKind.definition_list) => .definition_list,
         @intFromEnum(TwigNodeKind.table) => .table,
@@ -2168,16 +2190,15 @@ fn voidKind(kind: c_int) ?twig.AST.Node.Kind {
         @intFromEnum(TwigNodeKind.soft_break) => .soft_break,
         @intFromEnum(TwigNodeKind.hard_break) => .hard_break,
         @intFromEnum(TwigNodeKind.non_breaking_space) => .non_breaking_space,
-        @intFromEnum(TwigNodeKind.emph) => .emph,
-        @intFromEnum(TwigNodeKind.strong) => .strong,
-        @intFromEnum(TwigNodeKind.span) => .span,
-        @intFromEnum(TwigNodeKind.mark) => .mark,
-        @intFromEnum(TwigNodeKind.superscript) => .superscript,
-        @intFromEnum(TwigNodeKind.subscript) => .subscript,
-        @intFromEnum(TwigNodeKind.insert) => .insert,
-        @intFromEnum(TwigNodeKind.delete) => .delete,
-        @intFromEnum(TwigNodeKind.double_quoted) => .double_quoted,
-        @intFromEnum(TwigNodeKind.single_quoted) => .single_quoted,
+        @intFromEnum(TwigNodeKind.emph) => .{ .inline_mark = .emph },
+        @intFromEnum(TwigNodeKind.strong) => .{ .inline_mark = .strong },
+        @intFromEnum(TwigNodeKind.mark) => .{ .inline_mark = .mark },
+        @intFromEnum(TwigNodeKind.superscript) => .{ .inline_mark = .superscript },
+        @intFromEnum(TwigNodeKind.subscript) => .{ .inline_mark = .subscript },
+        @intFromEnum(TwigNodeKind.insert) => .{ .inline_mark = .insert },
+        @intFromEnum(TwigNodeKind.delete) => .{ .inline_mark = .delete },
+        @intFromEnum(TwigNodeKind.double_quoted) => .{ .inline_mark = .double_quoted },
+        @intFromEnum(TwigNodeKind.single_quoted) => .{ .inline_mark = .single_quoted },
         else => null,
     };
 }
@@ -2207,13 +2228,13 @@ pub export fn twig_builder_add_text(
     const text = sliceOf(text_ptr, text_len) orelse return .invalid_argument;
     const node_kind: twig.AST.Node.Kind = switch (kind) {
         @intFromEnum(TwigNodeKind.str) => .{ .str = text },
-        @intFromEnum(TwigNodeKind.symb) => .{ .symb = text },
-        @intFromEnum(TwigNodeKind.verbatim) => .{ .verbatim = text },
-        @intFromEnum(TwigNodeKind.inline_math) => .{ .inline_math = text },
-        @intFromEnum(TwigNodeKind.display_math) => .{ .display_math = text },
-        @intFromEnum(TwigNodeKind.url) => .{ .url = text },
-        @intFromEnum(TwigNodeKind.email) => .{ .email = text },
-        @intFromEnum(TwigNodeKind.footnote_reference) => .{ .footnote_reference = text },
+        @intFromEnum(TwigNodeKind.symb) => .{ .text_leaf = .{ .kind = .symb, .text = text } },
+        @intFromEnum(TwigNodeKind.verbatim) => .{ .text_leaf = .{ .kind = .verbatim, .text = text } },
+        @intFromEnum(TwigNodeKind.inline_math) => .{ .text_leaf = .{ .kind = .inline_math, .text = text } },
+        @intFromEnum(TwigNodeKind.display_math) => .{ .text_leaf = .{ .kind = .display_math, .text = text } },
+        @intFromEnum(TwigNodeKind.url) => .{ .text_leaf = .{ .kind = .url, .text = text } },
+        @intFromEnum(TwigNodeKind.email) => .{ .text_leaf = .{ .kind = .email, .text = text } },
+        @intFromEnum(TwigNodeKind.footnote_reference) => .{ .text_leaf = .{ .kind = .footnote_reference, .text = text } },
         @intFromEnum(TwigNodeKind.comment) => .{ .comment = text },
         @intFromEnum(TwigNodeKind.doctype) => .{ .doctype = text },
         @intFromEnum(TwigNodeKind.cdata) => .{ .cdata = text },
@@ -2353,11 +2374,11 @@ pub export fn twig_builder_add_image(
     return emitNode(out_id, handle.builder.addNode(.{ .image = .{ .destination = dest, .reference = ref } }));
 }
 
-fn directiveFormOf(form: c_int) ?twig.AST.DirectiveForm {
+fn directiveFormOf(form: c_int) ?twig.AST.Form {
     return switch (form) {
-        @intFromEnum(TwigDirectiveForm.text) => .text,
-        @intFromEnum(TwigDirectiveForm.leaf) => .leaf,
-        @intFromEnum(TwigDirectiveForm.container) => .container,
+        @intFromEnum(TwigDirectiveForm.text) => .inline_text,
+        @intFromEnum(TwigDirectiveForm.leaf) => .block_leaf,
+        @intFromEnum(TwigDirectiveForm.container) => .block_fenced,
         else => null,
     };
 }
@@ -2372,7 +2393,7 @@ pub export fn twig_builder_add_directive(
     const handle = asBuilder(b orelse return .invalid_argument);
     const f = directiveFormOf(form) orelse return .invalid_argument;
     const name = sliceOf(name_ptr, name_len) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .directive = .{ .form = f, .name = name } }));
+    return emitNode(out_id, handle.builder.addNode(.{ .container = .{ .form = f, .name = name } }));
 }
 
 pub export fn twig_builder_add_element(
@@ -2383,7 +2404,7 @@ pub export fn twig_builder_add_element(
 ) TwigStatus {
     const handle = asBuilder(b orelse return .invalid_argument);
     const name = sliceOf(name_ptr, name_len) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .element = .{ .name = name } }));
+    return emitNode(out_id, handle.builder.addNode(.{ .container = .{ .name = name } }));
 }
 
 pub export fn twig_builder_add_processing_instruction(

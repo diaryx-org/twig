@@ -52,12 +52,33 @@ pub const Splicer = @import("splicer.zig").Splicer;
 const Syntax = syntax_mod.Syntax;
 const ContainerSpelling = syntax_mod.ContainerSpelling;
 
-/// The `Node.Kind` tag an `InlineKind`/`ContainerKind` parses back as. The
-/// vocabularies are named for their kinds, so this is a rename, not a mapping —
-/// and it fails to compile rather than silently mis-mapping if one drifts.
-fn kindTag(kind: anytype) Splicer.KindTag {
+/// The node an `InlineKind`/`ContainerKind` parses back as. The vocabularies
+/// are named for their kinds, so this is a rename, not a mapping — and it fails
+/// to compile rather than silently mis-mapping if one drifts.
+///
+/// It yields an `AST.KindRef` rather than a bare tag because seven of the eight
+/// `InlineKind`s are now `InlineMark` family members sharing the `inline_mark`
+/// tag; only `verbatim` (a text leaf, not a paired wrapper) is still a tag of
+/// its own. The `@hasField` split is resolved at comptime, so a vocabulary
+/// entry that matches NEITHER a mark nor a kind tag is still a compile error.
+fn kindRef(kind: anytype) AST.KindRef {
     return switch (kind) {
-        inline else => |k| @field(Splicer.KindTag, @tagName(k)),
+        inline else => |k| if (@hasField(AST.InlineMark, @tagName(k)))
+            .{ .mark = @field(AST.InlineMark, @tagName(k)) }
+        else if (@hasField(AST.TextLeafKind, @tagName(k)))
+            .{ .text_leaf = @field(AST.TextLeafKind, @tagName(k)) }
+        else
+            .{ .tag = @field(Splicer.KindTag, @tagName(k)) },
+    };
+}
+
+/// `kindRef` for a vocabulary that is always a plain tag (`ContainerKind`) —
+/// asserts that at comptime rather than leaving the caller to unwrap.
+fn kindTag(kind: anytype) Splicer.KindTag {
+    return switch (kindRef(kind)) {
+        .tag => |t| t,
+        .text_leaf => unreachable,
+        .mark => unreachable,
     };
 }
 
@@ -153,7 +174,7 @@ pub const Editor = struct {
     /// the inline toolbar (always adds a mark).
     pub fn wrapRange(self: *Editor, span: Span, kind: InlineKind) Error!void {
         try self.checkRange(span.start, span.end);
-        const d = self.syntax.inline_delims.get(kind) orelse return error.UnsupportedFormat;
+        const d = self.syntax.authorableDelimsFor(kindRef(kind)) orelse return error.UnsupportedFormat;
         self.splicer.wrapRange(span, d.open, d.close) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.EditConflict,
@@ -165,8 +186,8 @@ pub const Editor = struct {
     /// rich editor's Cmd-B.
     pub fn toggleInline(self: *Editor, span: Span, kind: InlineKind) Error!void {
         try self.checkRange(span.start, span.end);
-        const d = self.syntax.inline_delims.get(kind) orelse return error.UnsupportedFormat;
-        self.splicer.toggleInline(span, kindTag(kind), d.open, d.close) catch |err| switch (err) {
+        const d = self.syntax.authorableDelimsFor(kindRef(kind)) orelse return error.UnsupportedFormat;
+        self.splicer.toggleInline(span, kindRef(kind), d.open, d.close) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.NoNodeSpan, error.NoContentSpan => return error.NotEditable,
             else => return error.EditConflict,
@@ -521,8 +542,11 @@ pub const Editor = struct {
             // destination, so keeping it would spell the new link with the URL it
             // was meant to replace. Empty text sends it through the canonical
             // spelling below, exactly as a caret on bare text goes.
-            text = switch (std.meta.activeTag(node.kind)) {
-                .url, .email => "",
+            text = switch (node.kind) {
+                // An autolink's visible text IS its destination; the caller
+                // supplies that, so the node contributes nothing.
+                .text_leaf => |l| if (l.kind == .url or l.kind == .email) "" else
+                    if (node.content_span) |cs| src[cs.start..cs.end] else "",
                 else => if (node.content_span) |cs| src[cs.start..cs.end] else "",
             };
             target = node.span;
@@ -734,7 +758,7 @@ fn coveredBlocks(
     // Climb to the nearest ancestor that holds blocks: the deepest shared node
     // may be an inline (a `str`), and a container wraps blocks, not words.
     var p = i;
-    while (p > 0 and !locate.isBlockParent(std.meta.activeTag(ast.nodes[chain_a.items[p]].kind))) p -= 1;
+    while (p > 0 and !locate.isBlockParent(ast.nodes[chain_a.items[p]].kind)) p -= 1;
 
     if (p + 1 >= chain_a.items.len) return error.NoBlock;
     const first = chain_a.items[p + 1];
@@ -1175,7 +1199,9 @@ fn writeLiteral(
 /// picking one kind per format would miss half the autolinks it was meant to
 /// catch.
 fn autolinkCovering(ast: *const AST, chain: []const AST.Node.Id, start: usize, end: usize) ?AST.Node.Id {
-    return locate.innermostCovering(ast, chain, &.{ .url, .email }, start, end);
+    const id = locate.innermostCovering(ast, chain, &.{.text_leaf}, start, end) orelse return null;
+    const l = ast.nodes[id].kind.text_leaf;
+    return if (l.kind == .url or l.kind == .email) id else null;
 }
 
 /// Whether writing at `pos` would land STRICTLY INSIDE an autolink's URL — an

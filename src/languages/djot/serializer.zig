@@ -4,6 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
+const dj_syntax = @import("syntax.zig");
 const Document = djot.Document;
 const AST = djot.AST;
 const Node = AST.Node;
@@ -314,7 +315,7 @@ const Renderer = struct {
                 const p = Prefix{ .parent = ctx.prefix, .segment = "> " };
                 try self.renderBlocks(id, .{ .prefix = &p }, true);
             },
-            .div => {
+            .container => {
                 try self.writePrefix(ctx);
                 try self.writer.writeAll(":::");
                 if (self.ast.attrsOf(id).entries.len > 0) {
@@ -503,8 +504,53 @@ const Renderer = struct {
                 try self.writePrefix(ctx);
             },
             .non_breaking_space => try self.writer.writeAll("\\ "),
-            .symb => |s| try self.writer.print(":{s}:", .{s}),
-            .verbatim => |v| try self.writeTickFenced(v),
+            // Delimiters come from `dj_syntax.table`, NOT from a switch here. The
+            // hand-written copy this replaces had DRIFTED: it spelled `mark` as
+            // `=x=` while the table said `{=`/`=}`, so a djot mark did not
+            // survive a round-trip. One table, one answer.
+            //
+            // `text_leaf` is deliberately NOT folded in with it: a verbatim's
+            // fence WIDENS to clear backticks in its own content (`` ` `` needs
+            // `` `` ` `` ``), and djot's math wraps a verbatim that widens with
+            // it. `Delims` is a fixed byte pair and cannot say that, so those
+            // keep the arm below — the table is necessary but not sufficient
+            // for them, and pretending otherwise silently corrupted output.
+            .inline_mark => |m| {
+                const d = dj_syntax.table.delimsFor(.{ .mark = m }) orelse return;
+                try self.writer.writeAll(d.open);
+                try self.renderInlineChildren(id, ctx);
+                try self.writer.writeAll(d.close);
+            },
+            .text_leaf => |leaf| switch (leaf.kind) {
+                .symb => {
+                    const s = leaf.text;
+                    try self.writer.print(":{s}:", .{s});
+                },
+                .verbatim => {
+                    const v = leaf.text;
+                    try self.writeTickFenced(v);
+                },
+                .inline_math => {
+                    const m = leaf.text;
+                    try self.writer.print("${s}$", .{m});
+                },
+                .display_math => {
+                    const m = leaf.text;
+                    try self.writer.print("$$\n{s}\n$$", .{m});
+                },
+                .url => {
+                    const u = leaf.text;
+                    try self.writer.print("<{s}>", .{u});
+                },
+                .email => {
+                    const e = leaf.text;
+                    try self.writer.print("<{s}>", .{e});
+                },
+                .footnote_reference => {
+                    const lab = leaf.text;
+                    try self.writer.print("[^{s}]", .{lab});
+                },
+            },
             // Djot spells raw inline content `` `<br>`{=html} ``. Writing the
             // bare text instead loses the raw-ness silently: it reparses as
             // ordinary characters and comes back HTML-escaped. A formatless
@@ -513,22 +559,9 @@ const Renderer = struct {
                 try self.writeTickFenced(r.text);
                 if (r.format.len > 0) try self.writer.print("{{={s}}}", .{r.format});
             },
-            .inline_math => |m| try self.writer.print("${s}$", .{m}),
-            .display_math => |m| try self.writer.print("$$\n{s}\n$$", .{m}),
-            .url => |u| try self.writer.print("<{s}>", .{u}),
-            .email => |e| try self.writer.print("<{s}>", .{e}),
-            .footnote_reference => |lab| try self.writer.print("[^{s}]", .{lab}),
             .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
-            .emph => {
-                try self.writer.writeByte('_');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('_');
-            },
-            .strong => {
-                try self.writer.writeByte('*');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('*');
-            },
+            // One arm, still exhaustive over `InlineMark`: a tenth mark fails
+            // THIS build (where spelling lives) and no other.
             .link => |l| {
                 try self.writer.writeByte('[');
                 try self.renderInlineChildren(id, ctx);
@@ -541,46 +574,11 @@ const Renderer = struct {
                 try self.writer.writeByte(']');
                 if (im.destination) |dest| try self.writer.print("({s})", .{dest}) else if (im.reference) |lab| try self.writer.print("[{s}]", .{lab});
             },
-            .span => {
+            .container => {
                 try self.writer.writeByte('[');
                 try self.renderInlineChildren(id, ctx);
                 try self.writer.writeByte(']');
                 try self.writeDjotAttrs(id);
-            },
-            .mark => {
-                try self.writer.writeByte('=');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('=');
-            },
-            .superscript => {
-                try self.writer.writeByte('^');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('^');
-            },
-            .subscript => {
-                try self.writer.writeByte('~');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('~');
-            },
-            .insert => {
-                try self.writer.writeAll("{+");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("+}");
-            },
-            .delete => {
-                try self.writer.writeAll("{-");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("-}");
-            },
-            .double_quoted => {
-                try self.writer.writeByte('"');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('"');
-            },
-            .single_quoted => {
-                try self.writer.writeByte('\'');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('\'');
             },
             else => try self.renderInlineChildren(id, ctx),
         }

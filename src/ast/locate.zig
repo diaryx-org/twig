@@ -98,9 +98,26 @@ pub fn innermostBlock(ast: *const AST, offset: usize, source_len: usize) ?AST.No
 
 /// True for a node whose children are blocks — the level a container op works
 /// at. Everything else (a `para`, a `heading`) holds inlines.
-pub fn isBlockParent(tag: KindTag) bool {
-    return switch (tag) {
-        .doc, .block_quote, .list_item, .task_list_item, .div, .section => true,
+///
+/// ── Why this is NOT `AST.contentModel(kind) == .blocks` ────────────────────
+/// It looks like it should be, and it was written that way first. It is not,
+/// because a container gesture prefixes whole LINES, and "may hold blocks" does
+/// not imply "its children each own their lines". A table `cell` may hold
+/// blocks — HTML's `<td><p>x</p></td>` does — but a row's cells SHARE one line,
+/// so treating a cell as a block parent makes the quote gesture wrap the header
+/// row and not the separator under it:
+///
+///     | c | d |          > | c | d |
+///     |---|---|    ->    |---|---|      <- broken table, not a quoted one
+///
+/// against the correct whole-table wrap the list below produces. The full test
+/// suite passes either way, so this is deliberately a hand-kept list of the
+/// LINE-OWNING containers, not a derivation. Adding a kind here means asserting
+/// its children each start on their own line.
+pub fn isBlockParent(kind: AST.Node.Kind) bool {
+    return switch (kind) {
+        .doc, .block_quote, .list_item, .task_list_item, .section => true,
+        .container => |c| if (c.form) |f| f.isBlockForm() else false,
         else => false,
     };
 }

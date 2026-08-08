@@ -259,7 +259,7 @@ pub const Parser = struct {
         }
         if (std.mem.eql(u8, name, "div")) {
             children.* = self.dropFormattingWhitespace(children.*);
-            return .div;
+            return .{ .container = .{ .name = "div", .form = .block_fenced } };
         }
         // These are structural containers with no Djot syntax of their own;
         // `section` renders its children directly in the Djot serializer.
@@ -304,14 +304,14 @@ pub const Parser = struct {
                 .alignment = cellAlignment(attrs),
             } };
         }
-        if (std.mem.eql(u8, name, "em") or std.mem.eql(u8, name, "i")) return .emph;
-        if (std.mem.eql(u8, name, "strong") or std.mem.eql(u8, name, "b")) return .strong;
-        if (std.mem.eql(u8, name, "mark")) return .mark;
-        if (std.mem.eql(u8, name, "ins")) return .insert;
-        if (std.mem.eql(u8, name, "del") or std.mem.eql(u8, name, "s")) return .delete;
-        if (std.mem.eql(u8, name, "sup")) return .superscript;
-        if (std.mem.eql(u8, name, "sub")) return .subscript;
-        if (std.mem.eql(u8, name, "span")) return .span;
+        if (std.mem.eql(u8, name, "em") or std.mem.eql(u8, name, "i")) return .{ .inline_mark = .emph };
+        if (std.mem.eql(u8, name, "strong") or std.mem.eql(u8, name, "b")) return .{ .inline_mark = .strong };
+        if (std.mem.eql(u8, name, "mark")) return .{ .inline_mark = .mark };
+        if (std.mem.eql(u8, name, "ins")) return .{ .inline_mark = .insert };
+        if (std.mem.eql(u8, name, "del") or std.mem.eql(u8, name, "s")) return .{ .inline_mark = .delete };
+        if (std.mem.eql(u8, name, "sup")) return .{ .inline_mark = .superscript };
+        if (std.mem.eql(u8, name, "sub")) return .{ .inline_mark = .subscript };
+        if (std.mem.eql(u8, name, "span")) return .{ .container = .{ .name = "span", .form = .inline_text } };
         if (std.mem.eql(u8, name, "a")) {
             if (attrValue(attrs, "href")) |destination|
                 return .{ .link = .{ .destination = destination, .reference = null } };
@@ -332,22 +332,22 @@ pub const Parser = struct {
         }
         if (std.mem.eql(u8, name, "code") and children.*.len == 1) {
             switch (self.builder.nodes.items[children.*[0]].kind) {
-                .str => |text| return .{ .verbatim = text },
+                .str => |text| return .{ .text_leaf = .{ .kind = .verbatim, .text = text } },
                 else => {},
             }
         }
         if (std.mem.eql(u8, name, "pre") and children.*.len == 1) {
             const child = children.*[0];
             switch (self.builder.nodes.items[child].kind) {
-                .verbatim => |text| {
+                .text_leaf => |l| if (l.kind == .verbatim) {
                     const class = self.builderAttrs(child).get("class") orelse "";
                     const lang = languageFromClass(class);
-                    return .{ .code_block = .{ .lang = lang, .text = text } };
+                    return .{ .code_block = .{ .lang = lang, .text = l.text } };
                 },
                 else => {},
             }
         }
-        return .{ .element = .{ .name = name } };
+        return .{ .container = .{ .name = name } };
     }
 
     /// `<thead>`/`<tbody>`/`<tfoot>` have no counterpart in the shared table
@@ -382,9 +382,9 @@ pub const Parser = struct {
 
     fn isRowGroup(self: *const Parser, id: Node.Id) bool {
         return switch (self.builder.nodes.items[id].kind) {
-            .element => |e| std.mem.eql(u8, e.name, "thead") or
-                std.mem.eql(u8, e.name, "tbody") or
-                std.mem.eql(u8, e.name, "tfoot"),
+            .container => |c| std.mem.eql(u8, c.name, "thead") or
+                std.mem.eql(u8, c.name, "tbody") or
+                std.mem.eql(u8, c.name, "tfoot"),
             else => false,
         };
     }
@@ -482,7 +482,7 @@ pub const Parser = struct {
 
     fn isBlockKind(self: *const Parser, id: Node.Id) bool {
         return switch (self.builder.nodes.items[id].kind) {
-            .para, .heading, .thematic_break, .section, .div, .code_block, .block_quote, .bullet_list, .ordered_list, .task_list, .definition_list, .table, .list_item, .task_list_item, .definition_list_item, .term, .definition => true,
+            .para, .heading, .thematic_break, .section, .container, .code_block, .block_quote, .bullet_list, .ordered_list, .task_list, .definition_list, .table, .list_item, .task_list_item, .definition_list_item, .term, .definition => true,
             else => false,
         };
     }
@@ -753,7 +753,7 @@ test "HTML parser maps block markup and decodes character references" {
     const div = ast.nodes[doctype].next_sibling.?;
     const text = ast.nodes[div].first_child.?;
     try testing.expectEqualStrings(" html", ast.nodes[doctype].kind.doctype);
-    try testing.expect(ast.nodes[div].kind == .div);
+    try testing.expectEqualStrings("div", ast.nodes[div].kind.container.name);
     try testing.expectEqualStrings("x", ast.attrsOf(div).get("class").?);
     try testing.expect(ast.attrsOf(div).find("disabled").?.value == null);
     try testing.expectEqualStrings("Hi & 🙂", ast.nodes[text].kind.str);
@@ -842,7 +842,7 @@ test "HTML parser closes li and p implicitly and keeps script raw" {
     try testing.expect(ast.nodes[first_li].kind == .list_item);
     try testing.expect(ast.nodes[second_li].kind == .list_item);
     try testing.expect(ast.nodes[p].kind == .para);
-    try testing.expect(ast.nodes[div].kind == .div);
+    try testing.expectEqualStrings("div", ast.nodes[div].kind.container.name);
     const script_text = ast.nodes[script].first_child.?;
     try testing.expectEqualStrings("a < b &amp;", ast.nodes[script_text].kind.str);
 }

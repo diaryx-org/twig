@@ -56,7 +56,7 @@ fn writeNode(w: *Stringify, ast: *const AST, id: Node.Id) Writer.Error!void {
     try w.beginObject();
 
     try w.objectField("kind");
-    try w.write(@tagName(node.kind));
+    try w.write(AST.kindName(node.kind));
 
     try w.objectField("span");
     try w.beginArray();
@@ -112,7 +112,6 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .para,
         .thematic_break,
         .section,
-        .div,
         .block_quote,
         .definition_list,
         .table,
@@ -124,16 +123,9 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .soft_break,
         .hard_break,
         .non_breaking_space,
-        .emph,
-        .strong,
-        .span,
-        .mark,
-        .superscript,
-        .subscript,
-        .insert,
-        .delete,
-        .double_quoted,
-        .single_quoted,
+        // `inline_mark`'s family member is already reported as the node's
+        // `kind` name (see `AST.kindName`), so it needs no payload field.
+        .inline_mark,
         => {},
 
         .heading => |h| {
@@ -206,39 +198,17 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.objectField("text");
             try w.write(s);
         },
-        .symb => |s| {
+        // The seven text leaves report their family member as the node's
+        // `kind` name (see `AST.kindName`), so one arm serves all of them.
+        .text_leaf => |l| {
             try w.objectField("text");
-            try w.write(s);
-        },
-        .verbatim => |s| {
-            try w.objectField("text");
-            try w.write(s);
+            try w.write(l.text);
         },
         .raw_inline => |r| {
             try w.objectField("format");
             try w.write(r.format);
             try w.objectField("text");
             try w.write(r.text);
-        },
-        .inline_math => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .display_math => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .url => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .email => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .footnote_reference => |s| {
-            try w.objectField("label");
-            try w.write(s);
         },
         .smart_punctuation => |sp| {
             try w.objectField("punctuation_kind");
@@ -258,15 +228,13 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.objectField("reference");
             try w.write(l.reference);
         },
-        .directive => |d| {
+        .container => |c| {
+            try w.objectField("name");
+            try w.write(c.name);
             try w.objectField("form");
-            try w.write(d.form);
-            try w.objectField("name");
-            try w.write(d.name);
-        },
-        .element => |e| {
-            try w.objectField("name");
-            try w.write(e.name);
+            try w.write(c.form);
+            try w.objectField("argument");
+            try w.write(c.argument);
         },
         .comment => |s| {
             try w.objectField("text");
@@ -323,7 +291,7 @@ test "encode: container node nests children in source order" {
     defer b.deinit();
     const a = try b.addLeaf(.{ .str = "a" });
     const em_text = try b.addLeaf(.{ .str = "b" });
-    const em = try b.addContainer(.emph, &.{em_text});
+    const em = try b.addContainer(.{ .inline_mark = .emph }, &.{em_text});
     const para = try b.addContainer(.para, &.{ a, em });
 
     var ast = try b.finish(para);
@@ -349,7 +317,7 @@ test "encode: container node nests children in source order" {
 test "encode: attrs render as ordered key/value pairs, bare attrs get a null value" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "input" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "input" } });
     try b.setAttrs(el, .{ .entries = &.{
         .{ .key = "disabled", .value = null },
         .{ .key = "type", .value = "checkbox" },
@@ -365,7 +333,7 @@ test "encode: attrs render as ordered key/value pairs, bare attrs get a null val
     defer parsed.deinit();
     const obj = parsed.value.object;
 
-    try testing.expectEqualStrings("element", obj.get("kind").?.string);
+    try testing.expectEqualStrings("container", obj.get("kind").?.string);
     try testing.expectEqualStrings("input", obj.get("name").?.string);
     const attrs = obj.get("attrs").?.array;
     try testing.expectEqual(@as(usize, 2), attrs.items.len);

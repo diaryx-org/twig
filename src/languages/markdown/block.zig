@@ -1196,7 +1196,7 @@ pub const Parser = struct {
         }
         if (c.kind == .directive) {
             const id = try self.builder.addContainer(
-                .{ .directive = .{ .form = .container, .name = c.directive_name } },
+                .{ .container = .{ .form = .block_fenced, .name = c.directive_name } },
                 c.children.items,
             );
             const syntactic = Span.init(self.lineStart(c.start_line), self.lineEnd(@min(c.end_line, line_idx)));
@@ -1831,7 +1831,7 @@ pub const Parser = struct {
 
     /// Index (on `self.stack`) of the innermost open container directive that
     /// a closing fence of `close_len` colons would close — i.e. the topmost
-    /// `.directive` whose own opening fence is no longer than `close_len`.
+    /// `.container` whose own opening fence is no longer than `close_len`.
     /// `null` if there is none (the fence is then just content).
     fn innermostDirectiveIndex(self: *Parser, close_len: usize) ?usize {
         var i = self.stack.items.len;
@@ -1904,7 +1904,7 @@ pub const Parser = struct {
         try self.maybeCloseTopList(idx, null);
         self.markListsLoose();
 
-        const kind: Node.Kind = .{ .directive = .{ .form = .leaf, .name = name } };
+        const kind: Node.Kind = .{ .container = .{ .form = .block_leaf, .name = name } };
         const id = if (label) |lab| blk: {
             const seg = self.singleSegment(lab);
             break :blk try self.addDeferredTextNode(kind, lab, &seg, idx, idx);
@@ -3087,7 +3087,7 @@ test "span: emphasis in a single-line paragraph covers its own delimiters" {
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "hi "
     const em = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[em].kind == .emph);
+    try testing.expect(r.ast.nodes[em].kind == .inline_mark and r.ast.nodes[em].kind.inline_mark == .emph);
     try testing.expectEqualStrings("*abc*", Span.of(u8, r.ast.nodes[em].span, src));
     try testing.expectEqualStrings("abc", Span.of(u8, r.ast.nodes[em].content_span.?, src));
 }
@@ -3101,7 +3101,7 @@ test "span: a code span includes its own backticks" {
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "x "
     const code = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[code].kind == .verbatim);
+    try testing.expect(r.ast.nodes[code].kind == .text_leaf and r.ast.nodes[code].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("`code`", Span.of(u8, r.ast.nodes[code].span, src));
 }
 
@@ -3135,7 +3135,7 @@ test "span: an inline node straddling a line-join gets the accurate source range
     const first = r.ast.nodes[para].first_child.?; // "a "
     try testing.expectEqualStrings("a ", Span.of(u8, r.ast.nodes[first].span, src));
     const em = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[em].kind == .emph);
+    try testing.expect(r.ast.nodes[em].kind == .inline_mark and r.ast.nodes[em].kind.inline_mark == .emph);
     // The emphasis covers `*b\nc*` in the source, newline and all.
     try testing.expectEqualStrings("*b\nc*", Span.of(u8, r.ast.nodes[em].span, src));
 }
@@ -3155,13 +3155,13 @@ test "span: a text directive's label is mapped even when it straddles a line-joi
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const lead = r.ast.nodes[para].first_child.?; // "x "
     const dir = r.ast.nodes[lead].next_sibling.?;
-    try testing.expect(r.ast.nodes[dir].kind == .directive);
+    try testing.expect(r.ast.nodes[dir].kind == .container);
 
     // Before the join: exact bytes on line 1.
     const first = r.ast.nodes[dir].first_child.?;
     try testing.expectEqualStrings("a ", Span.of(u8, r.ast.nodes[first].span, src));
     const em = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[em].kind == .emph);
+    try testing.expect(r.ast.nodes[em].kind == .inline_mark and r.ast.nodes[em].kind.inline_mark == .emph);
     try testing.expectEqualStrings("*b*", Span.of(u8, r.ast.nodes[em].span, src));
     // The join itself, then line 2's byte — which only the second (rebased)
     // segment maps, and which is the half a first-segment-only clip would lose.
@@ -3184,7 +3184,7 @@ test "span/content_span: a verbatim code span broken across two lines is mapped"
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "x "
     const v = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[v].kind == .verbatim);
+    try testing.expect(r.ast.nodes[v].kind == .text_leaf and r.ast.nodes[v].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("`a\nb`", Span.of(u8, r.ast.nodes[v].span, src));
     try testing.expectEqualStrings("a\nb", Span.of(u8, r.ast.nodes[v].content_span.?, src));
 }
@@ -3348,8 +3348,8 @@ fn findFirstKind(ast: *const AST, id: Node.Id, tag: std.meta.Tag(Node.Kind)) ?No
 fn findElementNamed(ast: *const AST, id: Node.Id, name: []const u8) ?Node.Id {
     var it = ast.children(id);
     while (it.next()) |child| {
-        if (std.meta.activeTag(child.kind) == .element and
-            std.mem.eql(u8, child.kind.element.name, name)) return child.id;
+        if (std.meta.activeTag(child.kind) == .container and
+            std.mem.eql(u8, child.kind.container.name, name)) return child.id;
         if (findElementNamed(ast, child.id, name)) |found| return found;
     }
     return null;
@@ -3424,8 +3424,8 @@ test "html_elements: the fig.md <picture> block parses into heading > picture > 
     const heading = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[heading].kind.heading.level == 1);
 
-    const picture = findFirstKind(&r.ast, r.ast.root, .element).?;
-    try testing.expectEqualStrings("picture", r.ast.nodes[picture].kind.element.name);
+    const picture = findFirstKind(&r.ast, r.ast.root, .container).?;
+    try testing.expectEqualStrings("picture", r.ast.nodes[picture].kind.container.name);
 
     // The `<source>`'s srcset survives on the generic element's attributes.
     const source = findElementNamed(&r.ast, picture, "source").?;
@@ -3449,8 +3449,8 @@ test "html_elements: a one-line <video> is a block, not a paragraph of raw HTML"
     defer r.link_references.deinit(testing.allocator);
     defer r.footnotes.deinit(testing.allocator);
 
-    const video = findFirstKind(&r.ast, r.ast.root, .element).?;
-    try testing.expectEqualStrings("video", r.ast.nodes[video].kind.element.name);
+    const video = findFirstKind(&r.ast, r.ast.root, .container).?;
+    try testing.expectEqualStrings("video", r.ast.nodes[video].kind.container.name);
     try testing.expectEqualStrings("clip.mp4", r.ast.attrsOf(video).get("src").?);
     try testing.expectEqualStrings("still.png", r.ast.attrsOf(video).get("poster").?);
 }
@@ -3462,8 +3462,8 @@ test "html_elements: a one-line <audio> is a block too" {
     defer r.link_references.deinit(testing.allocator);
     defer r.footnotes.deinit(testing.allocator);
 
-    const audio = findFirstKind(&r.ast, r.ast.root, .element).?;
-    try testing.expectEqualStrings("audio", r.ast.nodes[audio].kind.element.name);
+    const audio = findFirstKind(&r.ast, r.ast.root, .container).?;
+    try testing.expectEqualStrings("audio", r.ast.nodes[audio].kind.container.name);
     try testing.expectEqualStrings("take.mp3", r.ast.attrsOf(audio).get("src").?);
 }
 
@@ -3477,8 +3477,8 @@ test "html_elements: a one-line <picture> is a block, with its source and img" {
     defer r.link_references.deinit(testing.allocator);
     defer r.footnotes.deinit(testing.allocator);
 
-    const picture2 = findFirstKind(&r.ast, r.ast.root, .element).?;
-    try testing.expectEqualStrings("picture", r.ast.nodes[picture2].kind.element.name);
+    const picture2 = findFirstKind(&r.ast, r.ast.root, .container).?;
+    try testing.expectEqualStrings("picture", r.ast.nodes[picture2].kind.container.name);
     const source2 = findElementNamed(&r.ast, picture2, "source").?;
     try testing.expectEqualStrings("d.svg", r.ast.attrsOf(source2).get("srcset").?);
     const banner = findFirstKind(&r.ast, picture2, .image).?;
@@ -3496,7 +3496,7 @@ test "html_elements OFF: a one-line <video> keeps stock CommonMark parsing" {
 
     const first = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[first].kind == .para);
-    try testing.expect(findFirstKind(&r.ast, r.ast.root, .element) == null);
+    try testing.expect(findFirstKind(&r.ast, r.ast.root, .container) == null);
 }
 
 test "html_elements: an <img> amid prose stays an inline image" {
@@ -3525,7 +3525,7 @@ test "paragraph with a code span and a hard break" {
     var it = r.ast.children(para);
     _ = it.next().?; // "foo "
     const code = it.next().?;
-    try testing.expectEqualStrings("bar", code.kind.verbatim);
+    try testing.expectEqualStrings("bar", code.kind.text_leaf.text);
     const brk = it.next().?;
     try testing.expect(brk.kind == .hard_break);
 }
@@ -4074,9 +4074,9 @@ test "container directive: AST node kind/form/name/attrs" {
     defer r.link_references.deinit(testing.allocator);
     defer r.footnotes.deinit(testing.allocator);
     const dir = firstChild(r.ast, r.ast.root);
-    try testing.expect(r.ast.nodes[dir].kind == .directive);
-    try testing.expectEqual(AST.DirectiveForm.container, r.ast.nodes[dir].kind.directive.form);
-    try testing.expectEqualStrings("warning", r.ast.nodes[dir].kind.directive.name);
+    try testing.expect(r.ast.nodes[dir].kind == .container);
+    try testing.expectEqual(@as(?AST.Form, .block_fenced), r.ast.nodes[dir].kind.container.form);
+    try testing.expectEqualStrings("warning", r.ast.nodes[dir].kind.container.name);
     const para = firstChild(r.ast, dir);
     try testing.expect(r.ast.nodes[para].kind == .para);
 }
@@ -4109,8 +4109,8 @@ test "leaf directive: AST kind and no-label case" {
     defer r.link_references.deinit(testing.allocator);
     defer r.footnotes.deinit(testing.allocator);
     const dir = firstChild(r.ast, r.ast.root);
-    try testing.expect(r.ast.nodes[dir].kind == .directive);
-    try testing.expectEqual(AST.DirectiveForm.leaf, r.ast.nodes[dir].kind.directive.form);
+    try testing.expect(r.ast.nodes[dir].kind == .container);
+    try testing.expectEqual(@as(?AST.Form, .block_leaf), r.ast.nodes[dir].kind.container.form);
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[dir].first_child);
 }
 
@@ -4122,7 +4122,7 @@ test "container directive interrupts a paragraph" {
     const para = firstChild(r.ast, r.ast.root);
     try testing.expect(r.ast.nodes[para].kind == .para);
     const dir = r.ast.nodes[para].next_sibling.?;
-    try testing.expect(r.ast.nodes[dir].kind == .directive);
+    try testing.expect(r.ast.nodes[dir].kind == .container);
 }
 
 test "unterminated container directive stays open to end of document" {
@@ -4137,7 +4137,7 @@ test "directives OFF: colon-fence lines are ordinary paragraphs" {
     defer r.link_references.deinit(testing.allocator);
     defer r.footnotes.deinit(testing.allocator);
     // Everything is one paragraph; no directive node anywhere.
-    for (r.ast.nodes) |n| try testing.expect(n.kind != .directive);
+    for (r.ast.nodes) |n| try testing.expect(n.kind != .container);
 }
 
 test "container directive inside a block quote" {

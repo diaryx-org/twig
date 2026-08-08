@@ -105,13 +105,17 @@ pub struct FlatNode {
     /// [`Alignment::Default`] is a real, unspecified alignment (a bare `---`) —
     /// distinct from the `None` a non-cell node reports.
     pub alignment: Option<Alignment>,
-    /// The name a kind carries in its own payload rather than in `kind`: a
-    /// generic `element`'s tag (`"picture"`, `"source"`, …) or a `directive`'s
-    /// type (`"note"`, `"embed"`, `"vis"`, …, no leading colons). `None` for
-    /// every semantic kind, whose identity is `kind` alone. With this an
+    /// The name a generic container carries in its own payload rather than in
+    /// `kind`: an HTML/XML tag (`"picture"`, `"source"`, …) or a directive type
+    /// (`"note"`, `"embed"`, `"vis"`, …, no leading colons). `None` for every
+    /// semantic kind, whose identity is `kind` alone. With this an
     /// `html_elements` parse's `<picture>`/`<source>` are distinguishable — both
-    /// report `kind == "element"` — and so are a `::embed` and a `::toc`, both
-    /// of which report `kind == "directive"`.
+    /// report `kind == "container"` — and so are a `::embed` and a `::toc`.
+    ///
+    /// A tag and a directive type share one `kind` because they are one concept
+    /// in the core: a named container with attributes and children. `name` is
+    /// what tells them apart, which is why it is not optional in practice for
+    /// anything a renderer cares about.
     pub name: Option<String>,
     /// Which of the three surface forms a `directive` was written in; `None` for
     /// every other kind. Pairs with [`name`](Self::name): the name says *which*
@@ -1820,7 +1824,7 @@ mod tests {
     fn flat_nodes_expose_element_name_and_attrs() {
         // A `<picture>` with a theme-switching `<source>`: the dark alternative
         // lives only in the `<source>`'s attributes, which the snapshot now
-        // surfaces (both `<picture>` and `<source>` report `kind == "element"`).
+        // surfaces (both `<picture>` and `<source>` report `kind == "container"`).
         let src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\"><img src=\"l.svg\" alt=\"x\"></picture>\n";
         let mut ed = Editor::new_ext(
             src.as_bytes(),
@@ -1857,7 +1861,7 @@ mod tests {
 
     #[test]
     fn flat_nodes_expose_directive_name_and_form() {
-        // All three surface forms report `kind == "directive"`, so the snapshot
+        // All three surface forms report `kind == "container"`, so the snapshot
         // has to carry both halves of a directive's identity: which type it is
         // (`name`) and how it was written (`directive_form`). Without them a
         // renderer can't tell an `::embed` from a `::toc`, nor an inline span
@@ -1873,7 +1877,7 @@ mod tests {
 
         let forms: Vec<(Option<&str>, Option<DirectiveForm>)> = nodes
             .iter()
-            .filter(|n| n.kind == "directive")
+            .filter(|n| n.kind == "container")
             .map(|n| (n.name.as_deref(), n.directive_form))
             .collect();
         assert_eq!(

@@ -78,7 +78,7 @@ fn kindsEqual(a: Node.Kind, b: Node.Kind) bool {
     if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
     return switch (a) {
         .doc => true,
-        .element => |av| std.mem.eql(u8, av.name, b.element.name),
+        .container => |av| std.mem.eql(u8, av.name, b.container.name),
         .str => |av| std.mem.eql(u8, av, b.str),
         .comment => |av| std.mem.eql(u8, av, b.comment),
         .doctype => |av| std.mem.eql(u8, av, b.doctype),
@@ -158,8 +158,8 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     try testing.expect(nl2.kind == .str);
 
     const root = doc_it.next() orelse return error.TestExpectedNonNull;
-    try testing.expect(root.kind == .element);
-    try testing.expectEqualStrings("root", root.kind.element.name);
+    try testing.expect(root.kind == .container);
+    try testing.expectEqualStrings("root", root.kind.container.name);
     try testing.expectEqual(@as(?*const Node, null), doc_it.next());
 
     const root_attrs = ast.attrsOf(root.id);
@@ -178,8 +178,8 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     try testing.expect(w2.kind == .str);
 
     const child = root_it.next() orelse return error.TestExpectedNonNull;
-    try testing.expect(child.kind == .element);
-    try testing.expectEqualStrings("child", child.kind.element.name);
+    try testing.expect(child.kind == .container);
+    try testing.expectEqualStrings("child", child.kind.container.name);
     try testing.expectEqualStrings("v", ast.attrsOf(child.id).get("x:attr").?);
 
     var child_it = ast.children(child.id);

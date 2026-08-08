@@ -304,7 +304,7 @@ fn printMatchLine(allocator: Allocator, ast: *const twig.AST, id: twig.AST.Node.
             try stdout.print("{d}", .{seg});
         }
     }
-    try stdout.print("]\t{s}\t", .{@tagName(std.meta.activeTag(ast.nodes[id].kind))});
+    try stdout.print("]\t{s}\t", .{twig.AST.kindName(ast.nodes[id].kind)});
 
     const text = try twig.Select.textOf(allocator, ast, id);
     defer allocator.free(text);

@@ -418,52 +418,59 @@ const Renderer = struct {
             .code_block => |cb| try self.writeCodeFence(ctx, cb.lang, cb.text),
             .raw_block => |rb| try self.writeCodeFence(ctx, rb.format, rb.text),
             .metadata => |m| try self.writeMetadata(ctx, m.lang, m.text),
-            .div => {
-                try self.writePrefix(ctx);
-                try self.writer.writeAll("::: \n");
-                const p = Prefix{ .parent = ctx.prefix, .segment = "  " };
-                try self.renderBlocks(id, .{ .prefix = &p }, true);
-                try self.writePrefix(ctx);
-                try self.writer.writeAll(":::\n");
-            },
-            .directive => |d| switch (d.form) {
-                // A block directive at block level is a leaf (`::name…`) or a
-                // container (`:::name…` … `:::`); a `text` directive only
-                // appears inline, so route a stray one there defensively.
-                .text => {
+            // One arm for what used to be three (`div`, `directive`,
+            // `element`). The branches below are exactly the disambiguation the
+            // separate kinds used to do implicitly: `form` says which spelling,
+            // and an anonymous djot div is the container NAMED "div".
+            .container => |c| {
+                const form = c.form orelse {
+                    // Unclassified: an HTML/XML element passing through.
                     try self.writePrefix(ctx);
-                    try self.renderInline(id, ctx);
-                    try self.writer.writeByte('\n');
-                },
-                .leaf => {
-                    try self.writePrefix(ctx);
-                    try self.writer.print("::{s}", .{d.name});
-                    if (self.ast.nodes[id].first_child != null) {
-                        try self.writer.writeByte('[');
-                        try self.renderInlineChildren(id, ctx);
-                        try self.writer.writeByte(']');
-                    }
-                    try self.writeDirectiveAttrs(id);
-                    try self.writer.writeByte('\n');
-                },
-                .container => {
-                    try self.writePrefix(ctx);
-                    try self.writer.print(":::{s}", .{d.name});
-                    try self.writeDirectiveAttrs(id);
-                    try self.writer.writeByte('\n');
-                    try self.renderBlocks(id, ctx, true);
-                    try self.writePrefix(ctx);
-                    try self.writer.writeAll(":::\n");
-                },
+                    try self.writer.print("<{s}>", .{c.name});
+                    try self.renderBlocks(id, ctx, false);
+                    try self.writer.print("</{s}>\n", .{c.name});
+                    return;
+                };
+                switch (form) {
+                    // A `text` container only appears inline; route a stray one
+                    // there defensively rather than emitting a broken block.
+                    .inline_text => {
+                        try self.writePrefix(ctx);
+                        try self.renderInline(id, ctx);
+                        try self.writer.writeByte('\n');
+                    },
+                    .block_leaf => {
+                        try self.writePrefix(ctx);
+                        try self.writer.print("::{s}", .{c.name});
+                        if (self.ast.nodes[id].first_child != null) {
+                            try self.writer.writeByte('[');
+                            try self.renderInlineChildren(id, ctx);
+                            try self.writer.writeByte(']');
+                        }
+                        try self.writeDirectiveAttrs(id);
+                        try self.writer.writeByte('\n');
+                    },
+                    .block_fenced => {
+                        try self.writePrefix(ctx);
+                        // djot's fenced div is anonymous — it carries its
+                        // identity as a class, so the fence takes no name.
+                        if (c.name.len == 0) {
+                            try self.writer.writeAll("::: \n");
+                            const p = Prefix{ .parent = ctx.prefix, .segment = "  " };
+                            try self.renderBlocks(id, .{ .prefix = &p }, true);
+                        } else {
+                            try self.writer.print(":::{s}", .{c.name});
+                            try self.writeDirectiveAttrs(id);
+                            try self.writer.writeByte('\n');
+                            try self.renderBlocks(id, ctx, true);
+                        }
+                        try self.writePrefix(ctx);
+                        try self.writer.writeAll(":::\n");
+                    },
+                }
             },
             .reference => {},
             .footnote => {},
-            .element => |e| {
-                try self.writePrefix(ctx);
-                try self.writer.print("<{s}>", .{e.name});
-                try self.renderBlocks(id, ctx, false);
-                try self.writer.print("</{s}>\n", .{e.name});
-            },
             .comment => |c| {
                 try self.writePrefix(ctx);
                 try self.writer.print("<!--{s}-->\n", .{c});
@@ -520,32 +527,62 @@ const Renderer = struct {
                 try self.writePrefix(ctx);
             },
             .non_breaking_space => try self.writer.writeAll("&nbsp;"),
-            .symb => |s| try self.writer.print(":{s}:", .{s}),
-            .verbatim => |v| {
-                const ticks = fenceTicks(v, 1);
-                var i: usize = 0;
-                while (i < ticks) : (i += 1) try self.writer.writeByte('`');
-                try self.writer.writeAll(v);
-                i = 0;
-                while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+            // Delimiters come from `md_syntax.table`, NOT from a switch here. The
+            // hand-written copy this replaces had DRIFTED: it spelled `mark` as
+            // `=x=` while the table said `{=`/`=}`, so a djot mark did not
+            // survive a round-trip. One table, one answer.
+            //
+            // `text_leaf` is deliberately NOT folded in with it: a verbatim's
+            // fence WIDENS to clear backticks in its own content (`` ` `` needs
+            // `` `` ` `` ``), and djot's math wraps a verbatim that widens with
+            // it. `Delims` is a fixed byte pair and cannot say that, so those
+            // keep the arm below — the table is necessary but not sufficient
+            // for them, and pretending otherwise silently corrupted output.
+            .inline_mark => |m| {
+                const d = md_syntax.table.delimsFor(.{ .mark = m }) orelse return;
+                try self.writer.writeAll(d.open);
+                try self.renderInlineChildren(id, ctx);
+                try self.writer.writeAll(d.close);
+            },
+            .text_leaf => |leaf| switch (leaf.kind) {
+                .symb => {
+                    const s = leaf.text;
+                    try self.writer.print(":{s}:", .{s});
+                },
+                .verbatim => {
+                    const v = leaf.text;
+                    const ticks = fenceTicks(v, 1);
+                    var i: usize = 0;
+                    while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+                    try self.writer.writeAll(v);
+                    i = 0;
+                    while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+                },
+                .inline_math => {
+                    const m = leaf.text;
+                    try self.writer.print("${s}$", .{m});
+                },
+                .display_math => {
+                    const m = leaf.text;
+                    try self.writer.print("$$\n{s}\n$$", .{m});
+                },
+                .url => {
+                    const u = leaf.text;
+                    try self.writer.print("<{s}>", .{u});
+                },
+                .email => {
+                    const e = leaf.text;
+                    try self.writer.print("<{s}>", .{e});
+                },
+                .footnote_reference => {
+                    const lab = leaf.text;
+                    try self.writer.print("[^{s}]", .{lab});
+                },
             },
             .raw_inline => |r| try self.writer.writeAll(r.text),
-            .inline_math => |m| try self.writer.print("${s}$", .{m}),
-            .display_math => |m| try self.writer.print("$$\n{s}\n$$", .{m}),
-            .url => |u| try self.writer.print("<{s}>", .{u}),
-            .email => |e| try self.writer.print("<{s}>", .{e}),
-            .footnote_reference => |lab| try self.writer.print("[^{s}]", .{lab}),
             .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
-            .emph => {
-                try self.writer.writeByte('*');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('*');
-            },
-            .strong => {
-                try self.writer.writeAll("**");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("**");
-            },
+            // One arm, still exhaustive over `InlineMark`: a tenth mark fails
+            // THIS build (where spelling lives) and no other.
             .link => |l| {
                 try self.writer.writeByte('[');
                 try self.renderInlineChildren(id, ctx);
@@ -558,54 +595,24 @@ const Renderer = struct {
                 try self.writer.writeByte(']');
                 if (im.destination) |dest| try self.writer.print("({s})", .{dest}) else if (im.reference) |lab| try self.writer.print("[{s}]", .{lab});
             },
-            .span => try self.renderInlineChildren(id, ctx),
-            .directive => |d| {
-                // Inline (text) directive `:name[label]{attrs}`. A leaf/
-                // container form shouldn't reach the inline path, but if one
-                // does, emitting the single-colon inline form is the safe
-                // lossy fallback.
-                try self.writer.print(":{s}", .{d.name});
+            .container => |c| {
+                // djot's bracketed span carries its identity in `attrs`, so
+                // Markdown — which has no `[…]{…}` — drops the wrapper and
+                // keeps the text. Anything else is an inline directive
+                // `:name[label]{attrs}`; a stray block form reaching the
+                // inline path emits the single-colon spelling as a safe lossy
+                // fallback, as it always has.
+                if (c.name.len == 0) {
+                    try self.renderInlineChildren(id, ctx);
+                    return;
+                }
+                try self.writer.print(":{s}", .{c.name});
                 if (node.first_child != null) {
                     try self.writer.writeByte('[');
                     try self.renderInlineChildren(id, ctx);
                     try self.writer.writeByte(']');
                 }
                 try self.writeDirectiveAttrs(id);
-            },
-            .mark => {
-                try self.writer.writeAll("==");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("==");
-            },
-            .superscript => {
-                try self.writer.writeByte('^');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('^');
-            },
-            .subscript => {
-                try self.writer.writeByte('~');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('~');
-            },
-            .insert => {
-                try self.writer.writeAll("{+");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("+}");
-            },
-            .delete => {
-                try self.writer.writeAll("~~");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("~~");
-            },
-            .double_quoted => {
-                try self.writer.writeByte('"');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('"');
-            },
-            .single_quoted => {
-                try self.writer.writeByte('\'');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('\'');
             },
             else => try self.renderInlineChildren(id, ctx),
         }

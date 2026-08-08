@@ -132,7 +132,6 @@ pub const Node = struct {
         /// syntax, only synthesized by the parser (see djot.js's `parse.ts`
         /// section handling).
         section,
-        div,
         code_block: struct { lang: ?[]const u8, text: []const u8 },
         raw_block: struct { format: []const u8, text: []const u8 },
         /// Document-level metadata (front/end matter) as an inert,
@@ -176,54 +175,82 @@ pub const Node = struct {
         soft_break,
         hard_break,
         non_breaking_space,
-        /// A `:name:` symbol/emoji shortcode; payload is the name, no
-        /// leading/trailing `:`.
-        symb: []const u8,
-        verbatim: []const u8,
+        /// A DELIMITED INLINE TEXT LEAF — a `:name:` shortcode, a `` `code` ``
+        /// span, `$math$`, a `<https://…>` autolink, a `[^label]` footnote
+        /// reference. Opaque text plus the marker that frames it; which one it
+        /// is rides in the payload. See `TextLeafKind`.
+        ///
+        /// `str` is deliberately NOT one of these: it is the UNdelimited case —
+        /// plain content with no marker at all — and it is by far the most
+        /// common node in any document, so it keeps its own arm rather than
+        /// paying an indirection to join a family it doesn't belong to. fig
+        /// draws the same line between `string` and `extended`.
+        text_leaf: struct { kind: TextLeafKind, text: []const u8 },
         raw_inline: struct { format: []const u8, text: []const u8 },
-        inline_math: []const u8,
-        display_math: []const u8,
-        url: []const u8,
-        email: []const u8,
-        /// `[^label]` used inline; payload is the label (no `^`/brackets).
-        footnote_reference: []const u8,
+        /// Already an `Extended`-shaped node before the pattern had a name here:
+        /// a nested kind plus opaque text. Stays its own arm because its nested
+        /// kind is a SEMANTIC choice the HTML printer acts on (which glyph),
+        /// not a spelling.
         smart_punctuation: struct { kind: SmartPunctuationKind, text: []const u8 },
-        emph,
-        strong,
         link: struct { destination: ?[]const u8, reference: ?[]const u8 },
         image: struct { destination: ?[]const u8, reference: ?[]const u8 },
-        span,
-        mark,
-        superscript,
-        subscript,
-        insert,
-        delete,
-        double_quoted,
-        single_quoted,
-        /// A generic directive (the CommonMark/remark "generic directives"
-        /// proposal, as implemented by `micromark-extension-directive`).
-        /// `name` is the directive TYPE (`note`, `youtube`, `abbr`, ...), no
-        /// leading colon(s); `form` distinguishes the three surface syntaxes
-        /// (see `DirectiveForm`). Any `{#id .class key=val}` shorthand goes in
-        /// the normal `attrs` side-table; a text/leaf directive's `[label]`
-        /// and a container directive's body become the node's children (inline
-        /// children for `text`/`leaf`, block children for `container`).
-        /// Distinct from `element` so a directive round-trips back to `:::`
-        /// syntax rather than to an HTML tag, and so selectors can address it
-        /// as a directive. Produced only by the Markdown parser (behind
-        /// `ParseOptions.directives`); other languages never emit it.
-        directive: struct { form: DirectiveForm, name: []const u8 },
-
+        /// A paired-delimiter inline wrapper — `*emph*`, `**strong**`,
+        /// `{=mark=}`, `^sup^`, `~sub~`, `{+ins+}`, `{-del-}`, and djot's two
+        /// smart-quote containers. Which one it is rides in the payload rather
+        /// than in the tag; see `InlineMark`.
+        inline_mark: InlineMark,
         // ── Generic markup ────────────────────────────────────────────────
-        /// A named element with no semantic mapping (HTML `<video>`,
-        /// arbitrary XML) — the escape hatch that keeps this vocabulary
-        /// closed: languages map what they can to semantic kinds (`<em>` →
-        /// `emph`) and fall back to `element` for the rest. Children are
-        /// parsed nodes like any container; attributes go in the normal
-        /// `attrs` side-table. `name` is stored as written, including any
-        /// namespace prefix (`svg:rect`) — prefix resolution is a
-        /// reader-side helper, later.
-        element: struct { name: []const u8 },
+        /// A NAMED GENERIC CONTAINER — the single escape hatch that keeps this
+        /// vocabulary closed. Languages map what they can to semantic kinds
+        /// (`<em>` → `emph`) and fall back to this for the rest: an HTML/XML
+        /// element (`<video>`, `svg:rect`), a djot fenced div or bracketed
+        /// span, a Markdown generic directive (`:::note`), an rST directive
+        /// (`.. note::`). Children are parsed nodes like any container;
+        /// attributes go in the normal `attrs` side-table.
+        ///
+        /// ── Why one kind and not four ──────────────────────────────────────
+        /// This replaces `div`, `span`, `directive`, and `element`, which were
+        /// four spellings of ONE concept — a named-or-classed container with
+        /// attributes and children — split by which format's parser produced
+        /// them. That split put SURFACE SYNTAX in `Kind`, which is exactly what
+        /// `syntax.zig` exists to keep out of the shared vocabulary: it meant a
+        /// djot `:::` and an HTML `<div>` were different nodes despite being
+        /// the same construct, every consumer (`ast/select.zig`, `ast/json.zig`,
+        /// `c_abi.zig`, four serializers) grew four near-identical arms, and a
+        /// fifth format could only be added by growing a fifth kind.
+        ///
+        /// What it does NOT do is erase the difference between a NAME and a
+        /// CLASS: djot's `::: note` is a div carrying `class=note` (the name is
+        /// `"div"`, the class is in `attrs`), while Markdown's `:::note` is a
+        /// directive whose TYPE is `note` (the name is `"note"`, `attrs` is
+        /// empty). Those are genuinely different documents and still parse to
+        /// different nodes. The unification is structural, not semantic.
+        ///
+        /// `name` is stored as written, including any namespace prefix
+        /// (`svg:rect`) — prefix resolution is a reader-side helper, later.
+        container: struct {
+            /// The tag or directive type: `"div"`, `"span"`, `"video"`,
+            /// `"svg:rect"`, `"note"`. Never empty — djot's anonymous `:::`
+            /// and `[…]{…}` carry `"div"`/`"span"`, which is what they render
+            /// as and what makes them compare equal to the HTML forms.
+            name: []const u8,
+            /// How the container was spelled, when the producing format draws
+            /// a distinction its serializer must reproduce (see `Form`).
+            ///
+            /// `null` = UNCLASSIFIED, which is the honest answer for HTML/XML:
+            /// whether `<video>` is a block or an inline is a property of the
+            /// tag and the stylesheet, not of the parse, and the HTML parser
+            /// has never decided it — `languages/djot/djot.zig`'s
+            /// `isBlock`/`isInline` report *neither* for such a node, and that
+            /// behaviour is preserved here rather than forced into a guess.
+            form: ?Form = null,
+            /// The directive ARGUMENT: rST's `.. image:: picture.png` puts
+            /// `picture.png` here. Positional, so it is neither an attribute
+            /// (`attrs` holds `:width: 50%`-style options) nor a child (the
+            /// children are the body). `null` for every format that has no
+            /// argument position — which today is all of them except rST.
+            argument: ?[]const u8 = null,
+        },
         /// HTML/XML `<!-- ... -->`; payload is the text between the
         /// delimiters, as written.
         comment: []const u8,
@@ -240,6 +267,270 @@ pub const Node = struct {
     };
 };
 
+// ── The two axes ───────────────────────────────────────────────────────────
+// `Kind` names WHAT a node is. Two further questions get asked of it constantly
+// — where it sits in the block/inline hierarchy, and what it is allowed to
+// contain — and until now each was answered by a separate hand-maintained list
+// per consumer: `languages/djot/djot.zig`'s `block_tags`/`inline_tags`,
+// `ast/locate.zig`'s `isBlockParent`, `languages/html/parser.zig`'s
+// `isBlockKind`, and `holdsOpaqueText` below. Those lists disagreed (djot
+// counted `reference`/`footnote` as blocks and HTML didn't; HTML counted
+// `list_item`/`term` and djot didn't), and every new kind had to be threaded
+// into each one by hand — with nothing failing the build if it wasn't.
+//
+// `level` and `contentModel` are the canonical answers. Both switch
+// exhaustively, so a NEW KIND CANNOT BE ADDED WITHOUT DECLARING BOTH — which
+// is the property the scattered lists never had.
+
+/// Which paired-delimiter inline a `Kind.inline_mark` is.
+///
+/// ── Why a nested enum and not nine union arms ──────────────────────────────
+/// Borrowed from fig's `Kind.Extended` (`ast/ast.zig`), whose doc states the
+/// property this is here for: "adding a new such scalar is a new `ExtKind`, not
+/// a new union arm: the outer switches stay closed; only the printers (where
+/// cross-format rendering is inherently type-specific) gain a case."
+///
+/// These nine were nine arms, and every GENERIC consumer treated all nine
+/// identically — `level` and `contentModel` below listed them twice over,
+/// `ast/json.zig` lumped them into one payload-free arm, `ast/select.zig` never
+/// distinguished them. Only the three serializers care, and only because each
+/// mark has its own delimiters — which is `syntax.zig`'s `Delims` table's job,
+/// not `Kind`'s.
+///
+/// Crucially this is NOT string matching and NOT a loss of exhaustiveness: a
+/// serializer still switches over `InlineMark` exhaustively, so a tenth mark
+/// still fails those builds until it is spelled. What it stops doing is failing
+/// the builds that never cared.
+///
+/// The EXTERNAL vocabulary is unchanged: `ast/json.zig` still emits
+/// `"kind": "emph"` and `c_abi.zig`'s `kindName` still reports `"emph"`, both
+/// by projecting the mark name up into the kind name. This is an internal
+/// structuring, not a surface change.
+pub const InlineMark = enum {
+    emph,
+    strong,
+    mark,
+    superscript,
+    subscript,
+    insert,
+    delete,
+    double_quoted,
+    single_quoted,
+};
+
+/// Which delimited inline text leaf a `Kind.text_leaf` is.
+///
+/// The same pattern as `InlineMark`, one level down: seven kinds that every
+/// generic consumer handled identically — `ast/json.zig` had seven
+/// byte-identical `{"text": …}` arms, `ast/builder.zig` seven identical dupes,
+/// `level`/`contentModel` listed all seven twice — and that only the printers
+/// tell apart, because only their delimiters differ.
+///
+/// `raw_inline` is excluded: its payload is `{format, text}`, a second field
+/// that would have to be `null` for all seven of these. `str` is excluded for
+/// the opposite reason (see `Kind.text_leaf`).
+pub const TextLeafKind = enum {
+    /// `:name:` — payload is the name, no surrounding colons.
+    symb,
+    /// `` `code` `` — payload is the interior.
+    verbatim,
+    inline_math,
+    display_math,
+    url,
+    email,
+    /// `[^label]` used inline; payload is the label (no `^`/brackets).
+    footnote_reference,
+};
+
+/// Names a kind precisely enough to match a node against it.
+///
+/// A bare `Kind` tag used to be enough, and for most kinds it still is. It
+/// stopped being enough for the nine `InlineMark`s, whose tag is now all
+/// `inline_mark`: "find the enclosing `strong`" cannot be asked with a tag.
+/// This is the exhaustively-switched bridge — no strings, and adding a family
+/// means adding an arm here, which fails every `matches` caller until handled.
+pub const KindRef = union(enum) {
+    tag: std.meta.Tag(Node.Kind),
+    mark: InlineMark,
+    text_leaf: TextLeafKind,
+
+    pub fn matches(self: KindRef, kind: Node.Kind) bool {
+        return switch (self) {
+            .tag => |t| std.meta.activeTag(kind) == t,
+            .mark => |m| kind == .inline_mark and kind.inline_mark == m,
+            .text_leaf => |k| kind == .text_leaf and kind.text_leaf.kind == k,
+        };
+    }
+};
+
+/// The name a kind reports to the OUTSIDE — `ast/json.zig`'s `"kind"` field and
+/// `c_abi.zig`'s `twig_node_kind_name`.
+///
+/// For an `inline_mark` this is the MARK's name (`"emph"`, `"strong"`), never
+/// `"inline_mark"`. The family is an internal structuring; the published
+/// vocabulary predates it and does not move because of it.
+pub fn kindName(kind: Node.Kind) []const u8 {
+    return switch (kind) {
+        .inline_mark => |m| @tagName(m),
+        .text_leaf => |l| @tagName(l.kind),
+        else => @tagName(kind),
+    };
+}
+
+/// Where a kind sits in the document hierarchy.
+///
+/// `neither` is not a shrug: it is the honest answer for three groups. The
+/// `doc` root is not itself a block. A structural child (`list_item`, `row`,
+/// `cell`, `term`, `caption`, …) only ever appears inside its own parent and
+/// never where a paragraph could go — which is exactly djot.js's `isBlock`
+/// rule, and why those are excluded here too. And a generic-markup node
+/// (`comment`, `doctype`, an unclassified `container`) genuinely has no level:
+/// whether an HTML `<video>` is a block is a property of the stylesheet, not
+/// the parse.
+pub const Level = enum { block, @"inline", neither };
+
+/// What a kind may hold. The distinction `blocks`/`inlines` vs `text` is the
+/// load-bearing one: a `text` node's `content_span` addresses OPAQUE BYTES, not
+/// a child region, so `insertChild` must refuse it even though it has a
+/// `content_span` (`replaceContent` still works). See `Node.content_span`.
+///
+/// This is what a kind may CONTAIN, not what a given node DOES contain. The
+/// difference is observable: in one HTML table, `<td><p>x</p></td>` parses to
+/// `cell > para` while its sibling `<td>y</td>` parses to `cell > str`, and
+/// djot puts inlines directly in every cell. Both are `.blocks` here — an
+/// inline run is the tight, `<p>`-elided case, exactly as a tight list item
+/// holds inlines without stopping `list_item` from being a block container.
+/// Every caller consults this as a PERMISSION ("may children go here at all"),
+/// which is the only reading the data supports.
+pub const ContentModel = enum {
+    /// Children are block-level nodes.
+    blocks,
+    /// Children are inline nodes.
+    inlines,
+    /// An opaque text payload and no children — see `holdsOpaqueText`.
+    text,
+    /// Neither children nor text: `thematic_break`, `soft_break`, `reference`.
+    empty,
+};
+
+/// `kind`'s position in the block/inline hierarchy. See `Level`.
+pub fn level(kind: Node.Kind) Level {
+    return switch (kind) {
+        .para,
+        .heading,
+        .thematic_break,
+        .section,
+        .code_block,
+        .raw_block,
+        .metadata,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .table,
+        .footnote,
+        .reference,
+        => .block,
+
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .text_leaf,
+        .raw_inline,
+        .smart_punctuation,
+        .link,
+        .image,
+        .inline_mark,
+        => .@"inline",
+
+        // A generic container's level is the one thing `form` was introduced to
+        // carry (see `Form`); an unclassified one has none.
+        .container => |c| if (c.form) |f|
+            (if (f.isBlockForm()) .block else .@"inline")
+        else
+            .neither,
+
+        // The root, the structural children, and generic markup — see `Level`.
+        .doc,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .row,
+        .cell,
+        .caption,
+        .comment,
+        .doctype,
+        .processing_instruction,
+        .cdata,
+        => .neither,
+    };
+}
+
+/// What `kind` may contain. See `ContentModel`.
+pub fn contentModel(kind: Node.Kind) ContentModel {
+    return switch (kind) {
+        .str,
+        .text_leaf,
+        .raw_inline,
+        .smart_punctuation,
+        .code_block,
+        .raw_block,
+        .metadata,
+        .comment,
+        .doctype,
+        .cdata,
+        => .text,
+
+        .thematic_break,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .reference,
+        .processing_instruction,
+        => .empty,
+
+        .doc,
+        .section,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .definition,
+        .row,
+        .cell,
+        .footnote,
+        => .blocks,
+
+        .para,
+        .heading,
+        .term,
+        .caption,
+        .link,
+        .image,
+        .inline_mark,
+        => .inlines,
+
+        // A fenced container holds blocks; the inline and one-line-leaf forms
+        // hold the label's inlines. An UNCLASSIFIED container (an HTML/XML
+        // element) may hold either, and answers `blocks` as the permissive
+        // one — every caller that consults this is asking "may I put children
+        // here at all", and only `text` answers no.
+        .container => |c| if (c.form) |f| switch (f) {
+            .block_fenced => .blocks,
+            .block_leaf, .inline_text => .inlines,
+        } else .blocks,
+    };
+}
+
 /// True for kinds that carry a TEXT/opaque payload rather than child nodes —
 /// a code block's body, an inline `verbatim`'s or math node's interior, a raw
 /// block, a bare `str`, etc. (the same set `c_abi.zig`'s `kindText` extracts).
@@ -248,27 +539,11 @@ pub const Node = struct {
 /// must refuse it even though it has a `content_span` (`replaceContent`, which
 /// replaces the whole interior, still works). This is the flip side of
 /// `content_span` no longer implying "container" — see its doc on `Node`.
+///
+/// Now a thin reading of `contentModel`, kept as its own name because that is
+/// what the callers mean and because it is public API.
 pub fn holdsOpaqueText(kind: Node.Kind) bool {
-    return switch (kind) {
-        .str,
-        .symb,
-        .verbatim,
-        .raw_inline,
-        .inline_math,
-        .display_math,
-        .url,
-        .email,
-        .footnote_reference,
-        .smart_punctuation,
-        .code_block,
-        .raw_block,
-        .metadata,
-        .comment,
-        .doctype,
-        .cdata,
-        => true,
-        else => false,
-    };
+    return contentModel(kind) == .text;
 }
 
 /// A single attribute pair (`AttributeParser`'s `keyval`). A `null` value
@@ -317,14 +592,36 @@ pub const Attrs = struct {
     }
 };
 
-/// The three surface forms a generic `directive` can take, distinguished by
-/// the number of leading colons and whether it fences a block:
-///   - `text`: inline, single colon — `:name[label]{attrs}`.
-///   - `leaf`: block, double colon, one line — `::name[label]{attrs}`.
-///   - `container`: block, triple(+) colon fence — `:::name{attrs}` ... `:::`.
-/// Governs both how the Markdown serializer re-emits the node and how many
-/// (and what kind of) children it carries.
-pub const DirectiveForm = enum { text, leaf, container };
+/// How a `container` was spelled — the one piece of a generic container's
+/// shape that a per-format `Syntax` table CANNOT hold, because it varies per
+/// NODE rather than per format: one Markdown document may contain both a
+/// `::name` leaf and a `:::name` fence, so the choice has to travel with the
+/// node. Everything else about spelling a container back (the colon, the
+/// angle brackets, the `.. ` prefix) is format-uniform and belongs in
+/// `syntax.zig`.
+///
+/// Also carries the block/inline classification that `div` and `span` used to
+/// encode by being separate kinds: `inline_text` is an inline, the two
+/// `block_*` forms are blocks, and a `null` form is neither (see
+/// `Kind.container.form`).
+///   - `inline_text`: inline — djot `[label]{attrs}`, Markdown `:name[label]`.
+///   - `block_leaf`: block, no body — Markdown `::name[label]{attrs}`,
+///     rST `.. name:: argument` with nothing indented under it.
+///   - `block_fenced`: block with a body — djot `:::` … `:::`, Markdown
+///     `:::name{attrs}` … `:::`, rST `.. name::` + an indented block.
+pub const Form = enum {
+    inline_text,
+    block_leaf,
+    block_fenced,
+
+    /// True for the forms that classify as blocks (`block_leaf`,
+    /// `block_fenced`) — the half of `djot.zig`'s `isBlock` that a flat
+    /// `EnumSet` over kind tags can no longer answer now that one kind spans
+    /// both levels.
+    pub fn isBlockForm(self: Form) bool {
+        return self != .inline_text;
+    }
+};
 
 pub const BulletListStyle = enum { dash, plus, star };
 

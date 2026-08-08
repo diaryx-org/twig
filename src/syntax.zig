@@ -30,6 +30,7 @@
 //! takes a `*const Syntax` without ever learning which format it came from.
 
 const std = @import("std");
+const AST = @import("ast/ast.zig");
 
 /// The inline marks a toolbar can wrap or toggle over a selection. Named for
 /// the `AST.Node.Kind` tags they parse back as — see `kindTag`.
@@ -54,7 +55,24 @@ pub const ContainerKind = enum { block_quote, bullet_list, ordered_list };
 
 /// The source delimiters that mark an inline kind. Values are exactly what the
 /// format's serializer emits, so a wrap round-trips.
-pub const Delims = struct { open: []const u8, close: []const u8 };
+pub const Delims = struct {
+    open: []const u8,
+    close: []const u8,
+    /// May an EDITOR gesture author this, or is the spelling emit-only?
+    ///
+    /// The two questions are genuinely different, and conflating them is why
+    /// this flag exists. Converting a djot document to Markdown should spell a
+    /// `mark` as `==x==` — lossy, but better than dropping the node. A Cmd-B
+    /// style toggle must NOT mint the same bytes: `==x==` is not CommonMark, so
+    /// the reparse gives back a `str`, not a `mark`, and the toggle isn't
+    /// reversible.
+    ///
+    /// `false` = the serializer may spell it, `Editor` refuses it with
+    /// `error.UnsupportedFormat`. Before this flag the two answers lived in two
+    /// places — a `null` here and a hand-written arm in the serializer — and
+    /// nothing kept them honest.
+    authorable: bool = true,
+};
 
 /// How a format spells a container's per-line prefix.
 pub const ContainerSpelling = struct {
@@ -99,10 +117,18 @@ pub const none: Syntax = .{};
 /// a format that only parses is `.{}` (see `none`) and every gesture over it
 /// reports unsupported without that format needing to say so.
 pub const Syntax = struct {
-    /// Delimiters per inline kind. `null` for a kind this format can't spell —
-    /// Markdown has no `{=mark=}`, so its `.mark` entry is `null`, and
-    /// `Editor.toggleInline(.mark)` on Markdown is `error.UnsupportedFormat`.
-    inline_delims: std.EnumArray(InlineKind, ?Delims) = .initFill(null),
+    /// Delimiters per inline mark. `null` for a mark this format cannot spell
+    /// AT ALL; a spelling that exists but must not be authored carries
+    /// `authorable = false` instead (see `Delims`).
+    ///
+    /// Keyed on `AST.InlineMark` rather than on `InlineKind`, so the table has
+    /// exactly one entry per node the serializers emit — which is what lets
+    /// them read it instead of keeping a second, drifting copy.
+    inline_delims: std.EnumArray(AST.InlineMark, ?Delims) = .initFill(null),
+
+    /// Delimiters per delimited text leaf — a `` `code` `` span, `$math$`, a
+    /// `:shortcode:`. Same contract as `inline_delims`, for the other family.
+    text_leaf_delims: std.EnumArray(AST.TextLeafKind, ?Delims) = .initFill(null),
 
     /// Per-line prefixes per container kind.
     container_spelling: std.EnumArray(ContainerKind, ?ContainerSpelling) = .initFill(null),
@@ -197,6 +223,26 @@ pub const Syntax = struct {
             self.heading_marker != null or
             self.text_escapes != null or
             self.inline_delims.get(.strong) != null;
+    }
+
+    /// The delimiters for whatever node `ref` names, from whichever family
+    /// table holds it — the one lookup a serializer needs, so it never has to
+    /// know which family a kind belongs to. `null` = this format has no
+    /// spelling for it.
+    pub fn delimsFor(self: *const Syntax, ref: AST.KindRef) ?Delims {
+        return switch (ref) {
+            .mark => |m| self.inline_delims.get(m),
+            .text_leaf => |l| self.text_leaf_delims.get(l),
+            // No other kind is spelled by a symmetric delimiter pair.
+            .tag => null,
+        };
+    }
+
+    /// `delimsFor` restricted to what an editor gesture may write — the
+    /// serializer's question minus the emit-only spellings. See `Delims`.
+    pub fn authorableDelimsFor(self: *const Syntax, ref: AST.KindRef) ?Delims {
+        const d = self.delimsFor(ref) orelse return null;
+        return if (d.authorable) d else null;
     }
 
     /// A `Syntax` literal is hand-maintained, so the invariants between its

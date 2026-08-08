@@ -18,18 +18,33 @@ fn spellsAutolink(angled: []const u8) bool {
     return inline_mod.InlineParser.autolinkKindOf(angled[1 .. angled.len - 1]) != null;
 }
 
-/// Djot spells all eight inline marks — the reason `InlineKind` has eight
-/// variants at all.
+/// Djot spells every inline mark — which is why `AST.InlineMark` has the
+/// variants it does.
 pub const table: syntax.Syntax = .{
     .inline_delims = .init(.{
         .strong = .{ .open = "*", .close = "*" },
         .emph = .{ .open = "_", .close = "_" },
-        .verbatim = .{ .open = "`", .close = "`" },
         .mark = .{ .open = "{=", .close = "=}" },
         .superscript = .{ .open = "^", .close = "^" },
         .subscript = .{ .open = "~", .close = "~" },
         .insert = .{ .open = "{+", .close = "+}" },
         .delete = .{ .open = "{-", .close = "-}" },
+        // Djot's smart-quote containers are produced by the PARSER from bare
+        // `"`/`'`; an editor toggling them would write the same bytes the
+        // parser turns into curly quotes, so they are emit-only.
+        .double_quoted = .{ .open = "\"", .close = "\"", .authorable = false },
+        .single_quoted = .{ .open = "'", .close = "'", .authorable = false },
+    }),
+    .text_leaf_delims = .init(.{
+        .verbatim = .{ .open = "`", .close = "`" },
+        // `$`code`` — the dollar sits OUTSIDE the verbatim run that carries the
+        // formula, so the opener is two bytes and the closer one.
+        .inline_math = .{ .open = "$`", .close = "`", .authorable = false },
+        .display_math = .{ .open = "$$`", .close = "`", .authorable = false },
+        .symb = .{ .open = ":", .close = ":", .authorable = false },
+        .url = .{ .open = "<", .close = ">", .authorable = false },
+        .email = .{ .open = "<", .close = ">", .authorable = false },
+        .footnote_reference = .{ .open = "[^", .close = "]", .authorable = false },
     }),
     .container_spelling = .init(.{
         .block_quote = .{ .marker = "> ", .cont = "> ", .blank = ">" },

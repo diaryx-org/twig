@@ -81,28 +81,21 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Document 
 // (`element`, `comment`, ...) never appear in a djot parse and are in
 // neither set.
 
-const block_tags = std.EnumSet(std.meta.Tag(AST.Node.Kind)).initMany(&.{
-    .para,       .heading,         .thematic_break, .section,     .div,
-    .code_block, .raw_block,       .block_quote,    .bullet_list, .ordered_list,
-    .task_list,  .definition_list, .table,          .reference,   .footnote,
-});
-
-const inline_tags = std.EnumSet(std.meta.Tag(AST.Node.Kind)).initMany(&.{
-    .str,       .soft_break,         .hard_break,        .non_breaking_space, .symb,
-    .verbatim,  .raw_inline,         .inline_math,       .display_math,       .url,
-    .email,     .footnote_reference, .smart_punctuation, .emph,               .strong,
-    .link,      .image,              .span,              .mark,               .superscript,
-    .subscript, .insert,             .delete,            .double_quoted,      .single_quoted,
-});
-
-/// Mirrors djot.js `ast.ts`'s `isBlock`.
+/// Mirrors djot.js `ast.ts`'s `isBlock`, now as a reading of the shared
+/// `AST.level` axis rather than a second hand-maintained tag set. The two sets
+/// agreed on every kind djot.js knows about; the only additions are kinds
+/// djot.js has no concept of and so could not classify — `metadata` (a
+/// frontmatter data island) and a block-form `container`. Both are genuinely
+/// blocks, so this is the set growing to cover Twig's wider vocabulary, not a
+/// change of answer.
 pub fn isBlock(kind: AST.Node.Kind) bool {
-    return block_tags.contains(std.meta.activeTag(kind));
+    return AST.level(kind) == .block;
 }
 
-/// Mirrors djot.js `ast.ts`'s `isInline`.
+/// Mirrors djot.js `ast.ts`'s `isInline`. See `isBlock` — same reasoning; the
+/// only addition is an inline-form `container` (djot's `[…]{…}` span).
 pub fn isInline(kind: AST.Node.Kind) bool {
-    return inline_tags.contains(std.meta.activeTag(kind));
+    return AST.level(kind) == .@"inline";
 }
 
 pub const AutolinkKind = inline_mod.InlineParser.AutolinkKind;
@@ -136,7 +129,7 @@ test "parse produces a doc with a paragraph" {
     const str_id = ast.nodes[para_id].first_child orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("hello ", ast.nodes[str_id].kind.str);
     const strong_id = ast.nodes[str_id].next_sibling orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[strong_id].kind == .strong);
+    try testing.expect(ast.nodes[strong_id].kind == .inline_mark and ast.nodes[strong_id].kind.inline_mark == .strong);
 }
 
 test "heading gets an auto id and wraps a section" {
@@ -180,8 +173,8 @@ test "isBlock/isInline classify kinds" {
     try testing.expect(isInline(.{ .str = "x" }));
     try testing.expect(!isBlock(.{ .str = "x" }));
     // Generic-markup kinds are neither: djot never produces them.
-    try testing.expect(!isBlock(.{ .element = .{ .name = "video" } }));
-    try testing.expect(!isInline(.{ .element = .{ .name = "video" } }));
+    try testing.expect(!isBlock(.{ .container = .{ .name = "video" } }));
+    try testing.expect(!isInline(.{ .container = .{ .name = "video" } }));
 }
 
 // ── djot.js AST-dump-only cases, asserted natively ──────────────────────────
@@ -199,15 +192,15 @@ test "symb: :name: shortcodes parse to symb nodes carrying the bare alias" {
 
     const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const first = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[first].kind == .symb);
-    try testing.expectEqualStrings("+1", ast.nodes[first].kind.symb);
+    try testing.expect(ast.nodes[first].kind == .text_leaf and ast.nodes[first].kind.text_leaf.kind == .symb);
+    try testing.expectEqualStrings("+1", ast.nodes[first].kind.text_leaf.text);
 
     const space = ast.nodes[first].next_sibling orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[space].kind == .str);
 
     const second = ast.nodes[space].next_sibling orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[second].kind == .symb);
-    try testing.expectEqualStrings("scream", ast.nodes[second].kind.symb);
+    try testing.expect(ast.nodes[second].kind == .text_leaf and ast.nodes[second].kind.text_leaf.kind == .symb);
+    try testing.expectEqualStrings("scream", ast.nodes[second].kind.text_leaf.text);
 }
 
 test "symb: a shortcode consumes only through its closing colon, leaving the rest literal" {
@@ -217,8 +210,8 @@ test "symb: a shortcode consumes only through its closing colon, leaving the res
 
     const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const first = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[first].kind == .symb);
-    try testing.expectEqualStrings("ice", ast.nodes[first].kind.symb);
+    try testing.expect(ast.nodes[first].kind == .text_leaf and ast.nodes[first].kind.text_leaf.kind == .symb);
+    try testing.expectEqualStrings("ice", ast.nodes[first].kind.text_leaf.text);
 
     // ":ice:" is consumed; the trailing "scream:" stays literal text.
     const rest = ast.nodes[first].next_sibling orelse return error.TestExpectedNonNull;

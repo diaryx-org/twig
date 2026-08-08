@@ -430,11 +430,10 @@ pub const Renderer = struct {
             // container's paragraphs would lose their `<p>` wrapping. `list_item`
             // is deliberately absent: it must preserve the enclosing list's
             // tightness for its own paragraphs to consume.
-            .block_quote, .div, .section => self.tight = false,
-            // A container directive's block children are never tight (same as
-            // div/blockquote); text/leaf forms have inline children, so the
-            // reset is harmless for them.
-            .directive => self.tight = false,
+            // A generic container's block children are never tight (same as
+            // blockquote); an inline form has inline children, so the reset is
+            // harmless for it.
+            .block_quote, .section, .container => self.tight = false,
             else => {},
         }
         var it = self.ast.children(id);
@@ -579,7 +578,8 @@ pub const Renderer = struct {
         var it = self.ast.children(id);
         while (it.next()) |child| {
             switch (self.ast.nodes[child.id].kind) {
-                .str, .verbatim => |t| try self.writer.writeAll(t),
+                .str => |t| try self.writer.writeAll(t),
+                .text_leaf => |l| if (l.kind == .verbatim) try self.writer.writeAll(l.text) else try self.renderNode(child.id),
                 else => try self.renderNode(child.id),
             }
         }
@@ -705,7 +705,42 @@ pub const Renderer = struct {
                 }
             },
             .block_quote => try self.inTags("blockquote", id, 2, &.{}),
-            .div => try self.inTags("div", id, 2, &.{}),
+            // One arm for what used to be three: `div` (block, 2 newlines),
+            // `span` (inline, 0), and `element` (void / raw-text aware). The
+            // void and raw-text rules are properties of the TAG and so apply
+            // however the node was produced; `form` supplies only the
+            // pretty-print spacing that the block/inline kind split used to.
+            .container => |c| {
+                const block = if (c.form) |f| f.isBlockForm() else false;
+                // An anonymous container (djot's `:::` / `[…]{…}`) has no tag
+                // of its own; it renders as the generic wrapper for its level,
+                // which is what djot.js emits too.
+                const tag = if (c.name.len > 0) c.name else if (block) "div" else "span";
+                try self.renderTag(tag, id, &.{});
+                if (isVoidElement(tag)) return;
+                if (isRawTextElement(tag)) {
+                    // Raw-text content (script/style/…) has no escaping
+                    // mechanism in HTML: it must be written verbatim. Escaping
+                    // it would corrupt the JS/CSS and double-escape on
+                    // re-parse (`<` → `&lt;` → `&amp;lt;`).
+                    try self.renderRawTextChildren(id);
+                    try self.renderCloseTag(tag);
+                    return;
+                }
+                // The old three-way newline split, preserved: a `text`
+                // directive/element got 0, a `leaf` got a trailing newline
+                // only, a fenced container got both. Collapsing this to one
+                // block/inline bit is what broke the `leaf` case.
+                const newlines: u8 = if (c.form) |f| switch (f) {
+                    .inline_text => 0,
+                    .block_leaf => 1,
+                    .block_fenced => 2,
+                } else 0;
+                if (newlines >= 2) try self.writer.writeByte('\n');
+                try self.renderChildren(id);
+                try self.renderCloseTag(tag);
+                if (newlines >= 1) try self.writer.writeByte('\n');
+            },
             .section => try self.inTags("section", id, 2, &.{}),
             .list_item => if (self.options.commonmark_lists)
                 try self.renderCommonMarkListItem(id)
@@ -768,27 +803,68 @@ pub const Renderer = struct {
                 const tag = std.fmt.bufPrint(&buf, "h{d}", .{v.level}) catch "h1";
                 try self.inTags(tag, id, 1, &.{});
             },
-            .footnote_reference => |label| {
-                const idx = try self.footnoteIndexFor(label);
-                var extra_buf: [3]KV = undefined;
-                var n: usize = 0;
-                var id_buf: [24]u8 = undefined;
-                if (!self.fnref_id_emitted.contains(label)) {
-                    const id_text = std.fmt.bufPrint(&id_buf, "fnref{d}", .{idx}) catch "fnref";
-                    extra_buf[n] = .{ .key = "id", .value = id_text };
+            // One arm, still exhaustive over `TextLeafKind`: an eighth leaf
+            // fails THIS build (where delimiters live) and no other.
+            .text_leaf => |leaf| switch (leaf.kind) {
+                .symb => {
+                    const alias = leaf.text;
+                    try self.writer.writeByte(':');
+                    try self.writeEscaped(alias);
+                    try self.writer.writeByte(':');
+                },
+                .verbatim => {
+                    const text = leaf.text;
+                    try self.renderTag("code", id, &.{});
+                    try self.writeEscaped(text);
+                    try self.renderCloseTag("code");
+                },
+                .inline_math => {
+                    const text = leaf.text;
+                    try self.renderTag("span", id, &.{.{ .key = "class", .value = "math inline" }});
+                    try self.writer.writeAll("\\(");
+                    try self.writeEscaped(text);
+                    try self.writer.writeAll("\\)");
+                    try self.renderCloseTag("span");
+                },
+                .display_math => {
+                    const text = leaf.text;
+                    try self.renderTag("span", id, &.{.{ .key = "class", .value = "math display" }});
+                    try self.writer.writeAll("\\[");
+                    try self.writeEscaped(text);
+                    try self.writer.writeAll("\\]");
+                    try self.renderCloseTag("span");
+                },
+                .url => {
+                    const text = leaf.text;
+                    try self.renderUrlOrEmail(id, text, false);
+                },
+                .email => {
+                    const text = leaf.text;
+                    try self.renderUrlOrEmail(id, text, true);
+                },
+                .footnote_reference => {
+                    const label = leaf.text;
+                    const idx = try self.footnoteIndexFor(label);
+                    var extra_buf: [3]KV = undefined;
+                    var n: usize = 0;
+                    var id_buf: [24]u8 = undefined;
+                    if (!self.fnref_id_emitted.contains(label)) {
+                        const id_text = std.fmt.bufPrint(&id_buf, "fnref{d}", .{idx}) catch "fnref";
+                        extra_buf[n] = .{ .key = "id", .value = id_text };
+                        n += 1;
+                        try self.fnref_id_emitted.put(self.allocator, label, {});
+                    }
+                    var href_buf: [24]u8 = undefined;
+                    const href_text = std.fmt.bufPrint(&href_buf, "#fn{d}", .{idx}) catch "#fn";
+                    extra_buf[n] = .{ .key = "href", .value = href_text };
                     n += 1;
-                    try self.fnref_id_emitted.put(self.allocator, label, {});
-                }
-                var href_buf: [24]u8 = undefined;
-                const href_text = std.fmt.bufPrint(&href_buf, "#fn{d}", .{idx}) catch "#fn";
-                extra_buf[n] = .{ .key = "href", .value = href_text };
-                n += 1;
-                extra_buf[n] = .{ .key = "role", .value = "doc-noteref" };
-                n += 1;
-                try self.renderTag("a", id, extra_buf[0..n]);
-                try self.writer.writeAll("<sup>");
-                try self.writer.print("{d}", .{idx});
-                try self.writer.writeAll("</sup></a>");
+                    extra_buf[n] = .{ .key = "role", .value = "doc-noteref" };
+                    n += 1;
+                    try self.renderTag("a", id, extra_buf[0..n]);
+                    try self.writer.writeAll("<sup>");
+                    try self.writer.print("{d}", .{idx});
+                    try self.writer.writeAll("</sup></a>");
+                },
             },
             .table => if (self.options.table_sections)
                 try self.renderSectionedTable(id)
@@ -868,39 +944,26 @@ pub const Renderer = struct {
                 }
             },
             .smart_punctuation => |v| try self.writer.writeAll(smartPunct(v.kind)),
-            .double_quoted => {
-                try self.writer.writeAll(smartPunct(.left_double_quote));
-                try self.renderChildren(id);
-                try self.writer.writeAll(smartPunct(.right_double_quote));
-            },
-            .single_quoted => {
-                try self.writer.writeAll(smartPunct(.left_single_quote));
-                try self.renderChildren(id);
-                try self.writer.writeAll(smartPunct(.right_single_quote));
-            },
-            .symb => |alias| {
-                try self.writer.writeByte(':');
-                try self.writeEscaped(alias);
-                try self.writer.writeByte(':');
-            },
-            .inline_math => |text| {
-                try self.renderTag("span", id, &.{.{ .key = "class", .value = "math inline" }});
-                try self.writer.writeAll("\\(");
-                try self.writeEscaped(text);
-                try self.writer.writeAll("\\)");
-                try self.renderCloseTag("span");
-            },
-            .display_math => |text| {
-                try self.renderTag("span", id, &.{.{ .key = "class", .value = "math display" }});
-                try self.writer.writeAll("\\[");
-                try self.writeEscaped(text);
-                try self.writer.writeAll("\\]");
-                try self.renderCloseTag("span");
-            },
-            .verbatim => |text| {
-                try self.renderTag("code", id, &.{});
-                try self.writeEscaped(text);
-                try self.renderCloseTag("code");
+            // One arm, still exhaustive over `InlineMark`: a tenth mark fails
+            // THIS build (where spelling lives) and no other.
+            .inline_mark => |m| switch (m) {
+                .emph => try self.inTags("em", id, 0, &.{}),
+                .strong => try self.inTags("strong", id, 0, &.{}),
+                .mark => try self.inTags("mark", id, 0, &.{}),
+                .superscript => try self.inTags("sup", id, 0, &.{}),
+                .subscript => try self.inTags("sub", id, 0, &.{}),
+                .insert => try self.inTags("ins", id, 0, &.{}),
+                .delete => try self.inTags("del", id, 0, &.{}),
+                .double_quoted => {
+                    try self.writer.writeAll(smartPunct(.left_double_quote));
+                    try self.renderChildren(id);
+                    try self.writer.writeAll(smartPunct(.right_double_quote));
+                },
+                .single_quoted => {
+                    try self.writer.writeAll(smartPunct(.left_single_quote));
+                    try self.renderChildren(id);
+                    try self.writer.writeAll(smartPunct(.right_single_quote));
+                },
             },
             .raw_inline => |v| {
                 if (std.mem.eql(u8, v.format, "html")) try self.writeRawHtml(v.text);
@@ -910,16 +973,6 @@ pub const Renderer = struct {
             .non_breaking_space => try self.writer.writeAll("&nbsp;"),
             .link => |v| try self.renderLinkOrImage(id, v, false),
             .image => |v| try self.renderLinkOrImage(id, v, true),
-            .url => |text| try self.renderUrlOrEmail(id, text, false),
-            .email => |text| try self.renderUrlOrEmail(id, text, true),
-            .strong => try self.inTags("strong", id, 0, &.{}),
-            .emph => try self.inTags("em", id, 0, &.{}),
-            .span => try self.inTags("span", id, 0, &.{}),
-            .mark => try self.inTags("mark", id, 0, &.{}),
-            .insert => try self.inTags("ins", id, 0, &.{}),
-            .delete => try self.inTags("del", id, 0, &.{}),
-            .superscript => try self.inTags("sup", id, 0, &.{}),
-            .subscript => try self.inTags("sub", id, 0, &.{}),
 
             // Generic directives render like an element whose tag name is the
             // directive name, with the `{#id .class k=v}` shorthand applied as
@@ -927,29 +980,10 @@ pub const Renderer = struct {
             // `mdast-util-directive` (`:::main{#x}` -> `<main id="x">…</main>`).
             // `text` is inline (no surrounding newlines); `leaf`/`container`
             // are block-level.
-            .directive => |d| switch (d.form) {
-                .text => try self.inTags(d.name, id, 0, &.{}),
-                .leaf => try self.inTags(d.name, id, 1, &.{}),
-                .container => try self.inTags(d.name, id, 2, &.{}),
-            },
 
             // ── generic markup (net-new relative to djot/html.zig) ────────
             // See this file's module doc comment for the rationale behind
             // each of these.
-            .element => |e| {
-                try self.renderTag(e.name, id, &.{});
-                if (isVoidElement(e.name)) return;
-                if (isRawTextElement(e.name)) {
-                    // Raw-text content (script/style/…) has no escaping
-                    // mechanism in HTML: it must be written verbatim. Escaping
-                    // it would corrupt the JS/CSS and double-escape on
-                    // re-parse (`<` → `&lt;` → `&amp;lt;`).
-                    try self.renderRawTextChildren(id);
-                } else {
-                    try self.renderChildren(id);
-                }
-                try self.renderCloseTag(e.name);
-            },
             .comment => |text| {
                 try self.writer.writeAll("<!--");
                 try self.writer.writeAll(text);
@@ -1030,8 +1064,9 @@ pub const Renderer = struct {
         var it = self.ast.children(id);
         while (it.next()) |child| {
             switch (child.kind) {
-                .footnote_reference => {},
-                .str, .verbatim, .symb, .url, .email, .inline_math, .display_math => |t| try buf.appendSlice(self.allocator, t),
+                .str => |t| try buf.appendSlice(self.allocator, t),
+                // A footnote reference contributes no text to a plain-text render.
+                .text_leaf => |l| if (l.kind != .footnote_reference) try buf.appendSlice(self.allocator, l.text),
                 .raw_inline => |v| try buf.appendSlice(self.allocator, v.text),
                 .code_block => |v| try buf.appendSlice(self.allocator, v.text),
                 .raw_block => |v| try buf.appendSlice(self.allocator, v.text),
@@ -1182,7 +1217,7 @@ test "renders a simple paragraph with emphasis (no Context needed)" {
     defer b.deinit();
     const s1 = try b.addLeaf(.{ .str = "hello " });
     const em_text = try b.addLeaf(.{ .str = "world" });
-    const em = try b.addContainer(.emph, &.{em_text});
+    const em = try b.addContainer(.{ .inline_mark = .emph }, &.{em_text});
     const para = try b.addContainer(.para, &.{ s1, em });
     const root = try b.addContainer(.doc, &.{para});
 
@@ -1198,7 +1233,7 @@ test "element with children round-trips as an open/close pair" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
     const text = try b.addLeaf(.{ .str = "hi" });
-    const el = try b.addContainer(.{ .element = .{ .name = "video" } }, &.{text});
+    const el = try b.addContainer(.{ .container = .{ .name = "video" } }, &.{text});
     b.setContentSpan(el, .{ .start = 0, .end = 2 });
 
     var ast = try b.finish(el);
@@ -1212,7 +1247,7 @@ test "element with children round-trips as an open/close pair" {
 test "a self-closing (XML-style) non-void element still gets an explicit close tag" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "video" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "video" } });
     // `content_span == null`: an XML-style `<video/>` parse.
 
     var ast = try b.finish(el);
@@ -1226,7 +1261,7 @@ test "a self-closing (XML-style) non-void element still gets an explicit close t
 test "a void element renders with no close tag regardless of content_span" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "br" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "br" } });
 
     var ast = try b.finish(el);
     defer ast.deinit();
@@ -1239,7 +1274,7 @@ test "a void element renders with no close tag regardless of content_span" {
 test "a bare (null-value) attribute on a generic element renders as just its key" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "input" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "input" } });
     try b.setAttrs(el, .{ .entries = &.{ .{ .key = "disabled", .value = null }, .{ .key = "type", .value = "checkbox" } } });
 
     var ast = try b.finish(el);
