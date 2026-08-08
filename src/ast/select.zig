@@ -425,8 +425,9 @@ fn kindNameMatches(name: []const u8, kind: Node.Kind) bool {
     if (eqAny(name, &.{"item"})) return tag == .list_item or tag == .task_list_item or tag == .definition_list_item;
     if (eqAny(name, &.{"code"})) return tag == .code_block;
     if (eqAny(name, &.{ "metadata", "meta", "frontmatter" })) return tag == .metadata;
-    if (eqAny(name, &.{ "emph", "em", "emphasis", "italic" })) return tag == .emph;
-    if (eqAny(name, &.{ "strong", "bold", "b" })) return tag == .strong;
+    // The nine marks share one tag now, so their names test the family member.
+    if (eqAny(name, &.{ "emph", "em", "emphasis", "italic" })) return kind == .inline_mark and kind.inline_mark == .emph;
+    if (eqAny(name, &.{ "strong", "bold", "b" })) return kind == .inline_mark and kind.inline_mark == .strong;
     if (eqAny(name, &.{ "quote", "blockquote" })) return tag == .block_quote;
     if (eqAny(name, &.{"table"})) return tag == .table;
     if (eqAny(name, &.{"cell"})) return tag == .cell;
@@ -442,8 +443,9 @@ fn kindNameMatches(name: []const u8, kind: Node.Kind) bool {
         return tag == .container and std.mem.eql(u8, kind.container.name, name);
     }
     if (eqAny(name, &.{ "container", "element", "directive" })) return tag == .container;
-    // Power-user escape hatch: the exact `Node.Kind` tag name.
-    return std.mem.eql(u8, name, @tagName(tag));
+    // Power-user escape hatch: the exact kind name — which for a mark is the
+    // MARK's name (`superscript`, `insert`, …), matching what `-o ast` prints.
+    return std.mem.eql(u8, name, AST.kindName(kind));
 }
 
 fn opMatch(op: Op, actual: []const u8, want: []const u8) bool {

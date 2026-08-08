@@ -58,10 +58,10 @@ const Fixture = struct {
     }
 
     /// The first node of `kind` in the reparsed tree, or null.
-    fn find(self: *Fixture, kind: KindTag) ?AST.Node.Id {
+    fn find(self: *Fixture, kind: AST.KindRef) ?AST.Node.Id {
         const ast = self.ed.astView();
         for (ast.nodes, 0..) |n, i| {
-            if (std.meta.activeTag(n.kind) == kind) return @intCast(i);
+            if (kind.matches(n.kind)) return @intCast(i);
         }
         return null;
     }
@@ -69,7 +69,7 @@ const Fixture = struct {
     /// The destination the parser reads back out of the EDITED source — the only
     /// thing that proves an escape worked.
     fn expectLinkDest(self: *Fixture, expected: []const u8) !void {
-        const id = self.find(.link) orelse return error.NoLink;
+        const id = self.find(.{ .tag = .link }) orelse return error.NoLink;
         const dest = self.ed.astView().nodes[id].kind.link.destination orelse return error.NoDestination;
         try testing.expectEqualStrings(expected, dest);
     }
@@ -78,7 +78,7 @@ const Fixture = struct {
     /// text). Kind is the whole point: `<foo>` and `[foo](foo)` both look like a
     /// link in the source but reparse as raw HTML and a link respectively.
     fn expectSpelled(self: *Fixture, kind: KindTag, payload: []const u8) !void {
-        const id = self.find(kind) orelse return error.KindNotFound;
+        const id = self.find(.{ .tag = kind }) orelse return error.KindNotFound;
         const got: []const u8 = switch (self.ed.astView().nodes[id].kind) {
             // `link` and `image` carry distinct anonymous payload structs, so
             // they can't share a capture even though the field is the same.
@@ -90,7 +90,7 @@ const Fixture = struct {
         try testing.expectEqualStrings(payload, got);
     }
 
-    fn expectNoNodeOfKind(self: *Fixture, kind: KindTag) !void {
+    fn expectNoNodeOfKind(self: *Fixture, kind: AST.KindRef) !void {
         if (self.find(kind) != null) return error.UnexpectedKind;
     }
 
@@ -117,7 +117,7 @@ const Fixture = struct {
     /// raw HTML / an entity on the way through.
     fn expectLinkText(self: *Fixture, expected: []const u8) !void {
         const ast = self.ed.astView();
-        const link = self.find(.link) orelse return error.NoLink;
+        const link = self.find(.{ .tag = .link }) orelse return error.NoLink;
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(testing.allocator);
         var it = ast.children(link);
@@ -451,8 +451,8 @@ test "insertLineBreak: splices an in-cell <br> that reparses as a hard_break (ma
     try fx.ed.insertLineBreak(3); // caret just after `a` in the header cell
     try fx.expectSource("| a<br> | b |\n| --- | --- |\n| 1 | 2 |\n");
     // The point of the whole feature: a semantic break, not opaque raw HTML.
-    try testing.expect(fx.find(.hard_break) != null);
-    try fx.expectNoNodeOfKind(.raw_inline);
+    try testing.expect(fx.find(.{ .tag = .hard_break }) != null);
+    try fx.expectNoNodeOfKind(.{ .tag = .raw_inline });
 }
 
 test "insertLineBreak: the spliced break round-trips (the source re-serializes byte-for-byte)" {
@@ -528,7 +528,7 @@ test "insert_link: an empty range autolinks an absolute URL (both formats)" {
         try insertLink(&fx, 1, 1, "https://x.dev");
         try fx.expectSource("a<https://x.dev>b\n");
         try fx.expectSpelled(.url, "https://x.dev");
-        try fx.expectNoNodeOfKind(.link);
+        try fx.expectNoNodeOfKind(.{ .tag = .link });
     }
 }
 
@@ -539,7 +539,7 @@ test "insert_link: an empty range autolinks a bare email (both formats)" {
         try insertLink(&fx, 1, 1, "a@b.dev");
         try fx.expectSource("a<a@b.dev>b\n");
         try fx.expectSpelled(.email, "a@b.dev");
-        try fx.expectNoNodeOfKind(.link);
+        try fx.expectNoNodeOfKind(.{ .tag = .link });
     }
 }
 
@@ -968,7 +968,7 @@ test "insert_literal: typed markdown specials all stay literal" {
     const typed = "*b* _i_ `c` [t](u) <x> &amp;";
     try insertLiteral(&fx, 0, typed);
     try expectVisibleText(&fx, typed ++ "z");
-    for ([_]KindTag{ .emph, .strong, .verbatim, .link, .image, .raw_inline }) |k|
+    for ([_]AST.KindRef{ .{ .mark = .emph }, .{ .mark = .strong }, .{ .tag = .verbatim }, .{ .tag = .link }, .{ .tag = .image }, .{ .tag = .raw_inline } }) |k|
         try fx.expectNoNodeOfKind(k);
 }
 
@@ -979,7 +979,7 @@ test "insert_literal: typed djot specials all stay literal" {
     const typed = "*b* _i_ `c` ^s^ ~t~ {=m=} \"q\" ...";
     try insertLiteral(&fx, 0, typed);
     try expectVisibleText(&fx, typed ++ "z");
-    for ([_]KindTag{ .emph, .strong, .verbatim, .superscript, .subscript, .mark }) |k|
+    for ([_]AST.KindRef{ .{ .mark = .emph }, .{ .mark = .strong }, .{ .tag = .verbatim }, .{ .mark = .superscript }, .{ .mark = .subscript }, .{ .mark = .mark } }) |k|
         try fx.expectNoNodeOfKind(k);
 }
 
@@ -989,7 +989,7 @@ test "insert_literal: a block marker escapes at a line start, in both formats" {
         defer fx.deinit();
         try insertLiteral(&fx, 0, "# ");
         try fx.expectSource("\\# z\n");
-        try fx.expectNoNodeOfKind(.heading);
+        try fx.expectNoNodeOfKind(.{ .tag = .heading });
     }
 }
 
@@ -1000,7 +1000,7 @@ test "insert_literal: the same marker mid-line is ordinary text, left unescaped"
         try insertLiteral(&fx, 1, "# ");
         // No backslash: a `#` after other text on the line opens nothing.
         try fx.expectSource("a# z\n");
-        try fx.expectNoNodeOfKind(.heading);
+        try fx.expectNoNodeOfKind(.{ .tag = .heading });
     }
 }
 
@@ -1011,7 +1011,7 @@ test "insert_literal: leading whitespace still counts as a line start" {
     defer fx.deinit();
     try insertLiteral(&fx, 2, "# ");
     try fx.expectSource("  \\# z\n");
-    try fx.expectNoNodeOfKind(.heading);
+    try fx.expectNoNodeOfKind(.{ .tag = .heading });
 }
 
 test "insert_literal: an embedded newline re-enters the line-start zone" {
@@ -1020,7 +1020,7 @@ test "insert_literal: an embedded newline re-enters the line-start zone" {
     // The first `#` is mid-line (after "a"); the second opens its own line.
     try insertLiteral(&fx, 0, "a # b\n# c");
     try fx.expectSource("a # b\n\\# cz\n");
-    try fx.expectNoNodeOfKind(.heading);
+    try fx.expectNoNodeOfKind(.{ .tag = .heading });
 }
 
 test "insert_literal: a lone backslash round-trips as a backslash" {

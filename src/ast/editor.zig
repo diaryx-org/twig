@@ -52,12 +52,30 @@ pub const Splicer = @import("splicer.zig").Splicer;
 const Syntax = syntax_mod.Syntax;
 const ContainerSpelling = syntax_mod.ContainerSpelling;
 
-/// The `Node.Kind` tag an `InlineKind`/`ContainerKind` parses back as. The
-/// vocabularies are named for their kinds, so this is a rename, not a mapping —
-/// and it fails to compile rather than silently mis-mapping if one drifts.
-fn kindTag(kind: anytype) Splicer.KindTag {
+/// The node an `InlineKind`/`ContainerKind` parses back as. The vocabularies
+/// are named for their kinds, so this is a rename, not a mapping — and it fails
+/// to compile rather than silently mis-mapping if one drifts.
+///
+/// It yields an `AST.KindRef` rather than a bare tag because seven of the eight
+/// `InlineKind`s are now `InlineMark` family members sharing the `inline_mark`
+/// tag; only `verbatim` (a text leaf, not a paired wrapper) is still a tag of
+/// its own. The `@hasField` split is resolved at comptime, so a vocabulary
+/// entry that matches NEITHER a mark nor a kind tag is still a compile error.
+fn kindRef(kind: anytype) AST.KindRef {
     return switch (kind) {
-        inline else => |k| @field(Splicer.KindTag, @tagName(k)),
+        inline else => |k| if (@hasField(AST.InlineMark, @tagName(k)))
+            .{ .mark = @field(AST.InlineMark, @tagName(k)) }
+        else
+            .{ .tag = @field(Splicer.KindTag, @tagName(k)) },
+    };
+}
+
+/// `kindRef` for a vocabulary that is always a plain tag (`ContainerKind`) —
+/// asserts that at comptime rather than leaving the caller to unwrap.
+fn kindTag(kind: anytype) Splicer.KindTag {
+    return switch (kindRef(kind)) {
+        .tag => |t| t,
+        .mark => unreachable,
     };
 }
 
@@ -166,7 +184,7 @@ pub const Editor = struct {
     pub fn toggleInline(self: *Editor, span: Span, kind: InlineKind) Error!void {
         try self.checkRange(span.start, span.end);
         const d = self.syntax.inline_delims.get(kind) orelse return error.UnsupportedFormat;
-        self.splicer.toggleInline(span, kindTag(kind), d.open, d.close) catch |err| switch (err) {
+        self.splicer.toggleInline(span, kindRef(kind), d.open, d.close) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.NoNodeSpan, error.NoContentSpan => return error.NotEditable,
             else => return error.EditConflict,

@@ -1002,7 +1002,7 @@ pub const Scanner = struct {
                     try kids.append(self.b.allocator, self.items.items[ci].node);
                     cur = self.items.items[ci].next;
                 }
-                const new_node = try self.b.addContainer(if (use_delims == 2) .strong else .emph, kids.items);
+                const new_node = try self.b.addContainer(if (use_delims == 2) AST.Node.Kind{ .inline_mark = .strong } else AST.Node.Kind{ .inline_mark = .emph }, kids.items);
 
                 // The exact source bytes THIS match consumes: the opener's
                 // innermost (content-adjacent, i.e. rightmost) `use_delims`
@@ -1107,7 +1107,7 @@ pub const Scanner = struct {
                     try kids.append(self.b.allocator, self.items.items[ci].node);
                     cur = self.items.items[ci].next;
                 }
-                const new_node = try self.b.addContainer(.delete, kids.items);
+                const new_node = try self.b.addContainer(.{ .inline_mark = .delete }, kids.items);
                 // Unlike emphasis, strikethrough always consumes a matched
                 // pair's runs WHOLE (see this function's doc comment), so
                 // the span is simply the two runs' own (never-shrunk)
@@ -2576,7 +2576,7 @@ test "text directive label parses nested inline" {
     const first = ast.nodes[dir].first_child.?;
     try testing.expectEqualStrings("a ", ast.nodes[first].kind.str);
     const emph = ast.nodes[first].next_sibling.?;
-    try testing.expect(ast.nodes[emph].kind == .emph);
+    try testing.expect(ast.nodes[emph].kind == .inline_mark and ast.nodes[emph].kind.inline_mark == .emph);
 }
 
 test "colon not starting a valid directive stays literal" {
@@ -2671,11 +2671,11 @@ test "simple emphasis and strong emphasis" {
     defer ast.deinit();
     var it = ast.children(ast.root);
     const em = it.next().?;
-    try testing.expect(em.kind == .emph);
+    try testing.expect(em.kind == .inline_mark and em.kind.inline_mark == .emph);
     try testing.expectEqualStrings("em", ast.nodes[em.first_child.?].kind.str);
     _ = it.next().?; // " and "
     const strong = it.next().?;
-    try testing.expect(strong.kind == .strong);
+    try testing.expect(strong.kind == .inline_mark and strong.kind.inline_mark == .strong);
     try testing.expectEqualStrings("strong", ast.nodes[strong.first_child.?].kind.str);
 }
 
@@ -2684,12 +2684,12 @@ test "nested emphasis inside strong inside emphasis" {
     var ast = try parseAndFinish("*a **b** c*");
     defer ast.deinit();
     const em = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[em].kind == .emph);
+    try testing.expect(ast.nodes[em].kind == .inline_mark and ast.nodes[em].kind.inline_mark == .emph);
     var it = ast.children(em);
     const t1 = it.next().?;
     try testing.expectEqualStrings("a ", t1.kind.str);
     const strong = it.next().?;
-    try testing.expect(strong.kind == .strong);
+    try testing.expect(strong.kind == .inline_mark and strong.kind.inline_mark == .strong);
     try testing.expectEqualStrings("b", ast.nodes[strong.first_child.?].kind.str);
     const t2 = it.next().?;
     try testing.expectEqualStrings(" c", t2.kind.str);
@@ -2700,10 +2700,10 @@ test "underscore emphasis and asterisk strong side by side" {
     defer ast.deinit();
     var it = ast.children(ast.root);
     const strong = it.next().?;
-    try testing.expect(strong.kind == .strong);
+    try testing.expect(strong.kind == .inline_mark and strong.kind.inline_mark == .strong);
     _ = it.next().?; // " and "
     const em = it.next().?;
-    try testing.expect(em.kind == .emph);
+    try testing.expect(em.kind == .inline_mark and em.kind.inline_mark == .emph);
     try testing.expectEqualStrings("b", ast.nodes[em.first_child.?].kind.str);
 }
 
@@ -2721,7 +2721,7 @@ test "asterisk strong can start immediately after a word (no intraword restricti
     const t1 = it.next().?;
     try testing.expectEqualStrings("foo", t1.kind.str);
     const strong = it.next().?;
-    try testing.expect(strong.kind == .strong);
+    try testing.expect(strong.kind == .inline_mark and strong.kind.inline_mark == .strong);
     try testing.expectEqualStrings("bar", ast.nodes[strong.first_child.?].kind.str);
     const t2 = it.next().?;
     try testing.expectEqualStrings("baz", t2.kind.str);
@@ -2859,7 +2859,7 @@ test "span: emphasis covers the delimiters, content_span covers just the interio
     defer ast.deinit();
     const s = "*abc*";
     const em = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[em].kind == .emph);
+    try testing.expect(ast.nodes[em].kind == .inline_mark and ast.nodes[em].kind.inline_mark == .emph);
     try testing.expectEqualStrings("*abc*", Span.of(u8, ast.nodes[em].span, s));
     try testing.expectEqualStrings("abc", Span.of(u8, ast.nodes[em].content_span.?, s));
 }
@@ -2883,7 +2883,7 @@ test "span: a text directive's label children address the true source bytes" {
     const first = ast.nodes[dir].first_child.?;
     try testing.expectEqualStrings("a ", Span.of(u8, ast.nodes[first].span, s));
     const emph = ast.nodes[first].next_sibling.?;
-    try testing.expect(ast.nodes[emph].kind == .emph);
+    try testing.expect(ast.nodes[emph].kind == .inline_mark and ast.nodes[emph].kind.inline_mark == .emph);
     try testing.expectEqualStrings("*b*", Span.of(u8, ast.nodes[emph].span, s));
     try testing.expectEqualStrings("b", Span.of(u8, ast.nodes[emph].content_span.?, s));
     const last = ast.nodes[emph].next_sibling.?;
@@ -2895,7 +2895,7 @@ test "span: strong emphasis covers its own delimiters" {
     defer ast.deinit();
     const s = "**abc**";
     const strong = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[strong].kind == .strong);
+    try testing.expect(ast.nodes[strong].kind == .inline_mark and ast.nodes[strong].kind.inline_mark == .strong);
     try testing.expectEqualStrings("**abc**", Span.of(u8, ast.nodes[strong].span, s));
     try testing.expectEqualStrings("abc", Span.of(u8, ast.nodes[strong].content_span.?, s));
 }
@@ -3000,7 +3000,7 @@ test "span: a partially-consumed delimiter run pairs its leftover with an outer 
     const s = "*a **b***";
 
     const emph = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[emph].kind == .emph);
+    try testing.expect(ast.nodes[emph].kind == .inline_mark and ast.nodes[emph].kind.inline_mark == .emph);
     try testing.expectEqualStrings("*a **b***", Span.of(u8, ast.nodes[emph].span, s));
     try testing.expectEqualStrings("a **b**", Span.of(u8, ast.nodes[emph].content_span.?, s));
     try testing.expectEqual(@as(?Node.Id, null), ast.nodes[emph].next_sibling);
@@ -3009,7 +3009,7 @@ test "span: a partially-consumed delimiter run pairs its leftover with an outer 
     try testing.expectEqualStrings("a ", Span.of(u8, ast.nodes[a_space].span, s));
 
     const strong = ast.nodes[a_space].next_sibling.?;
-    try testing.expect(ast.nodes[strong].kind == .strong);
+    try testing.expect(ast.nodes[strong].kind == .inline_mark and ast.nodes[strong].kind.inline_mark == .strong);
     try testing.expectEqualStrings("**b**", Span.of(u8, ast.nodes[strong].span, s));
     try testing.expectEqualStrings("b", Span.of(u8, ast.nodes[strong].content_span.?, s));
     try testing.expectEqual(@as(?Node.Id, null), ast.nodes[strong].next_sibling);
@@ -3050,7 +3050,7 @@ test "span: a strikethrough delete node covers '~~text~~'" {
     defer ast.deinit();
     const s = "~~gone~~";
     const del = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[del].kind == .delete);
+    try testing.expect(ast.nodes[del].kind == .inline_mark and ast.nodes[del].kind.inline_mark == .delete);
     try testing.expectEqualStrings("~~gone~~", Span.of(u8, ast.nodes[del].span, s));
     try testing.expectEqualStrings("gone", Span.of(u8, ast.nodes[del].content_span.?, s));
 }
@@ -3112,7 +3112,7 @@ test "strikethrough: ~~text~~ becomes a delete node when the flag is on" {
     var ast = try parseAndFinishWithOptions("~~gone~~", .{ .strikethrough = true });
     defer ast.deinit();
     const del = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[del].kind == .delete);
+    try testing.expect(ast.nodes[del].kind == .inline_mark and ast.nodes[del].kind.inline_mark == .delete);
     try testing.expectEqualStrings("gone", ast.nodes[ast.nodes[del].first_child.?].kind.str);
 }
 
@@ -3120,7 +3120,7 @@ test "strikethrough: single tilde also delimits (GFM allows one or two)" {
     var ast = try parseAndFinishWithOptions("~gone~", .{ .strikethrough = true });
     defer ast.deinit();
     const del = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[del].kind == .delete);
+    try testing.expect(ast.nodes[del].kind == .inline_mark and ast.nodes[del].kind.inline_mark == .delete);
     try testing.expectEqualStrings("gone", ast.nodes[ast.nodes[del].first_child.?].kind.str);
 }
 
@@ -3344,7 +3344,7 @@ test "extended autolink: demotion reaches an email nested deeper inside the link
     var it = ast.children(link);
     _ = it.next().?; // "a "
     const em = it.next().?;
-    try testing.expect(em.kind == .emph);
+    try testing.expect(em.kind == .inline_mark and em.kind.inline_mark == .emph);
     const inner = ast.nodes[em.first_child.?];
     try testing.expect(inner.kind == .str);
     try testing.expectEqualStrings("b@c.de", inner.kind.str);

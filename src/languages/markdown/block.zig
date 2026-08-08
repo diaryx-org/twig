@@ -3087,7 +3087,7 @@ test "span: emphasis in a single-line paragraph covers its own delimiters" {
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "hi "
     const em = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[em].kind == .emph);
+    try testing.expect(r.ast.nodes[em].kind == .inline_mark and r.ast.nodes[em].kind.inline_mark == .emph);
     try testing.expectEqualStrings("*abc*", Span.of(u8, r.ast.nodes[em].span, src));
     try testing.expectEqualStrings("abc", Span.of(u8, r.ast.nodes[em].content_span.?, src));
 }
@@ -3135,7 +3135,7 @@ test "span: an inline node straddling a line-join gets the accurate source range
     const first = r.ast.nodes[para].first_child.?; // "a "
     try testing.expectEqualStrings("a ", Span.of(u8, r.ast.nodes[first].span, src));
     const em = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[em].kind == .emph);
+    try testing.expect(r.ast.nodes[em].kind == .inline_mark and r.ast.nodes[em].kind.inline_mark == .emph);
     // The emphasis covers `*b\nc*` in the source, newline and all.
     try testing.expectEqualStrings("*b\nc*", Span.of(u8, r.ast.nodes[em].span, src));
 }
@@ -3161,7 +3161,7 @@ test "span: a text directive's label is mapped even when it straddles a line-joi
     const first = r.ast.nodes[dir].first_child.?;
     try testing.expectEqualStrings("a ", Span.of(u8, r.ast.nodes[first].span, src));
     const em = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[em].kind == .emph);
+    try testing.expect(r.ast.nodes[em].kind == .inline_mark and r.ast.nodes[em].kind.inline_mark == .emph);
     try testing.expectEqualStrings("*b*", Span.of(u8, r.ast.nodes[em].span, src));
     // The join itself, then line 2's byte — which only the second (rebased)
     // segment maps, and which is the half a first-segment-only clip would lose.

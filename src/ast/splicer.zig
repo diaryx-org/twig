@@ -602,7 +602,7 @@ pub const Splicer = struct {
     /// equal to `span` — the mark is removed (delimiters stripped); otherwise
     /// `span` is wrapped with `open`/`close`. Mirrors a rich editor's Cmd-B:
     /// select a word, bold it; select it again, un-bold it.
-    pub fn toggleInline(self: *Splicer, span: Span, kind: KindTag, open: []const u8, close: []const u8) !void {
+    pub fn toggleInline(self: *Splicer, span: Span, kind: AST.KindRef, open: []const u8, close: []const u8) !void {
         const id = self.inlineNodeCovering(span, kind) orelse
             return self.wrapRange(span, open, close);
 
@@ -631,9 +631,9 @@ pub const Splicer = struct {
     /// The id of a node of `kind` whose whole span or interior exactly equals
     /// `span` — the "is this selection already marked?" test behind
     /// `toggleInline`. `null` if none.
-    fn inlineNodeCovering(self: *Splicer, span: Span, kind: KindTag) ?Node.Id {
+    fn inlineNodeCovering(self: *Splicer, span: Span, kind: AST.KindRef) ?Node.Id {
         for (self.ast.nodes, 0..) |node, id| {
-            if (std.meta.activeTag(node.kind) != kind) continue;
+            if (!kind.matches(node.kind)) continue;
             if (node.span.eql(span)) return @intCast(id);
             if (node.content_span) |cs| {
                 if (cs.eql(span)) return @intCast(id);
@@ -861,14 +861,14 @@ test "wrapRange bolds a selection; toggleInline removes it" {
     try testing.expectEqualStrings("a **word** b\n", ed.sourceBytes());
 
     // The strong node's interior is now "word" [4,8); toggle it back off.
-    try ed.toggleInline(Span.init(4, 8), .strong, "**", "**");
+    try ed.toggleInline(Span.init(4, 8), .{ .mark = .strong }, "**", "**");
     try testing.expectEqualStrings("a word b\n", ed.sourceBytes());
 }
 
 test "toggleInline wraps when the range isn't already marked" {
     var ed = try Splicer.init(testing.allocator, "a word b\n", &test_ctx, parseMarkdown);
     defer ed.deinit();
-    try ed.toggleInline(Span.init(2, 6), .emph, "*", "*");
+    try ed.toggleInline(Span.init(2, 6), .{ .mark = .emph }, "*", "*");
     try testing.expectEqualStrings("a *word* b\n", ed.sourceBytes());
 }
 
@@ -877,7 +877,7 @@ test "toggleInline strips a verbatim run via its content_span" {
     defer ed.deinit();
     // The verbatim node is [2,8) "`code`" with content_span [3,7) "code"; toggle
     // replaces the whole node with its interior.
-    try ed.toggleInline(Span.init(2, 8), .verbatim, "`", "`");
+    try ed.toggleInline(Span.init(2, 8), .{ .tag = .verbatim }, "`", "`");
     try testing.expectEqualStrings("a code b\n", ed.sourceBytes());
 }
 
@@ -889,7 +889,7 @@ test "toggleInline strips a MULTI-backtick verbatim (content_span, not delimiter
     // interior comes from content_span, not from stripping `open`/`close`. (The
     // old delimiter-strip fallback stripped one backtick per side, leaving the
     // corrupt "`x`".)
-    try ed.toggleInline(Span.init(2, 7), .verbatim, "`", "`");
+    try ed.toggleInline(Span.init(2, 7), .{ .tag = .verbatim }, "`", "`");
     try testing.expectEqualStrings("a x b\n", ed.sourceBytes());
 }
 

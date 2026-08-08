@@ -304,13 +304,13 @@ pub const Parser = struct {
                 .alignment = cellAlignment(attrs),
             } };
         }
-        if (std.mem.eql(u8, name, "em") or std.mem.eql(u8, name, "i")) return .emph;
-        if (std.mem.eql(u8, name, "strong") or std.mem.eql(u8, name, "b")) return .strong;
-        if (std.mem.eql(u8, name, "mark")) return .mark;
-        if (std.mem.eql(u8, name, "ins")) return .insert;
-        if (std.mem.eql(u8, name, "del") or std.mem.eql(u8, name, "s")) return .delete;
-        if (std.mem.eql(u8, name, "sup")) return .superscript;
-        if (std.mem.eql(u8, name, "sub")) return .subscript;
+        if (std.mem.eql(u8, name, "em") or std.mem.eql(u8, name, "i")) return .{ .inline_mark = .emph };
+        if (std.mem.eql(u8, name, "strong") or std.mem.eql(u8, name, "b")) return .{ .inline_mark = .strong };
+        if (std.mem.eql(u8, name, "mark")) return .{ .inline_mark = .mark };
+        if (std.mem.eql(u8, name, "ins")) return .{ .inline_mark = .insert };
+        if (std.mem.eql(u8, name, "del") or std.mem.eql(u8, name, "s")) return .{ .inline_mark = .delete };
+        if (std.mem.eql(u8, name, "sup")) return .{ .inline_mark = .superscript };
+        if (std.mem.eql(u8, name, "sub")) return .{ .inline_mark = .subscript };
         if (std.mem.eql(u8, name, "span")) return .{ .container = .{ .name = "span", .form = .inline_text } };
         if (std.mem.eql(u8, name, "a")) {
             if (attrValue(attrs, "href")) |destination|

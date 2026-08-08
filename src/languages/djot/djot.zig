@@ -129,7 +129,7 @@ test "parse produces a doc with a paragraph" {
     const str_id = ast.nodes[para_id].first_child orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("hello ", ast.nodes[str_id].kind.str);
     const strong_id = ast.nodes[str_id].next_sibling orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[strong_id].kind == .strong);
+    try testing.expect(ast.nodes[strong_id].kind == .inline_mark and ast.nodes[strong_id].kind.inline_mark == .strong);
 }
 
 test "heading gets an auto id and wraps a section" {

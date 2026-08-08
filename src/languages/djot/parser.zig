@@ -635,16 +635,16 @@ pub const TreeBuilder = struct {
 
             inline .emph_open, .strong_open, .span_open, .mark_open, .superscript_open, .subscript_open, .delete_open, .insert_open, .double_quoted_open, .single_quoted_open => try self.pushContainer(ev.start),
 
-            .emph_close => try self.closeSimpleInline(ev, .emph),
-            .strong_close => try self.closeSimpleInline(ev, .strong),
+            .emph_close => try self.closeSimpleInline(ev, .{ .inline_mark = .emph }),
+            .strong_close => try self.closeSimpleInline(ev, .{ .inline_mark = .strong }),
             .span_close => try self.closeSimpleInline(ev, .{ .container = .{ .name = "", .form = .inline_text } }),
-            .mark_close => try self.closeSimpleInline(ev, .mark),
-            .superscript_close => try self.closeSimpleInline(ev, .superscript),
-            .subscript_close => try self.closeSimpleInline(ev, .subscript),
-            .delete_close => try self.closeSimpleInline(ev, .delete),
-            .insert_close => try self.closeSimpleInline(ev, .insert),
-            .double_quoted_close => try self.closeSimpleInline(ev, .double_quoted),
-            .single_quoted_close => try self.closeSimpleInline(ev, .single_quoted),
+            .mark_close => try self.closeSimpleInline(ev, .{ .inline_mark = .mark }),
+            .superscript_close => try self.closeSimpleInline(ev, .{ .inline_mark = .superscript }),
+            .subscript_close => try self.closeSimpleInline(ev, .{ .inline_mark = .subscript }),
+            .delete_close => try self.closeSimpleInline(ev, .{ .inline_mark = .delete }),
+            .insert_close => try self.closeSimpleInline(ev, .{ .inline_mark = .insert }),
+            .double_quoted_close => try self.closeSimpleInline(ev, .{ .inline_mark = .double_quoted }),
+            .single_quoted_close => try self.closeSimpleInline(ev, .{ .inline_mark = .single_quoted }),
 
             .attributes_open => try self.pushContainer(ev.start),
             .attributes_close => try self.closeInlineAttributes(ev),
@@ -1482,7 +1482,7 @@ test "content_span: inline emphasis covers its text" {
 
     const para_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const emph_id = ast.nodes[para_id].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[emph_id].kind == .emph);
+    try testing.expect(ast.nodes[emph_id].kind == .inline_mark and ast.nodes[emph_id].kind.inline_mark == .emph);
     const cs = ast.nodes[emph_id].content_span orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("abc", src[cs.start..cs.end]);
 }

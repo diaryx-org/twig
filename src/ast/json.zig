@@ -56,7 +56,7 @@ fn writeNode(w: *Stringify, ast: *const AST, id: Node.Id) Writer.Error!void {
     try w.beginObject();
 
     try w.objectField("kind");
-    try w.write(@tagName(node.kind));
+    try w.write(AST.kindName(node.kind));
 
     try w.objectField("span");
     try w.beginArray();
@@ -123,15 +123,9 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .soft_break,
         .hard_break,
         .non_breaking_space,
-        .emph,
-        .strong,
-        .mark,
-        .superscript,
-        .subscript,
-        .insert,
-        .delete,
-        .double_quoted,
-        .single_quoted,
+        // `inline_mark`'s family member is already reported as the node's
+        // `kind` name (see `AST.kindName`), so it needs no payload field.
+        .inline_mark,
         => {},
 
         .heading => |h| {
@@ -319,7 +313,7 @@ test "encode: container node nests children in source order" {
     defer b.deinit();
     const a = try b.addLeaf(.{ .str = "a" });
     const em_text = try b.addLeaf(.{ .str = "b" });
-    const em = try b.addContainer(.emph, &.{em_text});
+    const em = try b.addContainer(.{ .inline_mark = .emph }, &.{em_text});
     const para = try b.addContainer(.para, &.{ a, em });
 
     var ast = try b.finish(para);

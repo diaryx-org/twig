@@ -543,15 +543,54 @@ const Renderer = struct {
             .email => |e| try self.writer.print("<{s}>", .{e}),
             .footnote_reference => |lab| try self.writer.print("[^{s}]", .{lab}),
             .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
-            .emph => {
-                try self.writer.writeByte('*');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('*');
-            },
-            .strong => {
-                try self.writer.writeAll("**");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("**");
+            // One arm, still exhaustive over `InlineMark`: a tenth mark fails
+            // THIS build (where spelling lives) and no other.
+            .inline_mark => |m| switch (m) {
+                .emph => {
+                    try self.writer.writeByte('*');
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeByte('*');
+                },
+                .strong => {
+                    try self.writer.writeAll("**");
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeAll("**");
+                },
+                .mark => {
+                    try self.writer.writeAll("==");
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeAll("==");
+                },
+                .superscript => {
+                    try self.writer.writeByte('^');
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeByte('^');
+                },
+                .subscript => {
+                    try self.writer.writeByte('~');
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeByte('~');
+                },
+                .insert => {
+                    try self.writer.writeAll("{+");
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeAll("+}");
+                },
+                .delete => {
+                    try self.writer.writeAll("~~");
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeAll("~~");
+                },
+                .double_quoted => {
+                    try self.writer.writeByte('"');
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeByte('"');
+                },
+                .single_quoted => {
+                    try self.writer.writeByte('\'');
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeByte('\'');
+                },
             },
             .link => |l| {
                 try self.writer.writeByte('[');
@@ -583,41 +622,6 @@ const Renderer = struct {
                     try self.writer.writeByte(']');
                 }
                 try self.writeDirectiveAttrs(id);
-            },
-            .mark => {
-                try self.writer.writeAll("==");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("==");
-            },
-            .superscript => {
-                try self.writer.writeByte('^');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('^');
-            },
-            .subscript => {
-                try self.writer.writeByte('~');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('~');
-            },
-            .insert => {
-                try self.writer.writeAll("{+");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("+}");
-            },
-            .delete => {
-                try self.writer.writeAll("~~");
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeAll("~~");
-            },
-            .double_quoted => {
-                try self.writer.writeByte('"');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('"');
-            },
-            .single_quoted => {
-                try self.writer.writeByte('\'');
-                try self.renderInlineChildren(id, ctx);
-                try self.writer.writeByte('\'');
             },
             else => try self.renderInlineChildren(id, ctx),
         }

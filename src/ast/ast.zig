@@ -187,17 +187,13 @@ pub const Node = struct {
         /// `[^label]` used inline; payload is the label (no `^`/brackets).
         footnote_reference: []const u8,
         smart_punctuation: struct { kind: SmartPunctuationKind, text: []const u8 },
-        emph,
-        strong,
         link: struct { destination: ?[]const u8, reference: ?[]const u8 },
         image: struct { destination: ?[]const u8, reference: ?[]const u8 },
-        mark,
-        superscript,
-        subscript,
-        insert,
-        delete,
-        double_quoted,
-        single_quoted,
+        /// A paired-delimiter inline wrapper — `*emph*`, `**strong**`,
+        /// `{=mark=}`, `^sup^`, `~sub~`, `{+ins+}`, `{-del-}`, and djot's two
+        /// smart-quote containers. Which one it is rides in the payload rather
+        /// than in the tag; see `InlineMark`.
+        inline_mark: InlineMark,
         // ── Generic markup ────────────────────────────────────────────────
         /// A NAMED GENERIC CONTAINER — the single escape hatch that keeps this
         /// vocabulary closed. Languages map what they can to semantic kinds
@@ -281,6 +277,74 @@ pub const Node = struct {
 // exhaustively, so a NEW KIND CANNOT BE ADDED WITHOUT DECLARING BOTH — which
 // is the property the scattered lists never had.
 
+/// Which paired-delimiter inline a `Kind.inline_mark` is.
+///
+/// ── Why a nested enum and not nine union arms ──────────────────────────────
+/// Borrowed from fig's `Kind.Extended` (`ast/ast.zig`), whose doc states the
+/// property this is here for: "adding a new such scalar is a new `ExtKind`, not
+/// a new union arm: the outer switches stay closed; only the printers (where
+/// cross-format rendering is inherently type-specific) gain a case."
+///
+/// These nine were nine arms, and every GENERIC consumer treated all nine
+/// identically — `level` and `contentModel` below listed them twice over,
+/// `ast/json.zig` lumped them into one payload-free arm, `ast/select.zig` never
+/// distinguished them. Only the three serializers care, and only because each
+/// mark has its own delimiters — which is `syntax.zig`'s `Delims` table's job,
+/// not `Kind`'s.
+///
+/// Crucially this is NOT string matching and NOT a loss of exhaustiveness: a
+/// serializer still switches over `InlineMark` exhaustively, so a tenth mark
+/// still fails those builds until it is spelled. What it stops doing is failing
+/// the builds that never cared.
+///
+/// The EXTERNAL vocabulary is unchanged: `ast/json.zig` still emits
+/// `"kind": "emph"` and `c_abi.zig`'s `kindName` still reports `"emph"`, both
+/// by projecting the mark name up into the kind name. This is an internal
+/// structuring, not a surface change.
+pub const InlineMark = enum {
+    emph,
+    strong,
+    mark,
+    superscript,
+    subscript,
+    insert,
+    delete,
+    double_quoted,
+    single_quoted,
+};
+
+/// Names a kind precisely enough to match a node against it.
+///
+/// A bare `Kind` tag used to be enough, and for most kinds it still is. It
+/// stopped being enough for the nine `InlineMark`s, whose tag is now all
+/// `inline_mark`: "find the enclosing `strong`" cannot be asked with a tag.
+/// This is the exhaustively-switched bridge — no strings, and adding a family
+/// means adding an arm here, which fails every `matches` caller until handled.
+pub const KindRef = union(enum) {
+    tag: std.meta.Tag(Node.Kind),
+    mark: InlineMark,
+
+    pub fn matches(self: KindRef, kind: Node.Kind) bool {
+        return switch (self) {
+            .tag => |t| std.meta.activeTag(kind) == t,
+            .mark => |m| kind == .inline_mark and kind.inline_mark == m,
+        };
+    }
+};
+
+/// The name a kind reports to the OUTSIDE — `ast/json.zig`'s `"kind"` field and
+/// `c_abi.zig`'s `twig_node_kind_name`.
+///
+/// For an `inline_mark` this is the MARK's name (`"emph"`, `"strong"`), never
+/// `"inline_mark"`. The family is an internal structuring; the published
+/// vocabulary predates it and does not move because of it.
+pub fn kindName(kind: Node.Kind) []const u8 {
+    return switch (kind) {
+        .inline_mark => |m| @tagName(m),
+        else => @tagName(kind),
+    };
+}
+
 /// Where a kind sits in the document hierarchy.
 ///
 /// `neither` is not a shrug: it is the honest answer for three groups. The
@@ -350,17 +414,9 @@ pub fn level(kind: Node.Kind) Level {
         .email,
         .footnote_reference,
         .smart_punctuation,
-        .emph,
-        .strong,
         .link,
         .image,
-        .mark,
-        .superscript,
-        .subscript,
-        .insert,
-        .delete,
-        .double_quoted,
-        .single_quoted,
+        .inline_mark,
         => .@"inline",
 
         // A generic container's level is the one thing `form` was introduced to
@@ -438,17 +494,9 @@ pub fn contentModel(kind: Node.Kind) ContentModel {
         .heading,
         .term,
         .caption,
-        .emph,
-        .strong,
         .link,
         .image,
-        .mark,
-        .superscript,
-        .subscript,
-        .insert,
-        .delete,
-        .double_quoted,
-        .single_quoted,
+        .inline_mark,
         => .inlines,
 
         // A fenced container holds blocks; the inline and one-line-leaf forms

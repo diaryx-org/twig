@@ -255,7 +255,7 @@ test "Builder constructs a small tree bottom-up" {
 
     const s1 = try b.addLeaf(.{ .str = "hello " });
     const em_text = try b.addLeaf(.{ .str = "world" });
-    const em = try b.addContainer(.emph, &.{em_text});
+    const em = try b.addContainer(.{ .inline_mark = .emph }, &.{em_text});
     const para = try b.addContainer(.para, &.{ s1, em });
 
     var ast = try b.finish(para);

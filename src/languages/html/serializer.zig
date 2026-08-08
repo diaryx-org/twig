@@ -902,15 +902,26 @@ pub const Renderer = struct {
                 }
             },
             .smart_punctuation => |v| try self.writer.writeAll(smartPunct(v.kind)),
-            .double_quoted => {
-                try self.writer.writeAll(smartPunct(.left_double_quote));
-                try self.renderChildren(id);
-                try self.writer.writeAll(smartPunct(.right_double_quote));
-            },
-            .single_quoted => {
-                try self.writer.writeAll(smartPunct(.left_single_quote));
-                try self.renderChildren(id);
-                try self.writer.writeAll(smartPunct(.right_single_quote));
+            // One arm, still exhaustive over `InlineMark`: a tenth mark fails
+            // THIS build (where spelling lives) and no other.
+            .inline_mark => |m| switch (m) {
+                .emph => try self.inTags("em", id, 0, &.{}),
+                .strong => try self.inTags("strong", id, 0, &.{}),
+                .mark => try self.inTags("mark", id, 0, &.{}),
+                .superscript => try self.inTags("sup", id, 0, &.{}),
+                .subscript => try self.inTags("sub", id, 0, &.{}),
+                .insert => try self.inTags("ins", id, 0, &.{}),
+                .delete => try self.inTags("del", id, 0, &.{}),
+                .double_quoted => {
+                    try self.writer.writeAll(smartPunct(.left_double_quote));
+                    try self.renderChildren(id);
+                    try self.writer.writeAll(smartPunct(.right_double_quote));
+                },
+                .single_quoted => {
+                    try self.writer.writeAll(smartPunct(.left_single_quote));
+                    try self.renderChildren(id);
+                    try self.writer.writeAll(smartPunct(.right_single_quote));
+                },
             },
             .symb => |alias| {
                 try self.writer.writeByte(':');
@@ -946,13 +957,6 @@ pub const Renderer = struct {
             .image => |v| try self.renderLinkOrImage(id, v, true),
             .url => |text| try self.renderUrlOrEmail(id, text, false),
             .email => |text| try self.renderUrlOrEmail(id, text, true),
-            .strong => try self.inTags("strong", id, 0, &.{}),
-            .emph => try self.inTags("em", id, 0, &.{}),
-            .mark => try self.inTags("mark", id, 0, &.{}),
-            .insert => try self.inTags("ins", id, 0, &.{}),
-            .delete => try self.inTags("del", id, 0, &.{}),
-            .superscript => try self.inTags("sup", id, 0, &.{}),
-            .subscript => try self.inTags("sub", id, 0, &.{}),
 
             // Generic directives render like an element whose tag name is the
             // directive name, with the `{#id .class k=v}` shorthand applied as
@@ -1196,7 +1200,7 @@ test "renders a simple paragraph with emphasis (no Context needed)" {
     defer b.deinit();
     const s1 = try b.addLeaf(.{ .str = "hello " });
     const em_text = try b.addLeaf(.{ .str = "world" });
-    const em = try b.addContainer(.emph, &.{em_text});
+    const em = try b.addContainer(.{ .inline_mark = .emph }, &.{em_text});
     const para = try b.addContainer(.para, &.{ s1, em });
     const root = try b.addContainer(.doc, &.{para});
 
