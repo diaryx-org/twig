@@ -1029,6 +1029,9 @@ fn kindNameZ(kind: twig.AST.Node.Kind) [*:0]const u8 {
         .inline_mark => |m| switch (m) {
             inline else => |mm| @tagName(mm).ptr,
         },
+        .text_leaf => |l| switch (l.kind) {
+            inline else => |lk| @tagName(lk).ptr,
+        },
         inline else => |_, tag| @tagName(tag).ptr,
     };
 }
@@ -1094,7 +1097,8 @@ fn kindAlignment(node: *const twig.AST.Node) c_int {
 /// or `null` for kinds that carry none. Borrows the AST-owned payload.
 fn kindText(node: *const twig.AST.Node) ?[]const u8 {
     return switch (node.kind) {
-        .str, .symb, .verbatim, .inline_math, .display_math, .url, .email, .footnote_reference => |s| s,
+        .str => |s| s,
+        .text_leaf => |l| l.text,
         .comment, .doctype, .cdata => |s| s,
         // Each payload is a distinct anonymous struct type, so Zig can't merge
         // these captures into one prong — but each exposes a `.text` field.
@@ -2224,13 +2228,13 @@ pub export fn twig_builder_add_text(
     const text = sliceOf(text_ptr, text_len) orelse return .invalid_argument;
     const node_kind: twig.AST.Node.Kind = switch (kind) {
         @intFromEnum(TwigNodeKind.str) => .{ .str = text },
-        @intFromEnum(TwigNodeKind.symb) => .{ .symb = text },
-        @intFromEnum(TwigNodeKind.verbatim) => .{ .verbatim = text },
-        @intFromEnum(TwigNodeKind.inline_math) => .{ .inline_math = text },
-        @intFromEnum(TwigNodeKind.display_math) => .{ .display_math = text },
-        @intFromEnum(TwigNodeKind.url) => .{ .url = text },
-        @intFromEnum(TwigNodeKind.email) => .{ .email = text },
-        @intFromEnum(TwigNodeKind.footnote_reference) => .{ .footnote_reference = text },
+        @intFromEnum(TwigNodeKind.symb) => .{ .text_leaf = .{ .kind = .symb, .text = text } },
+        @intFromEnum(TwigNodeKind.verbatim) => .{ .text_leaf = .{ .kind = .verbatim, .text = text } },
+        @intFromEnum(TwigNodeKind.inline_math) => .{ .text_leaf = .{ .kind = .inline_math, .text = text } },
+        @intFromEnum(TwigNodeKind.display_math) => .{ .text_leaf = .{ .kind = .display_math, .text = text } },
+        @intFromEnum(TwigNodeKind.url) => .{ .text_leaf = .{ .kind = .url, .text = text } },
+        @intFromEnum(TwigNodeKind.email) => .{ .text_leaf = .{ .kind = .email, .text = text } },
+        @intFromEnum(TwigNodeKind.footnote_reference) => .{ .text_leaf = .{ .kind = .footnote_reference, .text = text } },
         @intFromEnum(TwigNodeKind.comment) => .{ .comment = text },
         @intFromEnum(TwigNodeKind.doctype) => .{ .doctype = text },
         @intFromEnum(TwigNodeKind.cdata) => .{ .cdata = text },

@@ -226,7 +226,7 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                     try sc.flushBuf(i);
                     const content = try normalizeCodeSpan(b.allocator, text[span.content_start..span.content_end]);
                     defer b.allocator.free(content);
-                    const id = try b.addLeaf(.{ .verbatim = content });
+                    const id = try b.addLeaf(.{ .text_leaf = .{ .kind = .verbatim, .text = content } });
                     sc.setSpanIfMapped(id, i, span.end);
                     // The interior between the backtick runs, as written in the
                     // source. Note this is the RAW interior: `content` above is
@@ -262,7 +262,7 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
             '<' => {
                 if (scanAutolinkUri(text, i)) |end| {
                     try sc.flushBuf(i);
-                    const id = try b.addLeaf(.{ .url = text[i + 1 .. end - 1] });
+                    const id = try b.addLeaf(.{ .text_leaf = .{ .kind = .url, .text = text[i + 1 .. end - 1] } });
                     sc.setSpanIfMapped(id, i, end);
                     // Interior between the `<` and `>` of a core autolink. (The
                     // GFM *extended* autolinks below are frameless — bare
@@ -272,7 +272,7 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                     i = end;
                 } else if (scanAutolinkEmail(text, i)) |end| {
                     try sc.flushBuf(i);
-                    const id = try b.addLeaf(.{ .email = text[i + 1 .. end - 1] });
+                    const id = try b.addLeaf(.{ .text_leaf = .{ .kind = .email, .text = text[i + 1 .. end - 1] } });
                     sc.setSpanIfMapped(id, i, end);
                     sc.setContentSpanIfMapped(id, i + 1, end - 1);
                     _ = try sc.appendItem(id);
@@ -340,7 +340,7 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                         try sc.flushBuf(i);
                         const norm = try normalizeRefLabel(b.allocator, fr.label);
                         defer b.allocator.free(norm);
-                        const id = try b.addLeaf(.{ .footnote_reference = norm });
+                        const id = try b.addLeaf(.{ .text_leaf = .{ .kind = .footnote_reference, .text = norm } });
                         sc.setSpanIfMapped(id, i, fr.end);
                         // The label between `[^` and the closing `]`, as written
                         // — raw, so it can differ from the normalized `norm`.
@@ -437,10 +437,10 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                 if (sc.options.math) {
                     if (i + 1 < text.len and text[i + 1] == '$') {
                         if (scanDisplayMath(text, i)) |m| {
-                            matched = .{ .kind = .{ .display_math = text[i + 2 .. m.content_end] }, .end = m.end, .content_start = i + 2, .content_end = m.content_end };
+                            matched = .{ .kind = .{ .text_leaf = .{ .kind = .display_math, .text = text[i + 2 .. m.content_end] } }, .end = m.end, .content_start = i + 2, .content_end = m.content_end };
                         }
                     } else if (scanInlineMath(text, i)) |m| {
-                        matched = .{ .kind = .{ .inline_math = text[i + 1 .. m.content_end] }, .end = m.end, .content_start = i + 1, .content_end = m.content_end };
+                        matched = .{ .kind = .{ .text_leaf = .{ .kind = .inline_math, .text = text[i + 1 .. m.content_end] } }, .end = m.end, .content_start = i + 1, .content_end = m.content_end };
                     }
                 }
                 if (matched) |m| {
@@ -1265,16 +1265,16 @@ pub const Scanner = struct {
             child = self.b.nodes.items[cid].next_sibling;
         }
         const node = &self.b.nodes.items[id];
-        if (std.meta.activeTag(node.kind) != .email) return;
+        if (node.kind != .text_leaf or node.kind.text_leaf.kind != .email) return;
         for (self.ext_emails.items) |e| {
             if (e != id) continue;
             // Both kinds carry one string, so this rebinds the payload the
             // builder already owns rather than duping it again; the span still
             // covers exactly the source these bytes came from. Read the text
-            // out FIRST: assigning `.{ .str = node.kind.email }` would build
+            // out FIRST: assigning `.{ .str = node.kind.text_leaf.text }` would build
             // the new union straight into `node.kind`, activating `.str`
             // before the payload is read back out of `.email`.
-            const text = node.kind.email;
+            const text = node.kind.text_leaf.text;
             node.kind = .{ .str = text };
             return;
         }
@@ -1884,7 +1884,7 @@ fn tryExtUrlAutolink(sc: *Scanner, text: []const u8, i: usize) Allocator.Error!?
     if (trimmed.len <= prefix.len) return null;
     const final_end = i + trimmed.len;
     try sc.flushBuf(i);
-    const id = try sc.b.addLeaf(.{ .url = text[i..final_end] });
+    const id = try sc.b.addLeaf(.{ .text_leaf = .{ .kind = .url, .text = text[i..final_end] } });
     sc.setSpanIfMapped(id, i, final_end);
     _ = try sc.appendItem(id);
     return final_end;
@@ -2009,7 +2009,7 @@ fn tryExtEmailAutolink(sc: *Scanner, text: []const u8, at: usize) Allocator.Erro
     } else {
         try sc.flushBufNoSpan();
     }
-    const email_id = try sc.b.addLeaf(.{ .email = email.items });
+    const email_id = try sc.b.addLeaf(.{ .text_leaf = .{ .kind = .email, .text = email.items } });
     if (local_part_src_start) |lps| sc.setSpanIfMapped(email_id, lps, final_end);
     // Provisional: a link closing around this demotes it back to text (see
     // `demoteExtEmails`). Recorded here because this is the ONE site the
@@ -2631,7 +2631,7 @@ test "code span strips one matching leading/trailing space and converts newlines
     const s1 = it.next().?;
     try testing.expectEqualStrings("a ", s1.kind.str);
     const code = it.next().?;
-    try testing.expectEqualStrings("`foo`", code.kind.verbatim);
+    try testing.expectEqualStrings("`foo`", code.kind.text_leaf.text);
     const s2 = it.next().?;
     try testing.expectEqualStrings(" b", s2.kind.str);
 }
@@ -2752,12 +2752,12 @@ test "autolink URI and email" {
     defer ast.deinit();
     var it = ast.children(ast.root);
     const url = it.next().?;
-    try testing.expect(url.kind == .url);
-    try testing.expectEqualStrings("https://example.com", url.kind.url);
+    try testing.expect(url.kind == .text_leaf and url.kind.text_leaf.kind == .url);
+    try testing.expectEqualStrings("https://example.com", url.kind.text_leaf.text);
     _ = it.next().?; // " "
     const email = it.next().?;
-    try testing.expect(email.kind == .email);
-    try testing.expectEqualStrings("foo@bar.com", email.kind.email);
+    try testing.expect(email.kind == .text_leaf and email.kind.text_leaf.kind == .email);
+    try testing.expectEqualStrings("foo@bar.com", email.kind.text_leaf.text);
 }
 
 test "raw inline HTML passes through as raw_inline" {
@@ -2905,7 +2905,7 @@ test "span: verbatim covers the backticks, content_span covers just the interior
     defer ast.deinit();
     const s = "`code`";
     const v = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[v].kind == .verbatim);
+    try testing.expect(ast.nodes[v].kind == .text_leaf and ast.nodes[v].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("`code`", Span.of(u8, ast.nodes[v].span, s));
     try testing.expectEqualStrings("code", Span.of(u8, ast.nodes[v].content_span.?, s));
 }
@@ -2915,7 +2915,7 @@ test "span: a multi-backtick verbatim's content_span excludes BOTH backtick runs
     defer ast.deinit();
     const s = "``x``";
     const v = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[v].kind == .verbatim);
+    try testing.expect(ast.nodes[v].kind == .text_leaf and ast.nodes[v].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("x", Span.of(u8, ast.nodes[v].content_span.?, s));
 }
 
@@ -2926,8 +2926,8 @@ test "span: verbatim content_span is the RAW interior, not the normalized payloa
     defer ast.deinit();
     const s = "`` `foo` ``";
     const v = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[v].kind == .verbatim);
-    try testing.expectEqualStrings("`foo`", ast.nodes[v].kind.verbatim); // payload
+    try testing.expect(ast.nodes[v].kind == .text_leaf and ast.nodes[v].kind.text_leaf.kind == .verbatim);
+    try testing.expectEqualStrings("`foo`", ast.nodes[v].kind.text_leaf.text); // payload
     try testing.expectEqualStrings(" `foo` ", Span.of(u8, ast.nodes[v].content_span.?, s)); // raw
 }
 
@@ -2936,7 +2936,7 @@ test "span: inline_math and display_math report their interior as content_span" 
     defer im.deinit();
     const s1 = "$x$";
     const inline_node = im.nodes[im.root].first_child.?;
-    try testing.expect(im.nodes[inline_node].kind == .inline_math);
+    try testing.expect(im.nodes[inline_node].kind == .text_leaf and im.nodes[inline_node].kind.text_leaf.kind == .inline_math);
     try testing.expectEqualStrings("$x$", Span.of(u8, im.nodes[inline_node].span, s1));
     try testing.expectEqualStrings("x", Span.of(u8, im.nodes[inline_node].content_span.?, s1));
 
@@ -2944,7 +2944,7 @@ test "span: inline_math and display_math report their interior as content_span" 
     defer dm.deinit();
     const s2 = "$$x$$";
     const display_node = dm.nodes[dm.root].first_child.?;
-    try testing.expect(dm.nodes[display_node].kind == .display_math);
+    try testing.expect(dm.nodes[display_node].kind == .text_leaf and dm.nodes[display_node].kind.text_leaf.kind == .display_math);
     try testing.expectEqualStrings("$$x$$", Span.of(u8, dm.nodes[display_node].span, s2));
     try testing.expectEqualStrings("x", Span.of(u8, dm.nodes[display_node].content_span.?, s2));
 }
@@ -2954,11 +2954,11 @@ test "span: footnote_reference content_span is the RAW label between [^ and ]" {
     defer ast.deinit();
     const s = "see[^ A B ]";
     const ref = ast.nodes[ast.nodes[ast.root].first_child.?].next_sibling.?; // after "see"
-    try testing.expect(ast.nodes[ref].kind == .footnote_reference);
+    try testing.expect(ast.nodes[ref].kind == .text_leaf and ast.nodes[ref].kind.text_leaf.kind == .footnote_reference);
     try testing.expectEqualStrings("[^ A B ]", Span.of(u8, ast.nodes[ref].span, s));
     // The payload is the normalized label; content_span points at the source
     // interior as written, spaces and case preserved.
-    try testing.expectEqualStrings("a b", ast.nodes[ref].kind.footnote_reference);
+    try testing.expectEqualStrings("a b", ast.nodes[ref].kind.text_leaf.text);
     try testing.expectEqualStrings(" A B ", Span.of(u8, ast.nodes[ref].content_span.?, s));
 }
 
@@ -2968,7 +2968,7 @@ test "span: a core <...> autolink's content_span is the interior; a bare GFM aut
     defer uri.deinit();
     const s1 = "<http://x.dev>";
     const url = uri.nodes[uri.root].first_child.?;
-    try testing.expect(uri.nodes[url].kind == .url);
+    try testing.expect(uri.nodes[url].kind == .text_leaf and uri.nodes[url].kind.text_leaf.kind == .url);
     try testing.expectEqualStrings("<http://x.dev>", Span.of(u8, uri.nodes[url].span, s1));
     try testing.expectEqualStrings("http://x.dev", Span.of(u8, uri.nodes[url].content_span.?, s1));
 
@@ -2976,14 +2976,14 @@ test "span: a core <...> autolink's content_span is the interior; a bare GFM aut
     defer email.deinit();
     const s2 = "<a@b.com>";
     const mail = email.nodes[email.root].first_child.?;
-    try testing.expect(email.nodes[mail].kind == .email);
+    try testing.expect(email.nodes[mail].kind == .text_leaf and email.nodes[mail].kind.text_leaf.kind == .email);
     try testing.expectEqualStrings("a@b.com", Span.of(u8, email.nodes[mail].content_span.?, s2));
 
     // GFM extended (bare) autolink: frameless, so NO content_span.
     var bare = try parseAndFinishMapped("https://x.dev", .{ .autolinks = true });
     defer bare.deinit();
     const url2 = bare.nodes[bare.root].first_child.?;
-    try testing.expect(bare.nodes[url2].kind == .url);
+    try testing.expect(bare.nodes[url2].kind == .text_leaf and bare.nodes[url2].kind.text_leaf.kind == .url);
     try testing.expect(bare.nodes[url2].content_span == null);
 }
 
@@ -3041,7 +3041,7 @@ test "span: a code span covers its own backticks" {
     const s = "a `bc` d";
     const first = ast.nodes[ast.root].first_child.?; // "a "
     const code = ast.nodes[first].next_sibling.?; // the verbatim node
-    try testing.expect(ast.nodes[code].kind == .verbatim);
+    try testing.expect(ast.nodes[code].kind == .text_leaf and ast.nodes[code].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("`bc`", Span.of(u8, ast.nodes[code].span, s));
 }
 
@@ -3060,7 +3060,7 @@ test "span: an autolink covers '<...>' including the angle brackets" {
     defer ast.deinit();
     const s = "<http://a.co>";
     const url = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[url].kind == .url);
+    try testing.expect(ast.nodes[url].kind == .text_leaf and ast.nodes[url].kind.text_leaf.kind == .url);
     try testing.expectEqualStrings(s, Span.of(u8, ast.nodes[url].span, s));
 }
 
@@ -3083,8 +3083,8 @@ test "footnote reference: [^label] becomes a footnote_reference node when the fl
     const text = it.next().?;
     try testing.expectEqualStrings("see", text.kind.str);
     const ref = it.next().?;
-    try testing.expect(ref.kind == .footnote_reference);
-    try testing.expectEqualStrings("a", ref.kind.footnote_reference);
+    try testing.expect(ref.kind == .text_leaf and ref.kind.text_leaf.kind == .footnote_reference);
+    try testing.expectEqualStrings("a", ref.kind.text_leaf.text);
     try testing.expectEqual(@as(?*const AST.Node, null), it.next());
 }
 
@@ -3092,8 +3092,8 @@ test "footnote reference: the label is normalized (trim/collapse ws/lowercase), 
     var ast = try parseAndFinishWithOptions("[^ A  B ]", .{ .footnotes = true });
     defer ast.deinit();
     const ref = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[ref].kind == .footnote_reference);
-    try testing.expectEqualStrings("a b", ast.nodes[ref].kind.footnote_reference);
+    try testing.expect(ast.nodes[ref].kind == .text_leaf and ast.nodes[ref].kind.text_leaf.kind == .footnote_reference);
+    try testing.expectEqualStrings("a b", ast.nodes[ref].kind.text_leaf.text);
 }
 
 test "footnote reference OFF: [^a] parses as plain CommonMark (an unresolved shortcut link falls back to literal brackets)" {
@@ -3144,16 +3144,16 @@ test "inline math: $x$ becomes inline_math when the flag is on" {
     var ast = try parseAndFinishWithOptions("$x^2$", .{ .math = true });
     defer ast.deinit();
     const child = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[child].kind == .inline_math);
-    try testing.expectEqualStrings("x^2", ast.nodes[child].kind.inline_math);
+    try testing.expect(ast.nodes[child].kind == .text_leaf and ast.nodes[child].kind.text_leaf.kind == .inline_math);
+    try testing.expectEqualStrings("x^2", ast.nodes[child].kind.text_leaf.text);
 }
 
 test "display math: $$x$$ becomes display_math when the flag is on" {
     var ast = try parseAndFinishWithOptions("$$x^2$$", .{ .math = true });
     defer ast.deinit();
     const child = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[child].kind == .display_math);
-    try testing.expectEqualStrings("x^2", ast.nodes[child].kind.display_math);
+    try testing.expect(ast.nodes[child].kind == .text_leaf and ast.nodes[child].kind.text_leaf.kind == .display_math);
+    try testing.expectEqualStrings("x^2", ast.nodes[child].kind.text_leaf.text);
 }
 
 test "math OFF (the default): $x$ parses as plain CommonMark literal text" {
@@ -3179,8 +3179,8 @@ test "extended autolink: bare https:// URL becomes a url node" {
     const s1 = it.next().?;
     try testing.expectEqualStrings("see ", s1.kind.str);
     const url = it.next().?;
-    try testing.expect(url.kind == .url);
-    try testing.expectEqualStrings("https://example.com/x", url.kind.url);
+    try testing.expect(url.kind == .text_leaf and url.kind.text_leaf.kind == .url);
+    try testing.expectEqualStrings("https://example.com/x", url.kind.text_leaf.text);
 }
 
 test "extended autolink: www. gets an http:// prefix on the destination, text unchanged" {
@@ -3200,8 +3200,8 @@ test "extended autolink: trailing sentence punctuation is trimmed off the link" 
     var it = ast.children(ast.root);
     _ = it.next().?; // "Check "
     const url = it.next().?;
-    try testing.expect(url.kind == .url);
-    try testing.expectEqualStrings("https://example.com", url.kind.url);
+    try testing.expect(url.kind == .text_leaf and url.kind.text_leaf.kind == .url);
+    try testing.expectEqualStrings("https://example.com", url.kind.text_leaf.text);
     const trailing = it.next().?;
     try testing.expectEqualStrings(".", trailing.kind.str);
 }
@@ -3212,8 +3212,8 @@ test "extended autolink: a balanced trailing paren is kept, an unbalanced one is
     var it = ast.children(ast.root);
     _ = it.next().?; // "(see "
     const url = it.next().?;
-    try testing.expect(url.kind == .url);
-    try testing.expectEqualStrings("https://en.wikipedia.org/wiki/Foo_(bar)", url.kind.url);
+    try testing.expect(url.kind == .text_leaf and url.kind.text_leaf.kind == .url);
+    try testing.expectEqualStrings("https://en.wikipedia.org/wiki/Foo_(bar)", url.kind.text_leaf.text);
     const trailing = it.next().?;
     try testing.expectEqualStrings(")", trailing.kind.str);
 }
@@ -3225,8 +3225,8 @@ test "extended autolink: bare email address becomes an email node" {
     const s1 = it.next().?;
     try testing.expectEqualStrings("contact ", s1.kind.str);
     const email = it.next().?;
-    try testing.expect(email.kind == .email);
-    try testing.expectEqualStrings("foo@bar.example.com", email.kind.email);
+    try testing.expect(email.kind == .text_leaf and email.kind.text_leaf.kind == .email);
+    try testing.expectEqualStrings("foo@bar.example.com", email.kind.text_leaf.text);
 }
 
 test "extended autolinks OFF: bare www./http(s) text parses as plain CommonMark literal text" {
@@ -3276,7 +3276,7 @@ test "extended autolink: an UNMATCHED `[` suppresses a url for the rest of the b
     var ast = try parseAndFinishWithOptions("[a https://x.dev", .{ .autolinks = true });
     defer ast.deinit();
     var it = ast.children(ast.root);
-    while (it.next()) |n| try testing.expect(n.kind != .url and n.kind != .link);
+    while (it.next()) |n| try testing.expect(!(n.kind == .text_leaf and n.kind.text_leaf.kind == .url) and n.kind != .link);
 }
 
 test "extended autolink: a bracket that closes WITHOUT a link releases the suppression" {
@@ -3286,8 +3286,8 @@ test "extended autolink: a bracket that closes WITHOUT a link releases the suppr
     var found = false;
     var it = ast.children(ast.root);
     while (it.next()) |n| {
-        if (n.kind == .url) {
-            try testing.expectEqualStrings("https://x.dev", n.kind.url);
+        if (n.kind == .text_leaf and n.kind.text_leaf.kind == .url) {
+            try testing.expectEqualStrings("https://x.dev", n.kind.text_leaf.text);
             found = true;
         }
     }
@@ -3326,8 +3326,8 @@ test "extended autolink: an email inside a bracket that does NOT resolve still l
     var found = false;
     var it = ast.children(ast.root);
     while (it.next()) |n| {
-        if (n.kind == .email) {
-            try testing.expectEqualStrings("b@c.de", n.kind.email);
+        if (n.kind == .text_leaf and n.kind.text_leaf.kind == .email) {
+            try testing.expectEqualStrings("b@c.de", n.kind.text_leaf.text);
             found = true;
         }
     }
@@ -3356,8 +3356,8 @@ test "extended autolink: demotion is scoped to the link — an email after it st
     var emails: usize = 0;
     var it = ast.children(ast.root);
     while (it.next()) |n| {
-        if (n.kind == .email) {
-            try testing.expectEqualStrings("e@f.gh", n.kind.email);
+        if (n.kind == .text_leaf and n.kind.text_leaf.kind == .email) {
+            try testing.expectEqualStrings("e@f.gh", n.kind.text_leaf.text);
             emails += 1;
         }
     }
@@ -3375,8 +3375,8 @@ test "extended autolink: a CORE `<b@c.de>` inside a link is NOT demoted" {
     var it = ast.children(link);
     _ = it.next().?; // "a "
     const inner = it.next().?;
-    try testing.expect(inner.kind == .email);
-    try testing.expectEqualStrings("b@c.de", inner.kind.email);
+    try testing.expect(inner.kind == .text_leaf and inner.kind.text_leaf.kind == .email);
+    try testing.expectEqualStrings("b@c.de", inner.kind.text_leaf.text);
 }
 
 test "extended autolink: an email inside an IMAGE is not demoted (images are not links)" {
@@ -3389,5 +3389,5 @@ test "extended autolink: an email inside an IMAGE is not demoted (images are not
     try testing.expect(ast.nodes[img].kind == .image);
     var it = ast.children(img);
     _ = it.next().?; // "a "
-    try testing.expect(it.next().?.kind == .email);
+    try testing.expect(it.next().?.kind.text_leaf.kind == .email);
 }

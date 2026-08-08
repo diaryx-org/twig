@@ -877,7 +877,7 @@ test "toggleInline strips a verbatim run via its content_span" {
     defer ed.deinit();
     // The verbatim node is [2,8) "`code`" with content_span [3,7) "code"; toggle
     // replaces the whole node with its interior.
-    try ed.toggleInline(Span.init(2, 8), .{ .tag = .verbatim }, "`", "`");
+    try ed.toggleInline(Span.init(2, 8), .{ .text_leaf = .verbatim }, "`", "`");
     try testing.expectEqualStrings("a code b\n", ed.sourceBytes());
 }
 
@@ -889,7 +889,7 @@ test "toggleInline strips a MULTI-backtick verbatim (content_span, not delimiter
     // interior comes from content_span, not from stripping `open`/`close`. (The
     // old delimiter-strip fallback stripped one backtick per side, leaving the
     // corrupt "`x`".)
-    try ed.toggleInline(Span.init(2, 7), .{ .tag = .verbatim }, "`", "`");
+    try ed.toggleInline(Span.init(2, 7), .{ .text_leaf = .verbatim }, "`", "`");
     try testing.expectEqualStrings("a x b\n", ed.sourceBytes());
 }
 

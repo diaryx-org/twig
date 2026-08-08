@@ -361,14 +361,8 @@ pub const TreeBuilder = struct {
             .footnote => |v| .{ .footnote = .{ .label = try self.own(v.label) } },
             .reference => |v| .{ .reference = .{ .label = try self.own(v.label), .destination = try self.own(v.destination) } },
             .str => |v| .{ .str = try self.own(v) },
-            .symb => |v| .{ .symb = try self.own(v) },
-            .verbatim => |v| .{ .verbatim = try self.own(v) },
+            .text_leaf => |v| .{ .text_leaf = .{ .kind = v.kind, .text = try self.own(v.text) } },
             .raw_inline => |v| .{ .raw_inline = .{ .format = try self.own(v.format), .text = try self.own(v.text) } },
-            .inline_math => |v| .{ .inline_math = try self.own(v) },
-            .display_math => |v| .{ .display_math = try self.own(v) },
-            .url => |v| .{ .url = try self.own(v) },
-            .email => |v| .{ .email = try self.own(v) },
-            .footnote_reference => |v| .{ .footnote_reference = try self.own(v) },
             .smart_punctuation => |v| .{ .smart_punctuation = .{ .kind = v.kind, .text = try self.own(v.text) } },
             .link => |v| .{ .link = .{
                 .destination = if (v.destination) |d| try self.own(d) else null,
@@ -596,7 +590,7 @@ pub const TreeBuilder = struct {
             .symb => {
                 if (self.context == .normal) {
                     const alias = self.source[ev.start + 1 .. ev.end];
-                    const id = try self.addNode(.{ .symb = alias }, Span.init(ev.start, ev.end + 1));
+                    const id = try self.addNode(.{ .text_leaf = .{ .kind = .symb, .text = alias } }, Span.init(ev.start, ev.end + 1));
                     // Interior between the framing colons (`:name:` → `name`).
                     self.nodes.items[id].content_span = leafInteriorSpan(ev.start + 1, ev.end);
                     self.addChildToTip(id);
@@ -607,7 +601,7 @@ pub const TreeBuilder = struct {
             .footnote_reference => {
                 const raw = self.source[ev.start + 2 .. ev.end];
                 const lab = try normalizeLabel(self.allocator, raw);
-                const id = try self.addNode(.{ .footnote_reference = lab }, Span.init(ev.start, ev.end + 1));
+                const id = try self.addNode(.{ .text_leaf = .{ .kind = .footnote_reference, .text = lab } }, Span.init(ev.start, ev.end + 1));
                 // Interior between the `[^` and `]` framing (raw label, which
                 // need not equal the normalized `.footnote_reference` payload).
                 self.nodes.items[id].content_span = leafInteriorSpan(ev.start + 2, ev.end);
@@ -740,7 +734,7 @@ pub const TreeBuilder = struct {
                 defer c.deinit(self.allocator);
                 const text = try trimVerbatim(self.allocator, self.accumulated_text.items);
                 defer self.allocator.free(text);
-                const id = try self.addNode(.{ .verbatim = text }, Span.init(c.start, ev.end + 1));
+                const id = try self.addNode(.{ .text_leaf = .{ .kind = .verbatim, .text = text } }, Span.init(c.start, ev.end + 1));
                 // Raw interior between the backticks (a later `raw_format`
                 // event may retype this node to `raw_inline`, keeping the same
                 // interior). `source[content_span]` is the raw, untrimmed text.
@@ -770,7 +764,7 @@ pub const TreeBuilder = struct {
                 defer c.deinit(self.allocator);
                 const text = try stripNewlines(self.allocator, self.accumulated_text.items);
                 defer self.allocator.free(text);
-                const id = try self.addNode(.{ .url = text }, Span.init(c.start, ev.end + 1));
+                const id = try self.addNode(.{ .text_leaf = .{ .kind = .url, .text = text } }, Span.init(c.start, ev.end + 1));
                 // Interior between the `<` and `>` autolink delimiters.
                 self.nodes.items[id].content_span = leafInteriorSpan(c.content_start, ev.start);
                 try self.commitAttrs(id, &c.attrs);
@@ -788,7 +782,7 @@ pub const TreeBuilder = struct {
                 defer c.deinit(self.allocator);
                 const text = try stripNewlines(self.allocator, self.accumulated_text.items);
                 defer self.allocator.free(text);
-                const id = try self.addNode(.{ .email = text }, Span.init(c.start, ev.end + 1));
+                const id = try self.addNode(.{ .text_leaf = .{ .kind = .email, .text = text } }, Span.init(c.start, ev.end + 1));
                 // Interior between the `<` and `>` autolink delimiters.
                 self.nodes.items[id].content_span = leafInteriorSpan(c.content_start, ev.start);
                 try self.commitAttrs(id, &c.attrs);
@@ -971,8 +965,8 @@ pub const TreeBuilder = struct {
             self.topContainer().data.format = format;
         } else {
             const tip_id = self.getTip() orelse return;
-            if (self.nodes.items[tip_id].kind == .verbatim) {
-                const text = self.nodes.items[tip_id].kind.verbatim;
+            if (self.nodes.items[tip_id].kind == .text_leaf and self.nodes.items[tip_id].kind.text_leaf.kind == .verbatim) {
+                const text = self.nodes.items[tip_id].kind.text_leaf.text;
                 self.nodes.items[tip_id].kind = .{ .raw_inline = .{ .format = format, .text = text } };
             }
         }
@@ -991,7 +985,7 @@ pub const TreeBuilder = struct {
         defer c.deinit(self.allocator);
         const text = try trimVerbatim(self.allocator, self.accumulated_text.items);
         defer self.allocator.free(text);
-        const kind: Node.Kind = if (display) .{ .display_math = text } else .{ .inline_math = text };
+        const kind: Node.Kind = if (display) .{ .text_leaf = .{ .kind = .display_math, .text = text } } else .{ .text_leaf = .{ .kind = .inline_math, .text = text } };
         const id = try self.addNode(kind, Span.init(c.start, ev.end + 1));
         // Raw interior between the `$`/`$$` + backtick opener and the closing
         // backticks; `source[content_span]` is untrimmed, unlike `text`.
@@ -1371,14 +1365,8 @@ fn addStringContent(allocator: Allocator, tb: *TreeBuilder, first: ?Node.Id, buf
     while (cur) |id| : (cur = tb.nodes.items[id].next_sibling) {
         const node = &tb.nodes.items[id];
         switch (node.kind) {
-            .footnote_reference => {},
+            .text_leaf => |l| if (l.kind != .footnote_reference) try buf.appendSlice(allocator, l.text),
             .str => |t| try buf.appendSlice(allocator, t),
-            .verbatim => |t| try buf.appendSlice(allocator, t),
-            .symb => |t| try buf.appendSlice(allocator, t),
-            .url => |t| try buf.appendSlice(allocator, t),
-            .email => |t| try buf.appendSlice(allocator, t),
-            .inline_math => |t| try buf.appendSlice(allocator, t),
-            .display_math => |t| try buf.appendSlice(allocator, t),
             .raw_inline => |v| try buf.appendSlice(allocator, v.text),
             .code_block => |v| try buf.appendSlice(allocator, v.text),
             .raw_block => |v| try buf.appendSlice(allocator, v.text),
@@ -1592,7 +1580,7 @@ test "content_span: inline verbatim is the interior between the backticks" {
     const ast = doc.ast;
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[id].kind == .verbatim);
+    try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .verbatim);
     const sp = ast.nodes[id].span;
     try testing.expectEqualStrings("`code`", src[sp.start..sp.end]);
     const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
@@ -1608,8 +1596,8 @@ test "content_span: verbatim raw interior differs from the space-trimmed text" {
     const ast = doc.ast;
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[id].kind == .verbatim);
-    try testing.expectEqualStrings("`x`", ast.nodes[id].kind.verbatim);
+    try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .verbatim);
+    try testing.expectEqualStrings("`x`", ast.nodes[id].kind.text_leaf.text);
     const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
     // Raw interior INCLUDES the framing spaces: content_span != text.
     try testing.expectEqualStrings(" `x` ", src[cs.start..cs.end]);
@@ -1622,7 +1610,7 @@ test "content_span: inline and display math interiors exclude their delimiters" 
         defer doc.deinit();
         const ast = doc.ast;
         const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
-        try testing.expect(ast.nodes[id].kind == .inline_math);
+        try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .inline_math);
         const sp = ast.nodes[id].span;
         try testing.expectEqualStrings("$`x+y`", src[sp.start..sp.end]);
         const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
@@ -1634,7 +1622,7 @@ test "content_span: inline and display math interiors exclude their delimiters" 
         defer doc.deinit();
         const ast = doc.ast;
         const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
-        try testing.expect(ast.nodes[id].kind == .display_math);
+        try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .display_math);
         const sp = ast.nodes[id].span;
         try testing.expectEqualStrings("$$`x+y`", src[sp.start..sp.end]);
         const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
@@ -1661,7 +1649,7 @@ test "content_span: url autolink interior excludes the angle brackets" {
     const ast = doc.ast;
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[id].kind == .url);
+    try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .url);
     const sp = ast.nodes[id].span;
     try testing.expectEqualStrings("<https://x.dev>", src[sp.start..sp.end]);
     const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
@@ -1675,7 +1663,7 @@ test "content_span: email autolink interior excludes the angle brackets" {
     const ast = doc.ast;
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[id].kind == .email);
+    try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .email);
     const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("a@b.dev", src[cs.start..cs.end]);
 }
@@ -1687,7 +1675,7 @@ test "content_span: symbol interior excludes the framing colons" {
     const ast = doc.ast;
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[id].kind == .symb);
+    try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .symb);
     const sp = ast.nodes[id].span;
     try testing.expectEqualStrings(":smile:", src[sp.start..sp.end]);
     const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
@@ -1704,7 +1692,7 @@ test "content_span: footnote reference interior excludes the [^ and ]" {
     // Skip the leading `x` str to reach the footnote_reference.
     const str_x = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
     const id = ast.nodes[str_x].next_sibling orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[id].kind == .footnote_reference);
+    try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .footnote_reference);
     const sp = ast.nodes[id].span;
     try testing.expectEqualStrings("[^note]", src[sp.start..sp.end]);
     const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;

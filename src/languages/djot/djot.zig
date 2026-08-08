@@ -192,15 +192,15 @@ test "symb: :name: shortcodes parse to symb nodes carrying the bare alias" {
 
     const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const first = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[first].kind == .symb);
-    try testing.expectEqualStrings("+1", ast.nodes[first].kind.symb);
+    try testing.expect(ast.nodes[first].kind == .text_leaf and ast.nodes[first].kind.text_leaf.kind == .symb);
+    try testing.expectEqualStrings("+1", ast.nodes[first].kind.text_leaf.text);
 
     const space = ast.nodes[first].next_sibling orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[space].kind == .str);
 
     const second = ast.nodes[space].next_sibling orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[second].kind == .symb);
-    try testing.expectEqualStrings("scream", ast.nodes[second].kind.symb);
+    try testing.expect(ast.nodes[second].kind == .text_leaf and ast.nodes[second].kind.text_leaf.kind == .symb);
+    try testing.expectEqualStrings("scream", ast.nodes[second].kind.text_leaf.text);
 }
 
 test "symb: a shortcode consumes only through its closing colon, leaving the rest literal" {
@@ -210,8 +210,8 @@ test "symb: a shortcode consumes only through its closing colon, leaving the res
 
     const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const first = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[first].kind == .symb);
-    try testing.expectEqualStrings("ice", ast.nodes[first].kind.symb);
+    try testing.expect(ast.nodes[first].kind == .text_leaf and ast.nodes[first].kind.text_leaf.kind == .symb);
+    try testing.expectEqualStrings("ice", ast.nodes[first].kind.text_leaf.text);
 
     // ":ice:" is consumed; the trailing "scream:" stays literal text.
     const rest = ast.nodes[first].next_sibling orelse return error.TestExpectedNonNull;

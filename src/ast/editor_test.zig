@@ -77,14 +77,15 @@ const Fixture = struct {
     /// The reparsed KIND with its payload (a `link`'s destination, an autolink's
     /// text). Kind is the whole point: `<foo>` and `[foo](foo)` both look like a
     /// link in the source but reparse as raw HTML and a link respectively.
-    fn expectSpelled(self: *Fixture, kind: KindTag, payload: []const u8) !void {
-        const id = self.find(.{ .tag = kind }) orelse return error.KindNotFound;
+    fn expectSpelled(self: *Fixture, kind: AST.KindRef, payload: []const u8) !void {
+        const id = self.find(kind) orelse return error.KindNotFound;
         const got: []const u8 = switch (self.ed.astView().nodes[id].kind) {
             // `link` and `image` carry distinct anonymous payload structs, so
             // they can't share a capture even though the field is the same.
             .link => |l| l.destination orelse return error.NoPayload,
             .image => |i| i.destination orelse return error.NoPayload,
-            .url, .email, .str => |t| t,
+            .str => |t| t,
+            .text_leaf => |l| l.text,
             else => return error.NoPayload,
         };
         try testing.expectEqualStrings(payload, got);
@@ -102,7 +103,7 @@ const Fixture = struct {
         for (ast.nodes) |n| {
             const got: []const u8 = switch (n.kind) {
                 .link => |l| l.destination orelse return error.NoDestination,
-                .url, .email => |t| t,
+                .text_leaf => |l| l.text,
                 else => continue,
             };
             try testing.expectEqualStrings(expected, got);
@@ -527,7 +528,7 @@ test "insert_link: an empty range autolinks an absolute URL (both formats)" {
         defer fx.deinit();
         try insertLink(&fx, 1, 1, "https://x.dev");
         try fx.expectSource("a<https://x.dev>b\n");
-        try fx.expectSpelled(.url, "https://x.dev");
+        try fx.expectSpelled(.{ .text_leaf = .url }, "https://x.dev");
         try fx.expectNoNodeOfKind(.{ .tag = .link });
     }
 }
@@ -538,7 +539,7 @@ test "insert_link: an empty range autolinks a bare email (both formats)" {
         defer fx.deinit();
         try insertLink(&fx, 1, 1, "a@b.dev");
         try fx.expectSource("a<a@b.dev>b\n");
-        try fx.expectSpelled(.email, "a@b.dev");
+        try fx.expectSpelled(.{ .text_leaf = .email }, "a@b.dev");
         try fx.expectNoNodeOfKind(.{ .tag = .link });
     }
 }
@@ -551,13 +552,13 @@ test "insert_link: the formats disagree on what a `mailto:` autolink IS" {
     defer md.deinit();
     try insertLink(&md, 1, 1, "mailto:a@b.dev");
     try md.expectSource("a<mailto:a@b.dev>b\n");
-    try md.expectSpelled(.url, "mailto:a@b.dev");
+    try md.expectSpelled(.{ .text_leaf = .url }, "mailto:a@b.dev");
 
     var dj = try Fixture.init("ab\n", .djot);
     defer dj.deinit();
     try insertLink(&dj, 1, 1, "mailto:a@b.dev");
     try dj.expectSource("a<mailto:a@b.dev>b\n");
-    try dj.expectSpelled(.email, "mailto:a@b.dev");
+    try dj.expectSpelled(.{ .text_leaf = .email }, "mailto:a@b.dev");
 }
 
 test "insert_link: a bare word is NOT autolinkable — `<foo>` would be raw HTML" {
@@ -589,14 +590,14 @@ test "insert_link: a destination with a space falls back, escaped per format" {
     defer dj.deinit();
     try insertLink(&dj, 1, 1, "x dev");
     try dj.expectSource("a[x dev](x dev)b\n");
-    try dj.expectSpelled(.link, "x dev");
+    try dj.expectSpelled(.{ .tag = .link }, "x dev");
     try dj.expectLinkText("x dev");
 
     var md = try Fixture.init("ab\n", .markdown);
     defer md.deinit();
     try insertLink(&md, 1, 1, "x dev");
     try md.expectSource("a[x dev](<x dev>)b\n");
-    try md.expectSpelled(.link, "x dev");
+    try md.expectSpelled(.{ .tag = .link }, "x dev");
     try md.expectLinkText("x dev");
 }
 
@@ -607,7 +608,7 @@ test "insert_link: re-pointing a text-less link also gets the canonical spelling
     defer fx.deinit();
     try insertLink(&fx, 3, 3, "https://x.dev");
     try fx.expectSource("a <https://x.dev> b\n");
-    try fx.expectSpelled(.url, "https://x.dev");
+    try fx.expectSpelled(.{ .text_leaf = .url }, "https://x.dev");
 }
 
 test "insert_link: an `email` autolink re-points like a `url` one" {
@@ -616,7 +617,7 @@ test "insert_link: an `email` autolink re-points like a `url` one" {
         defer fx.deinit();
         try insertLink(&fx, 8, 8, "c@d.dev");
         try fx.expectSource("see <c@d.dev> ok\n");
-        try fx.expectSpelled(.email, "c@d.dev");
+        try fx.expectSpelled(.{ .text_leaf = .email }, "c@d.dev");
     }
 }
 
@@ -628,13 +629,13 @@ test "insert_link: a `mailto:` autolink re-points though the formats disagree on
     defer dj.deinit();
     try insertLink(&dj, 10, 10, "mailto:c@d.dev");
     try dj.expectSource("see <mailto:c@d.dev> ok\n");
-    try dj.expectSpelled(.email, "mailto:c@d.dev");
+    try dj.expectSpelled(.{ .text_leaf = .email }, "mailto:c@d.dev");
 
     var md = try Fixture.init("see <mailto:a@b.dev> ok\n", .markdown);
     defer md.deinit();
     try insertLink(&md, 10, 10, "mailto:c@d.dev");
     try md.expectSource("see <mailto:c@d.dev> ok\n");
-    try md.expectSpelled(.url, "mailto:c@d.dev");
+    try md.expectSpelled(.{ .text_leaf = .url }, "mailto:c@d.dev");
 }
 
 test "insert_link: an autolink's boundaries read like a link's — start in, end out" {
@@ -704,7 +705,7 @@ test "insert_link: a caret in an autolink re-points it, not its URL text" {
         defer fx.deinit();
         try insertLink(&fx, 10, 10, "https://y.dev");
         try fx.expectSource("see <https://y.dev> ok\n");
-        try fx.expectSpelled(.url, "https://y.dev");
+        try fx.expectSpelled(.{ .text_leaf = .url }, "https://y.dev");
     }
 }
 
@@ -723,7 +724,7 @@ test "insert_link: a SELECTION of a whole autolink re-points it, like a caret" {
     defer fx.deinit();
     try insertLink(&fx, 4, 19, "https://y.dev");
     try fx.expectSource("see <https://y.dev> ok\n");
-    try fx.expectSpelled(.url, "https://y.dev");
+    try fx.expectSpelled(.{ .text_leaf = .url }, "https://y.dev");
 }
 
 test "insert_link: a SELECTION running from text into the middle of a URL is refused" {
@@ -754,7 +755,7 @@ test "insert_link: a caret in an autolink INSIDE a link re-points the link" {
     try insertLink(&fx, 10, 10, "new");
     try fx.expectLinkDest("new");
     // The autolink survives as the link's text.
-    try fx.expectSpelled(.url, "https://x.dev");
+    try fx.expectSpelled(.{ .text_leaf = .url }, "https://x.dev");
 }
 
 // The escaping tests. Each asserts on the DESTINATION THE PARSER READS BACK, not
@@ -904,7 +905,7 @@ test "insert_image spells an image with the selection as alt text" {
     defer fx.deinit();
     try insertImage(&fx, 2, 6, "cat.png");
     try fx.expectSource("a ![word](cat.png) b\n");
-    try fx.expectSpelled(.image, "cat.png");
+    try fx.expectSpelled(.{ .tag = .image }, "cat.png");
 }
 
 test "insert_image: an empty range is a perfectly good image" {
@@ -914,7 +915,7 @@ test "insert_image: an empty range is a perfectly good image" {
     defer fx.deinit();
     try insertImage(&fx, 1, 1, "cat.png");
     try fx.expectSource("a![](cat.png)b\n");
-    try fx.expectSpelled(.image, "cat.png");
+    try fx.expectSpelled(.{ .tag = .image }, "cat.png");
 }
 
 test "insert_image: whitespace in the destination takes the format's spelling" {
@@ -925,13 +926,13 @@ test "insert_image: whitespace in the destination takes the format's spelling" {
     defer md.deinit();
     try insertImage(&md, 0, 1, "my cat.png");
     try md.expectSource("![w](<my cat.png>)\n");
-    try md.expectSpelled(.image, "my cat.png");
+    try md.expectSpelled(.{ .tag = .image }, "my cat.png");
 
     var dj = try Fixture.init("w\n", .djot);
     defer dj.deinit();
     try insertImage(&dj, 0, 1, "my cat.png");
     try dj.expectSource("![w](my cat.png)\n");
-    try dj.expectSpelled(.image, "my cat.png");
+    try dj.expectSpelled(.{ .tag = .image }, "my cat.png");
 }
 
 test "insert_image: a paren in the destination is escaped, not left to close early" {
@@ -939,7 +940,7 @@ test "insert_image: a paren in the destination is escaped, not left to close ear
     defer fx.deinit();
     try insertImage(&fx, 0, 1, "a)b.png");
     try fx.expectSource("![w](a\\)b.png)\n");
-    try fx.expectSpelled(.image, "a)b.png");
+    try fx.expectSpelled(.{ .tag = .image }, "a)b.png");
 }
 
 test "insert_image refuses a newline destination and a parse-only format" {
@@ -968,7 +969,7 @@ test "insert_literal: typed markdown specials all stay literal" {
     const typed = "*b* _i_ `c` [t](u) <x> &amp;";
     try insertLiteral(&fx, 0, typed);
     try expectVisibleText(&fx, typed ++ "z");
-    for ([_]AST.KindRef{ .{ .mark = .emph }, .{ .mark = .strong }, .{ .tag = .verbatim }, .{ .tag = .link }, .{ .tag = .image }, .{ .tag = .raw_inline } }) |k|
+    for ([_]AST.KindRef{ .{ .mark = .emph }, .{ .mark = .strong }, .{ .text_leaf = .verbatim }, .{ .tag = .link }, .{ .tag = .image }, .{ .tag = .raw_inline } }) |k|
         try fx.expectNoNodeOfKind(k);
 }
 
@@ -979,7 +980,7 @@ test "insert_literal: typed djot specials all stay literal" {
     const typed = "*b* _i_ `c` ^s^ ~t~ {=m=} \"q\" ...";
     try insertLiteral(&fx, 0, typed);
     try expectVisibleText(&fx, typed ++ "z");
-    for ([_]AST.KindRef{ .{ .mark = .emph }, .{ .mark = .strong }, .{ .tag = .verbatim }, .{ .mark = .superscript }, .{ .mark = .subscript }, .{ .mark = .mark } }) |k|
+    for ([_]AST.KindRef{ .{ .mark = .emph }, .{ .mark = .strong }, .{ .text_leaf = .verbatim }, .{ .mark = .superscript }, .{ .mark = .subscript }, .{ .mark = .mark } }) |k|
         try fx.expectNoNodeOfKind(k);
 }
 

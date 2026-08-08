@@ -65,6 +65,8 @@ fn kindRef(kind: anytype) AST.KindRef {
     return switch (kind) {
         inline else => |k| if (@hasField(AST.InlineMark, @tagName(k)))
             .{ .mark = @field(AST.InlineMark, @tagName(k)) }
+        else if (@hasField(AST.TextLeafKind, @tagName(k)))
+            .{ .text_leaf = @field(AST.TextLeafKind, @tagName(k)) }
         else
             .{ .tag = @field(Splicer.KindTag, @tagName(k)) },
     };
@@ -75,6 +77,7 @@ fn kindRef(kind: anytype) AST.KindRef {
 fn kindTag(kind: anytype) Splicer.KindTag {
     return switch (kindRef(kind)) {
         .tag => |t| t,
+        .text_leaf => unreachable,
         .mark => unreachable,
     };
 }
@@ -539,8 +542,11 @@ pub const Editor = struct {
             // destination, so keeping it would spell the new link with the URL it
             // was meant to replace. Empty text sends it through the canonical
             // spelling below, exactly as a caret on bare text goes.
-            text = switch (std.meta.activeTag(node.kind)) {
-                .url, .email => "",
+            text = switch (node.kind) {
+                // An autolink's visible text IS its destination; the caller
+                // supplies that, so the node contributes nothing.
+                .text_leaf => |l| if (l.kind == .url or l.kind == .email) "" else
+                    if (node.content_span) |cs| src[cs.start..cs.end] else "",
                 else => if (node.content_span) |cs| src[cs.start..cs.end] else "",
             };
             target = node.span;
@@ -1193,7 +1199,9 @@ fn writeLiteral(
 /// picking one kind per format would miss half the autolinks it was meant to
 /// catch.
 fn autolinkCovering(ast: *const AST, chain: []const AST.Node.Id, start: usize, end: usize) ?AST.Node.Id {
-    return locate.innermostCovering(ast, chain, &.{ .url, .email }, start, end);
+    const id = locate.innermostCovering(ast, chain, &.{.text_leaf}, start, end) orelse return null;
+    const l = ast.nodes[id].kind.text_leaf;
+    return if (l.kind == .url or l.kind == .email) id else null;
 }
 
 /// Whether writing at `pos` would land STRICTLY INSIDE an autolink's URL — an

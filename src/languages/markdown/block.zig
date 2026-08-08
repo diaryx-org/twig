@@ -3101,7 +3101,7 @@ test "span: a code span includes its own backticks" {
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "x "
     const code = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[code].kind == .verbatim);
+    try testing.expect(r.ast.nodes[code].kind == .text_leaf and r.ast.nodes[code].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("`code`", Span.of(u8, r.ast.nodes[code].span, src));
 }
 
@@ -3184,7 +3184,7 @@ test "span/content_span: a verbatim code span broken across two lines is mapped"
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "x "
     const v = r.ast.nodes[first].next_sibling.?;
-    try testing.expect(r.ast.nodes[v].kind == .verbatim);
+    try testing.expect(r.ast.nodes[v].kind == .text_leaf and r.ast.nodes[v].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("`a\nb`", Span.of(u8, r.ast.nodes[v].span, src));
     try testing.expectEqualStrings("a\nb", Span.of(u8, r.ast.nodes[v].content_span.?, src));
 }
@@ -3525,7 +3525,7 @@ test "paragraph with a code span and a hard break" {
     var it = r.ast.children(para);
     _ = it.next().?; // "foo "
     const code = it.next().?;
-    try testing.expectEqualStrings("bar", code.kind.verbatim);
+    try testing.expectEqualStrings("bar", code.kind.text_leaf.text);
     const brk = it.next().?;
     try testing.expect(brk.kind == .hard_break);
 }

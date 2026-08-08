@@ -175,17 +175,22 @@ pub const Node = struct {
         soft_break,
         hard_break,
         non_breaking_space,
-        /// A `:name:` symbol/emoji shortcode; payload is the name, no
-        /// leading/trailing `:`.
-        symb: []const u8,
-        verbatim: []const u8,
+        /// A DELIMITED INLINE TEXT LEAF — a `:name:` shortcode, a `` `code` ``
+        /// span, `$math$`, a `<https://…>` autolink, a `[^label]` footnote
+        /// reference. Opaque text plus the marker that frames it; which one it
+        /// is rides in the payload. See `TextLeafKind`.
+        ///
+        /// `str` is deliberately NOT one of these: it is the UNdelimited case —
+        /// plain content with no marker at all — and it is by far the most
+        /// common node in any document, so it keeps its own arm rather than
+        /// paying an indirection to join a family it doesn't belong to. fig
+        /// draws the same line between `string` and `extended`.
+        text_leaf: struct { kind: TextLeafKind, text: []const u8 },
         raw_inline: struct { format: []const u8, text: []const u8 },
-        inline_math: []const u8,
-        display_math: []const u8,
-        url: []const u8,
-        email: []const u8,
-        /// `[^label]` used inline; payload is the label (no `^`/brackets).
-        footnote_reference: []const u8,
+        /// Already an `Extended`-shaped node before the pattern had a name here:
+        /// a nested kind plus opaque text. Stays its own arm because its nested
+        /// kind is a SEMANTIC choice the HTML printer acts on (which glyph),
+        /// not a spelling.
         smart_punctuation: struct { kind: SmartPunctuationKind, text: []const u8 },
         link: struct { destination: ?[]const u8, reference: ?[]const u8 },
         image: struct { destination: ?[]const u8, reference: ?[]const u8 },
@@ -313,6 +318,30 @@ pub const InlineMark = enum {
     single_quoted,
 };
 
+/// Which delimited inline text leaf a `Kind.text_leaf` is.
+///
+/// The same pattern as `InlineMark`, one level down: seven kinds that every
+/// generic consumer handled identically — `ast/json.zig` had seven
+/// byte-identical `{"text": …}` arms, `ast/builder.zig` seven identical dupes,
+/// `level`/`contentModel` listed all seven twice — and that only the printers
+/// tell apart, because only their delimiters differ.
+///
+/// `raw_inline` is excluded: its payload is `{format, text}`, a second field
+/// that would have to be `null` for all seven of these. `str` is excluded for
+/// the opposite reason (see `Kind.text_leaf`).
+pub const TextLeafKind = enum {
+    /// `:name:` — payload is the name, no surrounding colons.
+    symb,
+    /// `` `code` `` — payload is the interior.
+    verbatim,
+    inline_math,
+    display_math,
+    url,
+    email,
+    /// `[^label]` used inline; payload is the label (no `^`/brackets).
+    footnote_reference,
+};
+
 /// Names a kind precisely enough to match a node against it.
 ///
 /// A bare `Kind` tag used to be enough, and for most kinds it still is. It
@@ -323,11 +352,13 @@ pub const InlineMark = enum {
 pub const KindRef = union(enum) {
     tag: std.meta.Tag(Node.Kind),
     mark: InlineMark,
+    text_leaf: TextLeafKind,
 
     pub fn matches(self: KindRef, kind: Node.Kind) bool {
         return switch (self) {
             .tag => |t| std.meta.activeTag(kind) == t,
             .mark => |m| kind == .inline_mark and kind.inline_mark == m,
+            .text_leaf => |k| kind == .text_leaf and kind.text_leaf.kind == k,
         };
     }
 };
@@ -341,6 +372,7 @@ pub const KindRef = union(enum) {
 pub fn kindName(kind: Node.Kind) []const u8 {
     return switch (kind) {
         .inline_mark => |m| @tagName(m),
+        .text_leaf => |l| @tagName(l.kind),
         else => @tagName(kind),
     };
 }
@@ -405,14 +437,8 @@ pub fn level(kind: Node.Kind) Level {
         .soft_break,
         .hard_break,
         .non_breaking_space,
-        .symb,
-        .verbatim,
+        .text_leaf,
         .raw_inline,
-        .inline_math,
-        .display_math,
-        .url,
-        .email,
-        .footnote_reference,
         .smart_punctuation,
         .link,
         .image,
@@ -448,14 +474,8 @@ pub fn level(kind: Node.Kind) Level {
 pub fn contentModel(kind: Node.Kind) ContentModel {
     return switch (kind) {
         .str,
-        .symb,
-        .verbatim,
+        .text_leaf,
         .raw_inline,
-        .inline_math,
-        .display_math,
-        .url,
-        .email,
-        .footnote_reference,
         .smart_punctuation,
         .code_block,
         .raw_block,

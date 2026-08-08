@@ -523,7 +523,8 @@ pub fn textOf(gpa: Allocator, ast: *const AST, id: Node.Id) Allocator.Error![]u8
 
 fn textInto(gpa: Allocator, ast: *const AST, id: Node.Id, buf: *std.ArrayList(u8)) Allocator.Error!void {
     switch (ast.nodes[id].kind) {
-        .str, .verbatim, .url, .email, .inline_math, .display_math, .symb => |s| try buf.appendSlice(gpa, s),
+        .str => |s| try buf.appendSlice(gpa, s),
+        .text_leaf => |l| try buf.appendSlice(gpa, l.text),
         .smart_punctuation => |v| try buf.appendSlice(gpa, v.text),
         .raw_inline => |v| try buf.appendSlice(gpa, v.text),
         .code_block => |v| try buf.appendSlice(gpa, v.text),

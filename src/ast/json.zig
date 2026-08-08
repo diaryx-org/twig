@@ -198,39 +198,17 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.objectField("text");
             try w.write(s);
         },
-        .symb => |s| {
+        // The seven text leaves report their family member as the node's
+        // `kind` name (see `AST.kindName`), so one arm serves all of them.
+        .text_leaf => |l| {
             try w.objectField("text");
-            try w.write(s);
-        },
-        .verbatim => |s| {
-            try w.objectField("text");
-            try w.write(s);
+            try w.write(l.text);
         },
         .raw_inline => |r| {
             try w.objectField("format");
             try w.write(r.format);
             try w.objectField("text");
             try w.write(r.text);
-        },
-        .inline_math => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .display_math => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .url => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .email => |s| {
-            try w.objectField("text");
-            try w.write(s);
-        },
-        .footnote_reference => |s| {
-            try w.objectField("label");
-            try w.write(s);
         },
         .smart_punctuation => |sp| {
             try w.objectField("punctuation_kind");

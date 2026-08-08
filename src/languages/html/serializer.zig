@@ -578,7 +578,8 @@ pub const Renderer = struct {
         var it = self.ast.children(id);
         while (it.next()) |child| {
             switch (self.ast.nodes[child.id].kind) {
-                .str, .verbatim => |t| try self.writer.writeAll(t),
+                .str => |t| try self.writer.writeAll(t),
+                .text_leaf => |l| if (l.kind == .verbatim) try self.writer.writeAll(l.text) else try self.renderNode(child.id),
                 else => try self.renderNode(child.id),
             }
         }
@@ -802,27 +803,68 @@ pub const Renderer = struct {
                 const tag = std.fmt.bufPrint(&buf, "h{d}", .{v.level}) catch "h1";
                 try self.inTags(tag, id, 1, &.{});
             },
-            .footnote_reference => |label| {
-                const idx = try self.footnoteIndexFor(label);
-                var extra_buf: [3]KV = undefined;
-                var n: usize = 0;
-                var id_buf: [24]u8 = undefined;
-                if (!self.fnref_id_emitted.contains(label)) {
-                    const id_text = std.fmt.bufPrint(&id_buf, "fnref{d}", .{idx}) catch "fnref";
-                    extra_buf[n] = .{ .key = "id", .value = id_text };
+            // One arm, still exhaustive over `TextLeafKind`: an eighth leaf
+            // fails THIS build (where delimiters live) and no other.
+            .text_leaf => |leaf| switch (leaf.kind) {
+                .symb => {
+                    const alias = leaf.text;
+                    try self.writer.writeByte(':');
+                    try self.writeEscaped(alias);
+                    try self.writer.writeByte(':');
+                },
+                .verbatim => {
+                    const text = leaf.text;
+                    try self.renderTag("code", id, &.{});
+                    try self.writeEscaped(text);
+                    try self.renderCloseTag("code");
+                },
+                .inline_math => {
+                    const text = leaf.text;
+                    try self.renderTag("span", id, &.{.{ .key = "class", .value = "math inline" }});
+                    try self.writer.writeAll("\\(");
+                    try self.writeEscaped(text);
+                    try self.writer.writeAll("\\)");
+                    try self.renderCloseTag("span");
+                },
+                .display_math => {
+                    const text = leaf.text;
+                    try self.renderTag("span", id, &.{.{ .key = "class", .value = "math display" }});
+                    try self.writer.writeAll("\\[");
+                    try self.writeEscaped(text);
+                    try self.writer.writeAll("\\]");
+                    try self.renderCloseTag("span");
+                },
+                .url => {
+                    const text = leaf.text;
+                    try self.renderUrlOrEmail(id, text, false);
+                },
+                .email => {
+                    const text = leaf.text;
+                    try self.renderUrlOrEmail(id, text, true);
+                },
+                .footnote_reference => {
+                    const label = leaf.text;
+                    const idx = try self.footnoteIndexFor(label);
+                    var extra_buf: [3]KV = undefined;
+                    var n: usize = 0;
+                    var id_buf: [24]u8 = undefined;
+                    if (!self.fnref_id_emitted.contains(label)) {
+                        const id_text = std.fmt.bufPrint(&id_buf, "fnref{d}", .{idx}) catch "fnref";
+                        extra_buf[n] = .{ .key = "id", .value = id_text };
+                        n += 1;
+                        try self.fnref_id_emitted.put(self.allocator, label, {});
+                    }
+                    var href_buf: [24]u8 = undefined;
+                    const href_text = std.fmt.bufPrint(&href_buf, "#fn{d}", .{idx}) catch "#fn";
+                    extra_buf[n] = .{ .key = "href", .value = href_text };
                     n += 1;
-                    try self.fnref_id_emitted.put(self.allocator, label, {});
-                }
-                var href_buf: [24]u8 = undefined;
-                const href_text = std.fmt.bufPrint(&href_buf, "#fn{d}", .{idx}) catch "#fn";
-                extra_buf[n] = .{ .key = "href", .value = href_text };
-                n += 1;
-                extra_buf[n] = .{ .key = "role", .value = "doc-noteref" };
-                n += 1;
-                try self.renderTag("a", id, extra_buf[0..n]);
-                try self.writer.writeAll("<sup>");
-                try self.writer.print("{d}", .{idx});
-                try self.writer.writeAll("</sup></a>");
+                    extra_buf[n] = .{ .key = "role", .value = "doc-noteref" };
+                    n += 1;
+                    try self.renderTag("a", id, extra_buf[0..n]);
+                    try self.writer.writeAll("<sup>");
+                    try self.writer.print("{d}", .{idx});
+                    try self.writer.writeAll("</sup></a>");
+                },
             },
             .table => if (self.options.table_sections)
                 try self.renderSectionedTable(id)
@@ -923,30 +965,6 @@ pub const Renderer = struct {
                     try self.writer.writeAll(smartPunct(.right_single_quote));
                 },
             },
-            .symb => |alias| {
-                try self.writer.writeByte(':');
-                try self.writeEscaped(alias);
-                try self.writer.writeByte(':');
-            },
-            .inline_math => |text| {
-                try self.renderTag("span", id, &.{.{ .key = "class", .value = "math inline" }});
-                try self.writer.writeAll("\\(");
-                try self.writeEscaped(text);
-                try self.writer.writeAll("\\)");
-                try self.renderCloseTag("span");
-            },
-            .display_math => |text| {
-                try self.renderTag("span", id, &.{.{ .key = "class", .value = "math display" }});
-                try self.writer.writeAll("\\[");
-                try self.writeEscaped(text);
-                try self.writer.writeAll("\\]");
-                try self.renderCloseTag("span");
-            },
-            .verbatim => |text| {
-                try self.renderTag("code", id, &.{});
-                try self.writeEscaped(text);
-                try self.renderCloseTag("code");
-            },
             .raw_inline => |v| {
                 if (std.mem.eql(u8, v.format, "html")) try self.writeRawHtml(v.text);
             },
@@ -955,8 +973,6 @@ pub const Renderer = struct {
             .non_breaking_space => try self.writer.writeAll("&nbsp;"),
             .link => |v| try self.renderLinkOrImage(id, v, false),
             .image => |v| try self.renderLinkOrImage(id, v, true),
-            .url => |text| try self.renderUrlOrEmail(id, text, false),
-            .email => |text| try self.renderUrlOrEmail(id, text, true),
 
             // Generic directives render like an element whose tag name is the
             // directive name, with the `{#id .class k=v}` shorthand applied as
@@ -1048,8 +1064,9 @@ pub const Renderer = struct {
         var it = self.ast.children(id);
         while (it.next()) |child| {
             switch (child.kind) {
-                .footnote_reference => {},
-                .str, .verbatim, .symb, .url, .email, .inline_math, .display_math => |t| try buf.appendSlice(self.allocator, t),
+                .str => |t| try buf.appendSlice(self.allocator, t),
+                // A footnote reference contributes no text to a plain-text render.
+                .text_leaf => |l| if (l.kind != .footnote_reference) try buf.appendSlice(self.allocator, l.text),
                 .raw_inline => |v| try buf.appendSlice(self.allocator, v.text),
                 .code_block => |v| try buf.appendSlice(self.allocator, v.text),
                 .raw_block => |v| try buf.appendSlice(self.allocator, v.text),

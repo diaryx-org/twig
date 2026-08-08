@@ -332,17 +332,17 @@ pub const Parser = struct {
         }
         if (std.mem.eql(u8, name, "code") and children.*.len == 1) {
             switch (self.builder.nodes.items[children.*[0]].kind) {
-                .str => |text| return .{ .verbatim = text },
+                .str => |text| return .{ .text_leaf = .{ .kind = .verbatim, .text = text } },
                 else => {},
             }
         }
         if (std.mem.eql(u8, name, "pre") and children.*.len == 1) {
             const child = children.*[0];
             switch (self.builder.nodes.items[child].kind) {
-                .verbatim => |text| {
+                .text_leaf => |l| if (l.kind == .verbatim) {
                     const class = self.builderAttrs(child).get("class") orelse "";
                     const lang = languageFromClass(class);
-                    return .{ .code_block = .{ .lang = lang, .text = text } };
+                    return .{ .code_block = .{ .lang = lang, .text = l.text } };
                 },
                 else => {},
             }

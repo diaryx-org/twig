@@ -503,8 +503,38 @@ const Renderer = struct {
                 try self.writePrefix(ctx);
             },
             .non_breaking_space => try self.writer.writeAll("\\ "),
-            .symb => |s| try self.writer.print(":{s}:", .{s}),
-            .verbatim => |v| try self.writeTickFenced(v),
+            // One arm, still exhaustive over `TextLeafKind`: an eighth leaf
+            // fails THIS build (where delimiters live) and no other.
+            .text_leaf => |leaf| switch (leaf.kind) {
+                .symb => {
+                    const s = leaf.text;
+                    try self.writer.print(":{s}:", .{s});
+                },
+                .verbatim => {
+                    const v = leaf.text;
+                    try self.writeTickFenced(v);
+                },
+                .inline_math => {
+                    const m = leaf.text;
+                    try self.writer.print("${s}$", .{m});
+                },
+                .display_math => {
+                    const m = leaf.text;
+                    try self.writer.print("$$\n{s}\n$$", .{m});
+                },
+                .url => {
+                    const u = leaf.text;
+                    try self.writer.print("<{s}>", .{u});
+                },
+                .email => {
+                    const e = leaf.text;
+                    try self.writer.print("<{s}>", .{e});
+                },
+                .footnote_reference => {
+                    const lab = leaf.text;
+                    try self.writer.print("[^{s}]", .{lab});
+                },
+            },
             // Djot spells raw inline content `` `<br>`{=html} ``. Writing the
             // bare text instead loses the raw-ness silently: it reparses as
             // ordinary characters and comes back HTML-escaped. A formatless
@@ -513,11 +543,6 @@ const Renderer = struct {
                 try self.writeTickFenced(r.text);
                 if (r.format.len > 0) try self.writer.print("{{={s}}}", .{r.format});
             },
-            .inline_math => |m| try self.writer.print("${s}$", .{m}),
-            .display_math => |m| try self.writer.print("$$\n{s}\n$$", .{m}),
-            .url => |u| try self.writer.print("<{s}>", .{u}),
-            .email => |e| try self.writer.print("<{s}>", .{e}),
-            .footnote_reference => |lab| try self.writer.print("[^{s}]", .{lab}),
             .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
             // One arm, still exhaustive over `InlineMark`: a tenth mark fails
             // THIS build (where spelling lives) and no other.

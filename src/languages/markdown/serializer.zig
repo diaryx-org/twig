@@ -527,21 +527,44 @@ const Renderer = struct {
                 try self.writePrefix(ctx);
             },
             .non_breaking_space => try self.writer.writeAll("&nbsp;"),
-            .symb => |s| try self.writer.print(":{s}:", .{s}),
-            .verbatim => |v| {
-                const ticks = fenceTicks(v, 1);
-                var i: usize = 0;
-                while (i < ticks) : (i += 1) try self.writer.writeByte('`');
-                try self.writer.writeAll(v);
-                i = 0;
-                while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+            // One arm, still exhaustive over `TextLeafKind`: an eighth leaf
+            // fails THIS build (where delimiters live) and no other.
+            .text_leaf => |leaf| switch (leaf.kind) {
+                .symb => {
+                    const s = leaf.text;
+                    try self.writer.print(":{s}:", .{s});
+                },
+                .verbatim => {
+                    const v = leaf.text;
+                    const ticks = fenceTicks(v, 1);
+                    var i: usize = 0;
+                    while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+                    try self.writer.writeAll(v);
+                    i = 0;
+                    while (i < ticks) : (i += 1) try self.writer.writeByte('`');
+                },
+                .inline_math => {
+                    const m = leaf.text;
+                    try self.writer.print("${s}$", .{m});
+                },
+                .display_math => {
+                    const m = leaf.text;
+                    try self.writer.print("$$\n{s}\n$$", .{m});
+                },
+                .url => {
+                    const u = leaf.text;
+                    try self.writer.print("<{s}>", .{u});
+                },
+                .email => {
+                    const e = leaf.text;
+                    try self.writer.print("<{s}>", .{e});
+                },
+                .footnote_reference => {
+                    const lab = leaf.text;
+                    try self.writer.print("[^{s}]", .{lab});
+                },
             },
             .raw_inline => |r| try self.writer.writeAll(r.text),
-            .inline_math => |m| try self.writer.print("${s}$", .{m}),
-            .display_math => |m| try self.writer.print("$$\n{s}\n$$", .{m}),
-            .url => |u| try self.writer.print("<{s}>", .{u}),
-            .email => |e| try self.writer.print("<{s}>", .{e}),
-            .footnote_reference => |lab| try self.writer.print("[^{s}]", .{lab}),
             .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
             // One arm, still exhaustive over `InlineMark`: a tenth mark fails
             // THIS build (where spelling lives) and no other.
