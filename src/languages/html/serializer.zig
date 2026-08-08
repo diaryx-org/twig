@@ -430,11 +430,10 @@ pub const Renderer = struct {
             // container's paragraphs would lose their `<p>` wrapping. `list_item`
             // is deliberately absent: it must preserve the enclosing list's
             // tightness for its own paragraphs to consume.
-            .block_quote, .div, .section => self.tight = false,
-            // A container directive's block children are never tight (same as
-            // div/blockquote); text/leaf forms have inline children, so the
-            // reset is harmless for them.
-            .directive => self.tight = false,
+            // A generic container's block children are never tight (same as
+            // blockquote); an inline form has inline children, so the reset is
+            // harmless for it.
+            .block_quote, .section, .container => self.tight = false,
             else => {},
         }
         var it = self.ast.children(id);
@@ -705,7 +704,42 @@ pub const Renderer = struct {
                 }
             },
             .block_quote => try self.inTags("blockquote", id, 2, &.{}),
-            .div => try self.inTags("div", id, 2, &.{}),
+            // One arm for what used to be three: `div` (block, 2 newlines),
+            // `span` (inline, 0), and `element` (void / raw-text aware). The
+            // void and raw-text rules are properties of the TAG and so apply
+            // however the node was produced; `form` supplies only the
+            // pretty-print spacing that the block/inline kind split used to.
+            .container => |c| {
+                const block = if (c.form) |f| f.isBlockForm() else false;
+                // An anonymous container (djot's `:::` / `[…]{…}`) has no tag
+                // of its own; it renders as the generic wrapper for its level,
+                // which is what djot.js emits too.
+                const tag = if (c.name.len > 0) c.name else if (block) "div" else "span";
+                try self.renderTag(tag, id, &.{});
+                if (isVoidElement(tag)) return;
+                if (isRawTextElement(tag)) {
+                    // Raw-text content (script/style/…) has no escaping
+                    // mechanism in HTML: it must be written verbatim. Escaping
+                    // it would corrupt the JS/CSS and double-escape on
+                    // re-parse (`<` → `&lt;` → `&amp;lt;`).
+                    try self.renderRawTextChildren(id);
+                    try self.renderCloseTag(tag);
+                    return;
+                }
+                // The old three-way newline split, preserved: a `text`
+                // directive/element got 0, a `leaf` got a trailing newline
+                // only, a fenced container got both. Collapsing this to one
+                // block/inline bit is what broke the `leaf` case.
+                const newlines: u8 = if (c.form) |f| switch (f) {
+                    .inline_text => 0,
+                    .block_leaf => 1,
+                    .block_fenced => 2,
+                } else 0;
+                if (newlines >= 2) try self.writer.writeByte('\n');
+                try self.renderChildren(id);
+                try self.renderCloseTag(tag);
+                if (newlines >= 1) try self.writer.writeByte('\n');
+            },
             .section => try self.inTags("section", id, 2, &.{}),
             .list_item => if (self.options.commonmark_lists)
                 try self.renderCommonMarkListItem(id)
@@ -914,7 +948,6 @@ pub const Renderer = struct {
             .email => |text| try self.renderUrlOrEmail(id, text, true),
             .strong => try self.inTags("strong", id, 0, &.{}),
             .emph => try self.inTags("em", id, 0, &.{}),
-            .span => try self.inTags("span", id, 0, &.{}),
             .mark => try self.inTags("mark", id, 0, &.{}),
             .insert => try self.inTags("ins", id, 0, &.{}),
             .delete => try self.inTags("del", id, 0, &.{}),
@@ -927,29 +960,10 @@ pub const Renderer = struct {
             // `mdast-util-directive` (`:::main{#x}` -> `<main id="x">…</main>`).
             // `text` is inline (no surrounding newlines); `leaf`/`container`
             // are block-level.
-            .directive => |d| switch (d.form) {
-                .text => try self.inTags(d.name, id, 0, &.{}),
-                .leaf => try self.inTags(d.name, id, 1, &.{}),
-                .container => try self.inTags(d.name, id, 2, &.{}),
-            },
 
             // ── generic markup (net-new relative to djot/html.zig) ────────
             // See this file's module doc comment for the rationale behind
             // each of these.
-            .element => |e| {
-                try self.renderTag(e.name, id, &.{});
-                if (isVoidElement(e.name)) return;
-                if (isRawTextElement(e.name)) {
-                    // Raw-text content (script/style/…) has no escaping
-                    // mechanism in HTML: it must be written verbatim. Escaping
-                    // it would corrupt the JS/CSS and double-escape on
-                    // re-parse (`<` → `&lt;` → `&amp;lt;`).
-                    try self.renderRawTextChildren(id);
-                } else {
-                    try self.renderChildren(id);
-                }
-                try self.renderCloseTag(e.name);
-            },
             .comment => |text| {
                 try self.writer.writeAll("<!--");
                 try self.writer.writeAll(text);
@@ -1198,7 +1212,7 @@ test "element with children round-trips as an open/close pair" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
     const text = try b.addLeaf(.{ .str = "hi" });
-    const el = try b.addContainer(.{ .element = .{ .name = "video" } }, &.{text});
+    const el = try b.addContainer(.{ .container = .{ .name = "video" } }, &.{text});
     b.setContentSpan(el, .{ .start = 0, .end = 2 });
 
     var ast = try b.finish(el);
@@ -1212,7 +1226,7 @@ test "element with children round-trips as an open/close pair" {
 test "a self-closing (XML-style) non-void element still gets an explicit close tag" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "video" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "video" } });
     // `content_span == null`: an XML-style `<video/>` parse.
 
     var ast = try b.finish(el);
@@ -1226,7 +1240,7 @@ test "a self-closing (XML-style) non-void element still gets an explicit close t
 test "a void element renders with no close tag regardless of content_span" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "br" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "br" } });
 
     var ast = try b.finish(el);
     defer ast.deinit();
@@ -1239,7 +1253,7 @@ test "a void element renders with no close tag regardless of content_span" {
 test "a bare (null-value) attribute on a generic element renders as just its key" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "input" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "input" } });
     try b.setAttrs(el, .{ .entries = &.{ .{ .key = "disabled", .value = null }, .{ .key = "type", .value = "checkbox" } } });
 
     var ast = try b.finish(el);

@@ -62,7 +62,7 @@ pub fn serializeNode(ast: *const AST, id: Node.Id, writer: *Writer) Writer.Error
             var it = ast.children(id);
             while (it.next()) |child| try serializeNode(ast, child.id, writer);
         },
-        .element => |e| {
+        .container => |e| {
             try writer.writeByte('<');
             try writer.writeAll(e.name);
             try writeAttrs(ast, id, writer);
@@ -154,7 +154,7 @@ test "escapes text and attribute values" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
     const text = try b.addLeaf(.{ .str = "a < b & c > d" });
-    const el = try b.addContainer(.{ .element = .{ .name = "p" } }, &.{text});
+    const el = try b.addContainer(.{ .container = .{ .name = "p" } }, &.{text});
     b.setContentSpan(el, .{ .start = 0, .end = 0 });
     try b.setAttrs(el, .{ .entries = &.{.{ .key = "title", .value = "x \"y\" & z" }} });
     const doc_id = try b.addContainer(.doc, &.{el});

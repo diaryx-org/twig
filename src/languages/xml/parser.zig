@@ -395,7 +395,7 @@ pub const Parser = struct {
             if ((self.peek() orelse 0) != '>')
                 return self.fail(self.pos, "expected '>' to close a self-closing tag", error.MalformedXml);
             self.pos += 1;
-            const id = try self.builder.addContainer(.{ .element = .{ .name = name } }, &.{});
+            const id = try self.builder.addContainer(.{ .container = .{ .name = name } }, &.{});
             self.builder.setSpan(id, Span.init(start, self.pos));
             try self.builder.setAttrs(id, .{ .entries = attrs });
             // `content_span` stays `null`: that's the signal to the
@@ -447,7 +447,7 @@ pub const Parser = struct {
             return self.fail(self.pos, "expected '>' to close the end tag", error.MalformedXml);
         self.pos += 1;
 
-        const id = try self.builder.addContainer(.{ .element = .{ .name = name } }, children.items);
+        const id = try self.builder.addContainer(.{ .container = .{ .name = name } }, children.items);
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(content_start, content_end));
         try self.builder.setAttrs(id, .{ .entries = attrs });
@@ -518,7 +518,7 @@ test "parses a minimal document" {
 
     try testing.expect(ast.nodes[ast.root].kind == .doc);
     const root_el = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    try testing.expectEqualStrings("a", ast.nodes[root_el].kind.element.name);
+    try testing.expectEqualStrings("a", ast.nodes[root_el].kind.container.name);
     try testing.expectEqual(@as(?Span, null), ast.nodes[root_el].content_span);
 }
 

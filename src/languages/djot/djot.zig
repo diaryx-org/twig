@@ -82,7 +82,7 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Document 
 // neither set.
 
 const block_tags = std.EnumSet(std.meta.Tag(AST.Node.Kind)).initMany(&.{
-    .para,       .heading,         .thematic_break, .section,     .div,
+    .para,       .heading,         .thematic_break, .section,
     .code_block, .raw_block,       .block_quote,    .bullet_list, .ordered_list,
     .task_list,  .definition_list, .table,          .reference,   .footnote,
 });
@@ -91,7 +91,7 @@ const inline_tags = std.EnumSet(std.meta.Tag(AST.Node.Kind)).initMany(&.{
     .str,       .soft_break,         .hard_break,        .non_breaking_space, .symb,
     .verbatim,  .raw_inline,         .inline_math,       .display_math,       .url,
     .email,     .footnote_reference, .smart_punctuation, .emph,               .strong,
-    .link,      .image,              .span,              .mark,               .superscript,
+    .link,      .image,              .mark,              .superscript,
     .subscript, .insert,             .delete,            .double_quoted,      .single_quoted,
 });
 
@@ -180,8 +180,8 @@ test "isBlock/isInline classify kinds" {
     try testing.expect(isInline(.{ .str = "x" }));
     try testing.expect(!isBlock(.{ .str = "x" }));
     // Generic-markup kinds are neither: djot never produces them.
-    try testing.expect(!isBlock(.{ .element = .{ .name = "video" } }));
-    try testing.expect(!isInline(.{ .element = .{ .name = "video" } }));
+    try testing.expect(!isBlock(.{ .container = .{ .name = "video" } }));
+    try testing.expect(!isInline(.{ .container = .{ .name = "video" } }));
 }
 
 // ── djot.js AST-dump-only cases, asserted natively ──────────────────────────

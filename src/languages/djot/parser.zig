@@ -637,7 +637,7 @@ pub const TreeBuilder = struct {
 
             .emph_close => try self.closeSimpleInline(ev, .emph),
             .strong_close => try self.closeSimpleInline(ev, .strong),
-            .span_close => try self.closeSimpleInline(ev, .span),
+            .span_close => try self.closeSimpleInline(ev, .{ .container = .{ .name = "", .form = .inline_text } }),
             .mark_close => try self.closeSimpleInline(ev, .mark),
             .superscript_close => try self.closeSimpleInline(ev, .superscript),
             .subscript_close => try self.closeSimpleInline(ev, .subscript),
@@ -886,7 +886,7 @@ pub const TreeBuilder = struct {
             .div_close => {
                 var c = self.popContainer();
                 defer c.deinit(self.allocator);
-                const id = try self.addNode(.div, Span.init(c.start, ev.end + 1));
+                const id = try self.addNode(.{ .container = .{ .name = "", .form = .block_fenced } }, Span.init(c.start, ev.end + 1));
                 self.nodes.items[id].first_child = c.first_child;
                 self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
                 try self.commitAttrs(id, &c.attrs);
@@ -947,22 +947,12 @@ pub const TreeBuilder = struct {
         return null;
     }
 
-    fn closeSimpleInline(self: *TreeBuilder, ev: Event, kind_tag: std.meta.Tag(Node.Kind)) Allocator.Error!void {
+    /// Takes a whole `Node.Kind` rather than a tag: djot's `[…]{…}` span is no
+    /// longer a kind of its own but a `container` named "span", so the closer
+    /// has to carry a payload and a bare tag can no longer name it.
+    fn closeSimpleInline(self: *TreeBuilder, ev: Event, kind: Node.Kind) Allocator.Error!void {
         var c = self.popContainer();
         defer c.deinit(self.allocator);
-        const kind: Node.Kind = switch (kind_tag) {
-            .emph => .emph,
-            .strong => .strong,
-            .span => .span,
-            .mark => .mark,
-            .superscript => .superscript,
-            .subscript => .subscript,
-            .delete => .delete,
-            .insert => .insert,
-            .double_quoted => .double_quoted,
-            .single_quoted => .single_quoted,
-            else => unreachable,
-        };
         const id = try self.addNode(kind, Span.init(c.start, ev.end + 1));
         self.nodes.items[id].first_child = c.first_child;
         self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
@@ -1474,7 +1464,7 @@ test "content_span: div's interior covers its child paragraph" {
     const ast = doc.ast;
 
     const div_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[div_id].kind == .div);
+    try testing.expectEqualStrings("", ast.nodes[div_id].kind.container.name);
     const cs = ast.nodes[div_id].content_span orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("abc", std.mem.trim(u8, src[cs.start..cs.end], " \t\r\n"));
 
@@ -1544,7 +1534,7 @@ test "content_span: an empty div (no children) stays null" {
     const ast = doc.ast;
 
     const div_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[div_id].kind == .div);
+    try testing.expectEqualStrings("", ast.nodes[div_id].kind.container.name);
     try testing.expectEqual(@as(?Node.Id, null), ast.nodes[div_id].first_child);
     try testing.expectEqual(@as(?Span, null), ast.nodes[div_id].content_span);
 }

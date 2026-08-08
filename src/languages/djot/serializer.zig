@@ -314,7 +314,7 @@ const Renderer = struct {
                 const p = Prefix{ .parent = ctx.prefix, .segment = "> " };
                 try self.renderBlocks(id, .{ .prefix = &p }, true);
             },
-            .div => {
+            .container => {
                 try self.writePrefix(ctx);
                 try self.writer.writeAll(":::");
                 if (self.ast.attrsOf(id).entries.len > 0) {
@@ -541,7 +541,7 @@ const Renderer = struct {
                 try self.writer.writeByte(']');
                 if (im.destination) |dest| try self.writer.print("({s})", .{dest}) else if (im.reference) |lab| try self.writer.print("[{s}]", .{lab});
             },
-            .span => {
+            .container => {
                 try self.writer.writeByte('[');
                 try self.renderInlineChildren(id, ctx);
                 try self.writer.writeByte(']');

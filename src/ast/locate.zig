@@ -98,9 +98,16 @@ pub fn innermostBlock(ast: *const AST, offset: usize, source_len: usize) ?AST.No
 
 /// True for a node whose children are blocks — the level a container op works
 /// at. Everything else (a `para`, a `heading`) holds inlines.
-pub fn isBlockParent(tag: KindTag) bool {
-    return switch (tag) {
-        .doc, .block_quote, .list_item, .task_list_item, .div, .section => true,
+///
+/// Takes a whole `Kind` rather than a `KindTag` because `container` spans both
+/// levels: a djot `:::` fence holds blocks, a djot `[…]{…}` span holds inlines,
+/// and only `container.form` tells them apart. An UNCLASSIFIED container (an
+/// HTML `<video>`, `form == null`) answers false — the same "neither" the
+/// djot module's `isBlock`/`isInline` have always reported for it.
+pub fn isBlockParent(kind: AST.Node.Kind) bool {
+    return switch (kind) {
+        .doc, .block_quote, .list_item, .task_list_item, .section => true,
+        .container => |c| if (c.form) |f| f.isBlockForm() else false,
         else => false,
     };
 }

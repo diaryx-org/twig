@@ -132,7 +132,6 @@ pub const Node = struct {
         /// syntax, only synthesized by the parser (see djot.js's `parse.ts`
         /// section handling).
         section,
-        div,
         code_block: struct { lang: ?[]const u8, text: []const u8 },
         raw_block: struct { format: []const u8, text: []const u8 },
         /// Document-level metadata (front/end matter) as an inert,
@@ -192,7 +191,6 @@ pub const Node = struct {
         strong,
         link: struct { destination: ?[]const u8, reference: ?[]const u8 },
         image: struct { destination: ?[]const u8, reference: ?[]const u8 },
-        span,
         mark,
         superscript,
         subscript,
@@ -200,30 +198,58 @@ pub const Node = struct {
         delete,
         double_quoted,
         single_quoted,
-        /// A generic directive (the CommonMark/remark "generic directives"
-        /// proposal, as implemented by `micromark-extension-directive`).
-        /// `name` is the directive TYPE (`note`, `youtube`, `abbr`, ...), no
-        /// leading colon(s); `form` distinguishes the three surface syntaxes
-        /// (see `DirectiveForm`). Any `{#id .class key=val}` shorthand goes in
-        /// the normal `attrs` side-table; a text/leaf directive's `[label]`
-        /// and a container directive's body become the node's children (inline
-        /// children for `text`/`leaf`, block children for `container`).
-        /// Distinct from `element` so a directive round-trips back to `:::`
-        /// syntax rather than to an HTML tag, and so selectors can address it
-        /// as a directive. Produced only by the Markdown parser (behind
-        /// `ParseOptions.directives`); other languages never emit it.
-        directive: struct { form: DirectiveForm, name: []const u8 },
-
         // ── Generic markup ────────────────────────────────────────────────
-        /// A named element with no semantic mapping (HTML `<video>`,
-        /// arbitrary XML) — the escape hatch that keeps this vocabulary
-        /// closed: languages map what they can to semantic kinds (`<em>` →
-        /// `emph`) and fall back to `element` for the rest. Children are
-        /// parsed nodes like any container; attributes go in the normal
-        /// `attrs` side-table. `name` is stored as written, including any
-        /// namespace prefix (`svg:rect`) — prefix resolution is a
-        /// reader-side helper, later.
-        element: struct { name: []const u8 },
+        /// A NAMED GENERIC CONTAINER — the single escape hatch that keeps this
+        /// vocabulary closed. Languages map what they can to semantic kinds
+        /// (`<em>` → `emph`) and fall back to this for the rest: an HTML/XML
+        /// element (`<video>`, `svg:rect`), a djot fenced div or bracketed
+        /// span, a Markdown generic directive (`:::note`), an rST directive
+        /// (`.. note::`). Children are parsed nodes like any container;
+        /// attributes go in the normal `attrs` side-table.
+        ///
+        /// ── Why one kind and not four ──────────────────────────────────────
+        /// This replaces `div`, `span`, `directive`, and `element`, which were
+        /// four spellings of ONE concept — a named-or-classed container with
+        /// attributes and children — split by which format's parser produced
+        /// them. That split put SURFACE SYNTAX in `Kind`, which is exactly what
+        /// `syntax.zig` exists to keep out of the shared vocabulary: it meant a
+        /// djot `:::` and an HTML `<div>` were different nodes despite being
+        /// the same construct, every consumer (`ast/select.zig`, `ast/json.zig`,
+        /// `c_abi.zig`, four serializers) grew four near-identical arms, and a
+        /// fifth format could only be added by growing a fifth kind.
+        ///
+        /// What it does NOT do is erase the difference between a NAME and a
+        /// CLASS: djot's `::: note` is a div carrying `class=note` (the name is
+        /// `"div"`, the class is in `attrs`), while Markdown's `:::note` is a
+        /// directive whose TYPE is `note` (the name is `"note"`, `attrs` is
+        /// empty). Those are genuinely different documents and still parse to
+        /// different nodes. The unification is structural, not semantic.
+        ///
+        /// `name` is stored as written, including any namespace prefix
+        /// (`svg:rect`) — prefix resolution is a reader-side helper, later.
+        container: struct {
+            /// The tag or directive type: `"div"`, `"span"`, `"video"`,
+            /// `"svg:rect"`, `"note"`. Never empty — djot's anonymous `:::`
+            /// and `[…]{…}` carry `"div"`/`"span"`, which is what they render
+            /// as and what makes them compare equal to the HTML forms.
+            name: []const u8,
+            /// How the container was spelled, when the producing format draws
+            /// a distinction its serializer must reproduce (see `Form`).
+            ///
+            /// `null` = UNCLASSIFIED, which is the honest answer for HTML/XML:
+            /// whether `<video>` is a block or an inline is a property of the
+            /// tag and the stylesheet, not of the parse, and the HTML parser
+            /// has never decided it — `languages/djot/djot.zig`'s
+            /// `isBlock`/`isInline` report *neither* for such a node, and that
+            /// behaviour is preserved here rather than forced into a guess.
+            form: ?Form = null,
+            /// The directive ARGUMENT: rST's `.. image:: picture.png` puts
+            /// `picture.png` here. Positional, so it is neither an attribute
+            /// (`attrs` holds `:width: 50%`-style options) nor a child (the
+            /// children are the body). `null` for every format that has no
+            /// argument position — which today is all of them except rST.
+            argument: ?[]const u8 = null,
+        },
         /// HTML/XML `<!-- ... -->`; payload is the text between the
         /// delimiters, as written.
         comment: []const u8,
@@ -317,14 +343,36 @@ pub const Attrs = struct {
     }
 };
 
-/// The three surface forms a generic `directive` can take, distinguished by
-/// the number of leading colons and whether it fences a block:
-///   - `text`: inline, single colon — `:name[label]{attrs}`.
-///   - `leaf`: block, double colon, one line — `::name[label]{attrs}`.
-///   - `container`: block, triple(+) colon fence — `:::name{attrs}` ... `:::`.
-/// Governs both how the Markdown serializer re-emits the node and how many
-/// (and what kind of) children it carries.
-pub const DirectiveForm = enum { text, leaf, container };
+/// How a `container` was spelled — the one piece of a generic container's
+/// shape that a per-format `Syntax` table CANNOT hold, because it varies per
+/// NODE rather than per format: one Markdown document may contain both a
+/// `::name` leaf and a `:::name` fence, so the choice has to travel with the
+/// node. Everything else about spelling a container back (the colon, the
+/// angle brackets, the `.. ` prefix) is format-uniform and belongs in
+/// `syntax.zig`.
+///
+/// Also carries the block/inline classification that `div` and `span` used to
+/// encode by being separate kinds: `inline_text` is an inline, the two
+/// `block_*` forms are blocks, and a `null` form is neither (see
+/// `Kind.container.form`).
+///   - `inline_text`: inline — djot `[label]{attrs}`, Markdown `:name[label]`.
+///   - `block_leaf`: block, no body — Markdown `::name[label]{attrs}`,
+///     rST `.. name:: argument` with nothing indented under it.
+///   - `block_fenced`: block with a body — djot `:::` … `:::`, Markdown
+///     `:::name{attrs}` … `:::`, rST `.. name::` + an indented block.
+pub const Form = enum {
+    inline_text,
+    block_leaf,
+    block_fenced,
+
+    /// True for the forms that classify as blocks (`block_leaf`,
+    /// `block_fenced`) — the half of `djot.zig`'s `isBlock` that a flat
+    /// `EnumSet` over kind tags can no longer answer now that one kind spans
+    /// both levels.
+    pub fn isBlockForm(self: Form) bool {
+        return self != .inline_text;
+    }
+};
 
 pub const BulletListStyle = enum { dash, plus, star };
 

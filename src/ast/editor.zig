@@ -734,7 +734,7 @@ fn coveredBlocks(
     // Climb to the nearest ancestor that holds blocks: the deepest shared node
     // may be an inline (a `str`), and a container wraps blocks, not words.
     var p = i;
-    while (p > 0 and !locate.isBlockParent(std.meta.activeTag(ast.nodes[chain_a.items[p]].kind))) p -= 1;
+    while (p > 0 and !locate.isBlockParent(ast.nodes[chain_a.items[p]].kind)) p -= 1;
 
     if (p + 1 >= chain_a.items.len) return error.NoBlock;
     const first = chain_a.items[p + 1];

@@ -1019,8 +1019,7 @@ fn kindName(node: *const twig.AST.Node) [*:0]const u8 {
 /// `::toc`. Borrows the AST-owned name payload.
 fn kindElementName(node: *const twig.AST.Node) ?[]const u8 {
     return switch (node.kind) {
-        .element => |e| e.name,
-        .directive => |d| d.name,
+        .container => |c| c.name,
         else => null,
     };
 }
@@ -1032,11 +1031,11 @@ fn kindElementName(node: *const twig.AST.Node) ?[]const u8 {
 /// block as a leaf, and a wrapper as a container.
 fn kindDirectiveForm(node: *const twig.AST.Node) c_int {
     return switch (node.kind) {
-        .directive => |d| @intFromEnum(switch (d.form) {
-            .text => TwigDirectiveForm.text,
-            .leaf => TwigDirectiveForm.leaf,
-            .container => TwigDirectiveForm.container,
-        }),
+        .container => |c| if (c.form) |f| @intFromEnum(switch (f) {
+            .inline_text => TwigDirectiveForm.text,
+            .block_leaf => TwigDirectiveForm.leaf,
+            .block_fenced => TwigDirectiveForm.container,
+        }) else TWIG_DIRECTIVE_NONE,
         else => TWIG_DIRECTIVE_NONE,
     };
 }
@@ -2156,7 +2155,10 @@ fn voidKind(kind: c_int) ?twig.AST.Node.Kind {
         @intFromEnum(TwigNodeKind.para) => .para,
         @intFromEnum(TwigNodeKind.thematic_break) => .thematic_break,
         @intFromEnum(TwigNodeKind.section) => .section,
-        @intFromEnum(TwigNodeKind.div) => .div,
+        // `div`/`span` are no longer kinds of their own; the legacy codes
+        // still build what they always built, now spelled as a `container`.
+        @intFromEnum(TwigNodeKind.div) => .{ .container = .{ .name = "div", .form = .block_fenced } },
+        @intFromEnum(TwigNodeKind.span) => .{ .container = .{ .name = "span", .form = .inline_text } },
         @intFromEnum(TwigNodeKind.block_quote) => .block_quote,
         @intFromEnum(TwigNodeKind.definition_list) => .definition_list,
         @intFromEnum(TwigNodeKind.table) => .table,
@@ -2170,7 +2172,6 @@ fn voidKind(kind: c_int) ?twig.AST.Node.Kind {
         @intFromEnum(TwigNodeKind.non_breaking_space) => .non_breaking_space,
         @intFromEnum(TwigNodeKind.emph) => .emph,
         @intFromEnum(TwigNodeKind.strong) => .strong,
-        @intFromEnum(TwigNodeKind.span) => .span,
         @intFromEnum(TwigNodeKind.mark) => .mark,
         @intFromEnum(TwigNodeKind.superscript) => .superscript,
         @intFromEnum(TwigNodeKind.subscript) => .subscript,
@@ -2353,11 +2354,11 @@ pub export fn twig_builder_add_image(
     return emitNode(out_id, handle.builder.addNode(.{ .image = .{ .destination = dest, .reference = ref } }));
 }
 
-fn directiveFormOf(form: c_int) ?twig.AST.DirectiveForm {
+fn directiveFormOf(form: c_int) ?twig.AST.Form {
     return switch (form) {
-        @intFromEnum(TwigDirectiveForm.text) => .text,
-        @intFromEnum(TwigDirectiveForm.leaf) => .leaf,
-        @intFromEnum(TwigDirectiveForm.container) => .container,
+        @intFromEnum(TwigDirectiveForm.text) => .inline_text,
+        @intFromEnum(TwigDirectiveForm.leaf) => .block_leaf,
+        @intFromEnum(TwigDirectiveForm.container) => .block_fenced,
         else => null,
     };
 }
@@ -2372,7 +2373,7 @@ pub export fn twig_builder_add_directive(
     const handle = asBuilder(b orelse return .invalid_argument);
     const f = directiveFormOf(form) orelse return .invalid_argument;
     const name = sliceOf(name_ptr, name_len) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .directive = .{ .form = f, .name = name } }));
+    return emitNode(out_id, handle.builder.addNode(.{ .container = .{ .form = f, .name = name } }));
 }
 
 pub export fn twig_builder_add_element(
@@ -2383,7 +2384,7 @@ pub export fn twig_builder_add_element(
 ) TwigStatus {
     const handle = asBuilder(b orelse return .invalid_argument);
     const name = sliceOf(name_ptr, name_len) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .element = .{ .name = name } }));
+    return emitNode(out_id, handle.builder.addNode(.{ .container = .{ .name = name } }));
 }
 
 pub export fn twig_builder_add_processing_instruction(

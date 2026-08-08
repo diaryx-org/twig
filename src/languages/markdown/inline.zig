@@ -157,7 +157,7 @@ fn isBlankStrNode(kind: Node.Kind) bool {
 fn inlineSafeKind(kind: Node.Kind) bool {
     return switch (kind) {
         .image, .hard_break => true,
-        .element => |e| html_lang.isVoidElement(e.name),
+        .container => |c| html_lang.isVoidElement(c.name),
         else => false,
     };
 }
@@ -1611,7 +1611,7 @@ fn buildTextDirective(sc: *Scanner, d: TextDirective) Allocator.Error!Node.Id {
     } else &.{};
     defer if (children.len > 0) b.allocator.free(children);
 
-    const id = try b.addContainer(.{ .directive = .{ .form = .text, .name = d.name } }, children);
+    const id = try b.addContainer(.{ .container = .{ .form = .inline_text, .name = d.name } }, children);
     if (d.attrs) |p| {
         defer p.deinit(b.allocator);
         try b.setAttrs(id, .{ .entries = p.entries });
@@ -2548,9 +2548,9 @@ test "text directive with label and attrs" {
     var ast = try parseAndFinishWithOptions(":abbr[HTML]{title=\"HyperText\" .up}", directives_on);
     defer ast.deinit();
     const dir = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[dir].kind == .directive);
-    try testing.expectEqual(AST.DirectiveForm.text, ast.nodes[dir].kind.directive.form);
-    try testing.expectEqualStrings("abbr", ast.nodes[dir].kind.directive.name);
+    try testing.expect(ast.nodes[dir].kind == .container);
+    try testing.expectEqual(@as(?AST.Form, .inline_text), ast.nodes[dir].kind.container.form);
+    try testing.expectEqualStrings("abbr", ast.nodes[dir].kind.container.name);
     // label parsed as inline children
     const label_child = ast.nodes[dir].first_child.?;
     try testing.expectEqualStrings("HTML", ast.nodes[label_child].kind.str);
@@ -2564,8 +2564,8 @@ test "bare text directive (no label, no attrs)" {
     var ast = try parseAndFinishWithOptions(":here", directives_on);
     defer ast.deinit();
     const dir = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[dir].kind == .directive);
-    try testing.expectEqualStrings("here", ast.nodes[dir].kind.directive.name);
+    try testing.expect(ast.nodes[dir].kind == .container);
+    try testing.expectEqualStrings("here", ast.nodes[dir].kind.container.name);
     try testing.expectEqual(@as(?Node.Id, null), ast.nodes[dir].first_child);
 }
 
@@ -2590,7 +2590,7 @@ test "colon not starting a valid directive stays literal" {
 test "directives disabled: no directive node is produced" {
     var ast = try parseAndFinishWithOptions(":abbr[HTML]", .{});
     defer ast.deinit();
-    for (ast.nodes) |n| try testing.expect(n.kind != .directive);
+    for (ast.nodes) |n| try testing.expect(n.kind != .container);
     // the colon in particular is plain literal text
     const child = ast.nodes[ast.root].first_child.?;
     try testing.expectEqualStrings(":abbr", ast.nodes[child].kind.str);
@@ -2876,7 +2876,7 @@ test "span: a text directive's label children address the true source bytes" {
 
     const lead = ast.nodes[ast.root].first_child.?;
     const dir = ast.nodes[lead].next_sibling.?;
-    try testing.expect(ast.nodes[dir].kind == .directive);
+    try testing.expect(ast.nodes[dir].kind == .container);
     try testing.expectEqualStrings(":abbr[a *b* c]", Span.of(u8, ast.nodes[dir].span, s));
     try testing.expectEqualStrings("a *b* c", Span.of(u8, ast.nodes[dir].content_span.?, s));
 

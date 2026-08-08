@@ -418,52 +418,59 @@ const Renderer = struct {
             .code_block => |cb| try self.writeCodeFence(ctx, cb.lang, cb.text),
             .raw_block => |rb| try self.writeCodeFence(ctx, rb.format, rb.text),
             .metadata => |m| try self.writeMetadata(ctx, m.lang, m.text),
-            .div => {
-                try self.writePrefix(ctx);
-                try self.writer.writeAll("::: \n");
-                const p = Prefix{ .parent = ctx.prefix, .segment = "  " };
-                try self.renderBlocks(id, .{ .prefix = &p }, true);
-                try self.writePrefix(ctx);
-                try self.writer.writeAll(":::\n");
-            },
-            .directive => |d| switch (d.form) {
-                // A block directive at block level is a leaf (`::name…`) or a
-                // container (`:::name…` … `:::`); a `text` directive only
-                // appears inline, so route a stray one there defensively.
-                .text => {
+            // One arm for what used to be three (`div`, `directive`,
+            // `element`). The branches below are exactly the disambiguation the
+            // separate kinds used to do implicitly: `form` says which spelling,
+            // and an anonymous djot div is the container NAMED "div".
+            .container => |c| {
+                const form = c.form orelse {
+                    // Unclassified: an HTML/XML element passing through.
                     try self.writePrefix(ctx);
-                    try self.renderInline(id, ctx);
-                    try self.writer.writeByte('\n');
-                },
-                .leaf => {
-                    try self.writePrefix(ctx);
-                    try self.writer.print("::{s}", .{d.name});
-                    if (self.ast.nodes[id].first_child != null) {
-                        try self.writer.writeByte('[');
-                        try self.renderInlineChildren(id, ctx);
-                        try self.writer.writeByte(']');
-                    }
-                    try self.writeDirectiveAttrs(id);
-                    try self.writer.writeByte('\n');
-                },
-                .container => {
-                    try self.writePrefix(ctx);
-                    try self.writer.print(":::{s}", .{d.name});
-                    try self.writeDirectiveAttrs(id);
-                    try self.writer.writeByte('\n');
-                    try self.renderBlocks(id, ctx, true);
-                    try self.writePrefix(ctx);
-                    try self.writer.writeAll(":::\n");
-                },
+                    try self.writer.print("<{s}>", .{c.name});
+                    try self.renderBlocks(id, ctx, false);
+                    try self.writer.print("</{s}>\n", .{c.name});
+                    return;
+                };
+                switch (form) {
+                    // A `text` container only appears inline; route a stray one
+                    // there defensively rather than emitting a broken block.
+                    .inline_text => {
+                        try self.writePrefix(ctx);
+                        try self.renderInline(id, ctx);
+                        try self.writer.writeByte('\n');
+                    },
+                    .block_leaf => {
+                        try self.writePrefix(ctx);
+                        try self.writer.print("::{s}", .{c.name});
+                        if (self.ast.nodes[id].first_child != null) {
+                            try self.writer.writeByte('[');
+                            try self.renderInlineChildren(id, ctx);
+                            try self.writer.writeByte(']');
+                        }
+                        try self.writeDirectiveAttrs(id);
+                        try self.writer.writeByte('\n');
+                    },
+                    .block_fenced => {
+                        try self.writePrefix(ctx);
+                        // djot's fenced div is anonymous — it carries its
+                        // identity as a class, so the fence takes no name.
+                        if (c.name.len == 0) {
+                            try self.writer.writeAll("::: \n");
+                            const p = Prefix{ .parent = ctx.prefix, .segment = "  " };
+                            try self.renderBlocks(id, .{ .prefix = &p }, true);
+                        } else {
+                            try self.writer.print(":::{s}", .{c.name});
+                            try self.writeDirectiveAttrs(id);
+                            try self.writer.writeByte('\n');
+                            try self.renderBlocks(id, ctx, true);
+                        }
+                        try self.writePrefix(ctx);
+                        try self.writer.writeAll(":::\n");
+                    },
+                }
             },
             .reference => {},
             .footnote => {},
-            .element => |e| {
-                try self.writePrefix(ctx);
-                try self.writer.print("<{s}>", .{e.name});
-                try self.renderBlocks(id, ctx, false);
-                try self.writer.print("</{s}>\n", .{e.name});
-            },
             .comment => |c| {
                 try self.writePrefix(ctx);
                 try self.writer.print("<!--{s}-->\n", .{c});
@@ -558,13 +565,18 @@ const Renderer = struct {
                 try self.writer.writeByte(']');
                 if (im.destination) |dest| try self.writer.print("({s})", .{dest}) else if (im.reference) |lab| try self.writer.print("[{s}]", .{lab});
             },
-            .span => try self.renderInlineChildren(id, ctx),
-            .directive => |d| {
-                // Inline (text) directive `:name[label]{attrs}`. A leaf/
-                // container form shouldn't reach the inline path, but if one
-                // does, emitting the single-colon inline form is the safe
-                // lossy fallback.
-                try self.writer.print(":{s}", .{d.name});
+            .container => |c| {
+                // djot's bracketed span carries its identity in `attrs`, so
+                // Markdown — which has no `[…]{…}` — drops the wrapper and
+                // keeps the text. Anything else is an inline directive
+                // `:name[label]{attrs}`; a stray block form reaching the
+                // inline path emits the single-colon spelling as a safe lossy
+                // fallback, as it always has.
+                if (c.name.len == 0) {
+                    try self.renderInlineChildren(id, ctx);
+                    return;
+                }
+                try self.writer.print(":{s}", .{c.name});
                 if (node.first_child != null) {
                     try self.writer.writeByte('[');
                     try self.renderInlineChildren(id, ctx);

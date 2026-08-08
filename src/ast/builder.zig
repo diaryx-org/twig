@@ -232,8 +232,11 @@ fn dupeKind(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Kind {
             .destination = if (v.destination) |d| try self.dupe(d) else null,
             .reference = if (v.reference) |r| try self.dupe(r) else null,
         } },
-        .directive => |v| .{ .directive = .{ .form = v.form, .name = try self.dupe(v.name) } },
-        .element => |v| .{ .element = .{ .name = try self.dupe(v.name) } },
+        .container => |v| .{ .container = .{
+            .name = try self.dupe(v.name),
+            .form = v.form,
+            .argument = if (v.argument) |a| try self.dupe(a) else null,
+        } },
         .comment => |v| .{ .comment = try self.dupe(v) },
         .doctype => |v| .{ .doctype = try self.dupe(v) },
         .processing_instruction => |v| .{ .processing_instruction = .{
@@ -287,7 +290,7 @@ test "setAttrs keeps a bare (null-value) attribute bare" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
 
-    const id = try b.addLeaf(.{ .element = .{ .name = "input" } });
+    const id = try b.addLeaf(.{ .container = .{ .name = "input" } });
     try b.setAttrs(id, .{ .entries = &.{ .{ .key = "disabled", .value = null }, .{ .key = "type", .value = "checkbox" } } });
 
     var ast = try b.finish(id);
@@ -312,7 +315,7 @@ test "dupeKind copies generic-markup string payloads into owned storage" {
     var data_buf = "version=\"1.0\"".*;
     var cdata_buf = "a < b".*;
 
-    const el = try b.addLeaf(.{ .element = .{ .name = name_buf[0..] } });
+    const el = try b.addLeaf(.{ .container = .{ .name = name_buf[0..] } });
     const cm = try b.addLeaf(.{ .comment = comment_buf[0..] });
     const dt = try b.addLeaf(.{ .doctype = doctype_buf[0..] });
     const pi = try b.addLeaf(.{ .processing_instruction = .{ .target = target_buf[0..], .data = data_buf[0..] } });
@@ -329,14 +332,14 @@ test "dupeKind copies generic-markup string payloads into owned storage" {
     var ast = try b.finish(root);
     defer ast.deinit();
 
-    try testing.expectEqualStrings("svg:rect", ast.nodes[el].kind.element.name);
+    try testing.expectEqualStrings("svg:rect", ast.nodes[el].kind.container.name);
     try testing.expectEqualStrings(" todo ", ast.nodes[cm].kind.comment);
     try testing.expectEqualStrings("html", ast.nodes[dt].kind.doctype);
     try testing.expectEqualStrings("xml", ast.nodes[pi].kind.processing_instruction.target);
     try testing.expectEqualStrings("version=\"1.0\"", ast.nodes[pi].kind.processing_instruction.data);
     try testing.expectEqualStrings("a < b", ast.nodes[cd].kind.cdata);
     // Not aliasing the (now-mutated) inputs also means distinct pointers.
-    try testing.expect(ast.nodes[el].kind.element.name.ptr != &name_buf);
+    try testing.expect(ast.nodes[el].kind.container.name.ptr != &name_buf);
 }
 
 test "graftAst copies a foreign tree, shifting spans and re-linking children" {
@@ -347,7 +350,7 @@ test "graftAst copies a foreign tree, shifting spans and re-linking children" {
     var donor = Builder.init(testing.allocator);
     const inner = try donor.addLeaf(.{ .str = "hi" });
     donor.setSpan(inner, Span.init(3, 5));
-    const el = try donor.addContainer(.{ .element = .{ .name = "b" } }, &.{inner});
+    const el = try donor.addContainer(.{ .container = .{ .name = "b" } }, &.{inner});
     donor.setSpan(el, Span.init(0, 8));
     try donor.setAttrs(el, .{ .entries = &.{.{ .key = "id", .value = "x" }} });
     var donor_ast = try donor.finish(el);
@@ -364,7 +367,7 @@ test "graftAst copies a foreign tree, shifting spans and re-linking children" {
 
     // The grafted root is reachable, kept its kind/attrs, and its span shifted.
     const b_el = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings("b", ast.nodes[b_el].kind.element.name);
+    try testing.expectEqualStrings("b", ast.nodes[b_el].kind.container.name);
     try testing.expectEqualStrings("x", ast.attrsOf(b_el).get("id").?);
     try testing.expect(ast.nodes[b_el].span.eql(Span.init(100, 108)));
     // Child linkage was rebuilt against host ids, and its span shifted too.
@@ -404,7 +407,7 @@ test "content_span defaults to null and is set via setContentSpan" {
     defer b.deinit();
 
     const text = try b.addLeaf(.{ .str = "abc" });
-    const el = try b.addContainer(.{ .element = .{ .name = "div" } }, &.{text});
+    const el = try b.addContainer(.{ .container = .{ .name = "div" } }, &.{text});
     b.setSpan(el, Span.init(0, 24));
     b.setContentSpan(el, Span.init(13, 16));
 

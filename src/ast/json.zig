@@ -112,7 +112,6 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .para,
         .thematic_break,
         .section,
-        .div,
         .block_quote,
         .definition_list,
         .table,
@@ -126,7 +125,6 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .non_breaking_space,
         .emph,
         .strong,
-        .span,
         .mark,
         .superscript,
         .subscript,
@@ -258,15 +256,13 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.objectField("reference");
             try w.write(l.reference);
         },
-        .directive => |d| {
+        .container => |c| {
+            try w.objectField("name");
+            try w.write(c.name);
             try w.objectField("form");
-            try w.write(d.form);
-            try w.objectField("name");
-            try w.write(d.name);
-        },
-        .element => |e| {
-            try w.objectField("name");
-            try w.write(e.name);
+            try w.write(c.form);
+            try w.objectField("argument");
+            try w.write(c.argument);
         },
         .comment => |s| {
             try w.objectField("text");
@@ -349,7 +345,7 @@ test "encode: container node nests children in source order" {
 test "encode: attrs render as ordered key/value pairs, bare attrs get a null value" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
-    const el = try b.addLeaf(.{ .element = .{ .name = "input" } });
+    const el = try b.addLeaf(.{ .container = .{ .name = "input" } });
     try b.setAttrs(el, .{ .entries = &.{
         .{ .key = "disabled", .value = null },
         .{ .key = "type", .value = "checkbox" },
@@ -365,7 +361,7 @@ test "encode: attrs render as ordered key/value pairs, bare attrs get a null val
     defer parsed.deinit();
     const obj = parsed.value.object;
 
-    try testing.expectEqualStrings("element", obj.get("kind").?.string);
+    try testing.expectEqualStrings("container", obj.get("kind").?.string);
     try testing.expectEqualStrings("input", obj.get("name").?.string);
     const attrs = obj.get("attrs").?.array;
     try testing.expectEqual(@as(usize, 2), attrs.items.len);

@@ -382,7 +382,7 @@ fn collectStep(
 }
 
 fn matches(gpa: Allocator, ast: *const AST, id: Node.Id, m: *const Matcher) Allocator.Error!bool {
-    if (!kindNameMatches(m.kind_name, std.meta.activeTag(ast.nodes[id].kind))) return false;
+    if (!kindNameMatches(m.kind_name, ast.nodes[id].kind)) return false;
     for (m.attrs) |pred| if (!attrMatches(ast, id, pred)) return false;
     if (m.contains) |needle| {
         const text = try textOf(gpa, ast, id);
@@ -410,7 +410,12 @@ fn eqAny(name: []const u8, options: []const []const u8) bool {
     return false;
 }
 
-fn kindNameMatches(name: []const u8, tag: std.meta.Tag(Node.Kind)) bool {
+/// Takes a whole `Kind`, not just its tag: since `div`, `span`, `element` and
+/// `directive` collapsed into one `container` kind, the selector names that
+/// used to BE tags (`div`, `span`) are now tag-plus-name tests, and only the
+/// payload can answer them.
+fn kindNameMatches(name: []const u8, kind: Node.Kind) bool {
+    const tag = std.meta.activeTag(kind);
     if (std.mem.eql(u8, name, "*") or std.mem.eql(u8, name, "any")) return true;
     if (eqAny(name, &.{ "heading", "h" })) return tag == .heading;
     if (eqAny(name, &.{ "para", "paragraph", "p" })) return tag == .para;
@@ -426,9 +431,17 @@ fn kindNameMatches(name: []const u8, tag: std.meta.Tag(Node.Kind)) bool {
     if (eqAny(name, &.{"table"})) return tag == .table;
     if (eqAny(name, &.{"cell"})) return tag == .cell;
     if (eqAny(name, &.{"row"})) return tag == .row;
-    if (eqAny(name, &.{"div"})) return tag == .div;
     if (eqAny(name, &.{"section"})) return tag == .section;
     if (eqAny(name, &.{ "text", "str" })) return tag == .str;
+    // `div` and `span` used to be their own kinds; they are now a `container`
+    // named "div"/"span", so the shorthand that addressed them has to match on
+    // the name. `element` and `directive` stay addressable as spellings of
+    // `container` so existing selectors (`directive[name=vis]`) keep working —
+    // but they no longer DISCRIMINATE, since one kind now serves both.
+    if (eqAny(name, &.{ "div", "span" })) {
+        return tag == .container and std.mem.eql(u8, kind.container.name, name);
+    }
+    if (eqAny(name, &.{ "container", "element", "directive" })) return tag == .container;
     // Power-user escape hatch: the exact `Node.Kind` tag name.
     return std.mem.eql(u8, name, @tagName(tag));
 }
@@ -480,8 +493,7 @@ fn attrMatches(ast: *const AST, id: Node.Id, pred: AttrPred) bool {
     // [name=vis]`) or a generic element's tag (`element[name=video]`).
     if (std.mem.eql(u8, pred.key, "name")) {
         const nm: ?[]const u8 = switch (node.kind) {
-            .directive => |d| d.name,
-            .element => |e| e.name,
+            .container => |c| c.name,
             else => null,
         };
         if (nm) |n| return if (pred.op == .present) true else opMatch(pred.op, n, pred.value);
@@ -615,7 +627,7 @@ test "resolveAll: a directive node is addressable by its kind name" {
     const ms = try resolveAll(testing.allocator, &ast, &sel);
     defer testing.allocator.free(ms);
     try testing.expectEqual(@as(usize, 2), ms.len);
-    try testing.expect(ast.nodes[ms[0].id].kind == .directive);
+    try testing.expect(ast.nodes[ms[0].id].kind == .container);
 }
 
 test "resolveAll: directive[name=...] and [class~=...] audience filtering" {
@@ -643,7 +655,7 @@ test "resolveAll: directive[name=...] and [class~=...] audience filtering" {
     const public = try resolveAll(testing.allocator, &ast, &pub_vis);
     defer testing.allocator.free(public);
     try testing.expectEqual(@as(usize, 1), public.len);
-    try testing.expectEqualStrings("vis", ast.nodes[public[0].id].kind.directive.name);
+    try testing.expectEqualStrings("vis", ast.nodes[public[0].id].kind.container.name);
 
     // `~=` is word-membership, not substring: `publi` matches nothing.
     var partial = try parse(testing.allocator, "directive[class~=publi]");
