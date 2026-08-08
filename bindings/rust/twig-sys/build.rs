@@ -271,12 +271,19 @@ fn zig_target_for_cargo_target(target: &str, host: &str) -> Option<&'static str>
         "riscv64gc-unknown-linux-gnu" => Some("riscv64-linux-gnu"),
         "riscv64gc-unknown-linux-musl" => Some("riscv64-linux-musl"),
         "wasm32-unknown-unknown" => Some("wasm32-freestanding"),
-        // Rust's WASI target is `wasm32-wasip1` (née `wasm32-wasi`); Zig has no
-        // separate preview1/preview2 tag, just `wasi` (preview1). `wasm32-wasip2`
-        // is intentionally unmapped — Zig has no component-model target, and a
-        // preview1-ABI static lib is not guaranteed link-compatible with wasip2's
-        // sysroot.
+        // Rust's WASI targets are `wasm32-wasip1` (née `wasm32-wasi`) and
+        // `wasm32-wasip2`; Zig has no separate preview1/preview2 tag, just
+        // `wasi` (preview1). `wasm32-wasip2` maps to the same Zig target:
+        // twig's C ABI surface (src/c_abi.zig) does no I/O of its own (no
+        // filesystem, no host calls) — only the CLI/bench/conformance code
+        // does, and none of that is in libtwig.a — so a preview1-ABI static
+        // lib links and runs correctly under Rust's wasip2 sysroot, which
+        // supplies the actual environment surface itself. Verified against
+        // fig (identical shape) by linking+running `fig/examples/wasm_smoke.rs`
+        // for both targets under wasmtime; revisit if twig ever grows real I/O
+        // in the C ABI surface.
         "wasm32-wasip1" => Some("wasm32-wasi"),
+        "wasm32-wasip2" => Some("wasm32-wasi"),
         "x86_64-unknown-linux-gnu" => Some("x86_64-linux-gnu"),
         "x86_64-unknown-linux-musl" => Some("x86_64-linux-musl"),
         _ => panic!(
