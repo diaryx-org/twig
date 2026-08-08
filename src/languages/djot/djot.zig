@@ -81,28 +81,21 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Document 
 // (`element`, `comment`, ...) never appear in a djot parse and are in
 // neither set.
 
-const block_tags = std.EnumSet(std.meta.Tag(AST.Node.Kind)).initMany(&.{
-    .para,       .heading,         .thematic_break, .section,
-    .code_block, .raw_block,       .block_quote,    .bullet_list, .ordered_list,
-    .task_list,  .definition_list, .table,          .reference,   .footnote,
-});
-
-const inline_tags = std.EnumSet(std.meta.Tag(AST.Node.Kind)).initMany(&.{
-    .str,       .soft_break,         .hard_break,        .non_breaking_space, .symb,
-    .verbatim,  .raw_inline,         .inline_math,       .display_math,       .url,
-    .email,     .footnote_reference, .smart_punctuation, .emph,               .strong,
-    .link,      .image,              .mark,              .superscript,
-    .subscript, .insert,             .delete,            .double_quoted,      .single_quoted,
-});
-
-/// Mirrors djot.js `ast.ts`'s `isBlock`.
+/// Mirrors djot.js `ast.ts`'s `isBlock`, now as a reading of the shared
+/// `AST.level` axis rather than a second hand-maintained tag set. The two sets
+/// agreed on every kind djot.js knows about; the only additions are kinds
+/// djot.js has no concept of and so could not classify — `metadata` (a
+/// frontmatter data island) and a block-form `container`. Both are genuinely
+/// blocks, so this is the set growing to cover Twig's wider vocabulary, not a
+/// change of answer.
 pub fn isBlock(kind: AST.Node.Kind) bool {
-    return block_tags.contains(std.meta.activeTag(kind));
+    return AST.level(kind) == .block;
 }
 
-/// Mirrors djot.js `ast.ts`'s `isInline`.
+/// Mirrors djot.js `ast.ts`'s `isInline`. See `isBlock` — same reasoning; the
+/// only addition is an inline-form `container` (djot's `[…]{…}` span).
 pub fn isInline(kind: AST.Node.Kind) bool {
-    return inline_tags.contains(std.meta.activeTag(kind));
+    return AST.level(kind) == .@"inline";
 }
 
 pub const AutolinkKind = inline_mod.InlineParser.AutolinkKind;

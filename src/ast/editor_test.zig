@@ -1047,3 +1047,4 @@ test "insert_literal: an offset past the source is InvalidRange" {
     try testing.expectError(error.InvalidRange, insertLiteral(&fx, 99, "x"));
     try fx.expectSource("ab\n");
 }
+

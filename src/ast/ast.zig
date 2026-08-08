@@ -266,15 +266,130 @@ pub const Node = struct {
     };
 };
 
-/// True for kinds that carry a TEXT/opaque payload rather than child nodes —
-/// a code block's body, an inline `verbatim`'s or math node's interior, a raw
-/// block, a bare `str`, etc. (the same set `c_abi.zig`'s `kindText` extracts).
-/// When such a leaf has a `content_span`, that span addresses opaque text, not
-/// a child region: there is no child sequence to index into, so `insertChild`
-/// must refuse it even though it has a `content_span` (`replaceContent`, which
-/// replaces the whole interior, still works). This is the flip side of
-/// `content_span` no longer implying "container" — see its doc on `Node`.
-pub fn holdsOpaqueText(kind: Node.Kind) bool {
+// ── The two axes ───────────────────────────────────────────────────────────
+// `Kind` names WHAT a node is. Two further questions get asked of it constantly
+// — where it sits in the block/inline hierarchy, and what it is allowed to
+// contain — and until now each was answered by a separate hand-maintained list
+// per consumer: `languages/djot/djot.zig`'s `block_tags`/`inline_tags`,
+// `ast/locate.zig`'s `isBlockParent`, `languages/html/parser.zig`'s
+// `isBlockKind`, and `holdsOpaqueText` below. Those lists disagreed (djot
+// counted `reference`/`footnote` as blocks and HTML didn't; HTML counted
+// `list_item`/`term` and djot didn't), and every new kind had to be threaded
+// into each one by hand — with nothing failing the build if it wasn't.
+//
+// `level` and `contentModel` are the canonical answers. Both switch
+// exhaustively, so a NEW KIND CANNOT BE ADDED WITHOUT DECLARING BOTH — which
+// is the property the scattered lists never had.
+
+/// Where a kind sits in the document hierarchy.
+///
+/// `neither` is not a shrug: it is the honest answer for three groups. The
+/// `doc` root is not itself a block. A structural child (`list_item`, `row`,
+/// `cell`, `term`, `caption`, …) only ever appears inside its own parent and
+/// never where a paragraph could go — which is exactly djot.js's `isBlock`
+/// rule, and why those are excluded here too. And a generic-markup node
+/// (`comment`, `doctype`, an unclassified `container`) genuinely has no level:
+/// whether an HTML `<video>` is a block is a property of the stylesheet, not
+/// the parse.
+pub const Level = enum { block, @"inline", neither };
+
+/// What a kind may hold. The distinction `blocks`/`inlines` vs `text` is the
+/// load-bearing one: a `text` node's `content_span` addresses OPAQUE BYTES, not
+/// a child region, so `insertChild` must refuse it even though it has a
+/// `content_span` (`replaceContent` still works). See `Node.content_span`.
+///
+/// This is what a kind may CONTAIN, not what a given node DOES contain. The
+/// difference is observable: in one HTML table, `<td><p>x</p></td>` parses to
+/// `cell > para` while its sibling `<td>y</td>` parses to `cell > str`, and
+/// djot puts inlines directly in every cell. Both are `.blocks` here — an
+/// inline run is the tight, `<p>`-elided case, exactly as a tight list item
+/// holds inlines without stopping `list_item` from being a block container.
+/// Every caller consults this as a PERMISSION ("may children go here at all"),
+/// which is the only reading the data supports.
+pub const ContentModel = enum {
+    /// Children are block-level nodes.
+    blocks,
+    /// Children are inline nodes.
+    inlines,
+    /// An opaque text payload and no children — see `holdsOpaqueText`.
+    text,
+    /// Neither children nor text: `thematic_break`, `soft_break`, `reference`.
+    empty,
+};
+
+/// `kind`'s position in the block/inline hierarchy. See `Level`.
+pub fn level(kind: Node.Kind) Level {
+    return switch (kind) {
+        .para,
+        .heading,
+        .thematic_break,
+        .section,
+        .code_block,
+        .raw_block,
+        .metadata,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .table,
+        .footnote,
+        .reference,
+        => .block,
+
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .symb,
+        .verbatim,
+        .raw_inline,
+        .inline_math,
+        .display_math,
+        .url,
+        .email,
+        .footnote_reference,
+        .smart_punctuation,
+        .emph,
+        .strong,
+        .link,
+        .image,
+        .mark,
+        .superscript,
+        .subscript,
+        .insert,
+        .delete,
+        .double_quoted,
+        .single_quoted,
+        => .@"inline",
+
+        // A generic container's level is the one thing `form` was introduced to
+        // carry (see `Form`); an unclassified one has none.
+        .container => |c| if (c.form) |f|
+            (if (f.isBlockForm()) .block else .@"inline")
+        else
+            .neither,
+
+        // The root, the structural children, and generic markup — see `Level`.
+        .doc,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .row,
+        .cell,
+        .caption,
+        .comment,
+        .doctype,
+        .processing_instruction,
+        .cdata,
+        => .neither,
+    };
+}
+
+/// What `kind` may contain. See `ContentModel`.
+pub fn contentModel(kind: Node.Kind) ContentModel {
     return switch (kind) {
         .str,
         .symb,
@@ -292,9 +407,75 @@ pub fn holdsOpaqueText(kind: Node.Kind) bool {
         .comment,
         .doctype,
         .cdata,
-        => true,
-        else => false,
+        => .text,
+
+        .thematic_break,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .reference,
+        .processing_instruction,
+        => .empty,
+
+        .doc,
+        .section,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .definition,
+        .row,
+        .cell,
+        .footnote,
+        => .blocks,
+
+        .para,
+        .heading,
+        .term,
+        .caption,
+        .emph,
+        .strong,
+        .link,
+        .image,
+        .mark,
+        .superscript,
+        .subscript,
+        .insert,
+        .delete,
+        .double_quoted,
+        .single_quoted,
+        => .inlines,
+
+        // A fenced container holds blocks; the inline and one-line-leaf forms
+        // hold the label's inlines. An UNCLASSIFIED container (an HTML/XML
+        // element) may hold either, and answers `blocks` as the permissive
+        // one — every caller that consults this is asking "may I put children
+        // here at all", and only `text` answers no.
+        .container => |c| if (c.form) |f| switch (f) {
+            .block_fenced => .blocks,
+            .block_leaf, .inline_text => .inlines,
+        } else .blocks,
     };
+}
+
+/// True for kinds that carry a TEXT/opaque payload rather than child nodes —
+/// a code block's body, an inline `verbatim`'s or math node's interior, a raw
+/// block, a bare `str`, etc. (the same set `c_abi.zig`'s `kindText` extracts).
+/// When such a leaf has a `content_span`, that span addresses opaque text, not
+/// a child region: there is no child sequence to index into, so `insertChild`
+/// must refuse it even though it has a `content_span` (`replaceContent`, which
+/// replaces the whole interior, still works). This is the flip side of
+/// `content_span` no longer implying "container" — see its doc on `Node`.
+///
+/// Now a thin reading of `contentModel`, kept as its own name because that is
+/// what the callers mean and because it is public API.
+pub fn holdsOpaqueText(kind: Node.Kind) bool {
+    return contentModel(kind) == .text;
 }
 
 /// A single attribute pair (`AttributeParser`'s `keyval`). A `null` value
