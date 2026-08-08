@@ -18,18 +18,32 @@ fn spellsAutolink(angled: []const u8) bool {
 }
 
 pub const table: syntax.Syntax = .{
-    // No `mark`/`superscript`/`subscript`/`insert`/`delete`: Markdown has no
-    // lightweight spelling for any of them, so they stay `null` and every
-    // gesture over them is refused rather than mis-spelled.
+    // Only `strong`/`emph` are AUTHORABLE. The rest carry the spelling the
+    // serializer uses when converting a djot document down to Markdown —
+    // `==mark==` and friends are extension syntax that CommonMark won't parse
+    // back, so writing them is acceptable (better than dropping the node) while
+    // an editor gesture minting them is not. See `Delims.authorable`.
     .inline_delims = .init(.{
         .strong = .{ .open = "**", .close = "**" },
         .emph = .{ .open = "*", .close = "*" },
+        .mark = .{ .open = "==", .close = "==", .authorable = false },
+        .superscript = .{ .open = "^", .close = "^", .authorable = false },
+        .subscript = .{ .open = "~", .close = "~", .authorable = false },
+        .insert = .{ .open = "{+", .close = "+}", .authorable = false },
+        // GFM strikethrough: parsed back, but only with the extension on, so
+        // still not something a toggle may assume.
+        .delete = .{ .open = "~~", .close = "~~", .authorable = false },
+        .double_quoted = .{ .open = "\"", .close = "\"", .authorable = false },
+        .single_quoted = .{ .open = "'", .close = "'", .authorable = false },
+    }),
+    .text_leaf_delims = .init(.{
         .verbatim = .{ .open = "`", .close = "`" },
-        .mark = null,
-        .superscript = null,
-        .subscript = null,
-        .insert = null,
-        .delete = null,
+        .inline_math = .{ .open = "$", .close = "$", .authorable = false },
+        .display_math = .{ .open = "$$", .close = "$$", .authorable = false },
+        .symb = .{ .open = ":", .close = ":", .authorable = false },
+        .url = .{ .open = "<", .close = ">", .authorable = false },
+        .email = .{ .open = "<", .close = ">", .authorable = false },
+        .footnote_reference = .{ .open = "[^", .close = "]", .authorable = false },
     }),
     .container_spelling = .init(.{
         .block_quote = .{ .marker = "> ", .cont = "> ", .blank = ">" },
@@ -68,13 +82,25 @@ pub const table: syntax.Syntax = .{
     .cell_line_break = "<br>",
 };
 
-test "markdown spells three inline kinds and refuses the other five" {
-    try std.testing.expect(table.inline_delims.get(.strong) != null);
-    try std.testing.expect(table.inline_delims.get(.emph) != null);
-    try std.testing.expect(table.inline_delims.get(.verbatim) != null);
-    for ([_]syntax.InlineKind{ .mark, .superscript, .subscript, .insert, .delete }) |k| {
-        try std.testing.expect(table.inline_delims.get(k) == null);
+test "markdown SPELLS every mark but AUTHORS only three" {
+    // The distinction `Delims.authorable` exists for. The serializer needs a
+    // spelling for every mark so a djot document converts without losing
+    // nodes; the editor must refuse all but the CommonMark three, because the
+    // rest would not reparse as the mark they were meant to be.
+    const AST = @import("../../ast/ast.zig");
+    for (std.enums.values(AST.InlineMark)) |m| {
+        try std.testing.expect(table.inline_delims.get(m) != null);
     }
+    const authorable_marks = [_]AST.InlineMark{ .strong, .emph };
+    for (std.enums.values(AST.InlineMark)) |m| {
+        const want = std.mem.indexOfScalar(AST.InlineMark, &authorable_marks, m) != null;
+        try std.testing.expectEqual(want, table.inline_delims.get(m).?.authorable);
+    }
+    // `verbatim` moved to the text-leaf table with the rest of its family, and
+    // is the one leaf an editor may toggle.
+    try std.testing.expect(table.text_leaf_delims.get(.verbatim).?.authorable);
+    try std.testing.expect(!table.text_leaf_delims.get(.url).?.authorable);
+
     table.assertCoherent();
     try std.testing.expect(table.authorable());
 }

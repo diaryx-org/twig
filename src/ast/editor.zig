@@ -174,7 +174,7 @@ pub const Editor = struct {
     /// the inline toolbar (always adds a mark).
     pub fn wrapRange(self: *Editor, span: Span, kind: InlineKind) Error!void {
         try self.checkRange(span.start, span.end);
-        const d = self.syntax.inline_delims.get(kind) orelse return error.UnsupportedFormat;
+        const d = self.syntax.authorableDelimsFor(kindRef(kind)) orelse return error.UnsupportedFormat;
         self.splicer.wrapRange(span, d.open, d.close) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.EditConflict,
@@ -186,7 +186,7 @@ pub const Editor = struct {
     /// rich editor's Cmd-B.
     pub fn toggleInline(self: *Editor, span: Span, kind: InlineKind) Error!void {
         try self.checkRange(span.start, span.end);
-        const d = self.syntax.inline_delims.get(kind) orelse return error.UnsupportedFormat;
+        const d = self.syntax.authorableDelimsFor(kindRef(kind)) orelse return error.UnsupportedFormat;
         self.splicer.toggleInline(span, kindRef(kind), d.open, d.close) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.NoNodeSpan, error.NoContentSpan => return error.NotEditable,

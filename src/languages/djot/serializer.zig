@@ -4,6 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
+const dj_syntax = @import("syntax.zig");
 const Document = djot.Document;
 const AST = djot.AST;
 const Node = AST.Node;
@@ -503,8 +504,23 @@ const Renderer = struct {
                 try self.writePrefix(ctx);
             },
             .non_breaking_space => try self.writer.writeAll("\\ "),
-            // One arm, still exhaustive over `TextLeafKind`: an eighth leaf
-            // fails THIS build (where delimiters live) and no other.
+            // Delimiters come from `dj_syntax.table`, NOT from a switch here. The
+            // hand-written copy this replaces had DRIFTED: it spelled `mark` as
+            // `=x=` while the table said `{=`/`=}`, so a djot mark did not
+            // survive a round-trip. One table, one answer.
+            //
+            // `text_leaf` is deliberately NOT folded in with it: a verbatim's
+            // fence WIDENS to clear backticks in its own content (`` ` `` needs
+            // `` `` ` `` ``), and djot's math wraps a verbatim that widens with
+            // it. `Delims` is a fixed byte pair and cannot say that, so those
+            // keep the arm below — the table is necessary but not sufficient
+            // for them, and pretending otherwise silently corrupted output.
+            .inline_mark => |m| {
+                const d = dj_syntax.table.delimsFor(.{ .mark = m }) orelse return;
+                try self.writer.writeAll(d.open);
+                try self.renderInlineChildren(id, ctx);
+                try self.writer.writeAll(d.close);
+            },
             .text_leaf => |leaf| switch (leaf.kind) {
                 .symb => {
                     const s = leaf.text;
@@ -546,53 +562,6 @@ const Renderer = struct {
             .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
             // One arm, still exhaustive over `InlineMark`: a tenth mark fails
             // THIS build (where spelling lives) and no other.
-            .inline_mark => |m| switch (m) {
-                .emph => {
-                    try self.writer.writeByte('_');
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeByte('_');
-                },
-                .strong => {
-                    try self.writer.writeByte('*');
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeByte('*');
-                },
-                .mark => {
-                    try self.writer.writeByte('=');
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeByte('=');
-                },
-                .superscript => {
-                    try self.writer.writeByte('^');
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeByte('^');
-                },
-                .subscript => {
-                    try self.writer.writeByte('~');
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeByte('~');
-                },
-                .insert => {
-                    try self.writer.writeAll("{+");
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeAll("+}");
-                },
-                .delete => {
-                    try self.writer.writeAll("{-");
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeAll("-}");
-                },
-                .double_quoted => {
-                    try self.writer.writeByte('"');
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeByte('"');
-                },
-                .single_quoted => {
-                    try self.writer.writeByte('\'');
-                    try self.renderInlineChildren(id, ctx);
-                    try self.writer.writeByte('\'');
-                },
-            },
             .link => |l| {
                 try self.writer.writeByte('[');
                 try self.renderInlineChildren(id, ctx);
