@@ -1,6 +1,6 @@
 .{
     .name = .twig,
-    .version = "2.7.1",
+    .version = "2.7.2",
     .fingerprint = 0xf34eb2175f91fb64,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
