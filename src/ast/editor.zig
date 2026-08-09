@@ -79,6 +79,7 @@ fn kindTag(kind: anytype) Splicer.KindTag {
         .tag => |t| t,
         .text_leaf => unreachable,
         .mark => unreachable,
+        .markup_leaf => unreachable,
     };
 }
 

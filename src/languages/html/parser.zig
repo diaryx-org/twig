@@ -672,7 +672,7 @@ pub const Parser = struct {
         const content_start = self.pos;
         const end = std.mem.indexOfPos(u8, self.source, self.pos, "-->") orelse self.source.len;
         self.pos = if (end < self.source.len) end + 3 else end;
-        const id = try self.builder.addLeaf(.{ .comment = self.source[content_start..end] });
+        const id = try self.builder.addLeaf(.{ .markup_leaf = .{ .kind = .comment, .text = self.source[content_start..end] } });
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(content_start, end));
         return id;
@@ -685,7 +685,7 @@ pub const Parser = struct {
         while (self.pos < self.source.len and self.source[self.pos] != '>') self.pos += 1;
         const end = self.pos;
         if (self.pos < self.source.len) self.pos += 1;
-        const id = try self.builder.addLeaf(.{ .comment = self.source[content_start..end] });
+        const id = try self.builder.addLeaf(.{ .markup_leaf = .{ .kind = .comment, .text = self.source[content_start..end] } });
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(content_start, end));
         return id;
@@ -698,7 +698,7 @@ pub const Parser = struct {
         while (self.pos < self.source.len and self.source[self.pos] != '>') self.pos += 1;
         const end = self.pos;
         if (self.pos < self.source.len) self.pos += 1;
-        const id = try self.builder.addLeaf(.{ .doctype = self.source[content_start..end] });
+        const id = try self.builder.addLeaf(.{ .markup_leaf = .{ .kind = .doctype, .text = self.source[content_start..end] } });
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(content_start, end));
         return id;
@@ -752,7 +752,7 @@ test "HTML parser maps block markup and decodes character references" {
     const doctype = ast.nodes[ast.root].first_child.?;
     const div = ast.nodes[doctype].next_sibling.?;
     const text = ast.nodes[div].first_child.?;
-    try testing.expectEqualStrings(" html", ast.nodes[doctype].kind.doctype);
+    try testing.expectEqualStrings(" html", ast.nodes[doctype].kind.markup_leaf.text);
     try testing.expectEqualStrings("div", ast.nodes[div].kind.container.name);
     try testing.expectEqualStrings("x", ast.attrsOf(div).get("class").?);
     try testing.expect(ast.attrsOf(div).find("disabled").?.value == null);
@@ -1017,17 +1017,17 @@ test "HTML framed leaves carry an interior content_span" {
     const pi = ast.nodes[bogus].next_sibling orelse return error.TestExpectedNonNull;
 
     // doctype: interior between `<!doctype` and `>`.
-    try testing.expect(ast.nodes[doctype].kind == .doctype);
+    try testing.expect(ast.nodes[doctype].kind == .markup_leaf and ast.nodes[doctype].kind.markup_leaf.kind == .doctype);
     try testing.expectEqualStrings("<!doctype html>", Span.of(u8, ast.nodes[doctype].span, source));
     try testing.expectEqualStrings(" html", Span.of(u8, ast.nodes[doctype].content_span.?, source));
 
     // proper comment: interior between `<!--` and `-->`.
-    try testing.expect(ast.nodes[comment].kind == .comment);
+    try testing.expect(ast.nodes[comment].kind == .markup_leaf and ast.nodes[comment].kind.markup_leaf.kind == .comment);
     try testing.expectEqualStrings("<!-- hi -->", Span.of(u8, ast.nodes[comment].span, source));
     try testing.expectEqualStrings(" hi ", Span.of(u8, ast.nodes[comment].content_span.?, source));
 
     // bogus comment (`<!`…`>`) is emitted as a comment kind and also framed.
-    try testing.expect(ast.nodes[bogus].kind == .comment);
+    try testing.expect(ast.nodes[bogus].kind == .markup_leaf and ast.nodes[bogus].kind.markup_leaf.kind == .comment);
     try testing.expectEqualStrings("<!bogus>", Span.of(u8, ast.nodes[bogus].span, source));
     try testing.expectEqualStrings("bogus", Span.of(u8, ast.nodes[bogus].content_span.?, source));
 
@@ -1044,7 +1044,7 @@ test "HTML empty comment interior gets an empty content_span at the boundary" {
     defer ast.deinit();
 
     const comment = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[comment].kind == .comment);
+    try testing.expect(ast.nodes[comment].kind == .markup_leaf and ast.nodes[comment].kind.markup_leaf.kind == .comment);
     const cs = ast.nodes[comment].content_span.?;
     try testing.expectEqual(@as(usize, 0), cs.len());
     try testing.expectEqual(ast.nodes[comment].span.start + "<!--".len, cs.start);

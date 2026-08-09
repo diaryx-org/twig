@@ -1073,8 +1073,9 @@ TwigStatus twig_builder_add_raw_inline(
     uint32_t *out_id
 );
 
-// Add a smart_punctuation node; `punct_kind` is a TwigSmartPunctuation code and
-// `text` is the source spelling it stands for (e.g. "---" for an em dash).
+// Add a smart_punctuation node; `punct_kind` is a TwigSmartPunctuation code.
+// `text`/`text_len` are accepted for ABI compatibility but ignored: the
+// spelling is always derived from `punct_kind` (e.g. "---" for an em dash).
 TwigStatus twig_builder_add_smart_punctuation(
     TwigBuilder *builder,
     int punct_kind,

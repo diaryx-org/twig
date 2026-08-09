@@ -363,7 +363,8 @@ pub const TreeBuilder = struct {
             .str => |v| .{ .str = try self.own(v) },
             .text_leaf => |v| .{ .text_leaf = .{ .kind = v.kind, .text = try self.own(v.text) } },
             .raw_inline => |v| .{ .raw_inline = .{ .format = try self.own(v.format), .text = try self.own(v.text) } },
-            .smart_punctuation => |v| .{ .smart_punctuation = .{ .kind = v.kind, .text = try self.own(v.text) } },
+            // `smart_punctuation`'s payload is now a bare `SmartPunctuationKind`
+            // (no string to copy), so it falls through to `else => kind` below.
             .link => |v| .{ .link = .{
                 .destination = if (v.destination) |d| try self.own(d) else null,
                 .reference = if (v.reference) |r| try self.own(r) else null,
@@ -894,13 +895,13 @@ pub const TreeBuilder = struct {
                 self.addChildToTip(id);
             },
 
-            .left_single_quote => try self.addSmartPunct(ev, .left_single_quote, "'"),
-            .right_single_quote => try self.addSmartPunct(ev, .right_single_quote, "'"),
-            .left_double_quote => try self.addSmartPunct(ev, .left_double_quote, "\""),
-            .right_double_quote => try self.addSmartPunct(ev, .right_double_quote, "\""),
-            .ellipses => try self.addSmartPunct(ev, .ellipses, "..."),
-            .en_dash => try self.addSmartPunct(ev, .en_dash, "--"),
-            .em_dash => try self.addSmartPunct(ev, .em_dash, "---"),
+            .left_single_quote => try self.addSmartPunct(ev, .left_single_quote),
+            .right_single_quote => try self.addSmartPunct(ev, .right_single_quote),
+            .left_double_quote => try self.addSmartPunct(ev, .left_double_quote),
+            .right_double_quote => try self.addSmartPunct(ev, .right_double_quote),
+            .ellipses => try self.addSmartPunct(ev, .ellipses),
+            .en_dash => try self.addSmartPunct(ev, .en_dash),
+            .em_dash => try self.addSmartPunct(ev, .em_dash),
 
             // Record that a blank line was seen, for the ENCLOSING list to
             // pick up (see `findListNode`/the tight/loose bookkeeping
@@ -953,8 +954,8 @@ pub const TreeBuilder = struct {
         self.addChildToTip(id);
     }
 
-    fn addSmartPunct(self: *TreeBuilder, ev: Event, kind: AST.SmartPunctuationKind, text: []const u8) Allocator.Error!void {
-        const id = try self.addNode(.{ .smart_punctuation = .{ .kind = kind, .text = text } }, Span.init(ev.start, ev.end + 1));
+    fn addSmartPunct(self: *TreeBuilder, ev: Event, kind: AST.SmartPunctuationKind) Allocator.Error!void {
+        const id = try self.addNode(.{ .smart_punctuation = kind }, Span.init(ev.start, ev.end + 1));
         self.addChildToTip(id);
     }
 
@@ -1370,7 +1371,7 @@ fn addStringContent(allocator: Allocator, tb: *TreeBuilder, first: ?Node.Id, buf
             .raw_inline => |v| try buf.appendSlice(allocator, v.text),
             .code_block => |v| try buf.appendSlice(allocator, v.text),
             .raw_block => |v| try buf.appendSlice(allocator, v.text),
-            .smart_punctuation => |v| try buf.appendSlice(allocator, v.text),
+            .smart_punctuation => |v| try buf.appendSlice(allocator, v.ascii()),
             .soft_break, .hard_break => try buf.append(allocator, '\n'),
             else => try addStringContent(allocator, tb, node.first_child, buf),
         }

@@ -1032,6 +1032,9 @@ fn kindNameZ(kind: twig.AST.Node.Kind) [*:0]const u8 {
         .text_leaf => |l| switch (l.kind) {
             inline else => |lk| @tagName(lk).ptr,
         },
+        .markup_leaf => |l| switch (l.kind) {
+            inline else => |lk| @tagName(lk).ptr,
+        },
         inline else => |_, tag| @tagName(tag).ptr,
     };
 }
@@ -1099,14 +1102,18 @@ fn kindText(node: *const twig.AST.Node) ?[]const u8 {
     return switch (node.kind) {
         .str => |s| s,
         .text_leaf => |l| l.text,
-        .comment, .doctype, .cdata => |s| s,
-        // Each payload is a distinct anonymous struct type, so Zig can't merge
+        .markup_leaf => |l| l.text,
+        // Each payload is a distinct named struct type, so Zig can't merge
         // these captures into one prong — but each exposes a `.text` field.
         .code_block => |p| p.text,
         .raw_block => |p| p.text,
         .raw_inline => |p| p.text,
         .metadata => |p| p.text,
-        .smart_punctuation => |p| p.text,
+        // No stored spelling anymore (see `Kind.smart_punctuation`'s doc on
+        // `ast.zig`) — derive the canonical ASCII spelling instead, keeping
+        // this accessor's C-surface behavior identical. A static string
+        // literal, so its lifetime outlives the AST it's borrowed "from".
+        .smart_punctuation => |p| p.ascii(),
         else => null,
     };
 }
@@ -2235,9 +2242,9 @@ pub export fn twig_builder_add_text(
         @intFromEnum(TwigNodeKind.url) => .{ .text_leaf = .{ .kind = .url, .text = text } },
         @intFromEnum(TwigNodeKind.email) => .{ .text_leaf = .{ .kind = .email, .text = text } },
         @intFromEnum(TwigNodeKind.footnote_reference) => .{ .text_leaf = .{ .kind = .footnote_reference, .text = text } },
-        @intFromEnum(TwigNodeKind.comment) => .{ .comment = text },
-        @intFromEnum(TwigNodeKind.doctype) => .{ .doctype = text },
-        @intFromEnum(TwigNodeKind.cdata) => .{ .cdata = text },
+        @intFromEnum(TwigNodeKind.comment) => .{ .markup_leaf = .{ .kind = .comment, .text = text } },
+        @intFromEnum(TwigNodeKind.doctype) => .{ .markup_leaf = .{ .kind = .doctype, .text = text } },
+        @intFromEnum(TwigNodeKind.cdata) => .{ .markup_leaf = .{ .kind = .cdata, .text = text } },
         else => return .invalid_argument,
     };
     return emitNode(out_id, handle.builder.addNode(node_kind));
@@ -2322,8 +2329,14 @@ fn smartPunctOf(kind: c_int) ?twig.AST.SmartPunctuationKind {
 }
 
 /// Add a `smart_punctuation` node. `punct_kind` is a `TwigSmartPunctuation`
-/// code; `text` is the source spelling it stands for (e.g. `"---"` for an
-/// em dash), copied.
+/// code. `text`/`text_len` are accepted for ABI compatibility but otherwise
+/// IGNORED: the node no longer stores a spelling of its own (see
+/// `AST.Kind.smart_punctuation`'s doc in `ast.zig`) — every reader derives
+/// the canonical ASCII spelling from `punct_kind` via
+/// `SmartPunctuationKind.ascii`, so a caller-supplied spelling could never
+/// have been observed anyway. Still validates `text`/`text_len` as a real
+/// slice (matching every other `twig_builder_add_*`), so passing a null/OOB
+/// pointer here fails the same way it always did.
 pub export fn twig_builder_add_smart_punctuation(
     b: ?*TwigBuilder,
     punct_kind: c_int,
@@ -2333,8 +2346,8 @@ pub export fn twig_builder_add_smart_punctuation(
 ) TwigStatus {
     const handle = asBuilder(b orelse return .invalid_argument);
     const pk = smartPunctOf(punct_kind) orelse return .invalid_argument;
-    const text = sliceOf(text_ptr, text_len) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .smart_punctuation = .{ .kind = pk, .text = text } }));
+    _ = sliceOf(text_ptr, text_len) orelse return .invalid_argument;
+    return emitNode(out_id, handle.builder.addNode(.{ .smart_punctuation = pk }));
 }
 
 /// Add a `link`. `has_destination`/`has_reference` gate the two optional

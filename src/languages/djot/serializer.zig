@@ -559,7 +559,7 @@ const Renderer = struct {
                 try self.writeTickFenced(r.text);
                 if (r.format.len > 0) try self.writer.print("{{={s}}}", .{r.format});
             },
-            .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
+            .smart_punctuation => |sp| try self.writer.writeAll(sp.ascii()),
             // One arm, still exhaustive over `InlineMark`: a tenth mark fails
             // THIS build (where spelling lives) and no other.
             .link => |l| {

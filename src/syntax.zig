@@ -233,8 +233,16 @@ pub const Syntax = struct {
         return switch (ref) {
             .mark => |m| self.inline_delims.get(m),
             .text_leaf => |l| self.text_leaf_delims.get(l),
-            // No other kind is spelled by a symmetric delimiter pair.
-            .tag => null,
+            // A `markup_leaf` IS framed by a symmetric pair (`<!--`/`-->`,
+            // `<![CDATA[`/`]]>`, …), but there is deliberately no table for
+            // it: the only formats that spell one (XML, HTML) are parse-only
+            // and carry no `Syntax` at all (see `format.zig`'s registry), no
+            // editor gesture authors one, and HTML's `cdata` isn't even a
+            // pair (it renders as escaped text). Each serializer's arm is the
+            // SINGLE copy of those spellings, so a table here would create
+            // the duplicate that `inline_delims` existed to remove. No
+            // remaining `.tag` kind is spelled by a symmetric pair.
+            .markup_leaf, .tag => null,
         };
     }
 

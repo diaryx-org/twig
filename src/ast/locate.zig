@@ -99,7 +99,7 @@ pub fn innermostBlock(ast: *const AST, offset: usize, source_len: usize) ?AST.No
 /// True for a node whose children are blocks — the level a container op works
 /// at. Everything else (a `para`, a `heading`) holds inlines.
 ///
-/// ── Why this is NOT `AST.contentModel(kind) == .blocks` ────────────────────
+/// ── Why this is NOT `kind.contentModel() == .blocks` ───────────────────────
 /// It looks like it should be, and it was written that way first. It is not,
 /// because a container gesture prefixes whole LINES, and "may hold blocks" does
 /// not imply "its children each own their lines". A table `cell` may hold

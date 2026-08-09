@@ -82,20 +82,20 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Document 
 // neither set.
 
 /// Mirrors djot.js `ast.ts`'s `isBlock`, now as a reading of the shared
-/// `AST.level` axis rather than a second hand-maintained tag set. The two sets
+/// `Kind.level` axis rather than a second hand-maintained tag set. The two sets
 /// agreed on every kind djot.js knows about; the only additions are kinds
 /// djot.js has no concept of and so could not classify — `metadata` (a
 /// frontmatter data island) and a block-form `container`. Both are genuinely
 /// blocks, so this is the set growing to cover Twig's wider vocabulary, not a
 /// change of answer.
 pub fn isBlock(kind: AST.Node.Kind) bool {
-    return AST.level(kind) == .block;
+    return kind.level() == .block;
 }
 
 /// Mirrors djot.js `ast.ts`'s `isInline`. See `isBlock` — same reasoning; the
 /// only addition is an inline-form `container` (djot's `[…]{…}` span).
 pub fn isInline(kind: AST.Node.Kind) bool {
-    return AST.level(kind) == .@"inline";
+    return kind.level() == .@"inline";
 }
 
 pub const AutolinkKind = inline_mod.InlineParser.AutolinkKind;

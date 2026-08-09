@@ -943,7 +943,7 @@ pub const Renderer = struct {
                     try self.writeEscaped(text);
                 }
             },
-            .smart_punctuation => |v| try self.writer.writeAll(smartPunct(v.kind)),
+            .smart_punctuation => |v| try self.writer.writeAll(smartPunct(v)),
             // One arm, still exhaustive over `InlineMark`: a tenth mark fails
             // THIS build (where spelling lives) and no other.
             .inline_mark => |m| switch (m) {
@@ -984,15 +984,21 @@ pub const Renderer = struct {
             // ── generic markup (net-new relative to djot/html.zig) ────────
             // See this file's module doc comment for the rationale behind
             // each of these.
-            .comment => |text| {
-                try self.writer.writeAll("<!--");
-                try self.writer.writeAll(text);
-                try self.writer.writeAll("-->");
-            },
-            .doctype => |guts| {
-                try self.writer.writeAll("<!DOCTYPE");
-                try self.writer.writeAll(guts);
-                try self.writer.writeByte('>');
+            // One arm, still exhaustive over `MarkupLeafKind`: a fourth
+            // markup leaf fails THIS build (where spelling lives) and no
+            // other.
+            .markup_leaf => |l| switch (l.kind) {
+                .comment => {
+                    try self.writer.writeAll("<!--");
+                    try self.writer.writeAll(l.text);
+                    try self.writer.writeAll("-->");
+                },
+                .doctype => {
+                    try self.writer.writeAll("<!DOCTYPE");
+                    try self.writer.writeAll(l.text);
+                    try self.writer.writeByte('>');
+                },
+                .cdata => try self.writeEscaped(l.text),
             },
             .processing_instruction => |pi| {
                 try self.writer.writeAll("<?");
@@ -1003,7 +1009,6 @@ pub const Renderer = struct {
                 }
                 try self.writer.writeByte('>');
             },
-            .cdata => |text| try self.writeEscaped(text),
 
             // `footnote`/`reference` definitions: rendered via the side
             // tables (`renderNotes`/`renderLinkOrImage`), never in place —
@@ -1070,7 +1075,7 @@ pub const Renderer = struct {
                 .raw_inline => |v| try buf.appendSlice(self.allocator, v.text),
                 .code_block => |v| try buf.appendSlice(self.allocator, v.text),
                 .raw_block => |v| try buf.appendSlice(self.allocator, v.text),
-                .smart_punctuation => |v| try buf.appendSlice(self.allocator, v.text),
+                .smart_punctuation => |v| try buf.appendSlice(self.allocator, v.ascii()),
                 .soft_break, .hard_break => try buf.append(self.allocator, '\n'),
                 else => try self.addStringContent(child.id, buf),
             }
@@ -1288,7 +1293,7 @@ test "a bare (null-value) attribute on a generic element renders as just its key
 test "a comment renders its text verbatim, unescaped" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const c = try b.addLeaf(.{ .comment = " a <b> & c " });
+    const c = try b.addLeaf(.{ .markup_leaf = .{ .kind = .comment, .text = " a <b> & c " } });
 
     var ast = try b.finish(c);
     defer ast.deinit();
@@ -1301,7 +1306,7 @@ test "a comment renders its text verbatim, unescaped" {
 test "a doctype renders as <!DOCTYPE payload>" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const dt = try b.addLeaf(.{ .doctype = " html" });
+    const dt = try b.addLeaf(.{ .markup_leaf = .{ .kind = .doctype, .text = " html" } });
 
     var ast = try b.finish(dt);
     defer ast.deinit();
@@ -1327,7 +1332,7 @@ test "a processing instruction renders as a bogus-comment-shaped <?target data>"
 test "cdata renders its contents as escaped text" {
     var b = Builder.init(testing.allocator);
     defer b.deinit();
-    const cd = try b.addLeaf(.{ .cdata = "a < b & c" });
+    const cd = try b.addLeaf(.{ .markup_leaf = .{ .kind = .cdata, .text = "a < b & c" } });
 
     var ast = try b.finish(cd);
     defer ast.deinit();

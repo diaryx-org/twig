@@ -275,7 +275,7 @@ pub const Parser = struct {
 
         const text = self.source[text_start..dash];
         self.pos = dash + 3;
-        const id = try self.builder.addLeaf(.{ .comment = text });
+        const id = try self.builder.addLeaf(.{ .markup_leaf = .{ .kind = .comment, .text = text } });
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(text_start, dash));
         return id;
@@ -288,7 +288,7 @@ pub const Parser = struct {
         const end = std.mem.findPos(u8, self.source, self.pos, "]]>") orelse
             return self.fail(start, "unterminated CDATA section", error.MalformedXml);
         self.pos = end + 3;
-        const id = try self.builder.addLeaf(.{ .cdata = self.source[text_start..end] });
+        const id = try self.builder.addLeaf(.{ .markup_leaf = .{ .kind = .cdata, .text = self.source[text_start..end] } });
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(text_start, end));
         return id;
@@ -323,7 +323,7 @@ pub const Parser = struct {
 
     /// Payload is the raw bytes from just after `<!DOCTYPE` to just before
     /// the terminating `>`, verbatim (including whitespace) — "not parsed
-    /// further" per `AST.Node.Kind.doctype`'s doc comment, which also makes
+    /// further" per `AST.MarkupLeafKind.doctype`'s doc comment, which also makes
     /// this the one generic-markup leaf whose serialization is a lossless
     /// byte round trip even with an internal subset. Quoted strings (public/
     /// system identifiers) and a bracketed internal subset may both contain
@@ -359,7 +359,7 @@ pub const Parser = struct {
                         const guts_end = self.pos;
                         const guts = self.source[guts_start..self.pos];
                         self.pos += 1;
-                        const id = try self.builder.addLeaf(.{ .doctype = guts });
+                        const id = try self.builder.addLeaf(.{ .markup_leaf = .{ .kind = .doctype, .text = guts } });
                         self.builder.setSpan(id, Span.init(start, self.pos));
                         self.builder.setContentSpan(id, Span.init(guts_start, guts_end));
                         return id;
@@ -536,17 +536,17 @@ test "framed leaves carry an interior content_span" {
     const pi = ast.nodes[cdata].next_sibling orelse return error.TestExpectedNonNull;
 
     // doctype: span covers the delimiters, content_span is the interior.
-    try testing.expect(ast.nodes[doctype].kind == .doctype);
+    try testing.expect(ast.nodes[doctype].kind == .markup_leaf and ast.nodes[doctype].kind.markup_leaf.kind == .doctype);
     try testing.expectEqualStrings("<!DOCTYPE html>", Span.of(u8, ast.nodes[doctype].span, source));
     try testing.expectEqualStrings(" html", Span.of(u8, ast.nodes[doctype].content_span.?, source));
 
     // comment
-    try testing.expect(ast.nodes[comment].kind == .comment);
+    try testing.expect(ast.nodes[comment].kind == .markup_leaf and ast.nodes[comment].kind.markup_leaf.kind == .comment);
     try testing.expectEqualStrings("<!-- hi -->", Span.of(u8, ast.nodes[comment].span, source));
     try testing.expectEqualStrings(" hi ", Span.of(u8, ast.nodes[comment].content_span.?, source));
 
     // cdata
-    try testing.expect(ast.nodes[cdata].kind == .cdata);
+    try testing.expect(ast.nodes[cdata].kind == .markup_leaf and ast.nodes[cdata].kind.markup_leaf.kind == .cdata);
     try testing.expectEqualStrings("<![CDATA[x<y]]>", Span.of(u8, ast.nodes[cdata].span, source));
     try testing.expectEqualStrings("x<y", Span.of(u8, ast.nodes[cdata].content_span.?, source));
 

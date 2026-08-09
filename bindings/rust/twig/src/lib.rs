@@ -1564,7 +1564,10 @@ impl Builder {
         })
     }
 
-    /// Add a smart-punctuation node standing for `text` (its source spelling).
+    /// Add a smart-punctuation node of `kind`. `text` is accepted for ABI
+    /// compatibility but ignored by the underlying builder: the node's
+    /// spelling is always the canonical one for `kind` (e.g. `"---"` for an
+    /// em dash), never a caller-supplied one.
     pub fn add_smart_punctuation(&mut self, kind: SmartPunctuation, text: &str) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
             ffi::twig_builder_add_smart_punctuation(b, kind.to_c(), text.as_ptr(), text.len(), out)

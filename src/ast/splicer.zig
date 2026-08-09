@@ -467,7 +467,7 @@ pub const Splicer = struct {
             // text leaf like `code_block`, whose `content_span` is opaque body
             // text, not a child region. Refuse the latter — it has no children
             // to index — even though it does carry a `content_span`.
-            if (AST.contentModel(self.ast.nodes[id].kind) == .text) return error.NotAContainer;
+            if (self.ast.nodes[id].kind.contentModel() == .text) return error.NotAContainer;
             const cs = self.ast.nodes[id].content_span orelse return error.NoContentSpan;
             return self.replaceAtSpan(Span.init(cs.start, cs.start), text);
         };

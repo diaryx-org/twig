@@ -445,7 +445,7 @@ fn kindNameMatches(name: []const u8, kind: Node.Kind) bool {
     if (eqAny(name, &.{ "container", "element", "directive" })) return tag == .container;
     // Power-user escape hatch: the exact kind name — which for a mark is the
     // MARK's name (`superscript`, `insert`, …), matching what `-o ast` prints.
-    return std.mem.eql(u8, name, AST.kindName(kind));
+    return std.mem.eql(u8, name, kind.kindName());
 }
 
 fn opMatch(op: Op, actual: []const u8, want: []const u8) bool {
@@ -525,7 +525,7 @@ fn textInto(gpa: Allocator, ast: *const AST, id: Node.Id, buf: *std.ArrayList(u8
     switch (ast.nodes[id].kind) {
         .str => |s| try buf.appendSlice(gpa, s),
         .text_leaf => |l| try buf.appendSlice(gpa, l.text),
-        .smart_punctuation => |v| try buf.appendSlice(gpa, v.text),
+        .smart_punctuation => |v| try buf.appendSlice(gpa, v.ascii()),
         .raw_inline => |v| try buf.appendSlice(gpa, v.text),
         .code_block => |v| try buf.appendSlice(gpa, v.text),
         .raw_block => |v| try buf.appendSlice(gpa, v.text),

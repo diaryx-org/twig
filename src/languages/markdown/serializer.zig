@@ -471,21 +471,20 @@ const Renderer = struct {
             },
             .reference => {},
             .footnote => {},
-            .comment => |c| {
+            // One arm, still exhaustive over `MarkupLeafKind`: a fourth
+            // markup leaf fails THIS build (where spelling lives) and no
+            // other.
+            .markup_leaf => |l| {
                 try self.writePrefix(ctx);
-                try self.writer.print("<!--{s}-->\n", .{c});
-            },
-            .doctype => |d| {
-                try self.writePrefix(ctx);
-                try self.writer.print("<!DOCTYPE{s}>\n", .{d});
+                switch (l.kind) {
+                    .comment => try self.writer.print("<!--{s}-->\n", .{l.text}),
+                    .doctype => try self.writer.print("<!DOCTYPE{s}>\n", .{l.text}),
+                    .cdata => try self.writer.print("<![CDATA[{s}]]>\n", .{l.text}),
+                }
             },
             .processing_instruction => |pi| {
                 try self.writePrefix(ctx);
                 if (pi.data.len == 0) try self.writer.print("<?{s}?>\n", .{pi.target}) else try self.writer.print("<?{s} {s}?>\n", .{ pi.target, pi.data });
-            },
-            .cdata => |cd| {
-                try self.writePrefix(ctx);
-                try self.writer.print("<![CDATA[{s}]]>\n", .{cd});
             },
             .list_item, .task_list_item, .definition_list_item, .term, .definition, .row, .cell, .caption => {
                 try self.renderBlocks(id, ctx, false);
@@ -580,7 +579,7 @@ const Renderer = struct {
                 },
             },
             .raw_inline => |r| try self.writer.writeAll(r.text),
-            .smart_punctuation => |sp| try self.writer.writeAll(sp.text),
+            .smart_punctuation => |sp| try self.writer.writeAll(sp.ascii()),
             // One arm, still exhaustive over `InlineMark`: a tenth mark fails
             // THIS build (where spelling lives) and no other.
             .link => |l| {

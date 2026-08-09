@@ -110,7 +110,7 @@ pub fn setAttrs(self: *Builder, id: Node.Id, attrs: AST.Attrs) Allocator.Error!v
         };
     }
 
-    const idx: u32 = @intCast(self.attrs.items.len);
+    const idx: AST.Attrs.Id = @intCast(self.attrs.items.len);
     try self.attrs.append(self.allocator, .{ .entries = entries });
     self.nodes.items[id].attrs = idx;
 }
@@ -217,7 +217,8 @@ fn dupeKind(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Kind {
         .str => |v| .{ .str = try self.dupe(v) },
         .text_leaf => |v| .{ .text_leaf = .{ .kind = v.kind, .text = try self.dupe(v.text) } },
         .raw_inline => |v| .{ .raw_inline = .{ .format = try self.dupe(v.format), .text = try self.dupe(v.text) } },
-        .smart_punctuation => |v| .{ .smart_punctuation = .{ .kind = v.kind, .text = try self.dupe(v.text) } },
+        // `smart_punctuation`'s payload is now a bare `SmartPunctuationKind`
+        // (no string to copy), so it falls through to `else => kind` below.
         .link => |v| .{ .link = .{
             .destination = if (v.destination) |d| try self.dupe(d) else null,
             .reference = if (v.reference) |r| try self.dupe(r) else null,
@@ -231,13 +232,11 @@ fn dupeKind(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Kind {
             .form = v.form,
             .argument = if (v.argument) |a| try self.dupe(a) else null,
         } },
-        .comment => |v| .{ .comment = try self.dupe(v) },
-        .doctype => |v| .{ .doctype = try self.dupe(v) },
+        .markup_leaf => |v| .{ .markup_leaf = .{ .kind = v.kind, .text = try self.dupe(v.text) } },
         .processing_instruction => |v| .{ .processing_instruction = .{
             .target = try self.dupe(v.target),
             .data = try self.dupe(v.data),
         } },
-        .cdata => |v| .{ .cdata = try self.dupe(v) },
         else => kind,
     };
 }
@@ -310,10 +309,10 @@ test "dupeKind copies generic-markup string payloads into owned storage" {
     var cdata_buf = "a < b".*;
 
     const el = try b.addLeaf(.{ .container = .{ .name = name_buf[0..] } });
-    const cm = try b.addLeaf(.{ .comment = comment_buf[0..] });
-    const dt = try b.addLeaf(.{ .doctype = doctype_buf[0..] });
+    const cm = try b.addLeaf(.{ .markup_leaf = .{ .kind = .comment, .text = comment_buf[0..] } });
+    const dt = try b.addLeaf(.{ .markup_leaf = .{ .kind = .doctype, .text = doctype_buf[0..] } });
     const pi = try b.addLeaf(.{ .processing_instruction = .{ .target = target_buf[0..], .data = data_buf[0..] } });
-    const cd = try b.addLeaf(.{ .cdata = cdata_buf[0..] });
+    const cd = try b.addLeaf(.{ .markup_leaf = .{ .kind = .cdata, .text = cdata_buf[0..] } });
     const root = try b.addContainer(.doc, &.{ el, cm, dt, pi, cd });
 
     name_buf[0] = 'X';
@@ -327,11 +326,11 @@ test "dupeKind copies generic-markup string payloads into owned storage" {
     defer ast.deinit();
 
     try testing.expectEqualStrings("svg:rect", ast.nodes[el].kind.container.name);
-    try testing.expectEqualStrings(" todo ", ast.nodes[cm].kind.comment);
-    try testing.expectEqualStrings("html", ast.nodes[dt].kind.doctype);
+    try testing.expectEqualStrings(" todo ", ast.nodes[cm].kind.markup_leaf.text);
+    try testing.expectEqualStrings("html", ast.nodes[dt].kind.markup_leaf.text);
     try testing.expectEqualStrings("xml", ast.nodes[pi].kind.processing_instruction.target);
     try testing.expectEqualStrings("version=\"1.0\"", ast.nodes[pi].kind.processing_instruction.data);
-    try testing.expectEqualStrings("a < b", ast.nodes[cd].kind.cdata);
+    try testing.expectEqualStrings("a < b", ast.nodes[cd].kind.markup_leaf.text);
     // Not aliasing the (now-mutated) inputs also means distinct pointers.
     try testing.expect(ast.nodes[el].kind.container.name.ptr != &name_buf);
 }

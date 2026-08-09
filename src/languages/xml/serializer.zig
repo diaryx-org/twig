@@ -78,15 +78,24 @@ pub fn serializeNode(ast: *const AST, id: Node.Id, writer: *Writer) Writer.Error
             try writer.writeByte('>');
         },
         .str => |s| try writeEscapedText(writer, s),
-        .comment => |text| {
-            try writer.writeAll("<!--");
-            try writer.writeAll(text);
-            try writer.writeAll("-->");
-        },
-        .doctype => |guts| {
-            try writer.writeAll("<!DOCTYPE");
-            try writer.writeAll(guts);
-            try writer.writeByte('>');
+        // One arm, still exhaustive over `MarkupLeafKind`: a fourth markup
+        // leaf fails THIS build (where spelling lives) and no other.
+        .markup_leaf => |l| switch (l.kind) {
+            .comment => {
+                try writer.writeAll("<!--");
+                try writer.writeAll(l.text);
+                try writer.writeAll("-->");
+            },
+            .doctype => {
+                try writer.writeAll("<!DOCTYPE");
+                try writer.writeAll(l.text);
+                try writer.writeByte('>');
+            },
+            .cdata => {
+                try writer.writeAll("<![CDATA[");
+                try writer.writeAll(l.text);
+                try writer.writeAll("]]>");
+            },
         },
         .processing_instruction => |pi| {
             try writer.writeAll("<?");
@@ -96,11 +105,6 @@ pub fn serializeNode(ast: *const AST, id: Node.Id, writer: *Writer) Writer.Error
                 try writer.writeAll(pi.data);
             }
             try writer.writeAll("?>");
-        },
-        .cdata => |text| {
-            try writer.writeAll("<![CDATA[");
-            try writer.writeAll(text);
-            try writer.writeAll("]]>");
         },
         // `parser.zig` (and any well-behaved XML parser) never produces
         // anything outside these generic-markup kinds.

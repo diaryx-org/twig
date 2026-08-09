@@ -56,7 +56,7 @@ fn writeNode(w: *Stringify, ast: *const AST, id: Node.Id) Writer.Error!void {
     try w.beginObject();
 
     try w.objectField("kind");
-    try w.write(AST.kindName(node.kind));
+    try w.write(node.kind.kindName());
 
     try w.objectField("span");
     try w.beginArray();
@@ -124,7 +124,7 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .hard_break,
         .non_breaking_space,
         // `inline_mark`'s family member is already reported as the node's
-        // `kind` name (see `AST.kindName`), so it needs no payload field.
+        // `kind` name (see `Kind.kindName`), so it needs no payload field.
         .inline_mark,
         => {},
 
@@ -199,7 +199,7 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.write(s);
         },
         // The seven text leaves report their family member as the node's
-        // `kind` name (see `AST.kindName`), so one arm serves all of them.
+        // `kind` name (see `Kind.kindName`), so one arm serves all of them.
         .text_leaf => |l| {
             try w.objectField("text");
             try w.write(l.text);
@@ -212,9 +212,12 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         },
         .smart_punctuation => |sp| {
             try w.objectField("punctuation_kind");
-            try w.write(sp.kind);
+            try w.write(sp);
+            // No stored spelling to report anymore (see `Kind.smart_punctuation`'s
+            // doc) — `text` is derived so the published JSON vocabulary is
+            // unchanged for existing consumers.
             try w.objectField("text");
-            try w.write(sp.text);
+            try w.write(sp.ascii());
         },
         .link => |l| {
             try w.objectField("destination");
@@ -236,23 +239,17 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.objectField("argument");
             try w.write(c.argument);
         },
-        .comment => |s| {
+        // The three markup leaves report their family member as the node's
+        // `kind` name (see `Kind.kindName`), so one arm serves all of them.
+        .markup_leaf => |l| {
             try w.objectField("text");
-            try w.write(s);
-        },
-        .doctype => |s| {
-            try w.objectField("text");
-            try w.write(s);
+            try w.write(l.text);
         },
         .processing_instruction => |p| {
             try w.objectField("target");
             try w.write(p.target);
             try w.objectField("data");
             try w.write(p.data);
-        },
-        .cdata => |s| {
-            try w.objectField("text");
-            try w.write(s);
         },
     }
 }

@@ -80,11 +80,9 @@ fn kindsEqual(a: Node.Kind, b: Node.Kind) bool {
         .doc => true,
         .container => |av| std.mem.eql(u8, av.name, b.container.name),
         .str => |av| std.mem.eql(u8, av, b.str),
-        .comment => |av| std.mem.eql(u8, av, b.comment),
-        .doctype => |av| std.mem.eql(u8, av, b.doctype),
+        .markup_leaf => |av| av.kind == b.markup_leaf.kind and std.mem.eql(u8, av.text, b.markup_leaf.text),
         .processing_instruction => |av| std.mem.eql(u8, av.target, b.processing_instruction.target) and
             std.mem.eql(u8, av.data, b.processing_instruction.data),
-        .cdata => |av| std.mem.eql(u8, av, b.cdata),
         // A well-formed-XML parse never produces any other kind.
         else => unreachable,
     };
@@ -151,8 +149,8 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     try testing.expect(nl1.kind == .str);
 
     const doctype = doc_it.next() orelse return error.TestExpectedNonNull;
-    try testing.expect(doctype.kind == .doctype);
-    try testing.expectEqualStrings(" root", doctype.kind.doctype);
+    try testing.expect(doctype.kind == .markup_leaf and doctype.kind.markup_leaf.kind == .doctype);
+    try testing.expectEqualStrings(" root", doctype.kind.markup_leaf.text);
 
     const nl2 = doc_it.next() orelse return error.TestExpectedNonNull;
     try testing.expect(nl2.kind == .str);
@@ -171,8 +169,8 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     try testing.expect(w1.kind == .str);
 
     const comment = root_it.next() orelse return error.TestExpectedNonNull;
-    try testing.expect(comment.kind == .comment);
-    try testing.expectEqualStrings(" a comment ", comment.kind.comment);
+    try testing.expect(comment.kind == .markup_leaf and comment.kind.markup_leaf.kind == .comment);
+    try testing.expectEqualStrings(" a comment ", comment.kind.markup_leaf.text);
 
     const w2 = root_it.next() orelse return error.TestExpectedNonNull;
     try testing.expect(w2.kind == .str);
@@ -196,8 +194,8 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     try testing.expect(w3.kind == .str);
 
     const cdata = root_it.next() orelse return error.TestExpectedNonNull;
-    try testing.expect(cdata.kind == .cdata);
-    try testing.expectEqualStrings("<raw> stuff", cdata.kind.cdata);
+    try testing.expect(cdata.kind == .markup_leaf and cdata.kind.markup_leaf.kind == .cdata);
+    try testing.expectEqualStrings("<raw> stuff", cdata.kind.markup_leaf.text);
 
     const w4 = root_it.next() orelse return error.TestExpectedNonNull;
     try testing.expect(w4.kind == .str);
