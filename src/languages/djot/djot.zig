@@ -53,6 +53,7 @@ pub const Document = struct {
     source: []const u8 = "",
     node_spans: []const Span = &.{},
     node_content_spans: []const ?Span = &.{},
+    node_spelling: []const ?TwigDocument.Spelling = &.{},
 
     /// Label (normalized) -> the `reference` definition node with that label.
     /// Populated during parsing; never consulted during parsing itself —
@@ -80,6 +81,7 @@ pub const Document = struct {
         self.footnotes.deinit(allocator);
         allocator.free(self.node_spans);
         allocator.free(self.node_content_spans);
+        allocator.free(self.node_spelling);
         self.ast.deinit();
     }
 
@@ -94,6 +96,7 @@ pub const Document = struct {
             .ast = self.ast,
             .node_spans = self.node_spans,
             .node_content_spans = self.node_content_spans,
+            .node_spelling = self.node_spelling,
         };
     }
 
@@ -106,6 +109,13 @@ pub const Document = struct {
     /// Node `id`'s interior span, or `null`. See `Document.node_content_spans`.
     pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
         return self.node_content_spans[id];
+    }
+
+    /// Node `id`'s recorded spelling, or `null` (canonical). Tolerates a
+    /// short/absent table — see `TwigDocument.node_spelling`.
+    pub fn spelling(self: *const Document, id: AST.Node.Id) ?TwigDocument.Spelling {
+        if (id >= self.node_spelling.len) return null;
+        return self.node_spelling[id];
     }
 };
 

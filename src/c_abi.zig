@@ -530,6 +530,44 @@ pub export fn twig_document_query(
     return .ok;
 }
 
+/// The source span of node `node_id` — the Document-side accessor for what
+/// `TwigQueryMatch.span` also carries, usable with any node id (e.g. one from
+/// a `TwigFlatNode` walk) without running a query. `invalid_argument` for an
+/// out-of-range id. Additive (ABI v4); the struct fields stay.
+pub export fn twig_document_node_span(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_span: ?*TwigSpan,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const out = out_span orelse return .invalid_argument;
+    const handle = asHandle(raw);
+    const d = handle.parsed.document();
+    if (node_id >= d.ast.nodes.len) return .invalid_argument;
+    const s = d.span(node_id);
+    out.* = .{ .start = s.start, .end = s.end };
+    return .ok;
+}
+
+/// The interior (between-delimiters) span of node `node_id`, the accessor
+/// form of `TwigQueryMatch.content_span`/`has_content_span`: `not_found`
+/// replaces the `has_content_span == 0` convention (out_span is untouched).
+/// `invalid_argument` for an out-of-range id. Additive (ABI v4).
+pub export fn twig_document_node_content_span(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_span: ?*TwigSpan,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const out = out_span orelse return .invalid_argument;
+    const handle = asHandle(raw);
+    const d = handle.parsed.document();
+    if (node_id >= d.ast.nodes.len) return .invalid_argument;
+    const cs = d.contentSpan(node_id) orelse return .not_found;
+    out.* = .{ .start = cs.start, .end = cs.end };
+    return .ok;
+}
+
 /// Parse `selector_src`, resolve it against `ast`, and return a freshly
 /// allocated `[]TwigQueryMatch` in document order (caller owns it). Shared by
 /// `twig_document_query` and `twig_editor_query`.
@@ -2461,7 +2499,7 @@ pub export fn twig_builder_add_reference(
     return emitNode(out_id, handle.builder.addNode(.{ .reference = .{ .label = label, .destination = dest } }));
 }
 
-fn bulletStyleOf(style: c_int) ?twig.AST.BulletListStyle {
+fn bulletStyleOf(style: c_int) ?twig.Document.Spelling.Bullet {
     return switch (style) {
         @intFromEnum(TwigBulletStyle.dash) => .dash,
         @intFromEnum(TwigBulletStyle.plus) => .plus,
@@ -2470,6 +2508,10 @@ fn bulletStyleOf(style: c_int) ?twig.AST.BulletListStyle {
     };
 }
 
+/// Add a `bullet_list`. `style` is spelling, not meaning — it lands in the
+/// builder's spelling side-table (see `Document.node_spelling`) rather than on
+/// the node, and `twig_builder_serialize` reads it back from there; the C
+/// signature is unchanged.
 pub export fn twig_builder_add_bullet_list(
     b: ?*TwigBuilder,
     style: c_int,
@@ -2478,10 +2520,12 @@ pub export fn twig_builder_add_bullet_list(
 ) TwigStatus {
     const handle = asBuilder(b orelse return .invalid_argument);
     const s = bulletStyleOf(style) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .bullet_list = .{ .style = s, .tight = tight != 0 } }));
+    const status = emitNode(out_id, handle.builder.addNode(.{ .bullet_list = .{ .tight = tight != 0 } }));
+    if (status == .ok) handle.builder.setSpelling(out_id.?.*, .{ .bullet = s });
+    return status;
 }
 
-fn numberingOf(numbering: c_int) ?twig.AST.OrderedListStyle.Numbering {
+fn numberingOf(numbering: c_int) ?twig.AST.ListNumbering {
     return switch (numbering) {
         @intFromEnum(TwigOrderedNumbering.decimal) => .decimal,
         @intFromEnum(TwigOrderedNumbering.lower_alpha) => .lower_alpha,
@@ -2492,7 +2536,7 @@ fn numberingOf(numbering: c_int) ?twig.AST.OrderedListStyle.Numbering {
     };
 }
 
-fn delimOf(delim: c_int) ?twig.AST.OrderedListStyle.Delim {
+fn delimOf(delim: c_int) ?twig.Document.Spelling.OrderedDelim {
     return switch (delim) {
         @intFromEnum(TwigOrderedDelim.period) => .period,
         @intFromEnum(TwigOrderedDelim.paren_after) => .paren_after,
@@ -2503,6 +2547,9 @@ fn delimOf(delim: c_int) ?twig.AST.OrderedListStyle.Delim {
 
 /// Add an `ordered_list`. `has_start == 0` leaves the start number implicit (a
 /// NULL `ordered_list.start`); otherwise `start` is the explicit first number.
+/// `delim` is spelling, not meaning — like `twig_builder_add_bullet_list`'s
+/// `style`, it lands in the spelling side-table; `numbering` stays on the node
+/// (it renders: `<ol type="a">`).
 pub export fn twig_builder_add_ordered_list(
     b: ?*TwigBuilder,
     numbering: c_int,
@@ -2515,11 +2562,13 @@ pub export fn twig_builder_add_ordered_list(
     const handle = asBuilder(b orelse return .invalid_argument);
     const num = numberingOf(numbering) orelse return .invalid_argument;
     const del = delimOf(delim) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .ordered_list = .{
-        .style = .{ .numbering = num, .delim = del },
+    const status = emitNode(out_id, handle.builder.addNode(.{ .ordered_list = .{
+        .numbering = num,
         .tight = tight != 0,
         .start = if (has_start != 0) start else null,
     } }));
+    if (status == .ok) handle.builder.setSpelling(out_id.?.*, .{ .ordered_delim = del });
+    return status;
 }
 
 pub export fn twig_builder_add_task_list(b: ?*TwigBuilder, tight: c_int, out_id: ?*u32) TwigStatus {
@@ -2640,8 +2689,11 @@ pub export fn twig_builder_set_attrs(
 fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: twig.Format) anyerror![]u8 {
     const ast = &doc.ast;
     return switch (target) {
-        .djot => twig.Djot.serializer.serializeAstAlloc(allocator, ast),
-        .markdown => twig.Markdown.serializer.serializeAstAlloc(allocator, ast),
+        // The `Spelled` variants carry the builder's spelling table (a
+        // `twig_builder_add_bullet_list` caller's `*` marker) into the
+        // otherwise-canonical bare-AST serialize — see `Document.node_spelling`.
+        .djot => twig.Djot.serializer.serializeAstSpelledAlloc(allocator, ast, doc.node_spelling),
+        .markdown => twig.Markdown.serializer.serializeAstSpelledAlloc(allocator, ast, doc.node_spelling),
         .html => twig.Html.serializeAlloc(allocator, ast, null),
         // XML alone needs the positions: an absent interior span is its
         // self-closing signal (see `languages/xml/serializer.zig`).
@@ -2922,6 +2974,115 @@ test "twig_document_serialize cross-converts markdown to djot" {
     );
     // Markdown `*markdown*` (emphasis) renders djot-style with underscores.
     try std.testing.expect(std.mem.indexOf(u8, ptr.?[0..len], "_markdown_") != null);
+}
+
+test "twig_builder list style/delim params still spell the serialized markers" {
+    // The params moved from the AST (`BulletListStyle`/`OrderedListStyle`) to
+    // the Document's spelling side-table; the C signatures and this observable
+    // behavior did not change.
+    var b: ?*TwigBuilder = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_create(&b));
+    defer twig_builder_destroy(b);
+
+    var txt: u32 = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_builder_add_text(b, @intFromEnum(TwigNodeKind.str), "a", 1, &txt),
+    );
+    var para: u32 = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.para), &para));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, para, @ptrCast(&txt), 1));
+    var item: u32 = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.list_item), &item));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, item, @ptrCast(&para), 1));
+    var list: u32 = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_builder_add_bullet_list(b, @intFromEnum(TwigBulletStyle.star), 1, &list),
+    );
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, list, @ptrCast(&item), 1));
+
+    var ptr: ?[*]const u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_builder_serialize(b, list, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+    );
+    try std.testing.expect(std.mem.startsWith(u8, ptr.?[0..len], "* a"));
+
+    // Same for an ordered list's paren delimiter.
+    var txt2: u32 = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_builder_add_text(b, @intFromEnum(TwigNodeKind.str), "b", 1, &txt2),
+    );
+    var para2: u32 = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.para), &para2));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, para2, @ptrCast(&txt2), 1));
+    var item2: u32 = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.list_item), &item2));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, item2, @ptrCast(&para2), 1));
+    var olist: u32 = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_builder_add_ordered_list(
+            b,
+            @intFromEnum(TwigOrderedNumbering.decimal),
+            @intFromEnum(TwigOrderedDelim.paren_after),
+            1,
+            0,
+            0,
+            &olist,
+        ),
+    );
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, olist, @ptrCast(&item2), 1));
+
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_builder_serialize(b, olist, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+    );
+    try std.testing.expect(std.mem.startsWith(u8, ptr.?[0..len], "1) b"));
+}
+
+test "twig_document_node_span accessors mirror the query match fields" {
+    const source = "# hi\n\ntext\n";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+    );
+    defer twig_document_destroy(doc);
+
+    var ptr: ?[*]const TwigQueryMatch = null;
+    var len: usize = 0;
+    const sel = "heading";
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_document_query(doc, sel.ptr, sel.len, &ptr, &len),
+    );
+    try std.testing.expectEqual(@as(usize, 1), len);
+    const m = ptr.?[0];
+
+    var span: TwigSpan = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_node_span(doc, m.node_id, &span));
+    try std.testing.expectEqual(m.span.start, span.start);
+    try std.testing.expectEqual(m.span.end, span.end);
+
+    var cs: TwigSpan = undefined;
+    const cs_status = twig_document_node_content_span(doc, m.node_id, &cs);
+    if (m.has_content_span != 0) {
+        try std.testing.expectEqual(TwigStatus.ok, cs_status);
+        try std.testing.expectEqual(m.content_span.start, cs.start);
+        try std.testing.expectEqual(m.content_span.end, cs.end);
+    } else {
+        try std.testing.expectEqual(TwigStatus.not_found, cs_status);
+    }
+
+    // Out-of-range ids are refused, not read.
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_document_node_span(doc, 0xFFFF_0000, &span),
+    );
 }
 
 test "twig_document_ast_json dumps the shared AST as JSON" {

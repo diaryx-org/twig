@@ -739,9 +739,9 @@ fn parseMarkdown(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Do
     var doc = try Markdown.parse(a, s, .{});
     doc.link_references.deinit(a);
     doc.footnotes.deinit(a);
-    // Hand over the tree AND its position tables; the language side-tables
-    // above are what this test vehicle does not need.
-    return .{ .source = doc.source, .ast = doc.ast, .node_spans = doc.node_spans, .node_content_spans = doc.node_content_spans };
+    // Hand over the tree AND its id-indexed side tables (spans, spelling); the
+    // language label tables above are what this test vehicle does not need.
+    return doc.document();
 }
 
 /// A throwaway context for the tests below, which use `parseXml` (which

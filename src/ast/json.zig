@@ -12,7 +12,7 @@
 //!
 //! Escaping correctness comes for free from `std.json.Stringify.write`,
 //! which is used for every leaf value (strings, ints, bools, `?T`, and even
-//! the payload enums like `BulletListStyle`/`Alignment`, which `write`
+//! the payload enums like `ListNumbering`/`Alignment`, which `write`
 //! renders as their tag name — no manual `@tagName` calls needed for those).
 //! Only the *shape* (which fields a kind gets, in what order) is decided by
 //! hand below, via `writeNode`'s explicit `beginObject`/`objectField`/
@@ -152,16 +152,12 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.write(m.text);
         },
         .bullet_list => |b| {
-            try w.objectField("style");
-            try w.write(b.style);
             try w.objectField("tight");
             try w.write(b.tight);
         },
         .ordered_list => |o| {
             try w.objectField("numbering");
-            try w.write(o.style.numbering);
-            try w.objectField("delim");
-            try w.write(o.style.delim);
+            try w.write(o.numbering);
             try w.objectField("tight");
             try w.write(o.tight);
             try w.objectField("start");
@@ -344,7 +340,7 @@ test "encode: attrs render as ordered key/value pairs, bare attrs get a null val
 test "encode: content_span is emitted only when set, and enum payloads render as tag-name strings" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
-    const list = try b.addContainer(.{ .bullet_list = .{ .style = .dash, .tight = true } }, &.{});
+    const list = try b.addContainer(.{ .ordered_list = .{ .numbering = .lower_alpha, .tight = true, .start = null } }, &.{});
     b.setContentSpan(list, .init(1, 5));
 
     var ast = try b.finishDocument("", list);
@@ -357,9 +353,13 @@ test "encode: content_span is emitted only when set, and enum payloads render as
     defer parsed.deinit();
     const obj = parsed.value.object;
 
-    try testing.expectEqualStrings("bullet_list", obj.get("kind").?.string);
-    try testing.expectEqualStrings("dash", obj.get("style").?.string);
+    try testing.expectEqualStrings("ordered_list", obj.get("kind").?.string);
+    try testing.expectEqualStrings("lower_alpha", obj.get("numbering").?.string);
     try testing.expectEqual(true, obj.get("tight").?.bool);
+    // The marker spelling (`- ` vs `* `, `1.` vs `1)`) left the AST for the
+    // Document's spelling table, so the encoding no longer carries it.
+    try testing.expectEqual(@as(?std.json.Value, null), obj.get("style"));
+    try testing.expectEqual(@as(?std.json.Value, null), obj.get("delim"));
     const cs = obj.get("content_span").?.array;
     try testing.expectEqual(@as(i64, 1), cs.items[0].integer);
     try testing.expectEqual(@as(i64, 5), cs.items[1].integer);

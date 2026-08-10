@@ -552,7 +552,9 @@ fn parseMd(a: Allocator, src: []const u8) !Document {
     var doc = try Markdown.parse(a, src, .{});
     doc.link_references.deinit(a);
     doc.footnotes.deinit(a);
-    return .{ .source = doc.source, .ast = doc.ast, .node_spans = doc.node_spans, .node_content_spans = doc.node_content_spans };
+    // Hand over the tree and every id-indexed side table (spans, spelling);
+    // only the language label tables above are dropped.
+    return doc.document();
 }
 
 test "parse: kind, contains shorthand, :nth, and attribute predicates" {

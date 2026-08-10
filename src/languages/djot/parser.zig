@@ -89,12 +89,12 @@ fn romanToNumber(s: []const u8) ?u32 {
     return if (total < 0) 0 else @intCast(total);
 }
 
-/// `event.ListMarkerStyle` and `AST.OrderedListStyle` declare identically-
-/// named `Numbering`/`Delim` enums independently (the former is scanning-
-/// only scratch state that also needs task/colon/etc. variants the AST has
-/// no business knowing about) -- convert explicitly at the one place a
-/// scanned marker style becomes a permanent AST node.
-fn toAstNumbering(n: ListMarkerStyle.Numbering) AST.OrderedListStyle.Numbering {
+/// `event.ListMarkerStyle` declares its own `Numbering`/`Delim` enums
+/// independently of `AST.ListNumbering` / `Document.Spelling.OrderedDelim`
+/// (the former is scanning-only scratch state that also needs task/colon/etc.
+/// variants those types have no business knowing about) -- convert explicitly
+/// at the one place a scanned marker style becomes permanent.
+fn toAstNumbering(n: ListMarkerStyle.Numbering) AST.ListNumbering {
     return switch (n) {
         .decimal => .decimal,
         .lower_alpha => .lower_alpha,
@@ -104,7 +104,7 @@ fn toAstNumbering(n: ListMarkerStyle.Numbering) AST.OrderedListStyle.Numbering {
     };
 }
 
-fn toAstDelim(d: ListMarkerStyle.Delim) AST.OrderedListStyle.Delim {
+fn toAstDelim(d: ListMarkerStyle.Delim) TwigDocument.Spelling.OrderedDelim {
     return switch (d) {
         .period => .period,
         .paren_after => .paren_after,
@@ -316,6 +316,9 @@ pub const TreeBuilder = struct {
     /// Parallel to `nodes` — node `id`'s interior span. See
     /// `Document.node_content_spans`.
     content_spans: std.ArrayList(?Span) = .empty,
+    /// Parallel to `nodes` — node `id`'s recorded spelling. See
+    /// `Document.node_spelling`.
+    spellings: std.ArrayList(?TwigDocument.Spelling) = .empty,
     owned_strings: std.ArrayList([]const u8) = .empty,
     attrs_table: std.ArrayList(AST.Attrs) = .empty,
     containers: std.ArrayList(TreeContainer) = .empty,
@@ -361,6 +364,7 @@ pub const TreeBuilder = struct {
         try self.nodes.append(self.allocator, .{ .id = id, .kind = try self.dupeKind(kind) });
         try self.spans.append(self.allocator, span);
         try self.content_spans.append(self.allocator, null);
+        try self.spellings.append(self.allocator, null);
         return id;
     }
 
@@ -523,6 +527,7 @@ pub const TreeBuilder = struct {
             .source = self.source,
             .node_spans = try self.spans.toOwnedSlice(self.allocator),
             .node_content_spans = try self.content_spans.toOwnedSlice(self.allocator),
+            .node_spelling = try self.spellings.toOwnedSlice(self.allocator),
         };
 
         // Drop the delimiter runs the inline pass built and abandoned, so the
@@ -541,6 +546,7 @@ pub const TreeBuilder = struct {
             .source = compacted.source,
             .node_spans = compacted.node_spans,
             .node_content_spans = compacted.node_content_spans,
+            .node_spelling = compacted.node_spelling,
             .references = self.references,
             .auto_references = self.auto_references,
             .footnotes = self.footnotes,
@@ -1214,12 +1220,19 @@ pub const TreeBuilder = struct {
         const kind: Node.Kind = switch (style) {
             .colon => .definition_list,
             .dash_task, .plus_task, .star_task => .{ .task_list = .{ .tight = c.data.tight } },
-            .dash => .{ .bullet_list = .{ .style = .dash, .tight = c.data.tight } },
-            .plus => .{ .bullet_list = .{ .style = .plus, .tight = c.data.tight } },
-            .star => .{ .bullet_list = .{ .style = .star, .tight = c.data.tight } },
-            .ordered => |o| .{ .ordered_list = .{ .style = .{ .numbering = toAstNumbering(o.numbering), .delim = toAstDelim(o.delim) }, .tight = c.data.tight, .start = getListStart(marker, o.numbering) } },
+            .dash, .plus, .star => .{ .bullet_list = .{ .tight = c.data.tight } },
+            .ordered => |o| .{ .ordered_list = .{ .numbering = toAstNumbering(o.numbering), .tight = c.data.tight, .start = getListStart(marker, o.numbering) } },
         };
         const id = try self.addNode(kind, s);
+        // The marker's spelling renders identically either way, so it goes in
+        // the spelling side-table, not the Kind — see `Document.node_spelling`.
+        switch (style) {
+            .dash => self.spellings.items[id] = .{ .bullet = .dash },
+            .plus => self.spellings.items[id] = .{ .bullet = .plus },
+            .star => self.spellings.items[id] = .{ .bullet = .star },
+            .ordered => |o| self.spellings.items[id] = .{ .ordered_delim = toAstDelim(o.delim) },
+            else => {},
+        }
         self.nodes.items[id].first_child = c.first_child;
         self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
         try self.commitAttrs(id, &c.attrs);

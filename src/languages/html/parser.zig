@@ -270,12 +270,12 @@ pub const Parser = struct {
         }
         if (std.mem.eql(u8, name, "ul")) {
             children.* = self.dropFormattingWhitespace(children.*);
-            return .{ .bullet_list = .{ .style = .dash, .tight = self.listIsTight(children.*) } };
+            return .{ .bullet_list = .{ .tight = self.listIsTight(children.*) } };
         }
         if (std.mem.eql(u8, name, "ol")) {
             children.* = self.dropFormattingWhitespace(children.*);
             const start = if (attrValue(attrs, "start")) |value| std.fmt.parseInt(u32, value, 10) catch null else null;
-            return .{ .ordered_list = .{ .style = .{ .numbering = .decimal, .delim = .period }, .tight = self.listIsTight(children.*), .start = start } };
+            return .{ .ordered_list = .{ .numbering = .decimal, .tight = self.listIsTight(children.*), .start = start } };
         }
         if (std.mem.eql(u8, name, "li")) {
             children.* = self.dropFormattingWhitespace(children.*);

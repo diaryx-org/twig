@@ -6,6 +6,7 @@ const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
 const dj_syntax = @import("syntax.zig");
 const Document = djot.Document;
+const TwigDocument = @import("../../document.zig");
 const AST = djot.AST;
 const Node = AST.Node;
 
@@ -345,7 +346,10 @@ const Renderer = struct {
                 try self.writer.writeAll("---\n");
             },
             .bullet_list => |bl| {
-                const marker: []const u8 = switch (bl.style) {
+                // The marker character is spelling, not meaning: recorded in
+                // the Document's side-table when the source is known, canonical
+                // `- ` otherwise (a bare-AST serialize has an empty table).
+                const marker: []const u8 = switch (bulletOf(self.doc.spelling(id))) {
                     .dash => "- ",
                     .plus => "+ ",
                     .star => "* ",
@@ -365,7 +369,7 @@ const Renderer = struct {
                 while (it.next()) |item| {
                     if (!first and !ol.tight) try self.writer.writeByte('\n');
                     var buf: [32]u8 = undefined;
-                    const marker = switch (ol.style.delim) {
+                    const marker = switch (delimOf(self.doc.spelling(id))) {
                         .period => std.fmt.bufPrint(&buf, "{d}. ", .{n}) catch unreachable,
                         .paren_after => std.fmt.bufPrint(&buf, "{d}) ", .{n}) catch unreachable,
                         .paren_both => std.fmt.bufPrint(&buf, "({d}) ", .{n}) catch unreachable,
@@ -585,6 +589,26 @@ const Renderer = struct {
     }
 };
 
+/// A `bullet_list`'s recorded marker character, canonical `-` when the
+/// spelling table has nothing (or something else) for the node.
+fn bulletOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.Bullet {
+    const s = sp orelse return .dash;
+    return switch (s) {
+        .bullet => |b| b,
+        else => .dash,
+    };
+}
+
+/// An `ordered_list`'s recorded marker punctuation, canonical `1.` when the
+/// spelling table has nothing (or something else) for the node.
+fn delimOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.OrderedDelim {
+    const s = sp orelse return .period;
+    return switch (s) {
+        .ordered_delim => |d| d,
+        else => .period,
+    };
+}
+
 pub fn serialize(allocator: Allocator, doc: *const Document, writer: *Writer) Writer.Error!void {
     var r = Renderer{ .allocator = allocator, .doc = doc, .ast = &doc.ast, .writer = writer };
     try r.renderBlock(doc.ast.root, .{});
@@ -622,6 +646,19 @@ pub fn serializeAlloc(allocator: Allocator, doc: *const Document) Allocator.Erro
 /// only shallow-copied into the temporary `Document` (never `deinit`'d
 /// through it) — the caller keeps owning it.
 pub fn serializeAstAlloc(allocator: Allocator, ast: *const AST) Allocator.Error![]u8 {
+    return serializeAstSpelledAlloc(allocator, ast, &.{});
+}
+
+/// `serializeAstAlloc` plus a spelling table: the same throwaway-`Document`
+/// wrapper, but with `node_spelling` carried in so a caller that DOES know how
+/// its lists were spelled (the C ABI's builder, whose tree has no source but
+/// does have caller-declared spellings) round-trips them. `serializeAstAlloc`
+/// is this with an empty table — the canonical spelling everywhere.
+pub fn serializeAstSpelledAlloc(
+    allocator: Allocator,
+    ast: *const AST,
+    node_spelling: []const ?TwigDocument.Spelling,
+) Allocator.Error![]u8 {
     var references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty;
     defer references.deinit(allocator);
     var footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty;
@@ -635,7 +672,12 @@ pub fn serializeAstAlloc(allocator: Allocator, ast: *const AST) Allocator.Error!
         }
     }
 
-    const doc: Document = .{ .ast = ast.*, .references = references, .footnotes = footnotes };
+    const doc: Document = .{
+        .ast = ast.*,
+        .node_spelling = node_spelling,
+        .references = references,
+        .footnotes = footnotes,
+    };
     return serializeAlloc(allocator, &doc);
 }
 
@@ -648,6 +690,27 @@ test "serializeAlloc renders basic djot content" {
     defer testing.allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "# Title") != null);
     try testing.expect(std.mem.indexOf(u8, out, "*world*") != null);
+}
+
+test "non-canonical list markers survive the Document path, canonicalize on the AST path" {
+    // `+` bullets and `(1)` delimiters render identically to `-`/`1.`, so they
+    // live in the Document's spelling table, not the AST. The Document path
+    // reads the table back; the bare-AST path has no table and writes the
+    // canonical spelling.
+    const src = "+ a\n+ b\n\n(1) x\n";
+    var doc = try djot.parse(testing.allocator, src);
+    defer doc.deinit();
+
+    const spelled = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(spelled);
+    try testing.expect(std.mem.indexOf(u8, spelled, "+ a") != null);
+    try testing.expect(std.mem.indexOf(u8, spelled, "(1) x") != null);
+
+    const canonical = try serializeAstAlloc(testing.allocator, &doc.ast);
+    defer testing.allocator.free(canonical);
+    try testing.expect(std.mem.indexOf(u8, canonical, "- a") != null);
+    try testing.expect(std.mem.indexOf(u8, canonical, "1. x") != null);
+    try testing.expect(std.mem.indexOf(u8, canonical, "+ a") == null);
 }
 
 test "serializeAlloc: fenced code language abuts the fence, no space" {

@@ -90,6 +90,7 @@ const AST = @import("../../ast/ast.zig");
 const Node = AST.Node;
 const Builder = AST.Builder;
 const Span = @import("../../span.zig");
+const TwigDocument = @import("../../document.zig");
 const compact = @import("../../ast/compact.zig");
 const Options = @import("options.zig");
 const inline_mod = @import("inline.zig");
@@ -109,6 +110,7 @@ pub const BlockResult = struct {
     source: []const u8 = "",
     node_spans: []const Span = &.{},
     node_content_spans: []const ?Span = &.{},
+    node_spelling: []const ?TwigDocument.Spelling = &.{},
     link_references: std.StringHashMapUnmanaged(Node.Id),
     /// Label (normalized via `normalizeLabel`, same as `link_references`) ->
     /// the `footnote` definition node with that label (`self.options
@@ -127,6 +129,7 @@ pub const BlockResult = struct {
         self.footnotes.deinit(allocator);
         allocator.free(self.node_spans);
         allocator.free(self.node_content_spans);
+        allocator.free(self.node_spelling);
         self.ast.deinit();
     }
 
@@ -361,7 +364,7 @@ fn isFenceClose(s: []const u8, fence_char: u8, fence_len: usize) bool {
 const ListMarker = struct {
     ordered: bool,
     bullet_char: u8 = 0,
-    delim: AST.OrderedListStyle.Delim = .period,
+    delim: TwigDocument.Spelling.OrderedDelim = .period,
     start: ?u32 = null,
     marker_len: usize,
 };
@@ -785,7 +788,7 @@ const Container = struct {
     // .list
     ordered: bool = false,
     bullet_char: u8 = 0,
-    delim: AST.OrderedListStyle.Delim = .period,
+    delim: TwigDocument.Spelling.OrderedDelim = .period,
     start_num: ?u32 = null,
     tight: bool = true,
     blank_pending: bool = false,
@@ -1053,6 +1056,7 @@ pub const Parser = struct {
             .source = doc.source,
             .node_spans = doc.node_spans,
             .node_content_spans = doc.node_content_spans,
+            .node_spelling = doc.node_spelling,
             .link_references = refs,
             .footnotes = fns,
         };
@@ -1272,20 +1276,29 @@ pub const Parser = struct {
             .block_quote => .block_quote,
             .list_item => if (c.is_task) .{ .task_list_item = .{ .checked = c.task_checked } } else .list_item,
             .list => if (c.ordered)
-                .{ .ordered_list = .{ .style = .{ .numbering = .decimal, .delim = c.delim }, .tight = c.tight, .start = c.start_num } }
+                .{ .ordered_list = .{ .numbering = .decimal, .tight = c.tight, .start = c.start_num } }
             else if (c.any_task)
                 .{ .task_list = .{ .tight = c.tight } }
             else
-                .{ .bullet_list = .{ .style = bulletStyle(c.bullet_char), .tight = c.tight } },
+                .{ .bullet_list = .{ .tight = c.tight } },
         };
         const id = try self.builder.addContainer(kind, c.children.items);
+        // The marker's spelling (`* ` vs `- `, `1)` vs `1.`) renders
+        // identically, so it goes in the Document's spelling table, not the
+        // Kind — see `Document.node_spelling`.
+        if (c.kind == .list) {
+            if (c.ordered)
+                self.builder.setSpelling(id, .{ .ordered_delim = c.delim })
+            else if (!c.any_task)
+                self.builder.setSpelling(id, .{ .bullet = bulletStyle(c.bullet_char) });
+        }
         const syntactic = Span.init(self.lineStart(c.start_line), self.lineEnd(@min(c.end_line, line_idx)));
         self.builder.setSpan(id, containerSpanExtended(&self.builder, id, syntactic));
         setContentSpanFromChildren(&self.builder, id);
         try self.appendToTop(id);
     }
 
-    fn bulletStyle(c: u8) AST.BulletListStyle {
+    fn bulletStyle(c: u8) TwigDocument.Spelling.Bullet {
         return switch (c) {
             '+' => .plus,
             '*' => .star,

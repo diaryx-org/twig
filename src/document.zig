@@ -25,10 +25,12 @@
 //! ── The criterion for what lives here ──────────────────────────────────────
 //! A fact belongs in `Document` iff two documents differing only in that fact
 //! render identically. Byte positions pass trivially — they are not rendered
-//! at all. A list's bullet character (`-` vs `*`) passes too, and is the next
-//! thing scheduled to move. A list's `tight` flag does NOT pass: it elides the
-//! `<p>` in `languages/html/serializer.zig`, so it is meaning, and it stays on
-//! `Kind`. Apply this test before adding a field here.
+//! at all. A list's bullet character (`-` vs `*`) and an ordered list's
+//! delimiter (`1.` vs `1)`) pass too, and live in `node_spelling`. A list's
+//! `tight` flag does NOT pass: it elides the `<p>` in
+//! `languages/html/serializer.zig`, so it is meaning, and it stays on `Kind` —
+//! as does an ordered list's `numbering` (`<ol type="a">`). Apply this test
+//! before adding a field here.
 
 const Document = @This();
 const std = @import("std");
@@ -87,11 +89,36 @@ node_spans: []const Span,
 /// takes a `*const AST`.
 node_content_spans: []const ?Span,
 
+/// Indexed by node id: how the node's source spelled a fact that renders
+/// identically either way — a `bullet_list`'s marker character, an
+/// `ordered_list`'s marker punctuation. `null` = no recorded spelling; a
+/// serializer falls back to its canonical choice (`- `, `1.`).
+///
+/// Unlike `node_spans`, this table may be SHORTER than `ast.nodes` — including
+/// empty, the default, which is what a `Document` assembled around a bare
+/// `AST` gets. Read it through `spelling()`, which treats a missing slot as
+/// `null`; that tolerance is what lets every such assembly site not care that
+/// the table exists.
+node_spelling: []const ?Spelling = &.{},
+
+/// One recorded spelling. The variant says which kind of node it annotates;
+/// a slot whose variant doesn't match its node's kind is ignored.
+pub const Spelling = union(enum) {
+    /// A `bullet_list`'s marker character: `-`, `+`, or `*`.
+    bullet: Bullet,
+    /// An `ordered_list`'s marker punctuation: `1.`, `1)`, or `(1)`.
+    ordered_delim: OrderedDelim,
+
+    pub const Bullet = enum { dash, plus, star };
+    pub const OrderedDelim = enum { period, paren_after, paren_both };
+};
+
 pub fn deinit(self: *Document) void {
     const allocator = self.ast.allocator;
     self.ast.deinit();
     allocator.free(self.node_spans);
     allocator.free(self.node_content_spans);
+    allocator.free(self.node_spelling);
 }
 
 /// The source span of `id`. Panics on an out-of-range id, like `ast.nodes[id]`
@@ -104,6 +131,13 @@ pub fn span(self: *const Document, id: AST.Node.Id) Span {
 /// synthesized. See `node_content_spans`.
 pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
     return self.node_content_spans[id];
+}
+
+/// The recorded spelling of `id`, or `null` — including for an id past the end
+/// of a short (or absent) table, unlike `span()`. See `node_spelling`.
+pub fn spelling(self: *const Document, id: AST.Node.Id) ?Spelling {
+    if (id >= self.node_spelling.len) return null;
+    return self.node_spelling[id];
 }
 
 /// Iterate `id`'s children — a pass-through to the tree, so a caller holding a
@@ -136,6 +170,21 @@ pub fn spansEql(self: Document, other: Document) bool {
     for (self.node_content_spans, other.node_content_spans) |a, b| {
         if ((a == null) != (b == null)) return false;
         if (a) |x| if (!x.eql(b.?)) return false;
+    }
+    return true;
+}
+
+/// Compare two documents' spelling layers — the same opt-in split from
+/// `AST.eql` that `spansEql` is. Compared through `spelling()`, so a short
+/// table and a full table of `null`s are equal, as they should be: both say
+/// "no spelling recorded anywhere".
+pub fn spellingEql(self: Document, other: Document) bool {
+    const n = @max(self.node_spelling.len, other.node_spelling.len);
+    for (0..n) |id| {
+        const a = self.spelling(@intCast(id));
+        const b = other.spelling(@intCast(id));
+        if ((a == null) != (b == null)) return false;
+        if (a) |x| if (!std.meta.eql(x, b.?)) return false;
     }
     return true;
 }
@@ -233,4 +282,27 @@ test "a spelling difference alone does not change the AST" {
     defer b.deinit();
 
     try testing.expect(a.ast.eql(b.ast));
+}
+
+test "a list marker difference lives in the spelling layer, not the AST" {
+    const testing = std.testing;
+    const Markdown = @import("languages/markdown/markdown.zig");
+
+    // `- x` and `* x` are the same bullet list, spelled two ways: equal as
+    // meaning, distinguishable through the opt-in `spellingEql` layer — the
+    // same split `spansEql` provides for positions.
+    var a = try Markdown.parse(testing.allocator, "- x\n", .{});
+    defer a.deinit();
+    var b = try Markdown.parse(testing.allocator, "* x\n", .{});
+    defer b.deinit();
+
+    try testing.expect(a.ast.eql(b.ast));
+    try testing.expect(!a.document().spellingEql(b.document()));
+    try testing.expect(a.document().spellingEql(a.document()));
+
+    // The recorded spelling is readable per node: the list is the root's
+    // first child.
+    const list = a.ast.nodes[a.ast.root].first_child.?;
+    try testing.expectEqual(Spelling.Bullet.dash, a.document().spelling(list).?.bullet);
+    try testing.expectEqual(Spelling.Bullet.star, b.document().spelling(list).?.bullet);
 }

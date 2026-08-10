@@ -97,6 +97,8 @@ pub fn run(
     errdefer spans.deinit(allocator);
     var content_spans = try std.ArrayList(?Span).initCapacity(allocator, n);
     errdefer content_spans.deinit(allocator);
+    var spellings = try std.ArrayList(?Document.Spelling).initCapacity(allocator, n);
+    errdefer spellings.deinit(allocator);
 
     // Two scratch buffers, allocated once and reused for every node visited.
     var stack: std.ArrayList(Node.Id) = .empty;
@@ -111,10 +113,10 @@ pub fn run(
     defer allocator.free(sorted_extra);
     std.mem.sort(Node.Id, sorted_extra, {}, std.sort.asc(Node.Id));
 
-    try visit(allocator, old, old.root, map, &nodes, &spans, &content_spans, &stack, &kids, doc);
+    try visit(allocator, old, old.root, map, &nodes, &spans, &content_spans, &spellings, &stack, &kids, doc);
     for (sorted_extra) |r| {
         if (r >= n or map[r] != null) continue;
-        try visit(allocator, old, r, map, &nodes, &spans, &content_spans, &stack, &kids, doc);
+        try visit(allocator, old, r, map, &nodes, &spans, &content_spans, &spellings, &stack, &kids, doc);
     }
 
     // Second pass: every child/sibling link still points into the OLD id space.
@@ -132,6 +134,7 @@ pub fn run(
     allocator.free(old.nodes);
     allocator.free(doc.node_spans);
     allocator.free(doc.node_content_spans);
+    allocator.free(doc.node_spelling);
 
     return .{
         .doc = .{
@@ -139,6 +142,7 @@ pub fn run(
             .ast = new_ast,
             .node_spans = try spans.toOwnedSlice(allocator),
             .node_content_spans = try content_spans.toOwnedSlice(allocator),
+            .node_spelling = try spellings.toOwnedSlice(allocator),
         },
         .map = map,
     };
@@ -154,6 +158,7 @@ fn visit(
     nodes: *std.ArrayList(Node),
     spans: *std.ArrayList(Span),
     content_spans: *std.ArrayList(?Span),
+    spellings: *std.ArrayList(?Document.Spelling),
     stack: *std.ArrayList(Node.Id),
     kids: *std.ArrayList(Node.Id),
     doc: Document,
@@ -173,6 +178,7 @@ fn visit(
         try nodes.append(allocator, node);
         try spans.append(allocator, doc.node_spans[id]);
         try content_spans.append(allocator, doc.node_content_spans[id]);
+        try spellings.append(allocator, doc.spelling(id));
 
         // Children must go onto the stack in REVERSE so they pop in document
         // order, and the sibling chain is singly linked — so they are gathered

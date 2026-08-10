@@ -262,12 +262,12 @@ pub fn runQuery(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, 
     // Querying needs the tree AND the spans it reports, so this is the shared
     // `Document` — the per-format reparse adapter discards only the LANGUAGE
     // side tables (djot references, Markdown link refs), never the positions.
-    var ast = format.entryFor(opts.input).parseToAst(&opts.parse_config, allocator, source) catch |err| {
+    var doc = format.entryFor(opts.input).parseToAst(&opts.parse_config, allocator, source) catch |err| {
         stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ opts.file, @tagName(opts.input), err }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
-    defer ast.deinit();
+    defer doc.deinit();
 
     var selector = twig.Select.parse(allocator, opts.selector) catch |err| {
         stderr.print("error: could not parse selector '{s}': {t}\n", .{ opts.selector, err }) catch {};
@@ -276,7 +276,7 @@ pub fn runQuery(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, 
     };
     defer selector.deinit();
 
-    const matches = twig.Select.resolveAll(allocator, &ast, &selector) catch return error.ActionFailed;
+    const matches = twig.Select.resolveAll(allocator, &doc, &selector) catch return error.ActionFailed;
 
     if (matches.len == 0) {
         stderr.print("no matches for selector '{s}'\n", .{opts.selector}) catch {};
@@ -285,7 +285,7 @@ pub fn runQuery(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, 
     }
 
     for (matches) |m| {
-        printMatchLine(allocator, &ast, m.id, stdout) catch |err| {
+        printMatchLine(allocator, &doc.ast, m.id, stdout) catch |err| {
             stderr.print("error: failed to write output: {t}\n", .{err}) catch {};
             stderr.flush() catch {};
             return error.ActionFailed;

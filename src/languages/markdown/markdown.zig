@@ -97,6 +97,7 @@ pub const Document = struct {
     source: []const u8 = "",
     node_spans: []const Span = &.{},
     node_content_spans: []const ?Span = &.{},
+    node_spelling: []const ?TwigDocument.Spelling = &.{},
 
     /// The options this document was parsed with. Retained so RENDERING can
     /// recover the dialect (`ParseOptions.dialect`) without the caller having
@@ -144,6 +145,7 @@ pub const Document = struct {
         self.footnotes.deinit(allocator);
         allocator.free(self.node_spans);
         allocator.free(self.node_content_spans);
+        allocator.free(self.node_spelling);
         self.ast.deinit();
     }
 
@@ -156,6 +158,7 @@ pub const Document = struct {
             .ast = self.ast,
             .node_spans = self.node_spans,
             .node_content_spans = self.node_content_spans,
+            .node_spelling = self.node_spelling,
         };
     }
 
@@ -167,6 +170,13 @@ pub const Document = struct {
     /// Node `id`'s interior span, or `null`.
     pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
         return self.node_content_spans[id];
+    }
+
+    /// Node `id`'s recorded spelling, or `null` (canonical). Tolerates a
+    /// short/absent table — see `TwigDocument.node_spelling`.
+    pub fn spelling(self: *const Document, id: AST.Node.Id) ?TwigDocument.Spelling {
+        if (id >= self.node_spelling.len) return null;
+        return self.node_spelling[id];
     }
 };
 
@@ -180,6 +190,7 @@ pub fn parse(allocator: Allocator, source: []const u8, options: ParseOptions) Al
         .source = result.source,
         .node_spans = result.node_spans,
         .node_content_spans = result.node_content_spans,
+        .node_spelling = result.node_spelling,
         .options = options,
         .link_references = result.link_references,
         .footnotes = result.footnotes,

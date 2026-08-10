@@ -284,6 +284,27 @@ TwigStatus twig_document_query(
     size_t *out_len
 );
 
+// The source span of node `node_id` — the accessor form of
+// TwigQueryMatch.span, usable with any node id (e.g. one held across queries)
+// without re-running a query. Writes into *out_span and returns
+// TWIG_STATUS_OK; TWIG_STATUS_INVALID_ARGUMENT for an out-of-range id.
+// Additive in ABI v4 — the struct fields remain.
+TwigStatus twig_document_node_span(
+    TwigDocument *doc,
+    uint32_t node_id,
+    TwigSpan *out_span
+);
+
+// The interior (between-delimiters) span of node `node_id` — the accessor form
+// of TwigQueryMatch.content_span/has_content_span, with TWIG_STATUS_NOT_FOUND
+// replacing the has_content_span == 0 convention (*out_span is untouched).
+// TWIG_STATUS_INVALID_ARGUMENT for an out-of-range id. Additive in ABI v4.
+TwigStatus twig_document_node_content_span(
+    TwigDocument *doc,
+    uint32_t node_id,
+    TwigSpan *out_span
+);
+
 // ── Editor ──────────────────────────────────────────────────────────────────
 // Lossless, in-place span-splice editing. Create an editor over some source,
 // apply edits addressed by a `locator` — either a dot-separated index path

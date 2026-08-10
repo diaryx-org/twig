@@ -35,6 +35,8 @@ attrs: std.ArrayList(AST.Attrs) = .empty,
 spans: std.ArrayList(Span) = .empty,
 /// Parallel to `nodes` — see `Document.node_content_spans`.
 content_spans: std.ArrayList(?Span) = .empty,
+/// Parallel to `nodes` — see `Document.node_spelling`.
+spellings: std.ArrayList(?Document.Spelling) = .empty,
 
 pub fn init(allocator: Allocator) Builder {
     return .{ .allocator = allocator };
@@ -46,6 +48,7 @@ pub fn deinit(self: *Builder) void {
     self.nodes.deinit(self.allocator);
     self.spans.deinit(self.allocator);
     self.content_spans.deinit(self.allocator);
+    self.spellings.deinit(self.allocator);
     for (self.attrs.items) |a| {
         self.allocator.free(a.entries);
     }
@@ -61,11 +64,13 @@ pub fn addNode(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Id {
         .id = id,
         .kind = try self.dupeKind(kind),
     });
-    // The position tables grow with the node arena, so every id is always
-    // addressable in all three. `Span.init(0, 0)` is the "unknown" default the
-    // old `Node.span` field carried; `null` likewise for the interior.
+    // The side tables grow with the node arena, so every id is always
+    // addressable in all of them. `Span.init(0, 0)` is the "unknown" default
+    // the old `Node.span` field carried; `null` likewise for the interior and
+    // the spelling.
     try self.spans.append(self.allocator, Span.init(0, 0));
     try self.content_spans.append(self.allocator, null);
+    try self.spellings.append(self.allocator, null);
     return id;
 }
 
@@ -104,6 +109,12 @@ pub fn setSpan(self: *Builder, id: Node.Id, span: Span) void {
 /// called, which is always a correct (if less informative) value.
 pub fn setContentSpan(self: *Builder, id: Node.Id, span: Span) void {
     self.content_spans.items[id] = span;
+}
+
+/// Record how the source spelled `id` — see `Document.node_spelling` for the
+/// contract. Left `null` when never called, which serializes canonically.
+pub fn setSpelling(self: *Builder, id: Node.Id, sp: Document.Spelling) void {
+    self.spellings.items[id] = sp;
 }
 
 /// Attach `attrs` to `id` (copying its strings into owned storage),
@@ -162,6 +173,8 @@ pub fn graftDocument(self: *Builder, src: *const Document, offset: usize) Alloca
         self.spans.items[id] = .{ .start = s.start + offset, .end = s.end + offset };
         if (src.node_content_spans[node.id]) |cs|
             self.content_spans.items[id] = .{ .start = cs.start + offset, .end = cs.end + offset };
+        // Spelling is position-free, so it copies unshifted.
+        self.spellings.items[id] = src.spelling(node.id);
         // `setAttrs` copies the entries' strings; it touches only `attrs`, so
         // the `dst` node pointer stays valid across it.
         if (node.attrs) |ai| try self.setAttrs(id, src.ast.attrs[ai]);
@@ -187,6 +200,7 @@ pub fn finish(self: *Builder, root: Node.Id) Allocator.Error!AST {
     self.attrs = .empty;
     self.spans.clearAndFree(self.allocator);
     self.content_spans.clearAndFree(self.allocator);
+    self.spellings.clearAndFree(self.allocator);
     return .{
         .allocator = self.allocator,
         .owned_strings = owned_strings,
@@ -208,6 +222,9 @@ pub fn finishDocument(self: *Builder, source: []const u8, root: Node.Id) Allocat
     const content_spans = try self.content_spans.toOwnedSlice(self.allocator);
     errdefer self.allocator.free(content_spans);
     self.content_spans = .empty;
+    const spellings = try self.spellings.toOwnedSlice(self.allocator);
+    errdefer self.allocator.free(spellings);
+    self.spellings = .empty;
     // `finish` clears the (now-empty) position lists, which is a no-op here.
     const ast = try self.finish(root);
     return .{
@@ -215,6 +232,7 @@ pub fn finishDocument(self: *Builder, source: []const u8, root: Node.Id) Allocat
         .ast = ast,
         .node_spans = spans,
         .node_content_spans = content_spans,
+        .node_spelling = spellings,
     };
 }
 
@@ -247,6 +265,7 @@ pub fn viewDocument(self: *const Builder, source: []const u8, root: Node.Id) Doc
         .ast = self.view(root),
         .node_spans = self.spans.items,
         .node_content_spans = self.content_spans.items,
+        .node_spelling = self.spellings.items,
     };
 }
 

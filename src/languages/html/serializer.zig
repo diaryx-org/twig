@@ -792,8 +792,8 @@ pub const Renderer = struct {
                         n += 1;
                     }
                 }
-                if (v.style.numbering != .decimal) {
-                    extra[n] = .{ .key = "type", .value = orderedListType(v.style.numbering) };
+                if (v.numbering != .decimal) {
+                    extra[n] = .{ .key = "type", .value = orderedListType(v.numbering) };
                     n += 1;
                 }
                 try self.inTags("ol", id, 2, extra[0..n]);
@@ -1025,7 +1025,7 @@ pub const Renderer = struct {
         return idx;
     }
 
-    fn orderedListType(numbering: AST.OrderedListStyle.Numbering) []const u8 {
+    fn orderedListType(numbering: AST.ListNumbering) []const u8 {
         return switch (numbering) {
             .decimal => "1",
             .lower_alpha => "a",

@@ -251,8 +251,8 @@ pub const Node = struct {
         pub const CodeBlock = struct { lang: ?[]const u8, text: []const u8 };
         pub const RawBlock = struct { format: []const u8, text: []const u8 };
         pub const Metadata = struct { lang: []const u8, text: []const u8 };
-        pub const BulletList = struct { style: BulletListStyle, tight: bool };
-        pub const OrderedList = struct { style: OrderedListStyle, tight: bool, start: ?u32 };
+        pub const BulletList = struct { tight: bool };
+        pub const OrderedList = struct { numbering: ListNumbering, tight: bool, start: ?u32 };
         pub const TaskList = struct { tight: bool };
         pub const TaskListItem = struct { checked: bool };
         pub const Row = struct { head: bool };
@@ -545,10 +545,8 @@ pub const Node = struct {
                     eqlStr(v.text, other.raw_block.text),
                 .metadata => |v| eqlStr(v.lang, other.metadata.lang) and
                     eqlStr(v.text, other.metadata.text),
-                .bullet_list => |v| v.style == other.bullet_list.style and
-                    v.tight == other.bullet_list.tight,
-                .ordered_list => |v| v.style.numbering == other.ordered_list.style.numbering and
-                    v.style.delim == other.ordered_list.style.delim and
+                .bullet_list => |v| v.tight == other.bullet_list.tight,
+                .ordered_list => |v| v.numbering == other.ordered_list.numbering and
                     v.tight == other.ordered_list.tight and
                     v.start == other.ordered_list.start,
                 .task_list => |v| v.tight == other.task_list.tight,
@@ -831,16 +829,12 @@ pub const Form = enum {
     }
 };
 
-pub const BulletListStyle = enum { dash, plus, star };
-
-pub const OrderedListStyle = struct {
-    numbering: Numbering,
-    delim: Delim,
-
-    pub const Numbering = enum { decimal, lower_alpha, upper_alpha, lower_roman, upper_roman };
-    /// Which punctuation wraps the number: `1.`, `1)`, or `(1)`.
-    pub const Delim = enum { period, paren_after, paren_both };
-};
+/// How an ordered list COUNTS (`<ol type="a">` renders differently), which is
+/// why it lives on `Kind`. How its markers are PUNCTUATED (`1.` vs `1)` vs
+/// `(1)`) renders identically and is therefore spelling — see
+/// `Document.Spelling.ordered_delim`, alongside a bullet list's `-`/`+`/`*`
+/// character. Both used to sit here as `BulletListStyle`/`OrderedListStyle`.
+pub const ListNumbering = enum { decimal, lower_alpha, upper_alpha, lower_roman, upper_roman };
 
 pub const Alignment = enum { default, left, right, center };
 
