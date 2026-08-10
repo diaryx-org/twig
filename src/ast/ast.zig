@@ -598,43 +598,40 @@ fn eqlOptStr(a: ?[]const u8, b: ?[]const u8) bool {
 /// "two documents of different formats can have the same AST" a claim a test
 /// can check rather than a design aspiration.
 ///
-/// This is a STRUCTURAL WALK from each root, not a comparison of the two node
-/// arrays. fig's `AST.eql` can compare `nodes` as a flat slice because its
-/// parsers emit exactly the reachable tree; Twig's do not.
+/// This compares the two node arrays directly, as fig's `AST.eql` does. It can
+/// only do so because `ast/compact.zig` runs at the end of every parse: Twig's
+/// inline grammars are not decidable left to right, so the parsers speculate
+/// and abandon nodes, and without that pass the arena would hold orphaned
+/// delimiter runs whose payloads record the SPELLING (`str "**"` versus
+/// `str "__"`). Compaction drops them and renumbers in pre-order, which is
+/// what makes the arena canonical enough to compare slot by slot.
 ///
-/// Twig's inline parsers are SPECULATIVE: `languages/markdown/inline.zig`
-/// emits each delimiter run as a literal-text `str` up front, then, if the run
-/// resolves into emphasis, builds the mark node and leaves the two `str`s
-/// unreferenced in the arena. Parsing `**x**` and `__x__` therefore yields
-/// arenas of the same size and the same kinds — but the orphans hold `"**"` in
-/// one and `"__"` in the other. Those payloads are the abandoned SPELLING, and
-/// a flat slice comparison compares them, reporting two spellings of one
-/// document as different documents. That is exactly the question this function
-/// exists to answer correctly, so it walks only what is reachable.
+/// A walk of the tree from the root would be the obvious alternative, and it
+/// is WRONG here — it was tried, and it has a false positive that matters. A
+/// link reference definition and a footnote definition are live nodes attached
+/// to no parent, so a tree walk never reaches them. Djot resolves reference
+/// labels at RENDER time, so for `[a][r]` the destination lives ONLY on that
+/// unattached `reference` node: two djot documents whose definitions differ
+/// (`[r]: /XXX` versus `[r]: /YYY`) have identical reachable trees and render
+/// to different HTML, and a tree walk calls them equal. Comparing the arena
+/// compares the definitions too, because compaction keeps them (they are
+/// passed in as extra roots) and orders them deterministically.
 ///
-/// Ids are not compared either: an id is an arena slot, and arena slots are a
-/// parsing artifact. What is compared is each node's kind (payload included),
-/// its attributes, and its children in order.
+/// Attributes are compared by VALUE rather than by index: `Node.attrs` points
+/// into a side-table that compaction deliberately does not renumber, so two
+/// equivalent parses can carry different indices for identical attributes.
 pub fn eql(self: AST, other: AST) bool {
-    return eqlNode(self, self.root, other, other.root);
-}
-
-fn eqlNode(a: AST, a_id: Node.Id, b: AST, b_id: Node.Id) bool {
-    const an = a.nodes[a_id];
-    const bn = b.nodes[b_id];
-    if (!an.kind.eql(bn.kind)) return false;
-    if (!attrsEql(a.attrsOf(a_id), b.attrsOf(b_id))) return false;
-
-    var ia = a.children(a_id);
-    var ib = b.children(b_id);
-    while (true) {
-        const ca = ia.next();
-        const cb = ib.next();
-        if (ca == null and cb == null) return true;
-        const x = ca orelse return false;
-        const y = cb orelse return false;
-        if (!eqlNode(a, x.id, b, y.id)) return false;
+    if (self.root != other.root) return false;
+    if (self.nodes.len != other.nodes.len) return false;
+    for (self.nodes, other.nodes, 0..) |a, b, i| {
+        if (a.id != b.id) return false;
+        if (a.first_child != b.first_child) return false;
+        if (a.next_sibling != b.next_sibling) return false;
+        if (!a.kind.eql(b.kind)) return false;
+        const id: Node.Id = @intCast(i);
+        if (!attrsEql(self.attrsOf(id), other.attrsOf(id))) return false;
     }
+    return true;
 }
 
 fn attrsEql(a: Attrs, b: Attrs) bool {

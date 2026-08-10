@@ -15,9 +15,14 @@
 //! and `__x__` leaves orphaned `str "**"` and `str "__"` respectively. That is
 //! format-specific spelling sitting in a structure whose entire purpose is to
 //! be format-generic. Nothing reads those nodes — but they are in `ast.nodes`,
-//! they are visible to any consumer that iterates the arena instead of walking
-//! the tree, and they made a flat `AST.eql` report two spellings of one
-//! document as two different documents.
+//! and they are visible to any consumer that iterates the arena instead of
+//! walking the tree.
+//!
+//! `AST.eql` is exactly such a consumer, and deliberately so: comparing the
+//! arena is what lets it see the unattached definitions a tree walk cannot
+//! reach (see its doc comment, and the tests at the foot of this file). This
+//! pass is what makes that comparison sound — without it, `**x**` and `__x__`
+//! would compare unequal on the strength of two abandoned `str`s.
 //!
 //! fig needs no such pass: its config grammars are decidable (`{` means a
 //! mapping, `- ` means a sequence element), so its parsers never speculate and
@@ -276,13 +281,20 @@ test "compaction preserves meaning" {
     const para = try b.addContainer(.para, &.{em});
     const doc = try b.finishDocument("**x**", para);
 
-    // The same tree, built without the orphan.
+    // The same tree, built without the orphan. It goes through the pass too:
+    // `AST.eql` compares arenas slot by slot, and only a compacted arena is in
+    // the canonical pre-order that makes that comparison meaningful. Both
+    // builders here emit bottom-up, so uncompacted they would disagree on ids
+    // while agreeing on the document.
     var b2 = AST.Builder.init(testing.allocator);
     defer b2.deinit();
     const t2 = try b2.addLeaf(.{ .str = "x" });
     const em2 = try b2.addContainer(.{ .inline_mark = .strong }, &.{t2});
     const para2 = try b2.addContainer(.para, &.{em2});
-    var clean = try b2.finishDocument("**x**", para2);
+    const clean_raw = try b2.finishDocument("**x**", para2);
+    const c2 = try run(testing.allocator, clean_raw, &.{});
+    defer c2.freeMap(testing.allocator);
+    var clean = c2.doc;
     defer clean.deinit();
 
     const c = try run(testing.allocator, doc, &.{});
@@ -400,4 +412,49 @@ test "the abandoned spelling is gone from the arena" {
         try testing.expectEqual(x.first_child, y.first_child);
         try testing.expectEqual(x.next_sibling, y.next_sibling);
     }
+}
+
+test "eql sees a difference that lives only on an unattached definition" {
+    const Djot = @import("../languages/djot/djot.zig");
+    const a = testing.allocator;
+
+    // Djot resolves reference labels at RENDER time, so a `link`'s destination
+    // lives solely on the `reference` definition — a node attached to no
+    // parent. These two documents render to different HTML, and every node
+    // reachable from the root is identical between them, so a tree walk calls
+    // them equal. Comparing the compacted arena does not.
+    var x = try Djot.parse(a, "[a][r]\n\n[r]: /XXX\n");
+    defer x.deinit();
+    var y = try Djot.parse(a, "[a][r]\n\n[r]: /YYY\n");
+    defer y.deinit();
+
+    try testing.expect(!x.ast.eql(y.ast));
+
+    const hx = try Djot.html.renderAlloc(a, &x, .{});
+    defer a.free(hx);
+    const hy = try Djot.html.renderAlloc(a, &y, .{});
+    defer a.free(hy);
+    try testing.expect(!std.mem.eql(u8, hx, hy));
+
+    // ...and the same document twice still compares equal, so the check above
+    // is not just "unattached nodes always differ".
+    var z = try Djot.parse(a, "[a][r]\n\n[r]: /XXX\n");
+    defer z.deinit();
+    try testing.expect(x.ast.eql(z.ast));
+}
+
+test "an unused link reference definition is part of the document" {
+    const Markdown = @import("../languages/markdown/markdown.zig");
+    const a = testing.allocator;
+
+    // Renders identically to plain `hi`, but the definition is real content a
+    // lossless converter must carry, and it survives compaction as an extra
+    // root. Tree-walk equality could not see it at all.
+    var bare = try Markdown.parse(a, "hi\n", .{});
+    defer bare.deinit();
+    var with_def = try Markdown.parse(a, "hi\n\n[unused]: /x\n", .{});
+    defer with_def.deinit();
+
+    try testing.expect(!bare.ast.eql(with_def.ast));
+    try testing.expectEqual(bare.ast.nodes.len + 1, with_def.ast.nodes.len);
 }
