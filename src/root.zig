@@ -127,4 +127,5 @@ test {
     _ = Select;
     _ = Filter;
     _ = ast_json;
+    _ = @import("ast/compact.zig");
 }

@@ -25,6 +25,10 @@ const ast_mod = @import("../../ast/ast.zig");
 const AST = ast_mod;
 const Node = AST.Node;
 const Document = @import("djot.zig").Document;
+/// The shared position-carrying document (`src/document.zig`), distinct from
+/// djot's own `Document` above.
+const TwigDocument = @import("../../document.zig");
+const compact = @import("../../ast/compact.zig");
 const Span = @import("../../span.zig");
 const event = @import("event.zig");
 const Event = event.Event;
@@ -506,7 +510,7 @@ pub const TreeBuilder = struct {
 
         self.deinitScratch();
 
-        return .{
+        const raw: TwigDocument = .{
             .ast = .{
                 .allocator = self.allocator,
                 .owned_strings = try self.owned_strings.toOwnedSlice(self.allocator),
@@ -519,10 +523,56 @@ pub const TreeBuilder = struct {
             .source = self.source,
             .node_spans = try self.spans.toOwnedSlice(self.allocator),
             .node_content_spans = try self.content_spans.toOwnedSlice(self.allocator),
+        };
+
+        // Drop the delimiter runs the inline pass built and abandoned, so the
+        // arena is the document rather than the search for it (see
+        // `ast/compact.zig`). Reference and footnote DEFINITIONS hang off no
+        // tree — they are resolved by label — so they must be handed in as
+        // extra roots or the sweep would delete them.
+        const compacted = try compactWithTables(
+            self.allocator,
+            raw,
+            &.{ &self.references, &self.auto_references, &self.footnotes },
+        );
+
+        return .{
+            .ast = compacted.ast,
+            .source = compacted.source,
+            .node_spans = compacted.node_spans,
+            .node_content_spans = compacted.node_content_spans,
             .references = self.references,
             .auto_references = self.auto_references,
             .footnotes = self.footnotes,
         };
+    }
+
+    /// Compact `doc`, using every value in `tables` as an extra root, then
+    /// rewrite those tables onto the new ids. The tables are label ->
+    /// definition-node maps, so their values are exactly the live nodes that
+    /// tree reachability cannot see.
+    fn compactWithTables(
+        allocator: Allocator,
+        doc: TwigDocument,
+        tables: []const *std.StringHashMapUnmanaged(Node.Id),
+    ) Allocator.Error!TwigDocument {
+        var roots: std.ArrayList(Node.Id) = .empty;
+        defer roots.deinit(allocator);
+        for (tables) |t| {
+            var it = t.valueIterator();
+            while (it.next()) |v| try roots.append(allocator, v.*);
+        }
+
+        const c = try compact.run(allocator, doc, roots.items);
+        defer c.freeMap(allocator);
+
+        // Every table value was passed in as a root, so each is guaranteed to
+        // have survived and `.?` cannot fire.
+        for (tables) |t| {
+            var it = t.valueIterator();
+            while (it.next()) |v| v.* = c.map[v.*].?;
+        }
+        return c.doc;
     }
 
     fn handleEvent(self: *TreeBuilder, ev: Event) Allocator.Error!void {

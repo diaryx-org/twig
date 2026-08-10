@@ -90,6 +90,7 @@ const AST = @import("../../ast/ast.zig");
 const Node = AST.Node;
 const Builder = AST.Builder;
 const Span = @import("../../span.zig");
+const compact = @import("../../ast/compact.zig");
 const Options = @import("options.zig");
 const inline_mod = @import("inline.zig");
 const attrs_mod = @import("attributes.zig");
@@ -1020,11 +1021,33 @@ pub const Parser = struct {
         self.builder.setSpan(doc_id, Span.init(0, self.source.len));
         setContentSpanFromChildren(&self.builder, doc_id);
 
-        const doc = try self.builder.finishDocument(self.source, doc_id);
-        const refs = self.link_references;
+        const raw = try self.builder.finishDocument(self.source, doc_id);
+        var refs = self.link_references;
         self.link_references = .empty;
-        const fns = self.footnotes;
+        var fns = self.footnotes;
         self.footnotes = .empty;
+
+        // Drop the delimiter runs `inline.zig` emitted speculatively and then
+        // abandoned when the run resolved into a mark — see `ast/compact.zig`.
+        // Link reference definitions and footnote definitions are attached to
+        // no parent (they are resolved by label, not by position), so both
+        // tables' nodes go in as extra roots and are repointed afterward.
+        var roots: std.ArrayList(Node.Id) = .empty;
+        defer roots.deinit(self.allocator);
+        var rit = refs.valueIterator();
+        while (rit.next()) |v| try roots.append(self.allocator, v.*);
+        var fit = fns.valueIterator();
+        while (fit.next()) |v| try roots.append(self.allocator, v.*);
+
+        const c = try compact.run(self.allocator, raw, roots.items);
+        defer c.freeMap(self.allocator);
+        // Every table value was a root, so each survived and `.?` cannot fire.
+        var rit2 = refs.valueIterator();
+        while (rit2.next()) |v| v.* = c.map[v.*].?;
+        var fit2 = fns.valueIterator();
+        while (fit2.next()) |v| v.* = c.map[v.*].?;
+
+        const doc = c.doc;
         return .{
             .ast = doc.ast,
             .source = doc.source,
