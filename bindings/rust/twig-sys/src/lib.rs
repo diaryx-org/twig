@@ -268,6 +268,16 @@ unsafe extern "C" {
         out_ptr: *mut *const TwigQueryMatch,
         out_len: *mut usize,
     ) -> TwigStatus;
+    pub fn twig_document_node_span(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_span: *mut TwigSpan,
+    ) -> TwigStatus;
+    pub fn twig_document_node_content_span(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_span: *mut TwigSpan,
+    ) -> TwigStatus;
 
     pub fn twig_editor_create(
         input: *const u8,

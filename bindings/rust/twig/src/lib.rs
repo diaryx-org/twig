@@ -330,6 +330,28 @@ impl Document {
             ffi::twig_document_query(raw, selector.as_ptr(), selector.len(), ptr, len)
         })
     }
+
+    /// Return the whole source span of `node` without running a selector query.
+    pub fn span(&mut self, node: NodeId) -> Result<Range<usize>, Error> {
+        let mut span = ffi::TwigSpan { start: 0, end: 0 };
+        let status = unsafe { ffi::twig_document_node_span(self.raw.as_ptr(), node.0, &mut span) };
+        Error::from_status(status)?;
+        Ok(span.start..span.end)
+    }
+
+    /// Return the interior span of `node`, or `None` when the node has no
+    /// recorded content span.
+    pub fn content_span(&mut self, node: NodeId) -> Result<Option<Range<usize>>, Error> {
+        let mut span = ffi::TwigSpan { start: 0, end: 0 };
+        let status = unsafe {
+            ffi::twig_document_node_content_span(self.raw.as_ptr(), node.0, &mut span)
+        };
+        match status.0 {
+            ffi::TwigStatus::OK => Ok(Some(span.start..span.end)),
+            ffi::TwigStatus::NOT_FOUND => Ok(None),
+            _ => Err(Error::from_status(status).unwrap_err()),
+        }
+    }
 }
 
 impl Drop for Document {
@@ -1808,6 +1830,20 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(&source[matches[0].span.clone()], "`code`");
+    }
+
+    #[test]
+    fn document_span_accessors_read_by_node_id() {
+        let source = "# hi\n\ntext\n";
+        let mut doc = Document::parse_str(source, Format::Markdown).expect("parse markdown");
+        let heading = doc.query("heading").expect("query").pop().expect("heading");
+
+        assert_eq!(doc.span(NodeId(heading.node_id)).expect("span"), heading.span);
+        assert_eq!(
+            doc.content_span(NodeId(heading.node_id)).expect("content span"),
+            heading.content_span
+        );
+        assert_eq!(doc.span(NodeId(u32::MAX)), Err(Error::InvalidArgument));
     }
 
     #[test]
