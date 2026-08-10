@@ -23,6 +23,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("../../ast/ast.zig");
+const Document = @import("../../document.zig");
 const Node = AST.Node;
 const Span = @import("../../span.zig");
 
@@ -73,9 +74,9 @@ pub const Parser = struct {
 
     /// Parse the whole document into a fresh, self-contained `AST` rooted at
     /// a `doc` node.
-    pub fn parse(self: *Parser) ParseError!AST {
+    pub fn parse(self: *Parser) ParseError!Document {
         const doc_id = try self.parseDocument();
-        return self.builder.finish(doc_id);
+        return self.builder.finishDocument(self.source, doc_id);
     }
 
     // ── diagnostics ──────────────────────────────────────────────────────
@@ -516,10 +517,10 @@ test "parses a minimal document" {
     var ast = try p.parse();
     defer ast.deinit();
 
-    try testing.expect(ast.nodes[ast.root].kind == .doc);
-    const root_el = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    try testing.expectEqualStrings("a", ast.nodes[root_el].kind.container.name);
-    try testing.expectEqual(@as(?Span, null), ast.nodes[root_el].content_span);
+    try testing.expect(ast.ast.nodes[ast.ast.root].kind == .doc);
+    const root_el = ast.ast.nodes[ast.ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("a", ast.ast.nodes[root_el].kind.container.name);
+    try testing.expectEqual(@as(?Span, null), ast.contentSpan(root_el));
 }
 
 test "framed leaves carry an interior content_span" {
@@ -529,30 +530,30 @@ test "framed leaves carry an interior content_span" {
     var ast = try p.parse();
     defer ast.deinit();
 
-    const doctype = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    const root_el = ast.nodes[doctype].next_sibling orelse return error.TestExpectedNonNull;
-    const comment = ast.nodes[root_el].first_child orelse return error.TestExpectedNonNull;
-    const cdata = ast.nodes[comment].next_sibling orelse return error.TestExpectedNonNull;
-    const pi = ast.nodes[cdata].next_sibling orelse return error.TestExpectedNonNull;
+    const doctype = ast.ast.nodes[ast.ast.root].first_child orelse return error.TestExpectedNonNull;
+    const root_el = ast.ast.nodes[doctype].next_sibling orelse return error.TestExpectedNonNull;
+    const comment = ast.ast.nodes[root_el].first_child orelse return error.TestExpectedNonNull;
+    const cdata = ast.ast.nodes[comment].next_sibling orelse return error.TestExpectedNonNull;
+    const pi = ast.ast.nodes[cdata].next_sibling orelse return error.TestExpectedNonNull;
 
     // doctype: span covers the delimiters, content_span is the interior.
-    try testing.expect(ast.nodes[doctype].kind == .markup_leaf and ast.nodes[doctype].kind.markup_leaf.kind == .doctype);
-    try testing.expectEqualStrings("<!DOCTYPE html>", Span.of(u8, ast.nodes[doctype].span, source));
-    try testing.expectEqualStrings(" html", Span.of(u8, ast.nodes[doctype].content_span.?, source));
+    try testing.expect(ast.ast.nodes[doctype].kind == .markup_leaf and ast.ast.nodes[doctype].kind.markup_leaf.kind == .doctype);
+    try testing.expectEqualStrings("<!DOCTYPE html>", Span.of(u8, ast.span(doctype), source));
+    try testing.expectEqualStrings(" html", Span.of(u8, ast.contentSpan(doctype).?, source));
 
     // comment
-    try testing.expect(ast.nodes[comment].kind == .markup_leaf and ast.nodes[comment].kind.markup_leaf.kind == .comment);
-    try testing.expectEqualStrings("<!-- hi -->", Span.of(u8, ast.nodes[comment].span, source));
-    try testing.expectEqualStrings(" hi ", Span.of(u8, ast.nodes[comment].content_span.?, source));
+    try testing.expect(ast.ast.nodes[comment].kind == .markup_leaf and ast.ast.nodes[comment].kind.markup_leaf.kind == .comment);
+    try testing.expectEqualStrings("<!-- hi -->", Span.of(u8, ast.span(comment), source));
+    try testing.expectEqualStrings(" hi ", Span.of(u8, ast.contentSpan(comment).?, source));
 
     // cdata
-    try testing.expect(ast.nodes[cdata].kind == .markup_leaf and ast.nodes[cdata].kind.markup_leaf.kind == .cdata);
-    try testing.expectEqualStrings("<![CDATA[x<y]]>", Span.of(u8, ast.nodes[cdata].span, source));
-    try testing.expectEqualStrings("x<y", Span.of(u8, ast.nodes[cdata].content_span.?, source));
+    try testing.expect(ast.ast.nodes[cdata].kind == .markup_leaf and ast.ast.nodes[cdata].kind.markup_leaf.kind == .cdata);
+    try testing.expectEqualStrings("<![CDATA[x<y]]>", Span.of(u8, ast.span(cdata), source));
+    try testing.expectEqualStrings("x<y", Span.of(u8, ast.contentSpan(cdata).?, source));
 
     // processing instruction: two payload fields, so content_span stays null.
-    try testing.expect(ast.nodes[pi].kind == .processing_instruction);
-    try testing.expectEqual(@as(?Span, null), ast.nodes[pi].content_span);
+    try testing.expect(ast.ast.nodes[pi].kind == .processing_instruction);
+    try testing.expectEqual(@as(?Span, null), ast.contentSpan(pi));
 }
 
 test "empty framed leaf interiors get an empty content_span at the boundary" {
@@ -562,17 +563,17 @@ test "empty framed leaf interiors get an empty content_span at the boundary" {
     var ast = try p.parse();
     defer ast.deinit();
 
-    const root_el = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    const comment = ast.nodes[root_el].first_child orelse return error.TestExpectedNonNull;
-    const cdata = ast.nodes[comment].next_sibling orelse return error.TestExpectedNonNull;
+    const root_el = ast.ast.nodes[ast.ast.root].first_child orelse return error.TestExpectedNonNull;
+    const comment = ast.ast.nodes[root_el].first_child orelse return error.TestExpectedNonNull;
+    const cdata = ast.ast.nodes[comment].next_sibling orelse return error.TestExpectedNonNull;
 
-    const comment_cs = ast.nodes[comment].content_span.?;
+    const comment_cs = ast.contentSpan(comment).?;
     try testing.expectEqual(@as(usize, 0), comment_cs.len());
-    try testing.expectEqual(ast.nodes[comment].span.start + "<!--".len, comment_cs.start);
+    try testing.expectEqual(ast.span(comment).start + "<!--".len, comment_cs.start);
 
-    const cdata_cs = ast.nodes[cdata].content_span.?;
+    const cdata_cs = ast.contentSpan(cdata).?;
     try testing.expectEqual(@as(usize, 0), cdata_cs.len());
-    try testing.expectEqual(ast.nodes[cdata].span.start + "<![CDATA[".len, cdata_cs.start);
+    try testing.expectEqual(ast.span(cdata).start + "<![CDATA[".len, cdata_cs.start);
 }
 
 test "duplicate attribute is a parse error with a diagnostic" {

@@ -9,18 +9,28 @@
 //! usage): nothing here inserts, removes, or reformats whitespace beyond
 //! what's already present as `str` nodes in the tree.
 //!
-//! Self-closing vs. open/close-pair form: the `AST` has no dedicated flag
-//! for "this element was written as `<a/>`", so this renderer uses
-//! `Node.content_span == null` as that signal (exactly what the parser
-//! leaves it as for a self-closing tag, and only for one — see
-//! `parser.zig`'s `parseElement`). An element with a non-null `content_span`
-//! always renders as an explicit `<a>...</a>` pair, even if it has no
-//! children (the zero-width-`content_span` case, `<a></a>`).
+//! Self-closing vs. open/close-pair form: the `AST` has no dedicated flag for
+//! "this element was written as `<a/>`", so this renderer uses an ABSENT
+//! interior span as that signal (exactly what the parser leaves for a
+//! self-closing tag, and only for one — see `parser.zig`'s `parseElement`).
+//! An element with a non-null interior always renders as an explicit
+//! `<a>...</a>` pair, even if it has no children (the zero-width case,
+//! `<a></a>`).
+//!
+//! That is why this is the ONE printer taking a `*const Document` rather than
+//! a `*const AST`: the signal it needs is a byte position, which now lives in
+//! `src/document.zig` rather than on the node. Every other serializer reads
+//! only meaning and keeps the narrower parameter — `languages/html/serializer
+//! .zig` decides the same question from the void-element NAME list instead,
+//! and so stays span-free. Self-closing is really a spelling, and the honest
+//! long-term home for it is the spelling side-table; reading it off the
+//! interior span preserves today's behaviour exactly until that lands.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const AST = @import("../../ast/ast.zig");
+const Document = @import("../../document.zig");
 const Node = AST.Node;
 
 fn writeEscapedText(writer: *Writer, s: []const u8) Writer.Error!void {
@@ -55,24 +65,24 @@ fn writeAttrs(ast: *const AST, id: Node.Id, writer: *Writer) Writer.Error!void {
 }
 
 /// Write `id` (and its descendants) as XML text to `writer`.
-pub fn serializeNode(ast: *const AST, id: Node.Id, writer: *Writer) Writer.Error!void {
-    const node = ast.nodes[id];
+pub fn serializeNode(doc: *const Document, id: Node.Id, writer: *Writer) Writer.Error!void {
+    const node = doc.ast.nodes[id];
     switch (node.kind) {
         .doc => {
-            var it = ast.children(id);
-            while (it.next()) |child| try serializeNode(ast, child.id, writer);
+            var it = doc.children(id);
+            while (it.next()) |child| try serializeNode(doc, child.id, writer);
         },
         .container => |e| {
             try writer.writeByte('<');
             try writer.writeAll(e.name);
-            try writeAttrs(ast, id, writer);
-            if (node.content_span == null) {
+            try writeAttrs(&doc.ast, id, writer);
+            if (doc.contentSpan(id) == null) {
                 try writer.writeAll("/>");
                 return;
             }
             try writer.writeByte('>');
-            var it = ast.children(id);
-            while (it.next()) |child| try serializeNode(ast, child.id, writer);
+            var it = doc.children(id);
+            while (it.next()) |child| try serializeNode(doc, child.id, writer);
             try writer.writeAll("</");
             try writer.writeAll(e.name);
             try writer.writeByte('>');
@@ -113,17 +123,17 @@ pub fn serializeNode(ast: *const AST, id: Node.Id, writer: *Writer) Writer.Error
 }
 
 /// Serialize the whole tree (from `ast.root`) to `writer`.
-pub fn serialize(ast: *const AST, writer: *Writer) Writer.Error!void {
-    try serializeNode(ast, ast.root, writer);
+pub fn serialize(doc: *const Document, writer: *Writer) Writer.Error!void {
+    try serializeNode(doc, doc.ast.root, writer);
 }
 
 /// Convenience wrapper: serialize to an owned string.
-pub fn serializeAlloc(allocator: Allocator, ast: *const AST) Allocator.Error![]u8 {
+pub fn serializeAlloc(allocator: Allocator, doc: *const Document) Allocator.Error![]u8 {
     var out: Writer.Allocating = .init(allocator);
     defer out.deinit();
     // `Writer.Allocating` only fails via `error.WriteFailed` when its own
     // backing allocation fails (mirrors `html.zig`'s `renderAlloc`).
-    serialize(ast, &out.writer) catch |err| switch (err) {
+    serialize(doc, &out.writer) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
     };
     return out.toOwnedSlice();
@@ -163,7 +173,7 @@ test "escapes text and attribute values" {
     try b.setAttrs(el, .{ .entries = &.{.{ .key = "title", .value = "x \"y\" & z" }} });
     const doc_id = try b.addContainer(.doc, &.{el});
 
-    var ast = try b.finish(doc_id);
+    var ast = try b.finishDocument("", doc_id);
     defer ast.deinit();
 
     const out = try serializeAlloc(testing.allocator, &ast);

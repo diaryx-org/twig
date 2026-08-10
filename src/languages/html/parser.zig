@@ -8,6 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("../../ast/ast.zig");
+const Document = @import("../../document.zig");
 const Node = AST.Node;
 const Span = @import("../../span.zig");
 
@@ -35,12 +36,12 @@ pub const Parser = struct {
         self.builder.deinit();
     }
 
-    pub fn parse(self: *Parser) ParseError!AST {
+    pub fn parse(self: *Parser) ParseError!Document {
         const children = try self.parseChildren(null);
         defer self.allocator.free(children);
         const doc = try self.builder.addContainer(.doc, self.dropFormattingWhitespace(children));
         self.builder.setSpan(doc, Span.init(0, self.source.len));
-        return self.builder.finish(doc);
+        return self.builder.finishDocument(self.source, doc);
     }
 
     fn isSpace(c: u8) bool {
@@ -505,8 +506,8 @@ pub const Parser = struct {
         const removed = text.len - trimmed.len;
         node.kind = .{ .str = trimmed };
         switch (side) {
-            .leading => node.span.start += removed,
-            .trailing => node.span.end -= removed,
+            .leading => self.builder.spans.items[id].start += removed,
+            .trailing => self.builder.spans.items[id].end -= removed,
         }
     }
 
@@ -530,8 +531,8 @@ pub const Parser = struct {
             const run_start = i;
             while (i < items.len and !self.isBlockKind(items[i])) i += 1;
             const run = items[run_start..i];
-            const span_start = self.builder.nodes.items[run[0]].span.start;
-            const span_end = self.builder.nodes.items[run[run.len - 1]].span.end;
+            const span_start = self.builder.spans.items[run[0]].start;
+            const span_end = self.builder.spans.items[run[run.len - 1]].end;
             const para = try self.builder.addContainer(.para, run);
             self.builder.setSpan(para, Span.init(span_start, span_end));
             self.builder.setContentSpan(para, Span.init(span_start, span_end));
@@ -546,7 +547,8 @@ pub const Parser = struct {
             if (self.builder.nodes.items[item].kind != .list_item) continue;
             const first = self.builder.nodes.items[item].first_child orelse continue;
             const para = self.builder.nodes.items[first];
-            if (para.kind != .para or para.span.start >= self.source.len or !std.mem.startsWith(u8, self.source[para.span.start..], "<p")) return true;
+            const para_start = self.builder.spans.items[first].start;
+            if (para.kind != .para or para_start >= self.source.len or !std.mem.startsWith(u8, self.source[para_start..], "<p")) return true;
         }
         return false;
     }
@@ -749,14 +751,14 @@ test "HTML parser maps block markup and decodes character references" {
     defer parser.deinit();
     var ast = try parser.parse();
     defer ast.deinit();
-    const doctype = ast.nodes[ast.root].first_child.?;
-    const div = ast.nodes[doctype].next_sibling.?;
-    const text = ast.nodes[div].first_child.?;
-    try testing.expectEqualStrings(" html", ast.nodes[doctype].kind.markup_leaf.text);
-    try testing.expectEqualStrings("div", ast.nodes[div].kind.container.name);
-    try testing.expectEqualStrings("x", ast.attrsOf(div).get("class").?);
-    try testing.expect(ast.attrsOf(div).find("disabled").?.value == null);
-    try testing.expectEqualStrings("Hi & 🙂", ast.nodes[text].kind.str);
+    const doctype = ast.ast.nodes[ast.ast.root].first_child.?;
+    const div = ast.ast.nodes[doctype].next_sibling.?;
+    const text = ast.ast.nodes[div].first_child.?;
+    try testing.expectEqualStrings(" html", ast.ast.nodes[doctype].kind.markup_leaf.text);
+    try testing.expectEqualStrings("div", ast.ast.nodes[div].kind.container.name);
+    try testing.expectEqualStrings("x", ast.ast.attrsOf(div).get("class").?);
+    try testing.expect(ast.ast.attrsOf(div).find("disabled").?.value == null);
+    try testing.expectEqualStrings("Hi & 🙂", ast.ast.nodes[text].kind.str);
 }
 
 test "HTML parser maps tables to the shared table vocabulary" {
@@ -764,17 +766,17 @@ test "HTML parser maps tables to the shared table vocabulary" {
     defer parser.deinit();
     var ast = try parser.parse();
     defer ast.deinit();
-    const table = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[table].kind == .table);
-    const caption = ast.nodes[table].first_child.?;
-    try testing.expect(ast.nodes[caption].kind == .caption);
-    const head_row = ast.nodes[caption].next_sibling.?;
-    const body_row = ast.nodes[head_row].next_sibling.?;
+    const table = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[table].kind == .table);
+    const caption = ast.ast.nodes[table].first_child.?;
+    try testing.expect(ast.ast.nodes[caption].kind == .caption);
+    const head_row = ast.ast.nodes[caption].next_sibling.?;
+    const body_row = ast.ast.nodes[head_row].next_sibling.?;
     // A row has no header marker of its own in HTML; `head` follows from `<th>`.
-    try testing.expect(ast.nodes[head_row].kind.row.head);
-    try testing.expect(!ast.nodes[body_row].kind.row.head);
-    try testing.expect(ast.nodes[ast.nodes[head_row].first_child.?].kind.cell.head);
-    try testing.expect(!ast.nodes[ast.nodes[body_row].first_child.?].kind.cell.head);
+    try testing.expect(ast.ast.nodes[head_row].kind.row.head);
+    try testing.expect(!ast.ast.nodes[body_row].kind.row.head);
+    try testing.expect(ast.ast.nodes[ast.ast.nodes[head_row].first_child.?].kind.cell.head);
+    try testing.expect(!ast.ast.nodes[ast.ast.nodes[body_row].first_child.?].kind.cell.head);
 }
 
 test "HTML parser splices row groups into the table, whitespace and all" {
@@ -800,12 +802,12 @@ test "HTML parser splices row groups into the table, whitespace and all" {
     defer parser.deinit();
     var ast = try parser.parse();
     defer ast.deinit();
-    const table = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[table].kind == .table);
+    const table = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[table].kind == .table);
     var rows: usize = 0;
-    var child = ast.nodes[table].first_child;
-    while (child) |id| : (child = ast.nodes[id].next_sibling) {
-        try testing.expect(ast.nodes[id].kind == .row);
+    var child = ast.ast.nodes[table].first_child;
+    while (child) |id| : (child = ast.ast.nodes[id].next_sibling) {
+        try testing.expect(ast.ast.nodes[id].kind == .row);
         rows += 1;
     }
     try testing.expectEqual(@as(usize, 2), rows);
@@ -816,16 +818,16 @@ test "HTML parser reads cell alignment from style and from the legacy attribute"
     defer parser.deinit();
     var ast = try parser.parse();
     defer ast.deinit();
-    const row = ast.nodes[ast.nodes[ast.root].first_child.?].first_child.?;
-    const first = ast.nodes[row].first_child.?;
-    const second = ast.nodes[first].next_sibling.?;
-    const third = ast.nodes[second].next_sibling.?;
+    const row = ast.ast.nodes[ast.ast.nodes[ast.ast.root].first_child.?].first_child.?;
+    const first = ast.ast.nodes[row].first_child.?;
+    const second = ast.ast.nodes[first].next_sibling.?;
+    const third = ast.ast.nodes[second].next_sibling.?;
     // `style` is what Twig's printer emits, so it's the one that must survive;
     // `align` is read for hand-written HTML, case-insensitively.
-    try testing.expectEqual(AST.Alignment.right, ast.nodes[first].kind.cell.alignment);
-    try testing.expectEqual(AST.Alignment.center, ast.nodes[second].kind.cell.alignment);
+    try testing.expectEqual(AST.Alignment.right, ast.ast.nodes[first].kind.cell.alignment);
+    try testing.expectEqual(AST.Alignment.center, ast.ast.nodes[second].kind.cell.alignment);
     // An unrelated style declaration is not an alignment.
-    try testing.expectEqual(AST.Alignment.default, ast.nodes[third].kind.cell.alignment);
+    try testing.expectEqual(AST.Alignment.default, ast.ast.nodes[third].kind.cell.alignment);
 }
 
 test "HTML parser closes li and p implicitly and keeps script raw" {
@@ -833,18 +835,18 @@ test "HTML parser closes li and p implicitly and keeps script raw" {
     defer parser.deinit();
     var ast = try parser.parse();
     defer ast.deinit();
-    const ul = ast.nodes[ast.root].first_child.?;
-    const first_li = ast.nodes[ul].first_child.?;
-    const second_li = ast.nodes[first_li].next_sibling.?;
-    const p = ast.nodes[ul].next_sibling.?;
-    const div = ast.nodes[p].next_sibling.?;
-    const script = ast.nodes[div].next_sibling.?;
-    try testing.expect(ast.nodes[first_li].kind == .list_item);
-    try testing.expect(ast.nodes[second_li].kind == .list_item);
-    try testing.expect(ast.nodes[p].kind == .para);
-    try testing.expectEqualStrings("div", ast.nodes[div].kind.container.name);
-    const script_text = ast.nodes[script].first_child.?;
-    try testing.expectEqualStrings("a < b &amp;", ast.nodes[script_text].kind.str);
+    const ul = ast.ast.nodes[ast.ast.root].first_child.?;
+    const first_li = ast.ast.nodes[ul].first_child.?;
+    const second_li = ast.ast.nodes[first_li].next_sibling.?;
+    const p = ast.ast.nodes[ul].next_sibling.?;
+    const div = ast.ast.nodes[p].next_sibling.?;
+    const script = ast.ast.nodes[div].next_sibling.?;
+    try testing.expect(ast.ast.nodes[first_li].kind == .list_item);
+    try testing.expect(ast.ast.nodes[second_li].kind == .list_item);
+    try testing.expect(ast.ast.nodes[p].kind == .para);
+    try testing.expectEqualStrings("div", ast.ast.nodes[div].kind.container.name);
+    const script_text = ast.ast.nodes[script].first_child.?;
+    try testing.expectEqualStrings("a < b &amp;", ast.ast.nodes[script_text].kind.str);
 }
 
 test "HTML parser restores Twig printer semantics and ignores layout whitespace" {
@@ -867,20 +869,20 @@ test "HTML parser restores Twig printer semantics and ignores layout whitespace"
     var ast = try parser.parse();
     defer ast.deinit();
 
-    const heading = ast.nodes[ast.root].first_child.?;
-    const para = ast.nodes[heading].next_sibling.?;
-    const list = ast.nodes[para].next_sibling.?;
-    const code = ast.nodes[list].next_sibling.?;
-    try testing.expectEqual(@as(u32, 1), ast.nodes[heading].kind.heading.level);
-    try testing.expect(ast.nodes[para].kind == .para);
-    const link = ast.nodes[ast.nodes[para].first_child.?].next_sibling.?;
-    try testing.expectEqualStrings("/u", ast.nodes[link].kind.link.destination.?);
-    try testing.expect(!ast.nodes[list].kind.bullet_list.tight);
-    const item = ast.nodes[list].first_child.?;
-    try testing.expect(ast.nodes[item].kind == .list_item);
-    try testing.expect(ast.nodes[ast.nodes[item].first_child.?].kind == .para);
-    try testing.expectEqualStrings("zig", ast.nodes[code].kind.code_block.lang.?);
-    try testing.expectEqualStrings("const x = 1;\n", ast.nodes[code].kind.code_block.text);
+    const heading = ast.ast.nodes[ast.ast.root].first_child.?;
+    const para = ast.ast.nodes[heading].next_sibling.?;
+    const list = ast.ast.nodes[para].next_sibling.?;
+    const code = ast.ast.nodes[list].next_sibling.?;
+    try testing.expectEqual(@as(u32, 1), ast.ast.nodes[heading].kind.heading.level);
+    try testing.expect(ast.ast.nodes[para].kind == .para);
+    const link = ast.ast.nodes[ast.ast.nodes[para].first_child.?].next_sibling.?;
+    try testing.expectEqualStrings("/u", ast.ast.nodes[link].kind.link.destination.?);
+    try testing.expect(!ast.ast.nodes[list].kind.bullet_list.tight);
+    const item = ast.ast.nodes[list].first_child.?;
+    try testing.expect(ast.ast.nodes[item].kind == .list_item);
+    try testing.expect(ast.ast.nodes[ast.ast.nodes[item].first_child.?].kind == .para);
+    try testing.expectEqualStrings("zig", ast.ast.nodes[code].kind.code_block.lang.?);
+    try testing.expectEqualStrings("const x = 1;\n", ast.ast.nodes[code].kind.code_block.text);
 }
 
 test "HTML round-trip does not duplicate attributes promoted to semantic fields" {
@@ -898,7 +900,7 @@ test "HTML round-trip does not duplicate attributes promoted to semantic fields"
         defer parser.deinit();
         var ast = try parser.parse();
         defer ast.deinit();
-        const html = try @import("serializer.zig").serializeAlloc(testing.allocator, &ast, null);
+        const html = try @import("serializer.zig").serializeAlloc(testing.allocator, &ast.ast, null);
         defer testing.allocator.free(html);
         try testing.expectEqualStrings(c.out, html);
     }
@@ -909,7 +911,7 @@ fn parseToHtml(source: []const u8) ![]u8 {
     defer parser.deinit();
     var ast = try parser.parse();
     defer ast.deinit();
-    return @import("serializer.zig").serializeAlloc(testing.allocator, &ast, null);
+    return @import("serializer.zig").serializeAlloc(testing.allocator, &ast.ast, null);
 }
 
 test "HTML raw-text elements are serialized literally, not escaped" {
@@ -951,11 +953,11 @@ test "HTML tight-list item text stays on the marker's line through djot/markdown
     var ast = try parser.parse();
     defer ast.deinit();
 
-    const djot = try @import("../djot/serializer.zig").serializeAstAlloc(testing.allocator, &ast);
+    const djot = try @import("../djot/serializer.zig").serializeAstAlloc(testing.allocator, &ast.ast);
     defer testing.allocator.free(djot);
     try testing.expectEqualStrings("- one\n- two\n", djot);
 
-    const md = try @import("../markdown/serializer.zig").serializeAstAlloc(testing.allocator, &ast);
+    const md = try @import("../markdown/serializer.zig").serializeAstAlloc(testing.allocator, &ast.ast);
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("- one\n- two\n", md);
 }
@@ -970,17 +972,17 @@ test "HTML block-level child of a list item is not wrapped in a paragraph" {
     var ast = try parser.parse();
     defer ast.deinit();
 
-    const list = ast.nodes[ast.root].first_child.?;
-    const item = ast.nodes[list].first_child.?;
-    const para = ast.nodes[item].first_child.?;
-    try testing.expect(ast.nodes[para].kind == .para);
+    const list = ast.ast.nodes[ast.ast.root].first_child.?;
+    const item = ast.ast.nodes[list].first_child.?;
+    const para = ast.ast.nodes[item].first_child.?;
+    try testing.expect(ast.ast.nodes[para].kind == .para);
     // The paragraph holds only the inline text, not the block quote.
-    const para_child = ast.nodes[para].first_child.?;
-    try testing.expect(ast.nodes[para_child].kind == .str);
-    try testing.expect(ast.nodes[para_child].next_sibling == null);
+    const para_child = ast.ast.nodes[para].first_child.?;
+    try testing.expect(ast.ast.nodes[para_child].kind == .str);
+    try testing.expect(ast.ast.nodes[para_child].next_sibling == null);
     // The block quote is the paragraph's sibling under the list item.
-    const bq = ast.nodes[para].next_sibling.?;
-    try testing.expect(ast.nodes[bq].kind == .block_quote);
+    const bq = ast.ast.nodes[para].next_sibling.?;
+    try testing.expect(ast.ast.nodes[bq].kind == .block_quote);
 }
 
 test "HTML soft-wrapped list-item paragraph keeps continuation indent in djot/markdown" {
@@ -995,11 +997,11 @@ test "HTML soft-wrapped list-item paragraph keeps continuation indent in djot/ma
     var ast = try parser.parse();
     defer ast.deinit();
 
-    const djot = try @import("../djot/serializer.zig").serializeAstAlloc(testing.allocator, &ast);
+    const djot = try @import("../djot/serializer.zig").serializeAstAlloc(testing.allocator, &ast.ast);
     defer testing.allocator.free(djot);
     try testing.expectEqualStrings("- one\n  two\n", djot);
 
-    const md = try @import("../markdown/serializer.zig").serializeAstAlloc(testing.allocator, &ast);
+    const md = try @import("../markdown/serializer.zig").serializeAstAlloc(testing.allocator, &ast.ast);
     defer testing.allocator.free(md);
     try testing.expectEqualStrings("- one\n  two\n", md);
 }
@@ -1011,29 +1013,29 @@ test "HTML framed leaves carry an interior content_span" {
     var ast = try parser.parse();
     defer ast.deinit();
 
-    const doctype = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    const comment = ast.nodes[doctype].next_sibling orelse return error.TestExpectedNonNull;
-    const bogus = ast.nodes[comment].next_sibling orelse return error.TestExpectedNonNull;
-    const pi = ast.nodes[bogus].next_sibling orelse return error.TestExpectedNonNull;
+    const doctype = ast.ast.nodes[ast.ast.root].first_child orelse return error.TestExpectedNonNull;
+    const comment = ast.ast.nodes[doctype].next_sibling orelse return error.TestExpectedNonNull;
+    const bogus = ast.ast.nodes[comment].next_sibling orelse return error.TestExpectedNonNull;
+    const pi = ast.ast.nodes[bogus].next_sibling orelse return error.TestExpectedNonNull;
 
     // doctype: interior between `<!doctype` and `>`.
-    try testing.expect(ast.nodes[doctype].kind == .markup_leaf and ast.nodes[doctype].kind.markup_leaf.kind == .doctype);
-    try testing.expectEqualStrings("<!doctype html>", Span.of(u8, ast.nodes[doctype].span, source));
-    try testing.expectEqualStrings(" html", Span.of(u8, ast.nodes[doctype].content_span.?, source));
+    try testing.expect(ast.ast.nodes[doctype].kind == .markup_leaf and ast.ast.nodes[doctype].kind.markup_leaf.kind == .doctype);
+    try testing.expectEqualStrings("<!doctype html>", Span.of(u8, ast.span(doctype), source));
+    try testing.expectEqualStrings(" html", Span.of(u8, ast.contentSpan(doctype).?, source));
 
     // proper comment: interior between `<!--` and `-->`.
-    try testing.expect(ast.nodes[comment].kind == .markup_leaf and ast.nodes[comment].kind.markup_leaf.kind == .comment);
-    try testing.expectEqualStrings("<!-- hi -->", Span.of(u8, ast.nodes[comment].span, source));
-    try testing.expectEqualStrings(" hi ", Span.of(u8, ast.nodes[comment].content_span.?, source));
+    try testing.expect(ast.ast.nodes[comment].kind == .markup_leaf and ast.ast.nodes[comment].kind.markup_leaf.kind == .comment);
+    try testing.expectEqualStrings("<!-- hi -->", Span.of(u8, ast.span(comment), source));
+    try testing.expectEqualStrings(" hi ", Span.of(u8, ast.contentSpan(comment).?, source));
 
     // bogus comment (`<!`…`>`) is emitted as a comment kind and also framed.
-    try testing.expect(ast.nodes[bogus].kind == .markup_leaf and ast.nodes[bogus].kind.markup_leaf.kind == .comment);
-    try testing.expectEqualStrings("<!bogus>", Span.of(u8, ast.nodes[bogus].span, source));
-    try testing.expectEqualStrings("bogus", Span.of(u8, ast.nodes[bogus].content_span.?, source));
+    try testing.expect(ast.ast.nodes[bogus].kind == .markup_leaf and ast.ast.nodes[bogus].kind.markup_leaf.kind == .comment);
+    try testing.expectEqualStrings("<!bogus>", Span.of(u8, ast.span(bogus), source));
+    try testing.expectEqualStrings("bogus", Span.of(u8, ast.contentSpan(bogus).?, source));
 
     // processing instruction: two payload fields, so content_span stays null.
-    try testing.expect(ast.nodes[pi].kind == .processing_instruction);
-    try testing.expectEqual(@as(?Span, null), ast.nodes[pi].content_span);
+    try testing.expect(ast.ast.nodes[pi].kind == .processing_instruction);
+    try testing.expectEqual(@as(?Span, null), ast.contentSpan(pi));
 }
 
 test "HTML empty comment interior gets an empty content_span at the boundary" {
@@ -1043,9 +1045,9 @@ test "HTML empty comment interior gets an empty content_span at the boundary" {
     var ast = try parser.parse();
     defer ast.deinit();
 
-    const comment = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(ast.nodes[comment].kind == .markup_leaf and ast.nodes[comment].kind.markup_leaf.kind == .comment);
-    const cs = ast.nodes[comment].content_span.?;
+    const comment = ast.ast.nodes[ast.ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.ast.nodes[comment].kind == .markup_leaf and ast.ast.nodes[comment].kind.markup_leaf.kind == .comment);
+    const cs = ast.contentSpan(comment).?;
     try testing.expectEqual(@as(usize, 0), cs.len());
-    try testing.expectEqual(ast.nodes[comment].span.start + "<!--".len, cs.start);
+    try testing.expectEqual(ast.span(comment).start + "<!--".len, cs.start);
 }

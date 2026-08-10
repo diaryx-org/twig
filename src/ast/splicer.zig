@@ -39,6 +39,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("ast.zig");
+const Document = @import("../document.zig");
 const Node = AST.Node;
 const Span = @import("../span.zig");
 
@@ -69,7 +70,7 @@ pub const Splicer = struct {
     /// document reparses with the SAME extension flags, e.g. `--directives`,
     /// it was first parsed with; a callback that needs no configuration just
     /// ignores it). It must outlive the editor.
-    pub const ParseFn = *const fn (ctx: *const anyopaque, Allocator, []const u8) anyerror!AST;
+    pub const ParseFn = *const fn (ctx: *const anyopaque, Allocator, []const u8) anyerror!Document;
 
     /// One history step: a whole source snapshot plus the opaque `caret` blob
     /// the host associated with THAT document state (see `current_caret`). The
@@ -89,9 +90,12 @@ pub const Splicer = struct {
     allocator: Allocator,
     /// The current (edited) document bytes. Owns its memory.
     source: std.ArrayList(u8),
-    /// The parse of `source.items` as of the last successful edit. Owns its
-    /// memory; replaced wholesale on every successful edit.
-    ast: AST,
+    /// The parse of `source.items` as of the last successful edit — the tree
+    /// AND the position tables addressing those bytes. Owns its memory;
+    /// replaced wholesale on every successful edit, which is also what keeps
+    /// `doc.source` (a borrow of `source.items`) from going stale: the buffer is
+    /// never mutated without an immediately following reparse.
+    doc: Document,
     parse_fn: ParseFn,
     /// Opaque configuration handed to `parse_fn` on every reparse (see
     /// `ParseFn`). Borrowed; must outlive the editor.
@@ -149,12 +153,12 @@ pub const Splicer = struct {
         var source: std.ArrayList(u8) = .empty;
         errdefer source.deinit(allocator);
         try source.appendSlice(allocator, source_bytes);
-        const ast = try parse_fn(parse_ctx, allocator, source.items);
-        return .{ .allocator = allocator, .source = source, .ast = ast, .parse_fn = parse_fn, .parse_ctx = parse_ctx };
+        const doc = try parse_fn(parse_ctx, allocator, source.items);
+        return .{ .allocator = allocator, .source = source, .doc = doc, .parse_fn = parse_fn, .parse_ctx = parse_ctx };
     }
 
     pub fn deinit(self: *Splicer) void {
-        self.ast.deinit();
+        self.doc.deinit();
         self.source.deinit(self.allocator);
         self.current_caret.deinit(self.allocator);
         for (self.undo_stack.items) |*e| e.deinit(self.allocator);
@@ -170,7 +174,7 @@ pub const Splicer = struct {
 
     /// The current parse (valid until the next successful edit).
     pub fn astView(self: *const Splicer) *const AST {
-        return &self.ast;
+        return &self.doc.ast;
     }
 
     /// Associate an opaque `blob` with the current document state — twig stores
@@ -213,7 +217,7 @@ pub const Splicer = struct {
         new_src.appendSliceAssumeCapacity(replacement);
         new_src.appendSliceAssumeCapacity(s[span.end..]);
 
-        const new_ast = self.parse_fn(self.parse_ctx, self.allocator, new_src.items) catch |err| {
+        const new_doc = self.parse_fn(self.parse_ctx, self.allocator, new_src.items) catch |err| {
             new_src.deinit(self.allocator);
             return err;
         };
@@ -221,8 +225,8 @@ pub const Splicer = struct {
         // Commit: the reparse succeeded, so retire the old state. The pre-edit
         // source goes onto the undo history (not freed), and any redo is dropped
         // now that a fresh edit has diverged the timeline.
-        self.ast.deinit();
-        self.ast = new_ast;
+        self.doc.deinit();
+        self.doc = new_doc;
         // Retire the pre-edit source together with the caret the host had set
         // for it, then reset `current_caret` — the new state is caret-less until
         // the host sets one for it.
@@ -292,7 +296,7 @@ pub const Splicer = struct {
     /// `Change` describing current → target.
     fn swapTo(self: *Splicer, target: HistoryEntry, other: *std.ArrayList(HistoryEntry)) !?Change {
         var t = target;
-        const new_ast = self.parse_fn(self.parse_ctx, self.allocator, t.source.items) catch |err| {
+        const new_doc = self.parse_fn(self.parse_ctx, self.allocator, t.source.items) catch |err| {
             // A stored snapshot parsed when it was recorded, so this shouldn't
             // happen; if it does, drop the entry and surface the error rather
             // than leave the editor half-swapped.
@@ -305,8 +309,8 @@ pub const Splicer = struct {
             var lost: HistoryEntry = .{ .source = self.source, .caret = self.current_caret };
             lost.deinit(self.allocator);
         };
-        self.ast.deinit();
-        self.ast = new_ast;
+        self.doc.deinit();
+        self.doc = new_doc;
         self.source = t.source;
         self.current_caret = t.caret;
         self.noteChange(change);
@@ -404,14 +408,14 @@ pub const Splicer = struct {
     /// a clear error. (A real node never legitimately occupies zero bytes at
     /// offset 0.)
     fn nodeSpan(self: *Splicer, id: Node.Id) !Span {
-        const s = self.ast.nodes[id].span;
+        const s = self.doc.span(id);
         if (s.start == 0 and s.end == 0) return error.NoNodeSpan;
         return s;
     }
 
     /// Replace the whole source of the node at `path`.
     pub fn replaceNode(self: *Splicer, path: []const usize, text: []const u8) !void {
-        try self.replaceNodeById(try self.ast.getIdByPath(path), text);
+        try self.replaceNodeById(try self.doc.ast.getIdByPath(path), text);
     }
     pub fn replaceNodeById(self: *Splicer, id: Node.Id, text: []const u8) !void {
         try self.replaceAtSpan(try self.nodeSpan(id), text);
@@ -424,10 +428,10 @@ pub const Splicer = struct {
     /// leaves, or a djot container the parser left with a null interior — see
     /// the module doc).
     pub fn replaceContent(self: *Splicer, path: []const usize, text: []const u8) !void {
-        try self.replaceContentById(try self.ast.getIdByPath(path), text);
+        try self.replaceContentById(try self.doc.ast.getIdByPath(path), text);
     }
     pub fn replaceContentById(self: *Splicer, id: Node.Id, text: []const u8) !void {
-        const cs = self.ast.nodes[id].content_span orelse return error.NoContentSpan;
+        const cs = self.doc.contentSpan(id) orelse return error.NoContentSpan;
         try self.replaceAtSpan(cs, text);
     }
 
@@ -435,14 +439,14 @@ pub const Splicer = struct {
     /// end). The caller supplies any needed separators/newlines — the editor
     /// does no whitespace guessing.
     pub fn insertBefore(self: *Splicer, path: []const usize, text: []const u8) !void {
-        try self.insertBeforeById(try self.ast.getIdByPath(path), text);
+        try self.insertBeforeById(try self.doc.ast.getIdByPath(path), text);
     }
     pub fn insertBeforeById(self: *Splicer, id: Node.Id, text: []const u8) !void {
         const at = (try self.nodeSpan(id)).start;
         try self.replaceAtSpan(Span.init(at, at), text);
     }
     pub fn insertAfter(self: *Splicer, path: []const usize, text: []const u8) !void {
-        try self.insertAfterById(try self.ast.getIdByPath(path), text);
+        try self.insertAfterById(try self.doc.ast.getIdByPath(path), text);
     }
     pub fn insertAfterById(self: *Splicer, id: Node.Id, text: []const u8) !void {
         const at = (try self.nodeSpan(id)).end;
@@ -458,17 +462,17 @@ pub const Splicer = struct {
     /// child sequence, so there is nothing to insert a *child* into (use
     /// `replaceContent` to edit the body instead).
     pub fn insertChild(self: *Splicer, path: []const usize, index: usize, text: []const u8) !void {
-        try self.insertChildById(try self.ast.getIdByPath(path), index, text);
+        try self.insertChildById(try self.doc.ast.getIdByPath(path), index, text);
     }
     pub fn insertChildById(self: *Splicer, id: Node.Id, index: usize, text: []const u8) !void {
-        const first = self.ast.nodes[id].first_child orelse {
+        const first = self.doc.ast.nodes[id].first_child orelse {
             // A childless node with a `content_span` is either an EMPTY
             // container (anchor the first child at its interior start) or a
             // text leaf like `code_block`, whose `content_span` is opaque body
             // text, not a child region. Refuse the latter — it has no children
             // to index — even though it does carry a `content_span`.
-            if (self.ast.nodes[id].kind.contentModel() == .text) return error.NotAContainer;
-            const cs = self.ast.nodes[id].content_span orelse return error.NoContentSpan;
+            if (self.doc.ast.nodes[id].kind.contentModel() == .text) return error.NotAContainer;
+            const cs = self.doc.contentSpan(id) orelse return error.NoContentSpan;
             return self.replaceAtSpan(Span.init(cs.start, cs.start), text);
         };
 
@@ -478,12 +482,12 @@ pub const Splicer = struct {
         var prev_last: ?Node.Id = null; // the sibling before `last`, for gap sampling
         while (cur) |c| {
             if (i == index) {
-                const at = self.ast.nodes[c].span.start;
+                const at = self.doc.span(c).start;
                 return self.replaceAtSpan(Span.init(at, at), text);
             }
             if (i > 0) prev_last = last;
             last = c;
-            cur = self.ast.nodes[c].next_sibling;
+            cur = self.doc.ast.nodes[c].next_sibling;
             i += 1;
         }
         // Appending past the last child. The between-child branch above anchors
@@ -499,12 +503,12 @@ pub const Splicer = struct {
         //      its terminator (e.g. EOF); inject one before the new node.
         //   3. Otherwise siblings are adjacent (inline) -> splice verbatim.
         const src = self.source.items;
-        const at = self.ast.nodes[last].span.end;
+        const at = self.doc.span(last).end;
         if (at < src.len and src[at] == '\n') {
             return self.replaceAtSpan(Span.init(at + 1, at + 1), text);
         }
         const siblings_line_separated = if (prev_last) |p| blk: {
-            const gap = src[self.ast.nodes[p].span.end..self.ast.nodes[last].span.start];
+            const gap = src[self.doc.span(p).end..self.doc.span(last).start];
             break :blk std.mem.indexOfScalar(u8, gap, '\n') != null;
         } else false;
         if (siblings_line_separated) {
@@ -521,7 +525,7 @@ pub const Splicer = struct {
     /// predictable primitive — see `deleteNodeSmart` for the block-aware
     /// variant that also tidies the surrounding blank lines.
     pub fn deleteNode(self: *Splicer, path: []const usize) !void {
-        try self.deleteNodeById(try self.ast.getIdByPath(path));
+        try self.deleteNodeById(try self.doc.ast.getIdByPath(path));
     }
     pub fn deleteNodeById(self: *Splicer, id: Node.Id) !void {
         try self.replaceAtSpan(try self.nodeSpan(id), "");
@@ -536,7 +540,7 @@ pub const Splicer = struct {
     /// — emphasis, a link) line surgery would be wrong, so it falls back to the
     /// exact-span delete of `deleteNode`. See `tidyDeletionSpan`.
     pub fn deleteNodeSmart(self: *Splicer, path: []const usize) !void {
-        try self.deleteNodeSmartById(try self.ast.getIdByPath(path));
+        try self.deleteNodeSmartById(try self.doc.ast.getIdByPath(path));
     }
     pub fn deleteNodeSmartById(self: *Splicer, id: Node.Id) !void {
         const span = try self.nodeSpan(id);
@@ -559,11 +563,11 @@ pub const Splicer = struct {
     /// survive the unwrap — stripping those needs serializer-assisted
     /// re-emission, which this span-splice editor deliberately doesn't do.
     pub fn unwrapNode(self: *Splicer, path: []const usize) !void {
-        try self.unwrapNodeById(try self.ast.getIdByPath(path));
+        try self.unwrapNodeById(try self.doc.ast.getIdByPath(path));
     }
     pub fn unwrapNodeById(self: *Splicer, id: Node.Id) !void {
         const span = try self.nodeSpan(id);
-        const cs = self.ast.nodes[id].content_span orelse return self.deleteNodeSmartById(id);
+        const cs = self.doc.contentSpan(id) orelse return self.deleteNodeSmartById(id);
         // `interior` aliases `self.source`; `replaceAtSpan` copies it into the
         // new buffer before retiring the old source, so this is safe.
         const interior = self.source.items[cs.start..cs.end];
@@ -606,22 +610,23 @@ pub const Splicer = struct {
         const id = self.inlineNodeCovering(span, kind) orelse
             return self.wrapRange(span, open, close);
 
-        const node = self.ast.nodes[id];
+        const node = self.doc.ast.nodes[id];
         // Prefer the parser's interior (correct regardless of delimiter width —
         // e.g. a multi-backtick `verbatim` whose interior the fixed-width
         // delimiters below can't strip); fall back to stripping the supplied
         // delimiters for a kind the parser leaves without a `content_span`. Both
         // replacement slices alias `self.source`, which `replaceAtSpan` copies
         // before retiring the old buffer — safe.
-        if (node.content_span) |cs| {
-            try self.replaceAtSpan(node.span, self.source.items[cs.start..cs.end]);
+        const node_span = self.doc.span(node.id);
+        if (self.doc.contentSpan(node.id)) |cs| {
+            try self.replaceAtSpan(node_span, self.source.items[cs.start..cs.end]);
             return;
         }
-        const s = self.source.items[node.span.start..node.span.end];
+        const s = self.source.items[node_span.start..node_span.end];
         if (s.len >= open.len + close.len and
             std.mem.startsWith(u8, s, open) and std.mem.endsWith(u8, s, close))
         {
-            try self.replaceAtSpan(node.span, s[open.len .. s.len - close.len]);
+            try self.replaceAtSpan(node_span, s[open.len .. s.len - close.len]);
             return;
         }
         // Matched a node of this kind but can't cleanly recover its interior.
@@ -632,10 +637,10 @@ pub const Splicer = struct {
     /// `span` — the "is this selection already marked?" test behind
     /// `toggleInline`. `null` if none.
     fn inlineNodeCovering(self: *Splicer, span: Span, kind: AST.KindRef) ?Node.Id {
-        for (self.ast.nodes, 0..) |node, id| {
+        for (self.doc.ast.nodes, 0..) |node, id| {
             if (!kind.matches(node.kind)) continue;
-            if (node.span.eql(span)) return @intCast(id);
-            if (node.content_span) |cs| {
+            if (self.doc.span(node.id).eql(span)) return @intCast(id);
+            if (self.doc.contentSpan(node.id)) |cs| {
                 if (cs.eql(span)) return @intCast(id);
             }
         }
@@ -718,7 +723,7 @@ fn tidyDeletionSpan(source: []const u8, span: Span) Span {
 
 const testing = std.testing;
 
-fn parseXml(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!AST {
+fn parseXml(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Document {
     _ = ctx;
     const Xml = @import("../languages/xml/xml.zig");
     return Xml.parse(a, s);
@@ -728,13 +733,15 @@ fn parseXml(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!AST {
 /// are direct siblings separated by real newlines in the source — the shape XML
 /// can't produce (it interns inter-element whitespace as its own text nodes).
 /// Needed to exercise `insertChild`'s line-separated append path.
-fn parseMarkdown(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!AST {
+fn parseMarkdown(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Document {
     _ = ctx;
     const Markdown = @import("../languages/markdown/markdown.zig");
     var doc = try Markdown.parse(a, s, .{});
     doc.link_references.deinit(a);
     doc.footnotes.deinit(a);
-    return doc.ast;
+    // Hand over the tree AND its position tables; the language side-tables
+    // above are what this test vehicle does not need.
+    return .{ .source = doc.source, .ast = doc.ast, .node_spans = doc.node_spans, .node_content_spans = doc.node_content_spans };
 }
 
 /// A throwaway context for the tests below, which use `parseXml` (which

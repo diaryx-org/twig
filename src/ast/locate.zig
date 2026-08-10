@@ -20,6 +20,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const AST = @import("ast.zig");
+const Document = @import("../document.zig");
 const Span = @import("../span.zig");
 
 /// A `Node.Kind` tag without its payload — the language-agnostic way to name a
@@ -41,11 +42,11 @@ pub fn spanContains(s: Span, offset: usize, source_len: usize) bool {
 
 /// The child of `id` whose span contains `offset` — the LAST such child, so an
 /// offset on a boundary resolves into the later sibling. `null` if none.
-pub fn childContaining(ast: *const AST, id: AST.Node.Id, offset: usize, source_len: usize) ?AST.Node.Id {
+pub fn childContaining(doc: *const Document, id: AST.Node.Id, offset: usize) ?AST.Node.Id {
     var found: ?AST.Node.Id = null;
-    var it = ast.children(id);
+    var it = doc.children(id);
     while (it.next()) |child| {
-        if (spanContains(child.span, offset, source_len)) found = child.id;
+        if (spanContains(doc.span(child.id), offset, doc.source.len)) found = child.id;
     }
     return found;
 }
@@ -54,12 +55,12 @@ pub fn childContaining(ast: *const AST, id: AST.Node.Id, offset: usize, source_l
 /// own span may be unset `(0,0)` (some parsers don't span the `doc` node); when
 /// so, entry is the root's child that owns the offset, and descent continues
 /// fully from there. `null` if no node covers the offset at all.
-pub fn deepestContaining(ast: *const AST, offset: usize, source_len: usize) ?AST.Node.Id {
-    var cur = ast.root;
-    if (!spanContains(ast.nodes[cur].span, offset, source_len)) {
-        cur = childContaining(ast, cur, offset, source_len) orelse return null;
+pub fn deepestContaining(doc: *const Document, offset: usize) ?AST.Node.Id {
+    var cur = doc.ast.root;
+    if (!spanContains(doc.span(cur), offset, doc.source.len)) {
+        cur = childContaining(doc, cur, offset) orelse return null;
     }
-    while (childContaining(ast, cur, offset, source_len)) |child| cur = child;
+    while (childContaining(doc, cur, offset)) |child| cur = child;
     return cur;
 }
 
@@ -68,14 +69,13 @@ pub fn deepestContaining(ast: *const AST, offset: usize, source_len: usize) ?AST
 /// containers with. Appends to `out`; the caller owns it.
 pub fn ancestorChain(
     allocator: Allocator,
-    ast: *const AST,
+    doc: *const Document,
     offset: usize,
-    source_len: usize,
     out: *std.ArrayList(AST.Node.Id),
 ) Allocator.Error!void {
-    var cur = ast.root;
+    var cur = doc.ast.root;
     try out.append(allocator, cur);
-    while (childContaining(ast, cur, offset, source_len)) |child| {
+    while (childContaining(doc, cur, offset)) |child| {
         cur = child;
         try out.append(allocator, cur);
     }
@@ -83,15 +83,15 @@ pub fn ancestorChain(
 
 /// The innermost `heading`/`para` on the descent to `offset`, or `null` — the
 /// block `Editor.setBlock` rewrites the marker of.
-pub fn innermostBlock(ast: *const AST, offset: usize, source_len: usize) ?AST.Node.Id {
+pub fn innermostBlock(doc: *const Document, offset: usize) ?AST.Node.Id {
     var result: ?AST.Node.Id = null;
-    var cur = ast.root;
+    var cur = doc.ast.root;
     while (true) {
-        switch (std.meta.activeTag(ast.nodes[cur].kind)) {
+        switch (std.meta.activeTag(doc.ast.nodes[cur].kind)) {
             .heading, .para => result = cur,
             else => {},
         }
-        cur = childContaining(ast, cur, offset, source_len) orelse break;
+        cur = childContaining(doc, cur, offset) orelse break;
     }
     return result;
 }
@@ -131,11 +131,11 @@ pub fn isBlockContainer(tag: KindTag) bool {
 }
 
 /// The innermost node on `chain` whose kind is `tag`, or `null`.
-pub fn innermostOfKind(ast: *const AST, chain: []const AST.Node.Id, tag: KindTag) ?AST.Node.Id {
+pub fn innermostOfKind(doc: *const Document, chain: []const AST.Node.Id, tag: KindTag) ?AST.Node.Id {
     var i = chain.len;
     while (i > 0) {
         i -= 1;
-        if (std.meta.activeTag(ast.nodes[chain[i]].kind) == tag) return chain[i];
+        if (std.meta.activeTag(doc.ast.nodes[chain[i]].kind) == tag) return chain[i];
     }
     return null;
 }
@@ -145,7 +145,7 @@ pub fn innermostOfKind(ast: *const AST, chain: []const AST.Node.Id, tag: KindTag
 /// from `innermostOfKind`: a node merely on the chain touches `start`, which is
 /// not the same as covering the whole range.
 pub fn innermostCovering(
-    ast: *const AST,
+    doc: *const Document,
     chain: []const AST.Node.Id,
     tags: []const KindTag,
     start: usize,
@@ -154,10 +154,11 @@ pub fn innermostCovering(
     var i = chain.len;
     while (i > 0) {
         i -= 1;
-        const node = ast.nodes[chain[i]];
+        const node = doc.ast.nodes[chain[i]];
         const tag = std.meta.activeTag(node.kind);
+        const sp = doc.span(chain[i]);
         for (tags) |want| {
-            if (tag == want and node.span.start <= start and node.span.end >= end) return chain[i];
+            if (tag == want and sp.start <= start and sp.end >= end) return chain[i];
         }
     }
     return null;
@@ -230,15 +231,15 @@ test "deepestContaining descends to the innermost node and chains to it" {
 
     // The offset of `hi` lands inside <a>, which is deeper than <r>.
     const at = std.mem.indexOf(u8, src, "hi").?;
-    const deep = deepestContaining(&ast, at, src.len).?;
+    const deep = deepestContaining(&ast, at).?;
 
     var chain: std.ArrayList(AST.Node.Id) = .empty;
     defer chain.deinit(gpa);
-    try ancestorChain(gpa, &ast, at, src.len, &chain);
+    try ancestorChain(gpa, &ast, at, &chain);
 
     // The chain ends at the deepest node and starts at the root.
     try std.testing.expectEqual(deep, chain.items[chain.items.len - 1]);
-    try std.testing.expectEqual(ast.root, chain.items[0]);
+    try std.testing.expectEqual(ast.ast.root, chain.items[0]);
     try std.testing.expect(chain.items.len >= 2);
 }
 
@@ -248,5 +249,5 @@ test "an offset past every span resolves to nothing" {
     var ast = try Xml.parse(gpa, "<r/>");
     defer ast.deinit();
     // Well past the source: no node can cover it.
-    try std.testing.expect(deepestContaining(&ast, 999, 4) == null);
+    try std.testing.expect(deepestContaining(&ast, 999) == null);
 }

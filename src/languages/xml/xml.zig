@@ -37,6 +37,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const AST = @import("../../ast/ast.zig");
+const Document = @import("../../document.zig");
 
 const parser_mod = @import("parser.zig");
 const serializer_mod = @import("serializer.zig");
@@ -55,7 +56,7 @@ pub const serializeAlloc = serializer_mod.serializeAlloc;
 /// `Diagnostic` (offset + message) — construct a `Parser` directly and call
 /// its `.parse()` instead when that detail matters (e.g. to point an editor
 /// at the exact byte that failed).
-pub fn parse(allocator: Allocator, source: []const u8) ParseError!AST {
+pub fn parse(allocator: Allocator, source: []const u8) ParseError!Document {
     var p = Parser.init(allocator, source);
     defer p.deinit();
     return p.parse();
@@ -100,12 +101,14 @@ fn attrsEqual(a: AST.Attrs, b: AST.Attrs) bool {
     return true;
 }
 
-fn treesEqual(a: *const AST, a_id: Node.Id, b: *const AST, b_id: Node.Id) bool {
-    const an = a.nodes[a_id];
-    const bn = b.nodes[b_id];
+fn treesEqual(a: *const Document, a_id: Node.Id, b: *const Document, b_id: Node.Id) bool {
+    const an = a.ast.nodes[a_id];
+    const bn = b.ast.nodes[b_id];
     if (!kindsEqual(an.kind, bn.kind)) return false;
-    if (!attrsEqual(a.attrsOf(a_id), b.attrsOf(b_id))) return false;
-    if ((an.content_span == null) != (bn.content_span == null)) return false;
+    if (!attrsEqual(a.ast.attrsOf(a_id), b.ast.attrsOf(b_id))) return false;
+    // The self-closing signal is an ABSENT interior span, which now lives on
+    // the document rather than the node — see `serializer.zig`.
+    if ((a.contentSpan(a_id) == null) != (b.contentSpan(b_id) == null)) return false;
 
     var ia = a.children(a_id);
     var ib = b.children(b_id);
@@ -137,9 +140,9 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     var ast = try parse(testing.allocator, src);
     defer ast.deinit();
 
-    try testing.expect(ast.nodes[ast.root].kind == .doc);
+    try testing.expect(ast.ast.nodes[ast.ast.root].kind == .doc);
 
-    var doc_it = ast.children(ast.root);
+    var doc_it = ast.children(ast.ast.root);
     const xml_decl = doc_it.next() orelse return error.TestExpectedNonNull;
     try testing.expect(xml_decl.kind == .processing_instruction);
     try testing.expectEqualStrings("xml", xml_decl.kind.processing_instruction.target);
@@ -160,7 +163,7 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     try testing.expectEqualStrings("root", root.kind.container.name);
     try testing.expectEqual(@as(?*const Node, null), doc_it.next());
 
-    const root_attrs = ast.attrsOf(root.id);
+    const root_attrs = ast.ast.attrsOf(root.id);
     try testing.expectEqualStrings("http://example.com/x", root_attrs.get("xmlns:x").?);
     try testing.expectEqualStrings("r1", root_attrs.get("id").?);
 
@@ -178,7 +181,7 @@ test "tree shape: prolog + doctype + nested elements/attrs + comment + cdata + p
     const child = root_it.next() orelse return error.TestExpectedNonNull;
     try testing.expect(child.kind == .container);
     try testing.expectEqualStrings("child", child.kind.container.name);
-    try testing.expectEqualStrings("v", ast.attrsOf(child.id).get("x:attr").?);
+    try testing.expectEqualStrings("v", ast.ast.attrsOf(child.id).get("x:attr").?);
 
     var child_it = ast.children(child.id);
     const child_text = child_it.next() orelse return error.TestExpectedNonNull;
@@ -206,38 +209,38 @@ test "spans: zero-width content_span for <a></a>, null for <a/>, exact offsets w
     {
         var ast = try parse(testing.allocator, "<a></a>");
         defer ast.deinit();
-        const el = ast.nodes[ast.root].first_child.?;
-        try testing.expect(ast.nodes[el].span.eql(Span.init(0, 7)));
-        try testing.expect(ast.nodes[el].content_span.?.eql(Span.init(3, 3)));
+        const el = ast.ast.nodes[ast.ast.root].first_child.?;
+        try testing.expect(ast.span(el).eql(Span.init(0, 7)));
+        try testing.expect(ast.contentSpan(el).?.eql(Span.init(3, 3)));
     }
     {
         var ast = try parse(testing.allocator, "<a/>");
         defer ast.deinit();
-        const el = ast.nodes[ast.root].first_child.?;
-        try testing.expect(ast.nodes[el].span.eql(Span.init(0, 4)));
-        try testing.expectEqual(@as(?Span, null), ast.nodes[el].content_span);
+        const el = ast.ast.nodes[ast.ast.root].first_child.?;
+        try testing.expect(ast.span(el).eql(Span.init(0, 4)));
+        try testing.expectEqual(@as(?Span, null), ast.contentSpan(el));
     }
     {
         // 0123456789012345
         // <a b="1">x</a>
         var ast = try parse(testing.allocator, "<a b=\"1\">x</a>");
         defer ast.deinit();
-        const el = ast.nodes[ast.root].first_child.?;
-        try testing.expect(ast.nodes[el].span.eql(Span.init(0, 14)));
-        try testing.expect(ast.nodes[el].content_span.?.eql(Span.init(9, 10)));
-        const text = ast.nodes[el].first_child.?;
-        try testing.expect(ast.nodes[text].span.eql(Span.init(9, 10)));
-        try testing.expectEqualStrings("x", ast.nodes[text].kind.str);
+        const el = ast.ast.nodes[ast.ast.root].first_child.?;
+        try testing.expect(ast.span(el).eql(Span.init(0, 14)));
+        try testing.expect(ast.contentSpan(el).?.eql(Span.init(9, 10)));
+        const text = ast.ast.nodes[el].first_child.?;
+        try testing.expect(ast.span(text).eql(Span.init(9, 10)));
+        try testing.expectEqualStrings("x", ast.ast.nodes[text].kind.str);
     }
 }
 
 test "entities decode in both text and attribute values" {
     var ast = try parse(testing.allocator, "<a b=\"x &amp; y &#65; z\">t &lt;&gt; &apos;&quot; &#x41;</a>");
     defer ast.deinit();
-    const el = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings("x & y A z", ast.attrsOf(el).get("b").?);
-    const text = ast.nodes[el].first_child.?;
-    try testing.expectEqualStrings("t <> '\" A", ast.nodes[text].kind.str);
+    const el = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("x & y A z", ast.ast.attrsOf(el).get("b").?);
+    const text = ast.ast.nodes[el].first_child.?;
+    try testing.expectEqualStrings("t <> '\" A", ast.ast.nodes[text].kind.str);
 }
 
 test "unknown entity errors with a diagnostic offset at the '&'" {
@@ -317,7 +320,7 @@ test "round trip (tree level): parse -> serialize -> parse yields a structurally
         var ast2 = try parse(testing.allocator, out);
         defer ast2.deinit();
 
-        try testing.expect(treesEqual(&ast1, ast1.root, &ast2, ast2.root));
+        try testing.expect(treesEqual(&ast1, ast1.ast.root, &ast2, ast2.ast.root));
     }
 }
 

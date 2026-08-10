@@ -24,6 +24,10 @@ const inline_mod = @import("inline.zig");
 const parser = @import("parser.zig");
 
 pub const AST = @import("../../ast/ast.zig");
+const Span = @import("../../span.zig");
+/// The shared position-carrying document (`src/document.zig`). Aliased to
+/// avoid colliding with this module's own djot-specific `Document`.
+const TwigDocument = @import("../../document.zig");
 pub const html = @import("html.zig");
 pub const serializer = @import("serializer.zig");
 
@@ -35,6 +39,20 @@ pub const serializer = @import("serializer.zig");
 /// like them.
 pub const Document = struct {
     ast: AST,
+
+    /// The source `ast` was parsed from (BORROWED) and the id-indexed position
+    /// tables that tie the two together — see `src/document.zig`, whose
+    /// `source`/`node_spans`/`node_content_spans` these are.
+    ///
+    /// They live here rather than on `AST` because positions are not meaning:
+    /// a printer takes `*const AST` and must not be able to reach a byte
+    /// offset, while the edit layer takes the `TwigDocument` that `document()`
+    /// projects. This type was already djot's fidelity carrier (it holds the
+    /// reference/footnote side-tables for the same reason), so it is where the
+    /// position tables belong too.
+    source: []const u8 = "",
+    node_spans: []const Span = &.{},
+    node_content_spans: []const ?Span = &.{},
 
     /// Label (normalized) -> the `reference` definition node with that label.
     /// Populated during parsing; never consulted during parsing itself —
@@ -56,10 +74,38 @@ pub const Document = struct {
         // The maps' keys live in `ast.owned_strings`; only the map
         // structures themselves are freed here (before the strings go away,
         // though the order is immaterial — map deinit never reads keys).
-        self.references.deinit(self.ast.allocator);
-        self.auto_references.deinit(self.ast.allocator);
-        self.footnotes.deinit(self.ast.allocator);
+        const allocator = self.ast.allocator;
+        self.references.deinit(allocator);
+        self.auto_references.deinit(allocator);
+        self.footnotes.deinit(allocator);
+        allocator.free(self.node_spans);
+        allocator.free(self.node_content_spans);
         self.ast.deinit();
+    }
+
+    /// A BORROWED `TwigDocument` view over this parse — the shape the edit
+    /// layer (`ast/splicer.zig`, `ast/editor.zig`, `ast/locate.zig`) and
+    /// `languages/xml/serializer.zig` take. Valid only while this `Document`
+    /// lives; must NOT be `deinit`ed (this type owns the storage). Same
+    /// borrowing contract as `AST.Builder.view`.
+    pub fn document(self: *const Document) TwigDocument {
+        return .{
+            .source = self.source,
+            .ast = self.ast,
+            .node_spans = self.node_spans,
+            .node_content_spans = self.node_content_spans,
+        };
+    }
+
+    /// Node `id`'s source span — the common case that would otherwise read
+    /// `d.document().span(id)`.
+    pub fn span(self: *const Document, id: AST.Node.Id) Span {
+        return self.node_spans[id];
+    }
+
+    /// Node `id`'s interior span, or `null`. See `Document.node_content_spans`.
+    pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
+        return self.node_content_spans[id];
     }
 };
 

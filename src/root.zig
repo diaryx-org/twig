@@ -12,6 +12,12 @@
 /// original source and is safe to hold onto after parsing).
 pub const AST = @import("ast/ast.zig");
 
+/// A parsed `AST` plus the source it came from and the byte spans tying them
+/// together. `AST` holds MEANING; `Document` holds POSITION. Printers take
+/// `*const AST` and cannot see a byte offset; the edit layer takes a
+/// `*const Document` because splicing needs both. See `document.zig`.
+pub const Document = @import("document.zig");
+
 /// Djot support: `Djot.parse(allocator, source) !Djot.Document` (the shared
 /// `AST` plus djot's reference/footnote side tables) plus `Djot.html` for
 /// HTML rendering. See `languages/djot/djot.zig`'s module doc comment.

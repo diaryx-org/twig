@@ -40,6 +40,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("ast.zig");
+const Document = @import("../document.zig");
 const Node = AST.Node;
 const Span = @import("../span.zig");
 
@@ -300,7 +301,8 @@ pub fn parse(gpa: Allocator, text: []const u8) ParseError!Selector {
 /// document-ordered candidates before the surviving picks become the current
 /// set for the next step — so `list:nth(2) > item` narrows to the 2nd list
 /// first, then matches only items that are direct children of *that* list.
-pub fn resolveAll(gpa: Allocator, ast: *const AST, selector: *const Selector) Allocator.Error![]Match {
+pub fn resolveAll(gpa: Allocator, doc: *const Document, selector: *const Selector) Allocator.Error![]Match {
+    const ast = &doc.ast;
     // Membership in the "current set" established by the previous step.
     // Sized by node id since ids are build order, not source order.
     const current = try gpa.alloc(bool, ast.nodes.len);
@@ -340,7 +342,8 @@ pub fn resolveAll(gpa: Allocator, ast: *const AST, selector: *const Selector) Al
     errdefer out.deinit(gpa);
     for (ordered.items) |id| {
         const node = ast.nodes[id];
-        try out.append(gpa, .{ .id = id, .span = node.span, .content_span = node.content_span });
+        _ = node;
+        try out.append(gpa, .{ .id = id, .span = doc.span(id), .content_span = doc.contentSpan(id) });
     }
     return out.toOwnedSlice(gpa);
 }
@@ -395,8 +398,8 @@ fn matches(gpa: Allocator, ast: *const AST, id: Node.Id, m: *const Matcher) Allo
 /// The single node the selector matches, or `NoMatch`/`AmbiguousMatch`. The
 /// CLI uses `resolveAll` directly so it can list the candidates on ambiguity;
 /// this is the library convenience for callers that want exactly one.
-pub fn resolveOne(gpa: Allocator, ast: *const AST, selector: *const Selector) ResolveOneError!Node.Id {
-    const all = try resolveAll(gpa, ast, selector);
+pub fn resolveOne(gpa: Allocator, doc: *const Document, selector: *const Selector) ResolveOneError!Node.Id {
+    const all = try resolveAll(gpa, doc, selector);
     defer gpa.free(all);
     if (all.len == 0) return error.NoMatch;
     if (all.len > 1) return error.AmbiguousMatch;
@@ -544,12 +547,12 @@ fn textInto(gpa: Allocator, ast: *const AST, id: Node.Id, buf: *std.ArrayList(u8
 
 const testing = std.testing;
 
-fn parseMd(a: Allocator, src: []const u8) !AST {
+fn parseMd(a: Allocator, src: []const u8) !Document {
     const Markdown = @import("../languages/markdown/markdown.zig");
     var doc = try Markdown.parse(a, src, .{});
     doc.link_references.deinit(a);
     doc.footnotes.deinit(a);
-    return doc.ast;
+    return .{ .source = doc.source, .ast = doc.ast, .node_spans = doc.node_spans, .node_content_spans = doc.node_content_spans };
 }
 
 test "parse: kind, contains shorthand, :nth, and attribute predicates" {
@@ -622,7 +625,7 @@ test "resolveAll: a directive node is addressable by its kind name" {
     var doc = try Markdown.parse(testing.allocator, ":::note\nhi\n:::\n\n::leaf\n", .{ .directives = true });
     doc.link_references.deinit(testing.allocator);
     doc.footnotes.deinit(testing.allocator);
-    var ast = doc.ast;
+    var ast = doc.document();
     defer ast.deinit();
 
     var sel = try parse(testing.allocator, "directive");
@@ -630,7 +633,7 @@ test "resolveAll: a directive node is addressable by its kind name" {
     const ms = try resolveAll(testing.allocator, &ast, &sel);
     defer testing.allocator.free(ms);
     try testing.expectEqual(@as(usize, 2), ms.len);
-    try testing.expect(ast.nodes[ms[0].id].kind == .container);
+    try testing.expect(ast.ast.nodes[ms[0].id].kind == .container);
 }
 
 test "resolveAll: directive[name=...] and [class~=...] audience filtering" {
@@ -642,7 +645,7 @@ test "resolveAll: directive[name=...] and [class~=...] audience filtering" {
     var doc = try Markdown.parse(testing.allocator, src, .{ .directives = true });
     doc.link_references.deinit(testing.allocator);
     doc.footnotes.deinit(testing.allocator);
-    var ast = doc.ast;
+    var ast = doc.document();
     defer ast.deinit();
 
     // All vis directives, regardless of audience.
@@ -658,7 +661,7 @@ test "resolveAll: directive[name=...] and [class~=...] audience filtering" {
     const public = try resolveAll(testing.allocator, &ast, &pub_vis);
     defer testing.allocator.free(public);
     try testing.expectEqual(@as(usize, 1), public.len);
-    try testing.expectEqualStrings("vis", ast.nodes[public[0].id].kind.container.name);
+    try testing.expectEqualStrings("vis", ast.ast.nodes[public[0].id].kind.container.name);
 
     // `~=` is word-membership, not substring: `publi` matches nothing.
     var partial = try parse(testing.allocator, "directive[class~=publi]");
@@ -694,14 +697,14 @@ test "resolveAll: attribute predicate on heading level, and :nth" {
     const m2 = try resolveAll(testing.allocator, &ast, &lvl2);
     defer testing.allocator.free(m2);
     try testing.expectEqual(@as(usize, 1), m2.len);
-    try testing.expectEqual(@as(u32, 2), ast.nodes[m2[0].id].kind.heading.level);
+    try testing.expectEqual(@as(u32, 2), ast.ast.nodes[m2[0].id].kind.heading.level);
 
     var third = try parse(testing.allocator, "heading:nth(3)");
     defer third.deinit();
     const m3 = try resolveAll(testing.allocator, &ast, &third);
     defer testing.allocator.free(m3);
     try testing.expectEqual(@as(usize, 1), m3.len);
-    try testing.expectEqual(@as(u32, 3), ast.nodes[m3[0].id].kind.heading.level);
+    try testing.expectEqual(@as(u32, 3), ast.ast.nodes[m3[0].id].kind.heading.level);
 }
 
 test "resolveAll: :contains matches on descendant text; resolveOne enforces uniqueness" {
@@ -711,7 +714,7 @@ test "resolveAll: :contains matches on descendant text; resolveOne enforces uniq
     var sel = try parse(testing.allocator, "heading(\"Status\")");
     defer sel.deinit();
     const one = try resolveOne(testing.allocator, &ast, &sel);
-    const txt = try textOf(testing.allocator, &ast, one);
+    const txt = try textOf(testing.allocator, &ast.ast, one);
     defer testing.allocator.free(txt);
     try testing.expectEqualStrings("Status", txt);
 
@@ -733,7 +736,7 @@ test "resolveAll: link destination prefix predicate" {
     const ms = try resolveAll(testing.allocator, &ast, &sel);
     defer testing.allocator.free(ms);
     try testing.expectEqual(@as(usize, 1), ms.len);
-    try testing.expect(ast.nodes[ms[0].id].kind == .link);
+    try testing.expect(ast.ast.nodes[ms[0].id].kind == .link);
 }
 
 test "resolveAll: descendant chain matches items nested at any depth under a list" {
@@ -749,7 +752,7 @@ test "resolveAll: descendant chain matches items nested at any depth under a lis
     try testing.expectEqual(@as(usize, 3), ms.len);
 
     var texts: [3][]u8 = undefined;
-    for (ms, 0..) |m, i| texts[i] = try textOf(testing.allocator, &ast, m.id);
+    for (ms, 0..) |m, i| texts[i] = try textOf(testing.allocator, &ast.ast, m.id);
     defer for (texts) |t| testing.allocator.free(t);
     // `textOf` concatenates ALL descendant text, so item "a" (which contains
     // the nested item "b") reads "ab"; only "b" and "c" are their own leaf.
@@ -776,7 +779,7 @@ test "resolveAll: child combinator requires the immediate parent, unlike descend
     const desc_ms = try resolveAll(testing.allocator, &ast, &desc_sel);
     defer testing.allocator.free(desc_ms);
     try testing.expectEqual(@as(usize, 1), desc_ms.len);
-    const txt = try textOf(testing.allocator, &ast, desc_ms[0].id);
+    const txt = try textOf(testing.allocator, &ast.ast, desc_ms[0].id);
     defer testing.allocator.free(txt);
     try testing.expectEqualStrings("x", txt);
 }
@@ -793,7 +796,7 @@ test "resolveAll: per-step :nth scopes a later step to one specific ancestor" {
     const ms = try resolveAll(testing.allocator, &ast, &sel);
     defer testing.allocator.free(ms);
     try testing.expectEqual(@as(usize, 1), ms.len);
-    const txt = try textOf(testing.allocator, &ast, ms[0].id);
+    const txt = try textOf(testing.allocator, &ast.ast, ms[0].id);
     defer testing.allocator.free(txt);
     try testing.expectEqualStrings("dishes", txt);
 

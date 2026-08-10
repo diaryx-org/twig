@@ -22,11 +22,19 @@ const Allocator = std.mem.Allocator;
 const AST = @import("ast.zig");
 const Node = AST.Node;
 const Span = @import("../span.zig");
+const Document = @import("../document.zig");
 
 allocator: Allocator,
 nodes: std.ArrayList(Node) = .empty,
 owned_strings: std.ArrayList([]const u8) = .empty,
 attrs: std.ArrayList(AST.Attrs) = .empty,
+/// Parallel to `nodes` — `spans.items[id]` is node `id`'s source span. Kept in
+/// lockstep by `addNode`, which is the only place a node id is minted, so the
+/// two arrays cannot drift. Handed to `Document` by `finishDocument`; dropped
+/// (and freed) by `finish`, which produces a position-free `AST`.
+spans: std.ArrayList(Span) = .empty,
+/// Parallel to `nodes` — see `Document.node_content_spans`.
+content_spans: std.ArrayList(?Span) = .empty,
 
 pub fn init(allocator: Allocator) Builder {
     return .{ .allocator = allocator };
@@ -36,6 +44,8 @@ pub fn deinit(self: *Builder) void {
     for (self.owned_strings.items) |s| self.allocator.free(s);
     self.owned_strings.deinit(self.allocator);
     self.nodes.deinit(self.allocator);
+    self.spans.deinit(self.allocator);
+    self.content_spans.deinit(self.allocator);
     for (self.attrs.items) |a| {
         self.allocator.free(a.entries);
     }
@@ -51,6 +61,11 @@ pub fn addNode(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Id {
         .id = id,
         .kind = try self.dupeKind(kind),
     });
+    // The position tables grow with the node arena, so every id is always
+    // addressable in all three. `Span.init(0, 0)` is the "unknown" default the
+    // old `Node.span` field carried; `null` likewise for the interior.
+    try self.spans.append(self.allocator, Span.init(0, 0));
+    try self.content_spans.append(self.allocator, null);
     return id;
 }
 
@@ -81,14 +96,14 @@ pub fn setChildren(self: *Builder, parent: Node.Id, ids: []const Node.Id) void {
 }
 
 pub fn setSpan(self: *Builder, id: Node.Id, span: Span) void {
-    self.nodes.items[id].span = span;
+    self.spans.items[id] = span;
 }
 
-/// Set the interior (between-the-delimiters) span of a container node — see
-/// `Node.content_span`'s doc comment for the contract. Left `null` when
-/// never called, which is always a correct (if less informative) value.
+/// Set the interior (between-the-delimiters) span of a node — see
+/// `Document.node_content_spans` for the contract. Left `null` when never
+/// called, which is always a correct (if less informative) value.
 pub fn setContentSpan(self: *Builder, id: Node.Id, span: Span) void {
-    self.nodes.items[id].content_span = span;
+    self.content_spans.items[id] = span;
 }
 
 /// Attach `attrs` to `id` (copying its strings into owned storage),
@@ -116,10 +131,14 @@ pub fn setAttrs(self: *Builder, id: Node.Id, attrs: AST.Attrs) Allocator.Error!v
 }
 
 /// Copy the entire tree of `src` into this builder, shifting every node's
-/// `span`/`content_span` right by `offset` source bytes, and return the
-/// builder id that now holds `src.root`. Strings and attributes are copied
+/// span and interior span right by `offset` source bytes, and return the
+/// builder id that now holds `src.ast.root`. Strings and attributes are copied
 /// into the builder's owned storage, and the child/sibling linkage is rebuilt
 /// against the builder's own ids.
+///
+/// Takes a `*const Document` rather than a `*const AST` precisely because it
+/// shifts positions: an `AST` alone no longer knows where it was written, so a
+/// graft that has to relocate a subtree needs the fidelity half too.
 ///
 /// `offset` is where `src`'s source text sits inside the builder's document,
 /// so a subtree parsed from an *extracted slice* — e.g. a Markdown HTML block
@@ -127,30 +146,38 @@ pub fn setAttrs(self: *Builder, id: Node.Id, attrs: AST.Attrs) Allocator.Error!v
 /// source rather than the slice. Pass `0` when `src` was parsed from the same
 /// buffer this builder is spanning.
 ///
-/// The returned id is `src.root` remapped; a caller that wants to drop a
+/// The returned id is `src.ast.root` remapped; a caller that wants to drop a
 /// synthetic wrapper (an HTML parse's `doc` root) walks its `first_child`
 /// chain instead of appending the returned id directly.
-pub fn graftAst(self: *Builder, src: *const AST, offset: usize) Allocator.Error!Node.Id {
+pub fn graftDocument(self: *Builder, src: *const Document, offset: usize) Allocator.Error!Node.Id {
     // Nodes are cloned in id order, so `src` id `i` lands at `base + i`; every
     // child/sibling reference is therefore just its old id plus `base`.
     const base: Node.Id = @intCast(self.nodes.items.len);
-    for (src.nodes) |node| {
+    for (src.ast.nodes) |node| {
         const id = try self.addNode(node.kind);
         const dst = &self.nodes.items[id];
         dst.first_child = if (node.first_child) |c| base + c else null;
         dst.next_sibling = if (node.next_sibling) |s| base + s else null;
-        dst.span = .{ .start = node.span.start + offset, .end = node.span.end + offset };
-        if (node.content_span) |cs|
-            dst.content_span = .{ .start = cs.start + offset, .end = cs.end + offset };
+        const s = src.node_spans[node.id];
+        self.spans.items[id] = .{ .start = s.start + offset, .end = s.end + offset };
+        if (src.node_content_spans[node.id]) |cs|
+            self.content_spans.items[id] = .{ .start = cs.start + offset, .end = cs.end + offset };
         // `setAttrs` copies the entries' strings; it touches only `attrs`, so
         // the `dst` node pointer stays valid across it.
-        if (node.attrs) |ai| try self.setAttrs(id, src.attrs[ai]);
+        if (node.attrs) |ai| try self.setAttrs(id, src.ast.attrs[ai]);
     }
-    return base + src.root;
+    return base + src.ast.root;
 }
 
-/// Freeze the builder into an owned `AST` rooted at `root`. The builder is
-/// left empty, so a subsequent `deinit` is harmless.
+/// Freeze the builder into an owned `AST` rooted at `root`, DISCARDING the
+/// position tables. The builder is left empty, so a subsequent `deinit` is
+/// harmless.
+///
+/// Use this when the caller genuinely only wants meaning — a synthesized tree,
+/// or a fragment built for serialization. A parser that wants its spans to
+/// survive calls `finishDocument` instead; there is no way to recover them
+/// afterward, which is deliberate (an `AST` that half-remembers where it came
+/// from is the fused model this split exists to undo).
 pub fn finish(self: *Builder, root: Node.Id) Allocator.Error!AST {
     const nodes = try self.nodes.toOwnedSlice(self.allocator);
     self.nodes = .empty;
@@ -158,12 +185,36 @@ pub fn finish(self: *Builder, root: Node.Id) Allocator.Error!AST {
     self.owned_strings = .empty;
     const attrs = try self.attrs.toOwnedSlice(self.allocator);
     self.attrs = .empty;
+    self.spans.clearAndFree(self.allocator);
+    self.content_spans.clearAndFree(self.allocator);
     return .{
         .allocator = self.allocator,
         .owned_strings = owned_strings,
         .root = root,
         .nodes = nodes,
         .attrs = attrs,
+    };
+}
+
+/// Freeze the builder into an owned `Document` over `source`, rooted at
+/// `root` — the `AST` plus the position tables built alongside it. `source` is
+/// BORROWED (see `Document.source`); the caller keeps it alive.
+///
+/// The builder is left empty, so a subsequent `deinit` is harmless.
+pub fn finishDocument(self: *Builder, source: []const u8, root: Node.Id) Allocator.Error!Document {
+    const spans = try self.spans.toOwnedSlice(self.allocator);
+    errdefer self.allocator.free(spans);
+    self.spans = .empty;
+    const content_spans = try self.content_spans.toOwnedSlice(self.allocator);
+    errdefer self.allocator.free(content_spans);
+    self.content_spans = .empty;
+    // `finish` clears the (now-empty) position lists, which is a no-op here.
+    const ast = try self.finish(root);
+    return .{
+        .source = source,
+        .ast = ast,
+        .node_spans = spans,
+        .node_content_spans = content_spans,
     };
 }
 
@@ -183,6 +234,19 @@ pub fn view(self: *const Builder, root: Node.Id) AST {
         .root = root,
         .nodes = self.nodes.items,
         .attrs = self.attrs.items,
+    };
+}
+
+/// A non-owning `Document` over the builder's current nodes and position
+/// tables. Same borrowing contract as `view` — valid only while the builder
+/// lives unmodified, and must NOT be `deinit`ed. `source` is borrowed from the
+/// caller as usual.
+pub fn viewDocument(self: *const Builder, source: []const u8, root: Node.Id) Document {
+    return .{
+        .source = source,
+        .ast = self.view(root),
+        .node_spans = self.spans.items,
+        .node_content_spans = self.content_spans.items,
     };
 }
 
@@ -335,38 +399,39 @@ test "dupeKind copies generic-markup string payloads into owned storage" {
     try testing.expect(ast.nodes[el].kind.container.name.ptr != &name_buf);
 }
 
-test "graftAst copies a foreign tree, shifting spans and re-linking children" {
+test "graftDocument copies a foreign tree, shifting spans and re-linking children" {
     const testing = std.testing;
 
-    // A donor AST parsed from a slice that sits at offset 100 in some larger
-    // document — its spans are slice-relative (0-based).
+    // A donor document parsed from a slice that sits at offset 100 in some
+    // larger document — its spans are slice-relative (0-based).
     var donor = Builder.init(testing.allocator);
     const inner = try donor.addLeaf(.{ .str = "hi" });
     donor.setSpan(inner, Span.init(3, 5));
     const el = try donor.addContainer(.{ .container = .{ .name = "b" } }, &.{inner});
     donor.setSpan(el, Span.init(0, 8));
     try donor.setAttrs(el, .{ .entries = &.{.{ .key = "id", .value = "x" }} });
-    var donor_ast = try donor.finish(el);
-    defer donor_ast.deinit();
+    var donor_doc = try donor.finishDocument("<b id=x>hi</b>", el);
+    defer donor_doc.deinit();
 
     // Graft it into a host builder as a child of a paragraph, shifted by 100.
     var host = Builder.init(testing.allocator);
     defer host.deinit();
-    const grafted = try host.graftAst(&donor_ast, 100);
+    const grafted = try host.graftDocument(&donor_doc, 100);
     const para = try host.addContainer(.para, &.{grafted});
 
-    var ast = try host.finish(para);
-    defer ast.deinit();
+    var doc = try host.finishDocument("", para);
+    defer doc.deinit();
+    const ast = doc.ast;
 
     // The grafted root is reachable, kept its kind/attrs, and its span shifted.
     const b_el = ast.nodes[ast.root].first_child.?;
     try testing.expectEqualStrings("b", ast.nodes[b_el].kind.container.name);
     try testing.expectEqualStrings("x", ast.attrsOf(b_el).get("id").?);
-    try testing.expect(ast.nodes[b_el].span.eql(Span.init(100, 108)));
+    try testing.expect(doc.span(b_el).eql(Span.init(100, 108)));
     // Child linkage was rebuilt against host ids, and its span shifted too.
     const str = ast.nodes[b_el].first_child.?;
     try testing.expectEqualStrings("hi", ast.nodes[str].kind.str);
-    try testing.expect(ast.nodes[str].span.eql(Span.init(103, 105)));
+    try testing.expect(doc.span(str).eql(Span.init(103, 105)));
 }
 
 test "view borrows the in-progress build without consuming it" {
@@ -394,7 +459,7 @@ test "view borrows the in-progress build without consuming it" {
     try testing.expectEqual(@as(?*const Node, null), it.next());
 }
 
-test "content_span defaults to null and is set via setContentSpan" {
+test "content span defaults to null and is set via setContentSpan" {
     const testing = std.testing;
     var b = Builder.init(testing.allocator);
     defer b.deinit();
@@ -404,9 +469,34 @@ test "content_span defaults to null and is set via setContentSpan" {
     b.setSpan(el, Span.init(0, 24));
     b.setContentSpan(el, Span.init(13, 16));
 
-    var ast = try b.finish(el);
-    defer ast.deinit();
+    var doc = try b.finishDocument("<div class=\"x\">abc</div>", el);
+    defer doc.deinit();
 
-    try testing.expectEqual(@as(?Span, null), ast.nodes[text].content_span);
-    try testing.expect(ast.nodes[el].content_span.?.eql(Span.init(13, 16)));
+    try testing.expectEqual(@as(?Span, null), doc.contentSpan(text));
+    try testing.expect(doc.contentSpan(el).?.eql(Span.init(13, 16)));
+}
+
+test "finish discards positions; finishDocument keeps them" {
+    const testing = std.testing;
+
+    var b1 = Builder.init(testing.allocator);
+    defer b1.deinit();
+    const a1 = try b1.addLeaf(.{ .str = "x" });
+    b1.setSpan(a1, Span.init(2, 3));
+    var ast = try b1.finish(a1);
+    defer ast.deinit();
+    // Nothing on the node remembers where it came from — that is the point.
+    try testing.expectEqual(@as(usize, 1), ast.nodes.len);
+
+    var b2 = Builder.init(testing.allocator);
+    defer b2.deinit();
+    const a2 = try b2.addLeaf(.{ .str = "x" });
+    b2.setSpan(a2, Span.init(2, 3));
+    var doc = try b2.finishDocument("  x", a2);
+    defer doc.deinit();
+    try testing.expect(doc.span(a2).eql(Span.init(2, 3)));
+    try testing.expectEqualStrings("x", doc.text(a2));
+
+    // Same meaning either way.
+    try testing.expect(ast.eql(doc.ast));
 }

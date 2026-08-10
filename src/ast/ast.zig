@@ -22,6 +22,25 @@
 //! every string a node carries is copied into `owned_strings` at build time,
 //! so a finished `AST` never borrows the original source text and printers can take `*const AST` alone.
 //!
+//! ── This file holds MEANING, not POSITION ──────────────────────────────────
+//! Byte offsets are NOT here. A node's `span`/`content_span` live in
+//! `src/document.zig`'s id-indexed side-tables, alongside the `source` they
+//! address — again following fig, whose `Node` is likewise `{id, kind,
+//! next_sibling}` with positions in a sibling `Document`.
+//!
+//! The split is what makes `eql` (below) possible: two parses can be compared
+//! for *meaning* because there are no positions left in the tree to disagree
+//! about, with `Document.spansEql` as the separate layer for "…and were
+//! written the same way". It also makes the boundary enforceable rather than
+//! conventional — a printer taking `*const AST` cannot reach a byte offset,
+//! while the edit layer takes a `*const Document` because splicing needs both
+//! halves.
+//!
+//! The rule for which side a new field lands on: a fact belongs in `Document`
+//! iff two documents differing only in that fact RENDER IDENTICALLY. A list's
+//! `tight` flag fails that test (it elides the `<p>`), so it stays in `Kind`;
+//! a bullet's `-`-vs-`*` spelling passes it.
+//!
 //! Node *shape* is much more heterogeneous here than in fig's config AST
 //! (~50 kinds vs. ~8), so unlike fig — which folds a container's child
 //! pointer directly into its `Kind` union payload (`sequence: ?Id`) — every
@@ -34,8 +53,6 @@
 const AST = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Span = @import("../span.zig");
-
 const reader = @import("reader.zig");
 pub const Builder = @import("builder.zig");
 
@@ -78,39 +95,17 @@ pub const Node = struct {
     kind: Kind,
     first_child: ?Id = null,
     next_sibling: ?Id = null,
-    /// Byte range `[start, end)` into the source this node was parsed from.
-    span: Span = Span.init(0, 0),
-    /// The byte range of the node's *interior* — the region an editor may
-    /// splice, sitting inside the node's own delimiters. For a container this
-    /// is where its children live (for `<div class=x>abc</div>`, the span of
-    /// `abc`; for a djot `::: div`, the lines between the fences). A *framed
-    /// text leaf* carries one too — its payload interior with the delimiters,
-    /// fences, or markers peeled off: a `code_block`'s / `metadata`'s body
-    /// between its fences, an inline `verbatim`'s or math node's interior
-    /// between its `` ` ``/`$`, a `symb`'s name between its colons, a `<…>`
-    /// autolink's URL, an XML `comment`'s or `cdata`'s text. See
-    /// `holdsOpaqueText` for the leaf kinds that can hold such interior text.
-    ///
-    /// `source[content_span]` is the raw source interior and need NOT equal a
-    /// normalized text field: an `emph`'s interior is the raw bytes between
-    /// its `*`s, not "rendered" emphasis, and a `code_block`'s interior is the
-    /// original indented source, whereas its `.text` payload is dedented and
-    /// newline-normalized — `source[content_span] != code_block.text` by
-    /// design. `content_span` is *where the body is*, not *a copy of it*.
-    ///
-    /// `null` = unknown or not meaningful: a FRAMELESS node whose span already
-    /// IS its content (a bare `str`; a bare `http://…` GFM autolink); a
-    /// synthesized node; an EMPTY container or frame with no interior. Parsers
-    /// should populate it when it is cheap to compute; a parser that leaves it
-    /// `null` is still correct, just less useful to editors. Because a framed
-    /// text leaf can carry one, "has a `content_span`" no longer implies
-    /// "accepts child nodes" — see `holdsOpaqueText`.
-    content_span: ?Span = null,
     /// Index into `AST.attrs`, or `null` if this node has no `{...}`
     /// attributes attached.
     attrs: ?Attrs.Id = null,
 
     pub const Id = u32;
+
+    // There is deliberately no `Node.eql`. A node's identity here is its
+    // `id`/`first_child`/`next_sibling` — arena slots, which are a parsing
+    // artifact, not part of the document (see `AST.eql`). A node-level
+    // equality that compared them would be a trap; one that ignored them
+    // would just be `kind.eql`. Compare kinds, or compare trees.
 
     /// The shared kind vocabulary: a semantic core (one kind per djot.js
     /// `ast.ts` tag) plus generic-markup kinds for what XML/HTML can't map
@@ -517,8 +512,139 @@ pub const Node = struct {
         pub fn holdsOpaqueText(self: Kind) bool {
             return self.contentModel() == .text;
         }
+
+        /// Structural equality of two kinds, payload included. Every arm is
+        /// spelled, so a new kind (or a new payload field) fails this build
+        /// until it declares how it compares — the same exhaustiveness
+        /// property `level`/`contentModel` have.
+        pub fn eql(self: Kind, other: Kind) bool {
+            if (std.meta.activeTag(self) != std.meta.activeTag(other)) return false;
+            return switch (self) {
+                // Payload-free kinds: the tag match above is the whole answer.
+                .doc,
+                .para,
+                .thematic_break,
+                .section,
+                .block_quote,
+                .definition_list,
+                .table,
+                .list_item,
+                .definition_list_item,
+                .term,
+                .definition,
+                .caption,
+                .soft_break,
+                .hard_break,
+                .non_breaking_space,
+                => true,
+
+                .heading => |v| v.level == other.heading.level,
+                .code_block => |v| eqlOptStr(v.lang, other.code_block.lang) and
+                    eqlStr(v.text, other.code_block.text),
+                .raw_block => |v| eqlStr(v.format, other.raw_block.format) and
+                    eqlStr(v.text, other.raw_block.text),
+                .metadata => |v| eqlStr(v.lang, other.metadata.lang) and
+                    eqlStr(v.text, other.metadata.text),
+                .bullet_list => |v| v.style == other.bullet_list.style and
+                    v.tight == other.bullet_list.tight,
+                .ordered_list => |v| v.style.numbering == other.ordered_list.style.numbering and
+                    v.style.delim == other.ordered_list.style.delim and
+                    v.tight == other.ordered_list.tight and
+                    v.start == other.ordered_list.start,
+                .task_list => |v| v.tight == other.task_list.tight,
+                .task_list_item => |v| v.checked == other.task_list_item.checked,
+                .row => |v| v.head == other.row.head,
+                .cell => |v| v.head == other.cell.head and v.alignment == other.cell.alignment,
+                .footnote => |v| eqlStr(v.label, other.footnote.label),
+                .reference => |v| eqlStr(v.label, other.reference.label) and
+                    eqlStr(v.destination, other.reference.destination),
+                .str => |v| eqlStr(v, other.str),
+                .text_leaf => |v| v.kind == other.text_leaf.kind and
+                    eqlStr(v.text, other.text_leaf.text),
+                .raw_inline => |v| eqlStr(v.format, other.raw_inline.format) and
+                    eqlStr(v.text, other.raw_inline.text),
+                .smart_punctuation => |v| v == other.smart_punctuation,
+                .link => |v| eqlOptStr(v.destination, other.link.destination) and
+                    eqlOptStr(v.reference, other.link.reference),
+                .image => |v| eqlOptStr(v.destination, other.image.destination) and
+                    eqlOptStr(v.reference, other.image.reference),
+                .inline_mark => |v| v == other.inline_mark,
+                .container => |v| eqlStr(v.name, other.container.name) and
+                    v.form == other.container.form and
+                    eqlOptStr(v.argument, other.container.argument),
+                .markup_leaf => |v| v.kind == other.markup_leaf.kind and
+                    eqlStr(v.text, other.markup_leaf.text),
+                .processing_instruction => |v| eqlStr(v.target, other.processing_instruction.target) and
+                    eqlStr(v.data, other.processing_instruction.data),
+            };
+        }
     };
 };
+
+fn eqlStr(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+fn eqlOptStr(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a == null or b == null) return (a == null) == (b == null);
+    return std.mem.eql(u8, a.?, b.?);
+}
+
+/// Abstract document equality: do these two trees MEAN the same thing?
+///
+/// Source positions are not consulted — they live in `document.zig`, and
+/// `Document.spansEql` is the separate layer for "…and were written the same
+/// way". That split is the point of the two types: this function is what makes
+/// "two documents of different formats can have the same AST" a claim a test
+/// can check rather than a design aspiration.
+///
+/// This is a STRUCTURAL WALK from each root, not a comparison of the two node
+/// arrays. fig's `AST.eql` can compare `nodes` as a flat slice because its
+/// parsers emit exactly the reachable tree; Twig's do not.
+///
+/// Twig's inline parsers are SPECULATIVE: `languages/markdown/inline.zig`
+/// emits each delimiter run as a literal-text `str` up front, then, if the run
+/// resolves into emphasis, builds the mark node and leaves the two `str`s
+/// unreferenced in the arena. Parsing `**x**` and `__x__` therefore yields
+/// arenas of the same size and the same kinds — but the orphans hold `"**"` in
+/// one and `"__"` in the other. Those payloads are the abandoned SPELLING, and
+/// a flat slice comparison compares them, reporting two spellings of one
+/// document as different documents. That is exactly the question this function
+/// exists to answer correctly, so it walks only what is reachable.
+///
+/// Ids are not compared either: an id is an arena slot, and arena slots are a
+/// parsing artifact. What is compared is each node's kind (payload included),
+/// its attributes, and its children in order.
+pub fn eql(self: AST, other: AST) bool {
+    return eqlNode(self, self.root, other, other.root);
+}
+
+fn eqlNode(a: AST, a_id: Node.Id, b: AST, b_id: Node.Id) bool {
+    const an = a.nodes[a_id];
+    const bn = b.nodes[b_id];
+    if (!an.kind.eql(bn.kind)) return false;
+    if (!attrsEql(a.attrsOf(a_id), b.attrsOf(b_id))) return false;
+
+    var ia = a.children(a_id);
+    var ib = b.children(b_id);
+    while (true) {
+        const ca = ia.next();
+        const cb = ib.next();
+        if (ca == null and cb == null) return true;
+        const x = ca orelse return false;
+        const y = cb orelse return false;
+        if (!eqlNode(a, x.id, b, y.id)) return false;
+    }
+}
+
+fn attrsEql(a: Attrs, b: Attrs) bool {
+    if (a.entries.len != b.entries.len) return false;
+    for (a.entries, b.entries) |x, y| {
+        if (!eqlStr(x.key, y.key)) return false;
+        if (!eqlOptStr(x.value, y.value)) return false;
+    }
+    return true;
+}
 
 /// Which paired-delimiter inline a `Kind.inline_mark` is.
 ///

@@ -12,6 +12,7 @@
 const std = @import("std");
 
 pub const AST = @import("../../ast/ast.zig");
+const Document = @import("../../document.zig");
 
 const serializer_mod = @import("serializer.zig");
 const parser_mod = @import("parser.zig");
@@ -97,7 +98,7 @@ pub const gfm_render_options: RenderOptions = blk: {
 /// document-oriented parser rather than a browser DOM implementation: it
 /// recognizes normal HTML token forms and common optional end tags, while
 /// preserving unknown markup in the generic AST vocabulary.
-pub fn parse(allocator: std.mem.Allocator, source: []const u8) ParseError!AST {
+pub fn parse(allocator: std.mem.Allocator, source: []const u8) ParseError!Document {
     var parser = Parser.init(allocator, source);
     defer parser.deinit();
     return parser.parse();

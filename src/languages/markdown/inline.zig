@@ -67,6 +67,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("../../ast/ast.zig");
+const Document = @import("../../document.zig");
 const Node = AST.Node;
 const Builder = AST.Builder;
 const Span = @import("../../span.zig");
@@ -857,27 +858,30 @@ pub const Scanner = struct {
         // (layout whitespace aside). More than one, or none, means it wasn't
         // self-contained — keep it raw.
         var chosen: ?Node.Id = null;
-        var it = tag_ast.children(tag_ast.root);
+        var it = tag_ast.children(tag_ast.ast.root);
         while (it.next()) |child| {
             if (isBlankStrNode(child.kind)) continue;
             if (chosen != null) return false;
             chosen = child.id;
         }
         const src_id = chosen orelse return false;
-        if (!inlineSafeKind(tag_ast.nodes[src_id].kind)) return false;
+        if (!inlineSafeKind(tag_ast.ast.nodes[src_id].kind)) return false;
 
         // Graft with a zero offset (spans stay tag-relative), then rewrite each
         // grafted node's span/content_span from tag-relative onto the source via
         // the inline segment map — the tag sits at `text[tag_start..]`, so a
         // tag-relative offset `o` is buffer offset `tag_start + o`.
         const base: Node.Id = @intCast(self.b.nodes.items.len);
-        _ = try self.b.graftAst(&tag_ast, 0);
+        _ = try self.b.graftDocument(&tag_ast, 0);
         var idx: usize = base;
         while (idx < self.b.nodes.items.len) : (idx += 1) {
-            const n = &self.b.nodes.items[idx];
-            if (self.mapSpan(n.span.start + tag_start, n.span.end + tag_start)) |sp| n.span = sp;
-            if (n.content_span) |cs| {
-                if (self.mapSpan(cs.start + tag_start, cs.end + tag_start)) |sp| n.content_span = sp;
+            // Positions live in the builder's parallel tables now, not on the
+            // node — the rewrite is otherwise unchanged.
+            const span = &self.b.spans.items[idx];
+            if (self.mapSpan(span.start + tag_start, span.end + tag_start)) |sp| span.* = sp;
+            if (self.b.content_spans.items[idx]) |cs| {
+                if (self.mapSpan(cs.start + tag_start, cs.end + tag_start)) |sp|
+                    self.b.content_spans.items[idx] = sp;
             }
         }
 
@@ -2400,6 +2404,22 @@ fn parseAndFinishWithOptions(text: []const u8, options: Options) !AST {
     return b.finish(root);
 }
 
+/// `parseAndFinish` for tests that assert on positions — same UNMAPPED parse
+/// (no `Segment`s), finished into a `Document` so the span tables survive.
+fn parseAndFinishDoc(text: []const u8) !Document {
+    return parseAndFinishWithOptionsDoc(text, .{});
+}
+
+/// `parseAndFinishWithOptions` for tests that assert on positions.
+fn parseAndFinishWithOptionsDoc(text: []const u8, options: Options) !Document {
+    var b = Builder.init(testing.allocator);
+    errdefer b.deinit();
+    const children = try parseInline(&b, text, &.{}, &empty_refs, options);
+    defer b.allocator.free(children);
+    const root = try b.addContainer(.para, children);
+    return b.finishDocument(text, root);
+}
+
 /// Like `parseAndFinishWithOptions`, but treats `text` itself as "the
 /// source" (a single `Segment` mapping the whole buffer onto itself 1:1),
 /// so a test can slice `text` directly with a resulting node's `span` and
@@ -2416,6 +2436,20 @@ fn parseAndFinishMapped(text: []const u8, options: Options) !AST {
     defer b.allocator.free(children);
     const root = try b.addContainer(.para, children);
     return b.finish(root);
+}
+
+/// `parseAndFinishMapped` for the SPAN tests: keeps the position tables by
+/// finishing into a `Document` instead of dropping them into a bare `AST`.
+/// `text` doubles as the source, so a resolved span slices straight out of the
+/// very string that was parsed.
+fn parseAndFinishMappedDoc(text: []const u8, options: Options) !Document {
+    var b = Builder.init(testing.allocator);
+    errdefer b.deinit();
+    const segs = [_]Segment{.{ .buf_offset = 0, .src_offset = 0, .len = text.len }};
+    const children = try parseInline(&b, text, &segs, &empty_refs, options);
+    defer b.allocator.free(children);
+    const root = try b.addContainer(.para, children);
+    return b.finishDocument(text, root);
 }
 
 /// Parse `text` as the inline content of a *table cell* — the `in_cell` context
@@ -2516,12 +2550,12 @@ test "html_elements: an inline <img> promotes to an image node with the src as d
 
 test "html_elements: a promoted inline <img>'s span addresses the true source bytes" {
     const src = "a <img src=\"x.png\" alt=\"cat\"> b";
-    var ast = try parseAndFinishMapped(src, html_on);
+    var ast = try parseAndFinishMappedDoc(src, html_on);
     defer ast.deinit();
-    var it = ast.children(ast.root);
+    var it = ast.children(ast.ast.root);
     _ = it.next(); // "a "
     const img = it.next().?;
-    try testing.expectEqualStrings("<img src=\"x.png\" alt=\"cat\">", src[img.span.start..img.span.end]);
+    try testing.expectEqualStrings("<img src=\"x.png\" alt=\"cat\">", Span.of(u8, ast.span(img.id), src));
 }
 
 test "html_elements: an inline <br> promotes to a hard_break" {
@@ -2847,21 +2881,21 @@ test "unhandled inline markup (unresolved brackets) passes through as literal te
 // the very same string and compared byte-for-byte.
 
 test "span: a str leaf's span is its own exact bytes" {
-    var ast = try parseAndFinishMapped("hello world", .{});
+    var ast = try parseAndFinishMappedDoc("hello world", .{});
     defer ast.deinit();
     const s = "hello world";
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings(s, Span.of(u8, ast.nodes[child].span, s));
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings(s, Span.of(u8, ast.span(child), s));
 }
 
 test "span: emphasis covers the delimiters, content_span covers just the interior" {
-    var ast = try parseAndFinishMapped("*abc*", .{});
+    var ast = try parseAndFinishMappedDoc("*abc*", .{});
     defer ast.deinit();
     const s = "*abc*";
-    const em = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[em].kind == .inline_mark and ast.nodes[em].kind.inline_mark == .emph);
-    try testing.expectEqualStrings("*abc*", Span.of(u8, ast.nodes[em].span, s));
-    try testing.expectEqualStrings("abc", Span.of(u8, ast.nodes[em].content_span.?, s));
+    const em = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[em].kind == .inline_mark and ast.ast.nodes[em].kind.inline_mark == .emph);
+    try testing.expectEqualStrings("*abc*", Span.of(u8, ast.span(em), s));
+    try testing.expectEqualStrings("abc", Span.of(u8, ast.contentSpan(em).?, s));
 }
 
 test "span: a text directive's label children address the true source bytes" {
@@ -2871,120 +2905,120 @@ test "span: a text directive's label children address the true source bytes" {
     // consumer that trusts spans reads as "at the start of the document",
     // putting a caret or a click on the wrong bytes entirely.
     const s = "x :abbr[a *b* c] y";
-    var ast = try parseAndFinishMapped(s, directives_on);
+    var ast = try parseAndFinishMappedDoc(s, directives_on);
     defer ast.deinit();
 
-    const lead = ast.nodes[ast.root].first_child.?;
-    const dir = ast.nodes[lead].next_sibling.?;
-    try testing.expect(ast.nodes[dir].kind == .container);
-    try testing.expectEqualStrings(":abbr[a *b* c]", Span.of(u8, ast.nodes[dir].span, s));
-    try testing.expectEqualStrings("a *b* c", Span.of(u8, ast.nodes[dir].content_span.?, s));
+    const lead = ast.ast.nodes[ast.ast.root].first_child.?;
+    const dir = ast.ast.nodes[lead].next_sibling.?;
+    try testing.expect(ast.ast.nodes[dir].kind == .container);
+    try testing.expectEqualStrings(":abbr[a *b* c]", Span.of(u8, ast.span(dir), s));
+    try testing.expectEqualStrings("a *b* c", Span.of(u8, ast.contentSpan(dir).?, s));
 
-    const first = ast.nodes[dir].first_child.?;
-    try testing.expectEqualStrings("a ", Span.of(u8, ast.nodes[first].span, s));
-    const emph = ast.nodes[first].next_sibling.?;
-    try testing.expect(ast.nodes[emph].kind == .inline_mark and ast.nodes[emph].kind.inline_mark == .emph);
-    try testing.expectEqualStrings("*b*", Span.of(u8, ast.nodes[emph].span, s));
-    try testing.expectEqualStrings("b", Span.of(u8, ast.nodes[emph].content_span.?, s));
-    const last = ast.nodes[emph].next_sibling.?;
-    try testing.expectEqualStrings(" c", Span.of(u8, ast.nodes[last].span, s));
+    const first = ast.ast.nodes[dir].first_child.?;
+    try testing.expectEqualStrings("a ", Span.of(u8, ast.span(first), s));
+    const emph = ast.ast.nodes[first].next_sibling.?;
+    try testing.expect(ast.ast.nodes[emph].kind == .inline_mark and ast.ast.nodes[emph].kind.inline_mark == .emph);
+    try testing.expectEqualStrings("*b*", Span.of(u8, ast.span(emph), s));
+    try testing.expectEqualStrings("b", Span.of(u8, ast.contentSpan(emph).?, s));
+    const last = ast.ast.nodes[emph].next_sibling.?;
+    try testing.expectEqualStrings(" c", Span.of(u8, ast.span(last), s));
 }
 
 test "span: strong emphasis covers its own delimiters" {
-    var ast = try parseAndFinishMapped("**abc**", .{});
+    var ast = try parseAndFinishMappedDoc("**abc**", .{});
     defer ast.deinit();
     const s = "**abc**";
-    const strong = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[strong].kind == .inline_mark and ast.nodes[strong].kind.inline_mark == .strong);
-    try testing.expectEqualStrings("**abc**", Span.of(u8, ast.nodes[strong].span, s));
-    try testing.expectEqualStrings("abc", Span.of(u8, ast.nodes[strong].content_span.?, s));
+    const strong = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[strong].kind == .inline_mark and ast.ast.nodes[strong].kind.inline_mark == .strong);
+    try testing.expectEqualStrings("**abc**", Span.of(u8, ast.span(strong), s));
+    try testing.expectEqualStrings("abc", Span.of(u8, ast.contentSpan(strong).?, s));
 }
 
 test "span: verbatim covers the backticks, content_span covers just the interior" {
-    var ast = try parseAndFinishMapped("`code`", .{});
+    var ast = try parseAndFinishMappedDoc("`code`", .{});
     defer ast.deinit();
     const s = "`code`";
-    const v = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[v].kind == .text_leaf and ast.nodes[v].kind.text_leaf.kind == .verbatim);
-    try testing.expectEqualStrings("`code`", Span.of(u8, ast.nodes[v].span, s));
-    try testing.expectEqualStrings("code", Span.of(u8, ast.nodes[v].content_span.?, s));
+    const v = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[v].kind == .text_leaf and ast.ast.nodes[v].kind.text_leaf.kind == .verbatim);
+    try testing.expectEqualStrings("`code`", Span.of(u8, ast.span(v), s));
+    try testing.expectEqualStrings("code", Span.of(u8, ast.contentSpan(v).?, s));
 }
 
 test "span: a multi-backtick verbatim's content_span excludes BOTH backtick runs" {
-    var ast = try parseAndFinishMapped("``x``", .{});
+    var ast = try parseAndFinishMappedDoc("``x``", .{});
     defer ast.deinit();
     const s = "``x``";
-    const v = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[v].kind == .text_leaf and ast.nodes[v].kind.text_leaf.kind == .verbatim);
-    try testing.expectEqualStrings("x", Span.of(u8, ast.nodes[v].content_span.?, s));
+    const v = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[v].kind == .text_leaf and ast.ast.nodes[v].kind.text_leaf.kind == .verbatim);
+    try testing.expectEqualStrings("x", Span.of(u8, ast.contentSpan(v).?, s));
 }
 
 test "span: verbatim content_span is the RAW interior, not the normalized payload" {
     // "`` `foo` ``": the payload strips one symmetric space (-> "`foo`"), but
     // content_span points at the interior AS WRITTEN, spaces included.
-    var ast = try parseAndFinishMapped("`` `foo` ``", .{});
+    var ast = try parseAndFinishMappedDoc("`` `foo` ``", .{});
     defer ast.deinit();
     const s = "`` `foo` ``";
-    const v = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[v].kind == .text_leaf and ast.nodes[v].kind.text_leaf.kind == .verbatim);
-    try testing.expectEqualStrings("`foo`", ast.nodes[v].kind.text_leaf.text); // payload
-    try testing.expectEqualStrings(" `foo` ", Span.of(u8, ast.nodes[v].content_span.?, s)); // raw
+    const v = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[v].kind == .text_leaf and ast.ast.nodes[v].kind.text_leaf.kind == .verbatim);
+    try testing.expectEqualStrings("`foo`", ast.ast.nodes[v].kind.text_leaf.text); // payload
+    try testing.expectEqualStrings(" `foo` ", Span.of(u8, ast.contentSpan(v).?, s)); // raw
 }
 
 test "span: inline_math and display_math report their interior as content_span" {
-    var im = try parseAndFinishMapped("$x$", .{ .math = true });
+    var im = try parseAndFinishMappedDoc("$x$", .{ .math = true });
     defer im.deinit();
     const s1 = "$x$";
-    const inline_node = im.nodes[im.root].first_child.?;
-    try testing.expect(im.nodes[inline_node].kind == .text_leaf and im.nodes[inline_node].kind.text_leaf.kind == .inline_math);
-    try testing.expectEqualStrings("$x$", Span.of(u8, im.nodes[inline_node].span, s1));
-    try testing.expectEqualStrings("x", Span.of(u8, im.nodes[inline_node].content_span.?, s1));
+    const inline_node = im.ast.nodes[im.ast.root].first_child.?;
+    try testing.expect(im.ast.nodes[inline_node].kind == .text_leaf and im.ast.nodes[inline_node].kind.text_leaf.kind == .inline_math);
+    try testing.expectEqualStrings("$x$", Span.of(u8, im.span(inline_node), s1));
+    try testing.expectEqualStrings("x", Span.of(u8, im.contentSpan(inline_node).?, s1));
 
-    var dm = try parseAndFinishMapped("$$x$$", .{ .math = true });
+    var dm = try parseAndFinishMappedDoc("$$x$$", .{ .math = true });
     defer dm.deinit();
     const s2 = "$$x$$";
-    const display_node = dm.nodes[dm.root].first_child.?;
-    try testing.expect(dm.nodes[display_node].kind == .text_leaf and dm.nodes[display_node].kind.text_leaf.kind == .display_math);
-    try testing.expectEqualStrings("$$x$$", Span.of(u8, dm.nodes[display_node].span, s2));
-    try testing.expectEqualStrings("x", Span.of(u8, dm.nodes[display_node].content_span.?, s2));
+    const display_node = dm.ast.nodes[dm.ast.root].first_child.?;
+    try testing.expect(dm.ast.nodes[display_node].kind == .text_leaf and dm.ast.nodes[display_node].kind.text_leaf.kind == .display_math);
+    try testing.expectEqualStrings("$$x$$", Span.of(u8, dm.span(display_node), s2));
+    try testing.expectEqualStrings("x", Span.of(u8, dm.contentSpan(display_node).?, s2));
 }
 
 test "span: footnote_reference content_span is the RAW label between [^ and ]" {
-    var ast = try parseAndFinishMapped("see[^ A B ]", .{ .footnotes = true });
+    var ast = try parseAndFinishMappedDoc("see[^ A B ]", .{ .footnotes = true });
     defer ast.deinit();
     const s = "see[^ A B ]";
-    const ref = ast.nodes[ast.nodes[ast.root].first_child.?].next_sibling.?; // after "see"
-    try testing.expect(ast.nodes[ref].kind == .text_leaf and ast.nodes[ref].kind.text_leaf.kind == .footnote_reference);
-    try testing.expectEqualStrings("[^ A B ]", Span.of(u8, ast.nodes[ref].span, s));
+    const ref = ast.ast.nodes[ast.ast.nodes[ast.ast.root].first_child.?].next_sibling.?; // after "see"
+    try testing.expect(ast.ast.nodes[ref].kind == .text_leaf and ast.ast.nodes[ref].kind.text_leaf.kind == .footnote_reference);
+    try testing.expectEqualStrings("[^ A B ]", Span.of(u8, ast.span(ref), s));
     // The payload is the normalized label; content_span points at the source
     // interior as written, spaces and case preserved.
-    try testing.expectEqualStrings("a b", ast.nodes[ref].kind.text_leaf.text);
-    try testing.expectEqualStrings(" A B ", Span.of(u8, ast.nodes[ref].content_span.?, s));
+    try testing.expectEqualStrings("a b", ast.ast.nodes[ref].kind.text_leaf.text);
+    try testing.expectEqualStrings(" A B ", Span.of(u8, ast.contentSpan(ref).?, s));
 }
 
 test "span: a core <...> autolink's content_span is the interior; a bare GFM autolink has none" {
     // Core autolink: framed by `<`/`>`, so content_span excludes them.
-    var uri = try parseAndFinishMapped("<http://x.dev>", .{});
+    var uri = try parseAndFinishMappedDoc("<http://x.dev>", .{});
     defer uri.deinit();
     const s1 = "<http://x.dev>";
-    const url = uri.nodes[uri.root].first_child.?;
-    try testing.expect(uri.nodes[url].kind == .text_leaf and uri.nodes[url].kind.text_leaf.kind == .url);
-    try testing.expectEqualStrings("<http://x.dev>", Span.of(u8, uri.nodes[url].span, s1));
-    try testing.expectEqualStrings("http://x.dev", Span.of(u8, uri.nodes[url].content_span.?, s1));
+    const url = uri.ast.nodes[uri.ast.root].first_child.?;
+    try testing.expect(uri.ast.nodes[url].kind == .text_leaf and uri.ast.nodes[url].kind.text_leaf.kind == .url);
+    try testing.expectEqualStrings("<http://x.dev>", Span.of(u8, uri.span(url), s1));
+    try testing.expectEqualStrings("http://x.dev", Span.of(u8, uri.contentSpan(url).?, s1));
 
-    var email = try parseAndFinishMapped("<a@b.com>", .{});
+    var email = try parseAndFinishMappedDoc("<a@b.com>", .{});
     defer email.deinit();
     const s2 = "<a@b.com>";
-    const mail = email.nodes[email.root].first_child.?;
-    try testing.expect(email.nodes[mail].kind == .text_leaf and email.nodes[mail].kind.text_leaf.kind == .email);
-    try testing.expectEqualStrings("a@b.com", Span.of(u8, email.nodes[mail].content_span.?, s2));
+    const mail = email.ast.nodes[email.ast.root].first_child.?;
+    try testing.expect(email.ast.nodes[mail].kind == .text_leaf and email.ast.nodes[mail].kind.text_leaf.kind == .email);
+    try testing.expectEqualStrings("a@b.com", Span.of(u8, email.contentSpan(mail).?, s2));
 
     // GFM extended (bare) autolink: frameless, so NO content_span.
-    var bare = try parseAndFinishMapped("https://x.dev", .{ .autolinks = true });
+    var bare = try parseAndFinishMappedDoc("https://x.dev", .{ .autolinks = true });
     defer bare.deinit();
-    const url2 = bare.nodes[bare.root].first_child.?;
-    try testing.expect(bare.nodes[url2].kind == .text_leaf and bare.nodes[url2].kind.text_leaf.kind == .url);
-    try testing.expect(bare.nodes[url2].content_span == null);
+    const url2 = bare.ast.nodes[bare.ast.root].first_child.?;
+    try testing.expect(bare.ast.nodes[url2].kind == .text_leaf and bare.ast.nodes[url2].kind.text_leaf.kind == .url);
+    try testing.expect(bare.contentSpan(url2) == null);
 }
 
 test "span: a partially-consumed delimiter run pairs its leftover with an outer opener" {
@@ -2995,83 +3029,83 @@ test "span: a partially-consumed delimiter run pairs its leftover with an outer 
     // leftover-opener re-match is exactly the delimiter-stack bookkeeping in
     // `processEmphasis` (spec ex409/414/415). Spans must stay byte-accurate
     // through both the partial consumption and the outer pairing.
-    var ast = try parseAndFinishMapped("*a **b***", .{});
+    var ast = try parseAndFinishMappedDoc("*a **b***", .{});
     defer ast.deinit();
     const s = "*a **b***";
 
-    const emph = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[emph].kind == .inline_mark and ast.nodes[emph].kind.inline_mark == .emph);
-    try testing.expectEqualStrings("*a **b***", Span.of(u8, ast.nodes[emph].span, s));
-    try testing.expectEqualStrings("a **b**", Span.of(u8, ast.nodes[emph].content_span.?, s));
-    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[emph].next_sibling);
+    const emph = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[emph].kind == .inline_mark and ast.ast.nodes[emph].kind.inline_mark == .emph);
+    try testing.expectEqualStrings("*a **b***", Span.of(u8, ast.span(emph), s));
+    try testing.expectEqualStrings("a **b**", Span.of(u8, ast.contentSpan(emph).?, s));
+    try testing.expectEqual(@as(?Node.Id, null), ast.ast.nodes[emph].next_sibling);
 
-    const a_space = ast.nodes[emph].first_child.?;
-    try testing.expectEqualStrings("a ", Span.of(u8, ast.nodes[a_space].span, s));
+    const a_space = ast.ast.nodes[emph].first_child.?;
+    try testing.expectEqualStrings("a ", Span.of(u8, ast.span(a_space), s));
 
-    const strong = ast.nodes[a_space].next_sibling.?;
-    try testing.expect(ast.nodes[strong].kind == .inline_mark and ast.nodes[strong].kind.inline_mark == .strong);
-    try testing.expectEqualStrings("**b**", Span.of(u8, ast.nodes[strong].span, s));
-    try testing.expectEqualStrings("b", Span.of(u8, ast.nodes[strong].content_span.?, s));
-    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[strong].next_sibling);
+    const strong = ast.ast.nodes[a_space].next_sibling.?;
+    try testing.expect(ast.ast.nodes[strong].kind == .inline_mark and ast.ast.nodes[strong].kind.inline_mark == .strong);
+    try testing.expectEqualStrings("**b**", Span.of(u8, ast.span(strong), s));
+    try testing.expectEqualStrings("b", Span.of(u8, ast.contentSpan(strong).?, s));
+    try testing.expectEqual(@as(?Node.Id, null), ast.ast.nodes[strong].next_sibling);
 }
 
 test "span: an inline link covers '[text](dest)', content_span covers just the text" {
-    var ast = try parseAndFinishMapped("[x](http://a.co)", .{});
+    var ast = try parseAndFinishMappedDoc("[x](http://a.co)", .{});
     defer ast.deinit();
     const s = "[x](http://a.co)";
-    const link = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[link].kind == .link);
-    try testing.expectEqualStrings("[x](http://a.co)", Span.of(u8, ast.nodes[link].span, s));
-    try testing.expectEqualStrings("x", Span.of(u8, ast.nodes[link].content_span.?, s));
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
+    try testing.expectEqualStrings("[x](http://a.co)", Span.of(u8, ast.span(link), s));
+    try testing.expectEqualStrings("x", Span.of(u8, ast.contentSpan(link).?, s));
 }
 
 test "span: an inline image covers '![alt](dest)'" {
-    var ast = try parseAndFinishMapped("![alt](/a.png)", .{});
+    var ast = try parseAndFinishMappedDoc("![alt](/a.png)", .{});
     defer ast.deinit();
     const s = "![alt](/a.png)";
-    const img = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[img].kind == .image);
-    try testing.expectEqualStrings("![alt](/a.png)", Span.of(u8, ast.nodes[img].span, s));
-    try testing.expectEqualStrings("alt", Span.of(u8, ast.nodes[img].content_span.?, s));
+    const img = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[img].kind == .image);
+    try testing.expectEqualStrings("![alt](/a.png)", Span.of(u8, ast.span(img), s));
+    try testing.expectEqualStrings("alt", Span.of(u8, ast.contentSpan(img).?, s));
 }
 
 test "span: a code span covers its own backticks" {
-    var ast = try parseAndFinishMapped("a `bc` d", .{});
+    var ast = try parseAndFinishMappedDoc("a `bc` d", .{});
     defer ast.deinit();
     const s = "a `bc` d";
-    const first = ast.nodes[ast.root].first_child.?; // "a "
-    const code = ast.nodes[first].next_sibling.?; // the verbatim node
-    try testing.expect(ast.nodes[code].kind == .text_leaf and ast.nodes[code].kind.text_leaf.kind == .verbatim);
-    try testing.expectEqualStrings("`bc`", Span.of(u8, ast.nodes[code].span, s));
+    const first = ast.ast.nodes[ast.ast.root].first_child.?; // "a "
+    const code = ast.ast.nodes[first].next_sibling.?; // the verbatim node
+    try testing.expect(ast.ast.nodes[code].kind == .text_leaf and ast.ast.nodes[code].kind.text_leaf.kind == .verbatim);
+    try testing.expectEqualStrings("`bc`", Span.of(u8, ast.span(code), s));
 }
 
 test "span: a strikethrough delete node covers '~~text~~'" {
-    var ast = try parseAndFinishMapped("~~gone~~", .{ .strikethrough = true });
+    var ast = try parseAndFinishMappedDoc("~~gone~~", .{ .strikethrough = true });
     defer ast.deinit();
     const s = "~~gone~~";
-    const del = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[del].kind == .inline_mark and ast.nodes[del].kind.inline_mark == .delete);
-    try testing.expectEqualStrings("~~gone~~", Span.of(u8, ast.nodes[del].span, s));
-    try testing.expectEqualStrings("gone", Span.of(u8, ast.nodes[del].content_span.?, s));
+    const del = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+    try testing.expectEqualStrings("~~gone~~", Span.of(u8, ast.span(del), s));
+    try testing.expectEqualStrings("gone", Span.of(u8, ast.contentSpan(del).?, s));
 }
 
 test "span: an autolink covers '<...>' including the angle brackets" {
-    var ast = try parseAndFinishMapped("<http://a.co>", .{});
+    var ast = try parseAndFinishMappedDoc("<http://a.co>", .{});
     defer ast.deinit();
     const s = "<http://a.co>";
-    const url = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[url].kind == .text_leaf and ast.nodes[url].kind.text_leaf.kind == .url);
-    try testing.expectEqualStrings(s, Span.of(u8, ast.nodes[url].span, s));
+    const url = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[url].kind == .text_leaf and ast.ast.nodes[url].kind.text_leaf.kind == .url);
+    try testing.expectEqualStrings(s, Span.of(u8, ast.span(url), s));
 }
 
 test "span: a node with no segment map is left unset (0,0)" {
     // The plain (unmapped) helper -- no `Segment`s at all -- must never
     // fabricate a span.
-    var ast = try parseAndFinish("*abc*");
+    var ast = try parseAndFinishDoc("*abc*");
     defer ast.deinit();
-    const em = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqual(@as(usize, 0), ast.nodes[em].span.start);
-    try testing.expectEqual(@as(usize, 0), ast.nodes[em].span.end);
+    const em = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqual(@as(usize, 0), ast.span(em).start);
+    try testing.expectEqual(@as(usize, 0), ast.span(em).end);
 }
 
 // ── Phase 3: footnote references ────────────────────────────────────────
@@ -3089,11 +3123,11 @@ test "footnote reference: [^label] becomes a footnote_reference node when the fl
 }
 
 test "footnote reference: the label is normalized (trim/collapse ws/lowercase), matching link labels" {
-    var ast = try parseAndFinishWithOptions("[^ A  B ]", .{ .footnotes = true });
+    var ast = try parseAndFinishWithOptionsDoc("[^ A  B ]", .{ .footnotes = true });
     defer ast.deinit();
-    const ref = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[ref].kind == .text_leaf and ast.nodes[ref].kind.text_leaf.kind == .footnote_reference);
-    try testing.expectEqualStrings("a b", ast.nodes[ref].kind.text_leaf.text);
+    const ref = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[ref].kind == .text_leaf and ast.ast.nodes[ref].kind.text_leaf.kind == .footnote_reference);
+    try testing.expectEqualStrings("a b", ast.ast.nodes[ref].kind.text_leaf.text);
 }
 
 test "footnote reference OFF: [^a] parses as plain CommonMark (an unresolved shortcut link falls back to literal brackets)" {
@@ -3109,65 +3143,65 @@ test "footnote reference OFF: [^a] parses as plain CommonMark (an unresolved sho
 // ── Phase 3: strikethrough ────────────────────────────────────────────────
 
 test "strikethrough: ~~text~~ becomes a delete node when the flag is on" {
-    var ast = try parseAndFinishWithOptions("~~gone~~", .{ .strikethrough = true });
+    var ast = try parseAndFinishWithOptionsDoc("~~gone~~", .{ .strikethrough = true });
     defer ast.deinit();
-    const del = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[del].kind == .inline_mark and ast.nodes[del].kind.inline_mark == .delete);
-    try testing.expectEqualStrings("gone", ast.nodes[ast.nodes[del].first_child.?].kind.str);
+    const del = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+    try testing.expectEqualStrings("gone", ast.ast.nodes[ast.ast.nodes[del].first_child.?].kind.str);
 }
 
 test "strikethrough: single tilde also delimits (GFM allows one or two)" {
-    var ast = try parseAndFinishWithOptions("~gone~", .{ .strikethrough = true });
+    var ast = try parseAndFinishWithOptionsDoc("~gone~", .{ .strikethrough = true });
     defer ast.deinit();
-    const del = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[del].kind == .inline_mark and ast.nodes[del].kind.inline_mark == .delete);
-    try testing.expectEqualStrings("gone", ast.nodes[ast.nodes[del].first_child.?].kind.str);
+    const del = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+    try testing.expectEqualStrings("gone", ast.ast.nodes[ast.ast.nodes[del].first_child.?].kind.str);
 }
 
 test "strikethrough: a run of 3+ tildes is never a delimiter, stays literal" {
-    var ast = try parseAndFinishWithOptions("~~~not~~~", .{ .strikethrough = true });
+    var ast = try parseAndFinishWithOptionsDoc("~~~not~~~", .{ .strikethrough = true });
     defer ast.deinit();
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings("~~~not~~~", ast.nodes[child].kind.str);
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("~~~not~~~", ast.ast.nodes[child].kind.str);
 }
 
 test "strikethrough OFF: ~~text~~ parses as plain CommonMark literal text" {
-    var ast = try parseAndFinishWithOptions("~~gone~~", .{ .strikethrough = false });
+    var ast = try parseAndFinishWithOptionsDoc("~~gone~~", .{ .strikethrough = false });
     defer ast.deinit();
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings("~~gone~~", ast.nodes[child].kind.str);
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("~~gone~~", ast.ast.nodes[child].kind.str);
 }
 
 // ── Phase 3: math ────────────────────────────────────────────────────────
 
 test "inline math: $x$ becomes inline_math when the flag is on" {
-    var ast = try parseAndFinishWithOptions("$x^2$", .{ .math = true });
+    var ast = try parseAndFinishWithOptionsDoc("$x^2$", .{ .math = true });
     defer ast.deinit();
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[child].kind == .text_leaf and ast.nodes[child].kind.text_leaf.kind == .inline_math);
-    try testing.expectEqualStrings("x^2", ast.nodes[child].kind.text_leaf.text);
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[child].kind == .text_leaf and ast.ast.nodes[child].kind.text_leaf.kind == .inline_math);
+    try testing.expectEqualStrings("x^2", ast.ast.nodes[child].kind.text_leaf.text);
 }
 
 test "display math: $$x$$ becomes display_math when the flag is on" {
-    var ast = try parseAndFinishWithOptions("$$x^2$$", .{ .math = true });
+    var ast = try parseAndFinishWithOptionsDoc("$$x^2$$", .{ .math = true });
     defer ast.deinit();
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[child].kind == .text_leaf and ast.nodes[child].kind.text_leaf.kind == .display_math);
-    try testing.expectEqualStrings("x^2", ast.nodes[child].kind.text_leaf.text);
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[child].kind == .text_leaf and ast.ast.nodes[child].kind.text_leaf.kind == .display_math);
+    try testing.expectEqualStrings("x^2", ast.ast.nodes[child].kind.text_leaf.text);
 }
 
 test "math OFF (the default): $x$ parses as plain CommonMark literal text" {
-    var ast = try parseAndFinish("$x$");
+    var ast = try parseAndFinishDoc("$x$");
     defer ast.deinit();
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings("$x$", ast.nodes[child].kind.str);
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("$x$", ast.ast.nodes[child].kind.str);
 }
 
 test "math: a dollar sign followed by whitespace never opens math" {
-    var ast = try parseAndFinishWithOptions("costs $5 and $10 total", .{ .math = true });
+    var ast = try parseAndFinishWithOptionsDoc("costs $5 and $10 total", .{ .math = true });
     defer ast.deinit();
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings("costs $5 and $10 total", ast.nodes[child].kind.str);
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("costs $5 and $10 total", ast.ast.nodes[child].kind.str);
 }
 
 // ── Phase 3: GFM extended autolinks ─────────────────────────────────────
@@ -3184,14 +3218,14 @@ test "extended autolink: bare https:// URL becomes a url node" {
 }
 
 test "extended autolink: www. gets an http:// prefix on the destination, text unchanged" {
-    var ast = try parseAndFinishWithOptions("visit www.example.com now", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("visit www.example.com now", .{ .autolinks = true });
     defer ast.deinit();
-    var it = ast.children(ast.root);
+    var it = ast.children(ast.ast.root);
     _ = it.next().?; // "visit "
     const link = it.next().?;
     try testing.expect(link.kind == .link);
     try testing.expectEqualStrings("http://www.example.com", link.kind.link.destination.?);
-    try testing.expectEqualStrings("www.example.com", ast.nodes[link.first_child.?].kind.str);
+    try testing.expectEqualStrings("www.example.com", ast.ast.nodes[link.first_child.?].kind.str);
 }
 
 test "extended autolink: trailing sentence punctuation is trimmed off the link" {
@@ -3240,10 +3274,10 @@ test "extended autolinks OFF: bare www./http(s) text parses as plain CommonMark 
 }
 
 test "extended autolinks: a word-internal http:// (preceded by a letter) does not autolink" {
-    var ast = try parseAndFinishWithOptions("xhttp://example.com", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("xhttp://example.com", .{ .autolinks = true });
     defer ast.deinit();
-    const child = ast.nodes[ast.root].first_child.?;
-    try testing.expectEqualStrings("xhttp://example.com", ast.nodes[child].kind.str);
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("xhttp://example.com", ast.ast.nodes[child].kind.str);
 }
 
 // ── links vs extended autolinks ─────────────────────────────────────────
@@ -3258,11 +3292,11 @@ test "extended autolink: an open bracket suppresses a url — it does not swallo
     // The bug this guards: the body scan stops only at space/`<`, so without
     // the bracket check the URL ate `](d)` and the link never closed —
     // `[a <a href="https://x.dev%5D(d)">https://x.dev](d)</a>`.
-    var ast = try parseAndFinishWithOptions("[a https://x.dev](d)", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("[a https://x.dev](d)", .{ .autolinks = true });
     defer ast.deinit();
-    const link = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[link].kind == .link);
-    try testing.expectEqualStrings("d", ast.nodes[link].kind.link.destination.?);
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
+    try testing.expectEqualStrings("d", ast.ast.nodes[link].kind.link.destination.?);
     // The URL survives as ordinary text inside the link, never as a nested one.
     var it = ast.children(link);
     try testing.expectEqualStrings("a https://x.dev", it.next().?.kind.str);
@@ -3298,18 +3332,18 @@ test "extended autolink: a `]` is an ordinary URL byte when no bracket is open" 
     // Why the fix can't just stop the body at `]`: per the spec a url runs to
     // the next space or `<`, so this links WHOLE. The bracket context decides,
     // not the byte.
-    var ast = try parseAndFinishWithOptions("www.example.com/a]b", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("www.example.com/a]b", .{ .autolinks = true });
     defer ast.deinit();
-    const link = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[link].kind == .link);
-    try testing.expectEqualStrings("http://www.example.com/a]b", ast.nodes[link].kind.link.destination.?);
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
+    try testing.expectEqualStrings("http://www.example.com/a]b", ast.ast.nodes[link].kind.link.destination.?);
 }
 
 test "extended autolink: an email inside a link that RESOLVES is demoted back to text" {
-    var ast = try parseAndFinishWithOptions("[a b@c.de](d)", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("[a b@c.de](d)", .{ .autolinks = true });
     defer ast.deinit();
-    const link = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[link].kind == .link);
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
     var it = ast.children(link);
     try testing.expectEqualStrings("a ", it.next().?.kind.str);
     // Demoted in place: same bytes, now a `str`, and no second `email` node.
@@ -3337,15 +3371,15 @@ test "extended autolink: an email inside a bracket that does NOT resolve still l
 test "extended autolink: demotion reaches an email nested deeper inside the link" {
     // cmark's postprocess skips the whole link SUBTREE, not just its direct
     // children, so the emphasis is no hiding place.
-    var ast = try parseAndFinishWithOptions("[a *b@c.de*](d)", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("[a *b@c.de*](d)", .{ .autolinks = true });
     defer ast.deinit();
-    const link = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[link].kind == .link);
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
     var it = ast.children(link);
     _ = it.next().?; // "a "
     const em = it.next().?;
     try testing.expect(em.kind == .inline_mark and em.kind.inline_mark == .emph);
-    const inner = ast.nodes[em.first_child.?];
+    const inner = ast.ast.nodes[em.first_child.?];
     try testing.expect(inner.kind == .str);
     try testing.expectEqualStrings("b@c.de", inner.kind.str);
 }
@@ -3368,10 +3402,10 @@ test "extended autolink: a CORE `<b@c.de>` inside a link is NOT demoted" {
     // The reason `demoteExtEmails` matches by node id rather than by kind.
     // cmark leaves this nested (invalid HTML, but it is what the reference
     // emits), because only the EXTENSION's emails go through the postprocess.
-    var ast = try parseAndFinishWithOptions("[a <b@c.de>](d)", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("[a <b@c.de>](d)", .{ .autolinks = true });
     defer ast.deinit();
-    const link = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[link].kind == .link);
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
     var it = ast.children(link);
     _ = it.next().?; // "a "
     const inner = it.next().?;
@@ -3383,10 +3417,10 @@ test "extended autolink: an email inside an IMAGE is not demoted (images are not
     // cmark's postprocess keys on the LINK node type; an image is a different
     // one, so nothing suppresses there. Invisible in HTML (alt text renders the
     // same either way), which is exactly why it is pinned on the AST here.
-    var ast = try parseAndFinishWithOptions("![a b@c.de](i)", .{ .autolinks = true });
+    var ast = try parseAndFinishWithOptionsDoc("![a b@c.de](i)", .{ .autolinks = true });
     defer ast.deinit();
-    const img = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[img].kind == .image);
+    const img = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[img].kind == .image);
     var it = ast.children(img);
     _ = it.next().?; // "a "
     try testing.expect(it.next().?.kind.text_leaf.kind == .email);

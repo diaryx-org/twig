@@ -22,6 +22,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("ast.zig");
+const Document = @import("../document.zig");
 const Span = @import("../span.zig");
 const locate = @import("locate.zig");
 
@@ -72,10 +73,12 @@ pub const Error = error{
 };
 
 /// Lift the table containing `offset` into a [`Grid`], or `error.NotInTable`.
-pub fn extract(allocator: Allocator, ast: *const AST, src: []const u8, offset: usize) Error!Grid {
+pub fn extract(allocator: Allocator, doc: *const Document, offset: usize) Error!Grid {
+    const ast = &doc.ast;
+    const src = doc.source;
     var chain: std.ArrayList(AST.Node.Id) = .empty;
     defer chain.deinit(allocator);
-    locate.ancestorChain(allocator, ast, offset, src.len, &chain) catch return error.OutOfMemory;
+    locate.ancestorChain(allocator, doc, offset, &chain) catch return error.OutOfMemory;
 
     var table_id: ?AST.Node.Id = null;
     for (chain.items) |id| {
@@ -110,7 +113,7 @@ pub fn extract(allocator: Allocator, ast: *const AST, src: []const u8, offset: u
         var cit = ast.children(child.id);
         while (cit.next()) |cell| {
             if (std.meta.activeTag(cell.kind) != .cell) continue;
-            const content = if (cell.content_span) |cs| src[cs.start..cs.end] else "";
+            const content = if (doc.contentSpan(cell.id)) |cs| src[cs.start..cs.end] else "";
             try cells.append(allocator, content);
             // Alignment is per column; the first row to reach a column defines it.
             if (col_index >= grid.aligns.items.len) {
@@ -122,9 +125,9 @@ pub fn extract(allocator: Allocator, ast: *const AST, src: []const u8, offset: u
         // cells individually), so the caret's cell can't be read off a cell span
         // — the row is located by its own (per-line) span, and the column by
         // counting the `|` separators before the caret on that line.
-        if (!found_caret and offset >= child.span.start and offset <= child.span.end) {
+        if (!found_caret and offset >= doc.span(child.id).start and offset <= doc.span(child.id).end) {
             grid.caret_row = row_index;
-            grid.caret_col = columnAt(src, child.span.start, offset);
+            grid.caret_col = columnAt(src, doc.span(child.id).start, offset);
             found_caret = true;
         }
         try grid.rows.append(allocator, cells);
@@ -141,7 +144,7 @@ pub fn extract(allocator: Allocator, ast: *const AST, src: []const u8, offset: u
         grid.caret_col = 0;
     }
 
-    const t = ast.nodes[table].span;
+    const t = doc.span(table);
     grid.region = Span.init(locate.lineStartAt(src, t.start), locate.lineEndAt(src, t.end -| 1));
     return grid;
 }

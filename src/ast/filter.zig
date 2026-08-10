@@ -30,6 +30,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("ast.zig");
 const Node = AST.Node;
+const Document = @import("../document.zig");
 const Splicer = @import("splicer.zig").Splicer;
 const Select = @import("select.zig");
 
@@ -72,13 +73,12 @@ pub fn apply(gpa: Allocator, editor: *Splicer, options: Options) anyerror!void {
     var i: usize = 0;
     while (true) : (i += 1) {
         if (i > bound) return FilterError.FilterDidNotConverge;
-        const ast = editor.astView();
-        const drops = try Select.resolveAll(gpa, ast, &drop_sel);
+        const drops = try Select.resolveAll(gpa, &editor.doc, &drop_sel);
         defer gpa.free(drops);
 
         const target: ?Node.Id = blk: {
             if (keep_sel_opt) |*k| {
-                const keeps = try Select.resolveAll(gpa, ast, k);
+                const keeps = try Select.resolveAll(gpa, &editor.doc, k);
                 defer gpa.free(keeps);
                 break :blk firstNotIn(drops, keeps);
             }
@@ -97,7 +97,7 @@ pub fn apply(gpa: Allocator, editor: *Splicer, options: Options) anyerror!void {
         var j: usize = 0;
         while (true) : (j += 1) {
             if (j > bound) return FilterError.FilterDidNotConverge;
-            const drops = try Select.resolveAll(gpa, editor.astView(), &drop_sel);
+            const drops = try Select.resolveAll(gpa, &editor.doc, &drop_sel);
             defer gpa.free(drops);
             if (drops.len == 0) break;
             try editor.unwrapNodeById(drops[0].id);
@@ -121,13 +121,13 @@ fn firstNotIn(candidates: []const Select.Match, set: []const Select.Match) ?Node
 
 const testing = std.testing;
 
-fn parseMarkdownDirectives(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!AST {
+fn parseMarkdownDirectives(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Document {
     _ = ctx;
     const Markdown = @import("../languages/markdown/markdown.zig");
     var doc = try Markdown.parse(a, s, .{ .directives = true });
     doc.link_references.deinit(a);
     doc.footnotes.deinit(a);
-    return doc.ast;
+    return doc.document();
 }
 
 const md_ctx: u8 = 0;

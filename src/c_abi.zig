@@ -480,7 +480,7 @@ pub export fn twig_document_ast_json(
     const allocator = activeAllocator();
     const handle = asHandle(raw);
 
-    const json = twig.ast_json.encodeAlloc(allocator, handle.parsed.ast()) catch |err| switch (err) {
+    const json = twig.ast_json.encodeAlloc(allocator, &handle.parsed.document()) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
     };
 
@@ -517,7 +517,7 @@ pub export fn twig_document_query(
     const allocator = activeAllocator();
     const handle = asHandle(raw);
 
-    const out = buildQueryMatches(allocator, handle.parsed.ast(), selector_src) catch |err| switch (err) {
+    const out = buildQueryMatches(allocator, &handle.parsed.document(), selector_src) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         error.InvalidSelector => return .invalid_argument,
     };
@@ -535,13 +535,13 @@ pub export fn twig_document_query(
 /// `twig_document_query` and `twig_editor_query`.
 fn buildQueryMatches(
     allocator: Allocator,
-    ast: *const twig.AST,
+    doc: *const twig.Document,
     selector_src: []const u8,
 ) error{ OutOfMemory, InvalidSelector }![]TwigQueryMatch {
     var selector = try twig.Select.parse(allocator, selector_src);
     defer selector.deinit();
 
-    const matches = try twig.Select.resolveAll(allocator, ast, &selector);
+    const matches = try twig.Select.resolveAll(allocator, doc, &selector);
     defer allocator.free(matches);
 
     if (matches.len == 0) return &.{};
@@ -555,7 +555,7 @@ fn buildQueryMatches(
             else
                 .{ .start = 0, .end = 0 },
             .has_content_span = if (m.content_span != null) 1 else 0,
-            .kind = kindNameZ(ast.nodes[m.id].kind),
+            .kind = kindNameZ(doc.ast.nodes[m.id].kind),
         };
     }
     return buf;
@@ -767,7 +767,7 @@ fn applyEdit(
     const allocator = activeAllocator();
     const splicer = &asEditor(raw).editor.splicer;
 
-    const id = twig.locator.resolve(allocator, splicer.astView(), locator) catch |err|
+    const id = twig.locator.resolve(allocator, &splicer.doc, locator) catch |err|
         return statusOfLocatorError(err);
 
     (switch (op) {
@@ -945,7 +945,7 @@ pub export fn twig_editor_ast_json(
     const allocator = activeAllocator();
     const handle = asEditor(raw);
 
-    const json = twig.ast_json.encodeAlloc(allocator, handle.editor.astView()) catch |err| switch (err) {
+    const json = twig.ast_json.encodeAlloc(allocator, &handle.editor.splicer.doc) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
     };
 
@@ -977,7 +977,7 @@ pub export fn twig_editor_query(
     const allocator = activeAllocator();
     const handle = asEditor(raw);
 
-    const out = buildQueryMatches(allocator, handle.editor.astView(), selector_src) catch |err| switch (err) {
+    const out = buildQueryMatches(allocator, &handle.editor.splicer.doc, selector_src) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         error.InvalidSelector => return .invalid_argument,
     };
@@ -1331,12 +1331,13 @@ pub export fn twig_editor_nodes(
 
     const allocator = activeAllocator();
     const handle = asEditor(raw);
-    const ast = handle.editor.astView();
-    const nodes = ast.nodes;
+    const doc = &handle.editor.splicer.doc;
+    const nodes = doc.ast.nodes;
 
     const buf = allocator.alloc(TwigFlatNode, nodes.len) catch return .out_of_memory;
     for (nodes, 0..) |*node, i| {
         buf[i] = flatNodeOf(
+            doc,
             node,
             @intCast(i),
             TWIG_NO_NODE, // parent filled in the pass below
@@ -1357,7 +1358,7 @@ pub export fn twig_editor_nodes(
     // Attributes: marshal into a companion buffer the flat nodes point into.
     // Built before publishing `buf` so a mid-way OOM leaves the old snapshot
     // intact. Identity order — `buf[i]` is arena node `i` for the whole tree.
-    const attrs = fillAttrs(allocator, ast, buf, null) catch {
+    const attrs = fillAttrs(allocator, &doc.ast, buf, null) catch {
         allocator.free(buf);
         return .out_of_memory;
     };
@@ -1394,7 +1395,8 @@ pub export fn twig_editor_child_spans(
     const len_out = out_len orelse return .invalid_argument;
     const allocator = activeAllocator();
     const handle = asEditor(raw);
-    const ast = handle.editor.astView();
+    const doc = &handle.editor.splicer.doc;
+    const ast = &doc.ast;
 
     const parent: twig.AST.Node.Id = if (node_id == TWIG_NO_NODE)
         ast.root
@@ -1407,7 +1409,7 @@ pub export fn twig_editor_child_spans(
     defer list.deinit(allocator);
     var it = ast.children(parent);
     while (it.next()) |child| {
-        list.append(allocator, flatMatch(ast, child.id)) catch return .out_of_memory;
+        list.append(allocator, flatMatch(doc, child.id)) catch return .out_of_memory;
     }
 
     if (handle.child_spans.len != 0) allocator.free(handle.child_spans);
@@ -1441,7 +1443,8 @@ pub export fn twig_editor_subtree(
     const len_out = out_len orelse return .invalid_argument;
     const allocator = activeAllocator();
     const handle = asEditor(raw);
-    const ast = handle.editor.astView();
+    const doc = &handle.editor.splicer.doc;
+    const ast = &doc.ast;
     if (node_id >= ast.nodes.len) return .invalid_argument;
 
     // The traversal is `AST.subtreeIds`; everything below is the wire remap into
@@ -1458,6 +1461,7 @@ pub export fn twig_editor_subtree(
     for (ids, 0..) |old_id, i| {
         const node = &ast.nodes[old_id];
         buf[i] = flatNodeOf(
+            doc,
             node,
             @intCast(i),
             TWIG_NO_NODE, // parent filled in the pass below
@@ -1506,11 +1510,11 @@ pub export fn twig_editor_node_at(
     const raw = ed orelse return .invalid_argument;
     const slot = out_match orelse return .invalid_argument;
     const handle = asEditor(raw);
-    const ast = handle.editor.astView();
+    const doc = &handle.editor.splicer.doc;
     if (offset > handle.editor.sourceBytes().len) return .invalid_argument;
 
-    const found = twig.locate.deepestContaining(ast, offset, handle.editor.sourceBytes().len) orelse return .not_found;
-    slot.* = flatMatch(ast, found);
+    const found = twig.locate.deepestContaining(doc, offset) orelse return .not_found;
+    slot.* = flatMatch(doc, found);
     return .ok;
 }
 
@@ -1530,14 +1534,12 @@ pub export fn twig_editor_nodes_at(
     const len_out = out_len orelse return .invalid_argument;
     const allocator = activeAllocator();
     const handle = asEditor(raw);
-    const ast = handle.editor.astView();
+    const doc = &handle.editor.splicer.doc;
     if (offset > handle.editor.sourceBytes().len) return .invalid_argument;
-
-    const len = handle.editor.sourceBytes().len;
     // Rebuild the exact root→deepest descent path, so the chain's last element
     // is always the node `twig_editor_node_at` returns. The root is included as
     // the outermost breadcrumb even when its own span is unset.
-    const deepest = twig.locate.deepestContaining(ast, offset, len) orelse {
+    const deepest = twig.locate.deepestContaining(doc, offset) orelse {
         if (handle.ancestor_matches.len != 0) allocator.free(handle.ancestor_matches);
         handle.ancestor_matches = &.{};
         ptr_out.* = null;
@@ -1548,11 +1550,11 @@ pub export fn twig_editor_nodes_at(
     var chain: std.ArrayList(TwigQueryMatch) = .empty;
     defer chain.deinit(allocator);
 
-    var cur = ast.root;
-    chain.append(allocator, flatMatch(ast, cur)) catch return .out_of_memory;
+    var cur = doc.ast.root;
+    chain.append(allocator, flatMatch(doc, cur)) catch return .out_of_memory;
     while (cur != deepest) {
-        cur = twig.locate.childContaining(ast, cur, offset, len) orelse break;
-        chain.append(allocator, flatMatch(ast, cur)) catch return .out_of_memory;
+        cur = twig.locate.childContaining(doc, cur, offset) orelse break;
+        chain.append(allocator, flatMatch(doc, cur)) catch return .out_of_memory;
     }
 
     if (handle.ancestor_matches.len != 0) allocator.free(handle.ancestor_matches);
@@ -1563,13 +1565,13 @@ pub export fn twig_editor_nodes_at(
 }
 
 /// Build a `TwigQueryMatch` for a node id from the flat arena.
-fn flatMatch(ast: *const twig.AST, id: twig.AST.Node.Id) TwigQueryMatch {
-    const node = &ast.nodes[id];
+fn flatMatch(doc: *const twig.Document, id: twig.AST.Node.Id) TwigQueryMatch {
+    const node = &doc.ast.nodes[id];
     return .{
         .node_id = id,
-        .span = spanC(node.span),
-        .content_span = if (node.content_span) |cs| spanC(cs) else .{ .start = 0, .end = 0 },
-        .has_content_span = if (node.content_span != null) 1 else 0,
+        .span = spanC(doc.span(id)),
+        .content_span = if (doc.contentSpan(id)) |cs| spanC(cs) else .{ .start = 0, .end = 0 },
+        .has_content_span = if (doc.contentSpan(id) != null) 1 else 0,
         .kind = kindName(node),
     };
 }
@@ -1578,7 +1580,7 @@ fn flatMatch(ast: *const twig.AST, id: twig.AST.Node.Id) TwigQueryMatch {
 /// ids in whatever id space the caller is building — arena ids for
 /// `twig_editor_nodes`, local ids for `twig_editor_subtree`. Spans are always
 /// absolute; only the links differ between the two callers.
-fn flatNodeOf(node: *const twig.AST.Node, id: u32, parent: u32, first_child: u32, next_sibling: u32) TwigFlatNode {
+fn flatNodeOf(doc: *const twig.Document, node: *const twig.AST.Node, id: u32, parent: u32, first_child: u32, next_sibling: u32) TwigFlatNode {
     const text = kindText(node);
     const dest = kindDestination(node);
     const name = kindElementName(node);
@@ -1587,9 +1589,9 @@ fn flatNodeOf(node: *const twig.AST.Node, id: u32, parent: u32, first_child: u32
         .parent = parent,
         .first_child = first_child,
         .next_sibling = next_sibling,
-        .span = spanC(node.span),
-        .content_span = if (node.content_span) |cs| spanC(cs) else .{ .start = 0, .end = 0 },
-        .has_content_span = if (node.content_span != null) 1 else 0,
+        .span = spanC(doc.span(node.id)),
+        .content_span = if (doc.contentSpan(node.id)) |cs| spanC(cs) else .{ .start = 0, .end = 0 },
+        .has_content_span = if (doc.contentSpan(node.id) != null) 1 else 0,
         .level = kindLevel(node),
         .kind = kindName(node),
         .text_ptr = if (text) |t| t.ptr else null,
@@ -2635,12 +2637,15 @@ pub export fn twig_builder_set_attrs(
 /// a purely generic-markup built tree (`element`/`comment`/...) into XML, which
 /// works today and which nothing tests. That's a behaviour call, not a mechanical
 /// one, so it is left exactly as it was — see the note in the refactor summary.
-fn serializeBuiltAst(allocator: Allocator, ast: *const twig.AST, target: twig.Format) anyerror![]u8 {
+fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: twig.Format) anyerror![]u8 {
+    const ast = &doc.ast;
     return switch (target) {
         .djot => twig.Djot.serializer.serializeAstAlloc(allocator, ast),
         .markdown => twig.Markdown.serializer.serializeAstAlloc(allocator, ast),
         .html => twig.Html.serializeAlloc(allocator, ast, null),
-        .xml => twig.Xml.serializeAlloc(allocator, ast),
+        // XML alone needs the positions: an absent interior span is its
+        // self-closing signal (see `languages/xml/serializer.zig`).
+        .xml => twig.Xml.serializeAlloc(allocator, doc),
     };
 }
 
@@ -2692,8 +2697,10 @@ pub export fn twig_builder_serialize(
     if (root >= handle.builder.nodes.items.len) return .invalid_argument;
 
     const allocator = activeAllocator();
-    const ast = handle.builder.view(root);
-    const serialized = serializeBuiltAst(allocator, &ast, target) catch |err| switch (err) {
+    // A built tree has no source text, so the view borrows an empty one; its
+    // position tables are whatever the caller set via the builder.
+    const doc = handle.builder.viewDocument("", root);
+    const serialized = serializeBuiltAst(allocator, &doc, target) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         error.UnsafeMetadata => return .unsafe_metadata,
         // Any other serializer error means the built tree can't be represented
@@ -2724,8 +2731,8 @@ pub export fn twig_builder_ast_json(
     if (root >= handle.builder.nodes.items.len) return .invalid_argument;
 
     const allocator = activeAllocator();
-    const ast = handle.builder.view(root);
-    const json = twig.ast_json.encodeAlloc(allocator, &ast) catch |err| switch (err) {
+    const doc = handle.builder.viewDocument("", root);
+    const json = twig.ast_json.encodeAlloc(allocator, &doc) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
     };
 
@@ -2755,8 +2762,8 @@ pub export fn twig_builder_query(
     if (root >= handle.builder.nodes.items.len) return .invalid_argument;
 
     const allocator = activeAllocator();
-    const ast = handle.builder.view(root);
-    const out = buildQueryMatches(allocator, &ast, selector_src) catch |err| switch (err) {
+    const doc = handle.builder.viewDocument("", root);
+    const out = buildQueryMatches(allocator, &doc, selector_src) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         error.InvalidSelector => return .invalid_argument,
     };

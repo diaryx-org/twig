@@ -26,32 +26,33 @@ const Writer = std.Io.Writer;
 const Stringify = std.json.Stringify;
 
 const AST = @import("ast.zig");
+const Document = @import("../document.zig");
 const Node = AST.Node;
 
 /// Encode `ast` (rooted at `ast.root`) as pretty-printed (2-space indent)
 /// JSON, writing to `writer`. Emits a trailing newline so piping straight to
 /// a terminal or a file looks like any other well-behaved text tool's
 /// output.
-pub fn encode(ast: *const AST, writer: *Writer) Writer.Error!void {
+pub fn encode(doc: *const Document, writer: *Writer) Writer.Error!void {
     var w: Stringify = .{ .writer = writer, .options = .{ .whitespace = .indent_2 } };
-    try writeNode(&w, ast, ast.root);
+    try writeNode(&w, doc, doc.ast.root);
     try writer.writeByte('\n');
 }
 
 /// `encode` into a freshly allocated, caller-owned buffer. The underlying
 /// `Writer.Allocating` only ever fails on allocation, so the encoder's
 /// `Writer.Error` collapses to `Allocator.Error` here.
-pub fn encodeAlloc(allocator: Allocator, ast: *const AST) Allocator.Error![]u8 {
+pub fn encodeAlloc(allocator: Allocator, doc: *const Document) Allocator.Error![]u8 {
     var out: Writer.Allocating = .init(allocator);
     defer out.deinit();
-    encode(ast, &out.writer) catch |err| switch (err) {
+    encode(doc, &out.writer) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
     };
     return out.toOwnedSlice();
 }
 
-fn writeNode(w: *Stringify, ast: *const AST, id: Node.Id) Writer.Error!void {
-    const node = ast.nodes[id];
+fn writeNode(w: *Stringify, doc: *const Document, id: Node.Id) Writer.Error!void {
+    const node = doc.ast.nodes[id];
 
     try w.beginObject();
 
@@ -60,11 +61,11 @@ fn writeNode(w: *Stringify, ast: *const AST, id: Node.Id) Writer.Error!void {
 
     try w.objectField("span");
     try w.beginArray();
-    try w.write(node.span.start);
-    try w.write(node.span.end);
+    try w.write(doc.span(id).start);
+    try w.write(doc.span(id).end);
     try w.endArray();
 
-    if (node.content_span) |cs| {
+    if (doc.contentSpan(id)) |cs| {
         try w.objectField("content_span");
         try w.beginArray();
         try w.write(cs.start);
@@ -74,7 +75,7 @@ fn writeNode(w: *Stringify, ast: *const AST, id: Node.Id) Writer.Error!void {
 
     try writeKindPayload(w, node.kind);
 
-    const attrs = ast.attrsOf(id);
+    const attrs = doc.ast.attrsOf(id);
     if (!attrs.isEmpty()) {
         try w.objectField("attrs");
         try w.beginArray();
@@ -92,8 +93,8 @@ fn writeNode(w: *Stringify, ast: *const AST, id: Node.Id) Writer.Error!void {
     if (node.first_child != null) {
         try w.objectField("children");
         try w.beginArray();
-        var it = ast.children(id);
-        while (it.next()) |child| try writeNode(w, ast, child.id);
+        var it = doc.children(id);
+        while (it.next()) |child| try writeNode(w, doc, child.id);
         try w.endArray();
     }
 
@@ -262,7 +263,7 @@ test "encode: leaf node gets kind/span, omits content_span/attrs/children when a
     const leaf = try b.addLeaf(.{ .str = "hi" });
     b.setSpan(leaf, .init(0, 2));
 
-    var ast = try b.finish(leaf);
+    var ast = try b.finishDocument("", leaf);
     defer ast.deinit();
 
     const out = try encodeAlloc(testing.allocator, &ast);
@@ -291,7 +292,7 @@ test "encode: container node nests children in source order" {
     const em = try b.addContainer(.{ .inline_mark = .emph }, &.{em_text});
     const para = try b.addContainer(.para, &.{ a, em });
 
-    var ast = try b.finish(para);
+    var ast = try b.finishDocument("", para);
     defer ast.deinit();
 
     const out = try encodeAlloc(testing.allocator, &ast);
@@ -320,7 +321,7 @@ test "encode: attrs render as ordered key/value pairs, bare attrs get a null val
         .{ .key = "type", .value = "checkbox" },
     } });
 
-    var ast = try b.finish(el);
+    var ast = try b.finishDocument("", el);
     defer ast.deinit();
 
     const out = try encodeAlloc(testing.allocator, &ast);
@@ -346,7 +347,7 @@ test "encode: content_span is emitted only when set, and enum payloads render as
     const list = try b.addContainer(.{ .bullet_list = .{ .style = .dash, .tight = true } }, &.{});
     b.setContentSpan(list, .init(1, 5));
 
-    var ast = try b.finish(list);
+    var ast = try b.finishDocument("", list);
     defer ast.deinit();
 
     const out = try encodeAlloc(testing.allocator, &ast);
@@ -370,7 +371,7 @@ test "encode is pretty-printed with 2-space indentation" {
     const leaf = try b.addLeaf(.{ .str = "x" });
     const root = try b.addContainer(.para, &.{leaf});
 
-    var ast = try b.finish(root);
+    var ast = try b.finishDocument("", root);
     defer ast.deinit();
 
     const out = try encodeAlloc(testing.allocator, &ast);

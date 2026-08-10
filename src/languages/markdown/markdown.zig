@@ -62,6 +62,10 @@ const block = @import("block.zig");
 const inline_mod = @import("inline.zig");
 
 pub const AST = @import("../../ast/ast.zig");
+const Span = @import("../../span.zig");
+/// The shared position-carrying document (`src/document.zig`), aliased to
+/// avoid colliding with this module's Markdown-specific `Document`.
+const TwigDocument = @import("../../document.zig");
 pub const ParseOptions = @import("options.zig");
 pub const html = @import("html.zig");
 pub const serializer = @import("serializer.zig");
@@ -82,6 +86,17 @@ pub const Parser = block.Parser;
 /// here rather than on the shared `AST` (XML/HTML have nothing like them).
 pub const Document = struct {
     ast: AST,
+
+    /// The source `ast` was parsed from (BORROWED) and the id-indexed position
+    /// tables tying the two together — `src/document.zig`'s
+    /// `source`/`node_spans`/`node_content_spans`, carried here for the same
+    /// reason djot's `Document` carries them: positions are not meaning, so
+    /// they ride beside the tree rather than on its nodes. A printer takes
+    /// `*const AST` and cannot reach a byte offset; the edit layer takes the
+    /// `TwigDocument` that `document()` projects.
+    source: []const u8 = "",
+    node_spans: []const Span = &.{},
+    node_content_spans: []const ?Span = &.{},
 
     /// The options this document was parsed with. Retained so RENDERING can
     /// recover the dialect (`ParseOptions.dialect`) without the caller having
@@ -124,9 +139,34 @@ pub const Document = struct {
     footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
 
     pub fn deinit(self: *Document) void {
-        self.link_references.deinit(self.ast.allocator);
-        self.footnotes.deinit(self.ast.allocator);
+        const allocator = self.ast.allocator;
+        self.link_references.deinit(allocator);
+        self.footnotes.deinit(allocator);
+        allocator.free(self.node_spans);
+        allocator.free(self.node_content_spans);
         self.ast.deinit();
+    }
+
+    /// A BORROWED `TwigDocument` view over this parse — the shape the edit
+    /// layer takes. Valid only while this `Document` lives; must NOT be
+    /// `deinit`ed. Same contract as djot's `Document.document`.
+    pub fn document(self: *const Document) TwigDocument {
+        return .{
+            .source = self.source,
+            .ast = self.ast,
+            .node_spans = self.node_spans,
+            .node_content_spans = self.node_content_spans,
+        };
+    }
+
+    /// Node `id`'s source span.
+    pub fn span(self: *const Document, id: AST.Node.Id) Span {
+        return self.node_spans[id];
+    }
+
+    /// Node `id`'s interior span, or `null`.
+    pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
+        return self.node_content_spans[id];
     }
 };
 
@@ -137,6 +177,9 @@ pub fn parse(allocator: Allocator, source: []const u8, options: ParseOptions) Al
     const result = try block.parse(allocator, source, options);
     return .{
         .ast = result.ast,
+        .source = result.source,
+        .node_spans = result.node_spans,
+        .node_content_spans = result.node_content_spans,
         .options = options,
         .link_references = result.link_references,
         .footnotes = result.footnotes,

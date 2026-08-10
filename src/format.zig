@@ -28,6 +28,7 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
 const AST = @import("ast/ast.zig");
+const Document = @import("document.zig");
 const Djot = @import("languages/djot/djot.zig");
 const Markdown = @import("languages/markdown/markdown.zig");
 const Xml = @import("languages/xml/xml.zig");
@@ -73,16 +74,27 @@ pub const ParseConfig = struct {
 pub const ParsedDoc = union(Format) {
     djot: Djot.Document,
     markdown: Markdown.Document,
-    xml: AST,
-    html: AST,
+    xml: Document,
+    html: Document,
 
-    /// The shared `AST` underneath, regardless of variant.
+    /// The shared `AST` underneath, regardless of variant — MEANING only.
     pub fn ast(self: *const ParsedDoc) *const AST {
         return switch (self.*) {
             .djot => |*d| &d.ast,
             .markdown => |*d| &d.ast,
-            .xml => |*a| a,
-            .html => |*a| a,
+            .xml => |*d| &d.ast,
+            .html => |*d| &d.ast,
+        };
+    }
+
+    /// A BORROWED `Document` view — the tree plus the positions addressing
+    /// `source`. What the edit layer and `languages/xml/serializer.zig` take;
+    /// must NOT be `deinit`ed (the variant owns the storage).
+    pub fn document(self: *const ParsedDoc) Document {
+        return switch (self.*) {
+            .djot => |*d| d.document(),
+            .markdown => |*d| d.document(),
+            .xml, .html => |*d| d.*,
         };
     }
 
@@ -90,8 +102,8 @@ pub const ParsedDoc = union(Format) {
         switch (self.*) {
             .djot => |*d| d.deinit(),
             .markdown => |*d| d.deinit(),
-            .xml => |*a| a.deinit(),
-            .html => |*a| a.deinit(),
+            .xml => |*d| d.deinit(),
+            .html => |*d| d.deinit(),
         }
     }
 };
@@ -124,28 +136,28 @@ fn parseHtml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) an
 // back `.ast` is leak-free and leaves a fully valid tree. XML and HTML already
 // return a bare `AST`.
 
-fn parseToAstDjot(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!AST {
+fn parseToAstDjot(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
     _ = ctx;
     var doc = try Djot.parse(allocator, source);
     doc.references.deinit(allocator);
     doc.auto_references.deinit(allocator);
     doc.footnotes.deinit(allocator);
-    return doc.ast;
+    return doc.document();
 }
 
-fn parseToAstMarkdown(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!AST {
+fn parseToAstMarkdown(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
     var doc = try Markdown.parse(allocator, source, ParseConfig.from(ctx).markdown);
     doc.link_references.deinit(allocator);
     doc.footnotes.deinit(allocator);
-    return doc.ast;
+    return doc.document();
 }
 
-fn parseToAstXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!AST {
+fn parseToAstXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
     _ = ctx;
     return Xml.parse(allocator, source);
 }
 
-fn parseToAstHtml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!AST {
+fn parseToAstHtml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
     _ = ctx;
     return Html.parse(allocator, source);
 }
@@ -179,7 +191,8 @@ fn renderHtmlMarkdown(allocator: Allocator, doc: *const ParsedDoc, writer: *Writ
 }
 
 fn serializeCanonicalXml(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
-    return Xml.serializeAlloc(allocator, doc.ast());
+    const d = doc.document();
+    return Xml.serializeAlloc(allocator, &d);
 }
 
 fn serializeCanonicalDjot(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
@@ -477,7 +490,7 @@ test "round-trip: a table survives Djot -> HTML -> Djot" {
 
     var page = try Html.parse(std.testing.allocator, rendered);
     defer page.deinit();
-    const back = try djot_serializer.serializeAstAlloc(std.testing.allocator, &page);
+    const back = try djot_serializer.serializeAstAlloc(std.testing.allocator, &page.ast);
     defer std.testing.allocator.free(back);
     try std.testing.expectEqualStrings(source, back);
 }

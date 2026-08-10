@@ -304,6 +304,14 @@ pub const TreeBuilder = struct {
     allocator: Allocator,
     source: []const u8,
     nodes: std.ArrayList(Node) = .empty,
+    /// Parallel to `nodes` — node `id`'s source span. Positions live beside
+    /// the arena rather than on the node, matching `ast/builder.zig` and
+    /// `src/document.zig`; `addNode` is the only place ids are minted, so the
+    /// arrays cannot drift.
+    spans: std.ArrayList(Span) = .empty,
+    /// Parallel to `nodes` — node `id`'s interior span. See
+    /// `Document.node_content_spans`.
+    content_spans: std.ArrayList(?Span) = .empty,
     owned_strings: std.ArrayList([]const u8) = .empty,
     attrs_table: std.ArrayList(AST.Attrs) = .empty,
     containers: std.ArrayList(TreeContainer) = .empty,
@@ -346,8 +354,17 @@ pub const TreeBuilder = struct {
 
     fn addNode(self: *TreeBuilder, kind: Node.Kind, span: Span) Allocator.Error!Node.Id {
         const id: Node.Id = @intCast(self.nodes.items.len);
-        try self.nodes.append(self.allocator, .{ .id = id, .kind = try self.dupeKind(kind), .span = span });
+        try self.nodes.append(self.allocator, .{ .id = id, .kind = try self.dupeKind(kind) });
+        try self.spans.append(self.allocator, span);
+        try self.content_spans.append(self.allocator, null);
         return id;
+    }
+
+    /// Set node `id`'s interior span. Named to read like `Builder`'s
+    /// `setContentSpan`, since it now does the same thing to a parallel array
+    /// rather than mutating a field on the node.
+    fn setContentSpan(self: *TreeBuilder, id: Node.Id, span: ?Span) void {
+        self.content_spans.items[id] = span;
     }
 
     /// Mirrors `ast/builder.zig`'s `dupeKind` (copy every string payload a
@@ -435,7 +452,7 @@ pub const TreeBuilder = struct {
         const first = first_child orelse return null;
         var last = first;
         while (self.nodes.items[last].next_sibling) |next| last = next;
-        return Span.init(self.nodes.items[first].span.start, self.nodes.items[last].span.end);
+        return Span.init(self.spans.items[first].start, self.spans.items[last].end);
     }
 
     /// The `content_span` of a framed *leaf* (inline `verbatim`/math, `<...>`
@@ -473,7 +490,7 @@ pub const TreeBuilder = struct {
             var c = closed;
             const sec_id = try self.addNode(.section, Span.init(c.start, self.source.len));
             self.nodes.items[sec_id].first_child = c.first_child;
-            self.nodes.items[sec_id].content_span = self.contentSpanFromChildren(c.first_child);
+            self.setContentSpan(sec_id, self.contentSpanFromChildren(c.first_child));
             try self.commitAttrs(sec_id, &c.attrs);
             self.addChildToTip(sec_id);
             c.deinit(self.allocator);
@@ -484,7 +501,7 @@ pub const TreeBuilder = struct {
         defer root.deinit(self.allocator);
         const doc_id = try self.addNode(.doc, Span.init(0, self.source.len));
         self.nodes.items[doc_id].first_child = root.first_child;
-        self.nodes.items[doc_id].content_span = self.contentSpanFromChildren(root.first_child);
+        self.setContentSpan(doc_id, self.contentSpanFromChildren(root.first_child));
         try self.commitAttrs(doc_id, &root.attrs);
 
         self.deinitScratch();
@@ -497,6 +514,11 @@ pub const TreeBuilder = struct {
                 .nodes = try self.nodes.toOwnedSlice(self.allocator),
                 .attrs = try self.attrs_table.toOwnedSlice(self.allocator),
             },
+            // Positions travel beside the tree, not inside it — see
+            // `djot.zig`'s `Document` and `src/document.zig`.
+            .source = self.source,
+            .node_spans = try self.spans.toOwnedSlice(self.allocator),
+            .node_content_spans = try self.content_spans.toOwnedSlice(self.allocator),
             .references = self.references,
             .auto_references = self.auto_references,
             .footnotes = self.footnotes,
@@ -593,7 +615,7 @@ pub const TreeBuilder = struct {
                     const alias = self.source[ev.start + 1 .. ev.end];
                     const id = try self.addNode(.{ .text_leaf = .{ .kind = .symb, .text = alias } }, Span.init(ev.start, ev.end + 1));
                     // Interior between the framing colons (`:name:` → `name`).
-                    self.nodes.items[id].content_span = leafInteriorSpan(ev.start + 1, ev.end);
+                    self.setContentSpan(id, leafInteriorSpan(ev.start + 1, ev.end));
                     self.addChildToTip(id);
                 } else {
                     try self.accumulated_text.appendSlice(self.allocator, self.textOf(ev));
@@ -605,7 +627,7 @@ pub const TreeBuilder = struct {
                 const id = try self.addNode(.{ .text_leaf = .{ .kind = .footnote_reference, .text = lab } }, Span.init(ev.start, ev.end + 1));
                 // Interior between the `[^` and `]` framing (raw label, which
                 // need not equal the normalized `.footnote_reference` payload).
-                self.nodes.items[id].content_span = leafInteriorSpan(ev.start + 2, ev.end);
+                self.setContentSpan(id, leafInteriorSpan(ev.start + 2, ev.end));
                 self.allocator.free(lab);
                 self.addChildToTip(id);
             },
@@ -694,7 +716,7 @@ pub const TreeBuilder = struct {
                 const span_start = if (c.data.is_image) c.start - 1 else c.start;
                 const id = try self.addNode(kind, Span.init(span_start, ev.end + 1));
                 self.nodes.items[id].first_child = c.first_child;
-                self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+                self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
                 self.context = .normal;
@@ -718,7 +740,7 @@ pub const TreeBuilder = struct {
                 const span_start = if (c.data.is_image) c.start - 1 else c.start;
                 const id = try self.addNode(kind, Span.init(span_start, ev.end + 1));
                 self.nodes.items[id].first_child = c.first_child;
-                self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+                self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
                 self.context = .normal;
@@ -739,7 +761,7 @@ pub const TreeBuilder = struct {
                 // Raw interior between the backticks (a later `raw_format`
                 // event may retype this node to `raw_inline`, keeping the same
                 // interior). `source[content_span]` is the raw, untrimmed text.
-                self.nodes.items[id].content_span = leafInteriorSpan(c.content_start, ev.start);
+                self.setContentSpan(id, leafInteriorSpan(c.content_start, ev.start));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
                 self.context = .normal;
@@ -767,7 +789,7 @@ pub const TreeBuilder = struct {
                 defer self.allocator.free(text);
                 const id = try self.addNode(.{ .text_leaf = .{ .kind = .url, .text = text } }, Span.init(c.start, ev.end + 1));
                 // Interior between the `<` and `>` autolink delimiters.
-                self.nodes.items[id].content_span = leafInteriorSpan(c.content_start, ev.start);
+                self.setContentSpan(id, leafInteriorSpan(c.content_start, ev.start));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
                 self.context = .normal;
@@ -785,7 +807,7 @@ pub const TreeBuilder = struct {
                 defer self.allocator.free(text);
                 const id = try self.addNode(.{ .text_leaf = .{ .kind = .email, .text = text } }, Span.init(c.start, ev.end + 1));
                 // Interior between the `<` and `>` autolink delimiters.
-                self.nodes.items[id].content_span = leafInteriorSpan(c.content_start, ev.start);
+                self.setContentSpan(id, leafInteriorSpan(c.content_start, ev.start));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
                 self.context = .normal;
@@ -798,7 +820,7 @@ pub const TreeBuilder = struct {
                 defer c.deinit(self.allocator);
                 const id = try self.addNode(.para, Span.init(c.start, ev.end + 1));
                 self.nodes.items[id].first_child = c.first_child;
-                self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+                self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
             },
@@ -839,7 +861,7 @@ pub const TreeBuilder = struct {
                 defer c.deinit(self.allocator);
                 const id = try self.addNode(.block_quote, Span.init(c.start, ev.end + 1));
                 self.nodes.items[id].first_child = c.first_child;
-                self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+                self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
             },
@@ -858,7 +880,7 @@ pub const TreeBuilder = struct {
                 defer c.deinit(self.allocator);
                 const id = try self.addNode(.{ .cell = .{ .head = false, .alignment = .default } }, Span.init(c.start, ev.end + 1));
                 self.nodes.items[id].first_child = c.first_child;
-                self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+                self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
             },
@@ -883,7 +905,7 @@ pub const TreeBuilder = struct {
                 defer c.deinit(self.allocator);
                 const id = try self.addNode(.{ .container = .{ .name = "", .form = .block_fenced } }, Span.init(c.start, ev.end + 1));
                 self.nodes.items[id].first_child = c.first_child;
-                self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+                self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
             },
@@ -950,7 +972,7 @@ pub const TreeBuilder = struct {
         defer c.deinit(self.allocator);
         const id = try self.addNode(kind, Span.init(c.start, ev.end + 1));
         self.nodes.items[id].first_child = c.first_child;
-        self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+        self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
         self.addChildToTip(id);
     }
 
@@ -990,7 +1012,7 @@ pub const TreeBuilder = struct {
         const id = try self.addNode(kind, Span.init(c.start, ev.end + 1));
         // Raw interior between the `$`/`$$` + backtick opener and the closing
         // backticks; `source[content_span]` is untrimmed, unlike `text`.
-        self.nodes.items[id].content_span = leafInteriorSpan(c.content_start, ev.start);
+        self.setContentSpan(id, leafInteriorSpan(c.content_start, ev.start));
         try self.commitAttrs(id, &c.attrs);
         self.addChildToTip(id);
         self.context = .normal;
@@ -1014,7 +1036,7 @@ pub const TreeBuilder = struct {
                 const whole = text;
                 const word = whole[word_start..];
                 self.nodes.items[tip_id.?].kind = .{ .str = whole[0..word_start] };
-                const word_id = try self.addNode(.{ .str = word }, self.nodes.items[tip_id.?].span);
+                const word_id = try self.addNode(.{ .str = word }, self.spans.items[tip_id.?]);
                 self.addChildToTip(word_id);
                 tip_id = word_id;
             } else {
@@ -1105,7 +1127,7 @@ pub const TreeBuilder = struct {
                 var closed = self.popContainer();
                 const sec_id = try self.addNode(.section, Span.init(closed.start, ev.end + 1));
                 self.nodes.items[sec_id].first_child = closed.first_child;
-                self.nodes.items[sec_id].content_span = self.contentSpanFromChildren(closed.first_child);
+                self.setContentSpan(sec_id, self.contentSpanFromChildren(closed.first_child));
                 try self.commitAttrs(sec_id, &closed.attrs);
                 self.addChildToTip(sec_id);
                 closed.deinit(self.allocator);
@@ -1124,7 +1146,7 @@ pub const TreeBuilder = struct {
 
         const id = try self.addNode(.{ .heading = .{ .level = level } }, Span.init(c.start, ev.end + 1));
         self.nodes.items[id].first_child = c.first_child;
-        self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+        self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
         try self.commitAttrs(id, &c.attrs);
         self.addChildToTip(id);
         c.deinit(self.allocator);
@@ -1149,7 +1171,7 @@ pub const TreeBuilder = struct {
         };
         const id = try self.addNode(kind, s);
         self.nodes.items[id].first_child = c.first_child;
-        self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+        self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
         try self.commitAttrs(id, &c.attrs);
         self.addChildToTip(id);
     }
@@ -1169,26 +1191,26 @@ pub const TreeBuilder = struct {
             }
             const term_id = try self.addNode(.term, s);
             self.nodes.items[term_id].first_child = term_children;
-            self.nodes.items[term_id].content_span = self.contentSpanFromChildren(term_children);
+            self.setContentSpan(term_id, self.contentSpanFromChildren(term_children));
             const def_id = try self.addNode(.definition, s);
             self.nodes.items[def_id].first_child = def_first;
-            self.nodes.items[def_id].content_span = self.contentSpanFromChildren(def_first);
+            self.setContentSpan(def_id, self.contentSpanFromChildren(def_first));
             self.nodes.items[term_id].next_sibling = def_id;
             const item_id = try self.addNode(.definition_list_item, s);
             self.nodes.items[item_id].first_child = term_id;
-            self.nodes.items[item_id].content_span = self.contentSpanFromChildren(term_id);
+            self.setContentSpan(item_id, self.contentSpanFromChildren(term_id));
             try self.commitAttrs(item_id, &c.attrs);
             self.addChildToTip(item_id);
         } else if (c.data.checkbox) |checked| {
             const id = try self.addNode(.{ .task_list_item = .{ .checked = checked } }, s);
             self.nodes.items[id].first_child = c.first_child;
-            self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+            self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
             try self.commitAttrs(id, &c.attrs);
             self.addChildToTip(id);
         } else {
             const id = try self.addNode(.list_item, s);
             self.nodes.items[id].first_child = c.first_child;
-            self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+            self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
             try self.commitAttrs(id, &c.attrs);
             self.addChildToTip(id);
         }
@@ -1209,7 +1231,7 @@ pub const TreeBuilder = struct {
         self.nodes.items[caption_id].next_sibling = first_row;
         const id = try self.addNode(.table, s);
         self.nodes.items[id].first_child = caption_id;
-        self.nodes.items[id].content_span = self.contentSpanFromChildren(caption_id);
+        self.setContentSpan(id, self.contentSpanFromChildren(caption_id));
         try self.commitAttrs(id, &c.attrs);
         self.addChildToTip(id);
     }
@@ -1248,7 +1270,7 @@ pub const TreeBuilder = struct {
         }
         const id = try self.addNode(.{ .row = .{ .head = false } }, Span.init(c.start, ev.end + 1));
         self.nodes.items[id].first_child = c.first_child;
-        self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+        self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
         try self.commitAttrs(id, &c.attrs);
         self.addChildToTip(id);
     }
@@ -1260,7 +1282,7 @@ pub const TreeBuilder = struct {
         if (self.nodes.items[tip_id].kind != .table) return;
         const capt_id = try self.addNode(.caption, Span.init(c.start, ev.end + 1));
         self.nodes.items[capt_id].first_child = c.first_child;
-        self.nodes.items[capt_id].content_span = self.contentSpanFromChildren(c.first_child);
+        self.setContentSpan(capt_id, self.contentSpanFromChildren(c.first_child));
         try self.commitAttrs(capt_id, &c.attrs);
         if (self.nodes.items[tip_id].first_child) |old_capt| {
             if (self.nodes.items[old_capt].kind == .caption) {
@@ -1270,7 +1292,7 @@ pub const TreeBuilder = struct {
                 // first child (the placeholder/earlier caption); re-derive
                 // now that the caption swap changed where its interior
                 // starts.
-                self.nodes.items[tip_id].content_span = self.contentSpanFromChildren(capt_id);
+                self.setContentSpan(tip_id, self.contentSpanFromChildren(capt_id));
             }
         }
     }
@@ -1283,7 +1305,7 @@ pub const TreeBuilder = struct {
         defer self.allocator.free(lab);
         const id = try self.addNode(.{ .footnote = .{ .label = lab } }, Span.init(c.start, ev.end + 1));
         self.nodes.items[id].first_child = c.first_child;
-        self.nodes.items[id].content_span = self.contentSpanFromChildren(c.first_child);
+        self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
         try self.commitAttrs(id, &c.attrs);
         const owned_lab = try self.own(lab);
         if (!self.footnotes.contains(owned_lab)) try self.footnotes.put(self.allocator, owned_lab, id);
@@ -1301,7 +1323,7 @@ pub const TreeBuilder = struct {
         // `TreeContainer`). `null` for an empty fenced block (no body line
         // seen). `source[content_span]` is the raw body, whereas `.text` is
         // dedented/newline-normalized — they need not byte-match.
-        if (c.body_start) |bs| self.nodes.items[id].content_span = Span.init(bs, c.body_end);
+        if (c.body_start) |bs| self.setContentSpan(id, Span.init(bs, c.body_end));
         try self.commitAttrs(id, &c.attrs);
         self.addChildToTip(id);
         self.context = .normal;
@@ -1454,13 +1476,13 @@ test "content_span: div's interior covers its child paragraph" {
 
     const div_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("", ast.nodes[div_id].kind.container.name);
-    const cs = ast.nodes[div_id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(div_id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("abc", std.mem.trim(u8, src[cs.start..cs.end], " \t\r\n"));
 
     // The interior is exactly the extent of the div's one child (the
     // paragraph), matching the XML parser's tag-interior convention.
     const para_id = ast.nodes[div_id].first_child orelse return error.TestExpectedNonNull;
-    try testing.expect(cs.eql(ast.nodes[para_id].span));
+    try testing.expect(cs.eql(doc.span(para_id)));
 }
 
 test "content_span: inline emphasis covers its text" {
@@ -1472,7 +1494,7 @@ test "content_span: inline emphasis covers its text" {
     const para_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const emph_id = ast.nodes[para_id].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[emph_id].kind == .inline_mark and ast.nodes[emph_id].kind.inline_mark == .emph);
-    const cs = ast.nodes[emph_id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(emph_id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("abc", src[cs.start..cs.end]);
 }
 
@@ -1485,7 +1507,7 @@ test "content_span: a leaf str node stays null" {
     const para_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const str_id = ast.nodes[para_id].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[str_id].kind == .str);
-    try testing.expectEqual(@as(?Span, null), ast.nodes[str_id].content_span);
+    try testing.expectEqual(@as(?Span, null), doc.contentSpan(str_id));
 }
 
 test "span: an inline image includes its leading `!`" {
@@ -1497,7 +1519,7 @@ test "span: an inline image includes its leading `!`" {
     const para_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const img_id = ast.nodes[para_id].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[img_id].kind == .image);
-    const sp = ast.nodes[img_id].span;
+    const sp = doc.span(img_id);
     // The span must start at the `!` (offset 0), not the `[` — otherwise an
     // `edit --delete` of the image orphans a stray `!`.
     try testing.expectEqualStrings("![alt](img.png)", src[sp.start..sp.end]);
@@ -1512,7 +1534,7 @@ test "span: a reference image includes its leading `!`" {
     const para_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     const img_id = ast.nodes[para_id].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[img_id].kind == .image);
-    const sp = ast.nodes[img_id].span;
+    const sp = doc.span(img_id);
     try testing.expectEqualStrings("![alt][id]", src[sp.start..sp.end]);
 }
 
@@ -1525,7 +1547,7 @@ test "content_span: an empty div (no children) stays null" {
     const div_id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("", ast.nodes[div_id].kind.container.name);
     try testing.expectEqual(@as(?Node.Id, null), ast.nodes[div_id].first_child);
-    try testing.expectEqual(@as(?Span, null), ast.nodes[div_id].content_span);
+    try testing.expectEqual(@as(?Span, null), doc.contentSpan(div_id));
 }
 
 // djot.js records source positions as line:col:byte triples; Twig records the
@@ -1540,24 +1562,24 @@ test "span: a bullet list and its items carry byte-accurate spans (sourcepos par
 
     const list = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[list].kind == .bullet_list);
-    try testing.expectEqual(@as(usize, 1), ast.nodes[list].span.start);
-    try testing.expectEqual(@as(usize, 10), ast.nodes[list].span.end);
+    try testing.expectEqual(@as(usize, 1), doc.span(list).start);
+    try testing.expectEqual(@as(usize, 10), doc.span(list).end);
 
     const item1 = ast.nodes[list].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[item1].kind == .list_item);
-    try testing.expectEqual(@as(usize, 1), ast.nodes[item1].span.start);
-    try testing.expectEqual(@as(usize, 6), ast.nodes[item1].span.end);
+    try testing.expectEqual(@as(usize, 1), doc.span(item1).start);
+    try testing.expectEqual(@as(usize, 6), doc.span(item1).end);
 
     const item2 = ast.nodes[item1].next_sibling orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[item2].kind == .list_item);
-    try testing.expectEqual(@as(usize, 6), ast.nodes[item2].span.start);
-    try testing.expectEqual(@as(usize, 10), ast.nodes[item2].span.end);
+    try testing.expectEqual(@as(usize, 6), doc.span(item2).start);
+    try testing.expectEqual(@as(usize, 10), doc.span(item2).end);
 
     // The leaf `str` spans exactly its single character.
     const para1 = ast.nodes[item1].first_child orelse return error.TestExpectedNonNull;
     const str1 = ast.nodes[para1].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[str1].kind == .str);
-    try testing.expectEqualStrings("a", src[ast.nodes[str1].span.start..ast.nodes[str1].span.end]);
+    try testing.expectEqualStrings("a", src[doc.span(str1).start..doc.span(str1).end]);
 }
 
 // ── content_span on framed *leaves* ─────────────────────────────────────
@@ -1582,9 +1604,9 @@ test "content_span: inline verbatim is the interior between the backticks" {
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .verbatim);
-    const sp = ast.nodes[id].span;
+    const sp = doc.span(id);
     try testing.expectEqualStrings("`code`", src[sp.start..sp.end]);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("code", src[cs.start..cs.end]);
 }
 
@@ -1599,7 +1621,7 @@ test "content_span: verbatim raw interior differs from the space-trimmed text" {
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .verbatim);
     try testing.expectEqualStrings("`x`", ast.nodes[id].kind.text_leaf.text);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     // Raw interior INCLUDES the framing spaces: content_span != text.
     try testing.expectEqualStrings(" `x` ", src[cs.start..cs.end]);
 }
@@ -1612,9 +1634,9 @@ test "content_span: inline and display math interiors exclude their delimiters" 
         const ast = doc.ast;
         const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
         try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .inline_math);
-        const sp = ast.nodes[id].span;
+        const sp = doc.span(id);
         try testing.expectEqualStrings("$`x+y`", src[sp.start..sp.end]);
-        const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+        const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
         try testing.expectEqualStrings("x+y", src[cs.start..cs.end]);
     }
     {
@@ -1624,9 +1646,9 @@ test "content_span: inline and display math interiors exclude their delimiters" 
         const ast = doc.ast;
         const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
         try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .display_math);
-        const sp = ast.nodes[id].span;
+        const sp = doc.span(id);
         try testing.expectEqualStrings("$$`x+y`", src[sp.start..sp.end]);
-        const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+        const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
         try testing.expectEqualStrings("x+y", src[cs.start..cs.end]);
     }
 }
@@ -1639,7 +1661,7 @@ test "content_span: raw inline keeps the backtick interior (not the {=fmt})" {
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .raw_inline);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("raw", src[cs.start..cs.end]);
 }
 
@@ -1651,9 +1673,9 @@ test "content_span: url autolink interior excludes the angle brackets" {
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .url);
-    const sp = ast.nodes[id].span;
+    const sp = doc.span(id);
     try testing.expectEqualStrings("<https://x.dev>", src[sp.start..sp.end]);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("https://x.dev", src[cs.start..cs.end]);
 }
 
@@ -1665,7 +1687,7 @@ test "content_span: email autolink interior excludes the angle brackets" {
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .email);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("a@b.dev", src[cs.start..cs.end]);
 }
 
@@ -1677,9 +1699,9 @@ test "content_span: symbol interior excludes the framing colons" {
 
     const id = firstInlineLeaf(ast) orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .symb);
-    const sp = ast.nodes[id].span;
+    const sp = doc.span(id);
     try testing.expectEqualStrings(":smile:", src[sp.start..sp.end]);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("smile", src[cs.start..cs.end]);
 }
 
@@ -1694,9 +1716,9 @@ test "content_span: footnote reference interior excludes the [^ and ]" {
     const str_x = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
     const id = ast.nodes[str_x].next_sibling orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .text_leaf and ast.nodes[id].kind.text_leaf.kind == .footnote_reference);
-    const sp = ast.nodes[id].span;
+    const sp = doc.span(id);
     try testing.expectEqualStrings("[^note]", src[sp.start..sp.end]);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("note", src[cs.start..cs.end]);
 }
 
@@ -1708,7 +1730,7 @@ test "content_span: fenced code block body excludes both fence lines" {
 
     const id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .code_block);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     // Raw source body — the fence lines (```lua and ```) are excluded.
     try testing.expectEqualStrings("x=1\ny=2\n", src[cs.start..cs.end]);
     // The payload matches here, but the guarantee is only that the span
@@ -1725,7 +1747,7 @@ test "content_span: raw block body excludes both fence lines" {
 
     const id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .raw_block);
-    const cs = ast.nodes[id].content_span orelse return error.TestExpectedNonNull;
+    const cs = doc.contentSpan(id) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("<b>hi</b>\n", src[cs.start..cs.end]);
 }
 
@@ -1737,5 +1759,5 @@ test "content_span: an empty fenced code block (no body) stays null" {
 
     const id = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[id].kind == .code_block);
-    try testing.expectEqual(@as(?Span, null), ast.nodes[id].content_span);
+    try testing.expectEqual(@as(?Span, null), doc.contentSpan(id));
 }

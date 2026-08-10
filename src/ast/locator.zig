@@ -17,6 +17,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const AST = @import("ast.zig");
+const Document = @import("../document.zig");
 const Select = @import("select.zig");
 
 pub const Error = error{
@@ -52,7 +53,8 @@ pub fn parsePath(allocator: Allocator, path_str: []const u8) Error![]const usize
 
 /// Resolve a locator (index path or unique selector) to a single node id
 /// against `ast`.
-pub fn resolve(allocator: Allocator, ast: *const AST, locator: []const u8) Error!AST.Node.Id {
+pub fn resolve(allocator: Allocator, doc: *const Document, locator: []const u8) Error!AST.Node.Id {
+    const ast = &doc.ast;
     if (isIndexPath(locator)) {
         const path = try parsePath(allocator, locator);
         defer if (path.len > 0) allocator.free(path);
@@ -65,7 +67,7 @@ pub fn resolve(allocator: Allocator, ast: *const AST, locator: []const u8) Error
     };
     defer selector.deinit();
 
-    const matches = try Select.resolveAll(allocator, ast, &selector);
+    const matches = try Select.resolveAll(allocator, doc, &selector);
     defer allocator.free(matches);
 
     if (matches.len == 0) return error.NotFound;
@@ -100,7 +102,7 @@ test "resolve accepts both a path and a selector, and reports why it failed" {
     defer ast.deinit();
 
     // The root is the empty path.
-    try std.testing.expectEqual(ast.root, try resolve(gpa, &ast, ""));
+    try std.testing.expectEqual(ast.ast.root, try resolve(gpa, &ast, ""));
     // A selector matching exactly one node resolves.
     _ = try resolve(gpa, &ast, "element[name=r]");
     // Two `<a>` elements: ambiguous, not a silent first-match.

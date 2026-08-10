@@ -40,6 +40,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const AST = @import("ast.zig");
+const Document = @import("../document.zig");
 const Span = @import("../span.zig");
 const locate = @import("locate.zig");
 const table_edit = @import("table_edit.zig");
@@ -206,10 +207,8 @@ pub const Editor = struct {
 
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
-        const ast = self.astView();
-        const block = locate.innermostBlock(ast, offset, src.len) orelse return error.NoBlock;
-        const node = ast.nodes[block];
-        const cs = node.content_span orelse return error.NotEditable;
+        const block = locate.innermostBlock(&self.splicer.doc, offset) orelse return error.NoBlock;
+        const cs = self.splicer.doc.contentSpan(block) orelse return error.NotEditable;
         const content = src[cs.start..cs.end];
 
         // Rewrite [block start, end-of-text): the leading marker region (a
@@ -217,9 +216,10 @@ pub const Editor = struct {
         // trailing newline the block span includes (Djot blocks do), so we don't
         // fuse with the next block. Rebuilding from `content_span` also
         // collapses a setext heading's underline line away for free.
-        var end = node.span.end;
-        if (end > node.span.start and src[end - 1] == '\n') end -= 1;
-        if (end > node.span.start and src[end - 1] == '\r') end -= 1;
+        const block_span = self.splicer.doc.span(block);
+        var end = block_span.end;
+        if (end > block_span.start and src[end - 1] == '\n') end -= 1;
+        if (end > block_span.start and src[end - 1] == '\r') end -= 1;
 
         const allocator = self.splicer.allocator;
         const prefix_len: usize = if (kind == .heading) level + 1 else 0; // marker*level + " "
@@ -231,7 +231,7 @@ pub const Editor = struct {
         }
         @memcpy(buf[prefix_len..], content);
 
-        return self.commitSplice(node.span.start, end, buf);
+        return self.commitSplice(block_span.start, end, buf);
     }
 
     // ── Block containers (quote / lists) ───────────────────────────────────
@@ -257,22 +257,22 @@ pub const Editor = struct {
         const src = self.sourceBytes();
         const ast = self.astView();
 
-        const blocks = coveredBlocks(allocator, ast, src, span.start, span.end) catch |err| switch (err) {
+        const blocks = coveredBlocks(allocator, &self.splicer.doc, span.start, span.end) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.NoBlock,
         };
         defer allocator.free(blocks.chain);
 
-        const region_start = locate.lineStartAt(src, ast.nodes[blocks.first].span.start);
-        const region_end = locate.lineEndAt(src, ast.nodes[blocks.last].span.end -| 1);
+        const region_start = locate.lineStartAt(src, self.splicer.doc.span(blocks.first).start);
+        const region_end = locate.lineEndAt(src, self.splicer.doc.span(blocks.last).end -| 1);
 
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
 
         // The toggle-off / convert / nest decision, all from the ancestor chain.
-        if (locate.innermostOfKind(ast, blocks.chain, kindTag(kind))) |target| {
-            if (containerFullyCovered(ast, src, target, region_start, region_end)) {
-                const t = ast.nodes[target].span;
+        if (locate.innermostOfKind(&self.splicer.doc, blocks.chain, kindTag(kind))) |target| {
+            if (containerFullyCovered(&self.splicer.doc, target, region_start, region_end)) {
+                const t = self.splicer.doc.span(target);
                 // The container's own lines, not the range's: its span can reach
                 // past the last covered block (a quote's trailing `>` line).
                 const splice_start = locate.lineStartAt(src, t.start);
@@ -289,7 +289,7 @@ pub const Editor = struct {
                     .bullet_list, .ordered_list => try buildListRewrite(
                         allocator,
                         src,
-                        ast,
+                        &self.splicer.doc,
                         target,
                         splice_start,
                         splice_end,
@@ -302,18 +302,18 @@ pub const Editor = struct {
         }
         if (kind == .bullet_list or kind == .ordered_list) {
             const other: Splicer.KindTag = if (kind == .bullet_list) .ordered_list else .bullet_list;
-            if (locate.innermostOfKind(ast, blocks.chain, other)) |target| {
-                if (containerFullyCovered(ast, src, target, region_start, region_end)) {
-                    const t = ast.nodes[target].span;
+            if (locate.innermostOfKind(&self.splicer.doc, blocks.chain, other)) |target| {
+                if (containerFullyCovered(&self.splicer.doc, target, region_start, region_end)) {
+                    const t = self.splicer.doc.span(target);
                     const splice_start = locate.lineStartAt(src, t.start);
                     const splice_end = locate.lineEndAt(src, t.end -| 1);
-                    try buildListRewrite(allocator, src, ast, target, splice_start, splice_end, sp, &out);
+                    try buildListRewrite(allocator, src, &self.splicer.doc, target, splice_start, splice_end, sp, &out);
                     return self.commitSplice(splice_start, splice_end, out.items);
                 }
             }
         }
 
-        try buildContainerAdd(allocator, src, ast, blocks, region_start, region_end, sp, &out);
+        try buildContainerAdd(allocator, src, &self.splicer.doc, blocks, region_start, region_end, sp, &out);
         return self.commitSplice(region_start, region_end, out.items);
     }
 
@@ -338,7 +338,7 @@ pub const Editor = struct {
         // whole nest under it in one pass so its levels stay consistent.
         var chain: std.ArrayList(AST.Node.Id) = .empty;
         defer chain.deinit(allocator);
-        locate.ancestorChain(allocator, ast, offset, src.len, &chain) catch
+        locate.ancestorChain(allocator, &self.splicer.doc, offset, &chain) catch
             return error.OutOfMemory;
         var outer: ?AST.Node.Id = null;
         for (chain.items) |id| {
@@ -349,8 +349,8 @@ pub const Editor = struct {
         }
         const list = outer orelse return error.NoBlock;
 
-        const region_start = locate.lineStartAt(src, ast.nodes[list].span.start);
-        const region_end = locate.lineEndAt(src, ast.nodes[list].span.end -| 1);
+        const region_start = locate.lineStartAt(src, self.splicer.doc.span(list).start);
+        const region_end = locate.lineEndAt(src, self.splicer.doc.span(list).end -| 1);
 
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
@@ -419,10 +419,9 @@ pub const Editor = struct {
     fn tableEdit(self: *Editor, offset: usize, op: TableOp) Error!void {
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
-        const ast = self.astView();
         const allocator = self.splicer.allocator;
 
-        var grid = table_edit.extract(allocator, ast, src, offset) catch |e| return mapTableErr(e);
+        var grid = table_edit.extract(allocator, &self.splicer.doc, offset) catch |e| return mapTableErr(e);
         defer grid.deinit();
 
         (switch (op) {
@@ -515,7 +514,7 @@ pub const Editor = struct {
 
         var chain: std.ArrayList(AST.Node.Id) = .empty;
         defer chain.deinit(allocator);
-        try locate.ancestorChain(allocator, ast, start, src.len, &chain);
+        try locate.ancestorChain(allocator, &self.splicer.doc, start, &chain);
 
         // The text to sit in the brackets, and the span the rebuilt link
         // replaces. Re-pointing an existing link rebuilds the whole node: a
@@ -523,8 +522,8 @@ pub const Editor = struct {
         // nothing smaller to splice (see `splicer.zig`'s module doc).
         var text: []const u8 = src[start..end];
         var target = Span.init(start, end);
-        var repoint = locate.innermostCovering(ast, chain.items, &.{.link}, start, end);
-        if (repoint == null) repoint = autolinkCovering(ast, chain.items, start, end);
+        var repoint = locate.innermostCovering(&self.splicer.doc, chain.items, &.{.link}, start, end);
+        if (repoint == null) repoint = autolinkCovering(&self.splicer.doc, chain.items, start, end);
         // Not covered by an autolink, but still landing inside one: the range
         // runs from ordinary text into the middle of a URL (either end can be the
         // one inside). There is nothing to re-point — half the selection is real
@@ -532,13 +531,14 @@ pub const Editor = struct {
         // the URL.
         if (repoint == null and start != end) {
             const splits =
-                (try splitsAutolink(allocator, ast, src.len, start)) or
-                (try splitsAutolink(allocator, ast, src.len, end));
+                (try splitsAutolink(allocator, &self.splicer.doc, start)) or
+                (try splitsAutolink(allocator, &self.splicer.doc, end));
             if (splits) return error.NotEditable;
         }
         if (repoint) |id| {
             const node = ast.nodes[id];
-            if (node.span.start == 0 and node.span.end == 0) return error.NotEditable;
+            const rp = self.splicer.doc.span(id);
+            if (rp.start == 0 and rp.end == 0) return error.NotEditable;
             // An autolink has no `[text]` half: the text it shows is the OLD
             // destination, so keeping it would spell the new link with the URL it
             // was meant to replace. Empty text sends it through the canonical
@@ -547,10 +547,10 @@ pub const Editor = struct {
                 // An autolink's visible text IS its destination; the caller
                 // supplies that, so the node contributes nothing.
                 .text_leaf => |l| if (l.kind == .url or l.kind == .email) "" else
-                    if (node.content_span) |cs| src[cs.start..cs.end] else "",
-                else => if (node.content_span) |cs| src[cs.start..cs.end] else "",
+                    if (self.splicer.doc.contentSpan(id)) |cs| src[cs.start..cs.end] else "",
+                else => if (self.splicer.doc.contentSpan(id)) |cs| src[cs.start..cs.end] else "",
             };
-            target = node.span;
+            target = rp;
         }
 
         var out: std.ArrayList(u8) = .empty;
@@ -706,13 +706,11 @@ pub const Editor = struct {
         const spelling = self.syntax.cell_line_break orelse return error.UnsupportedFormat;
 
         const allocator = self.splicer.allocator;
-        const ast = self.astView();
-        const src = self.sourceBytes();
 
         var chain: std.ArrayList(AST.Node.Id) = .empty;
         defer chain.deinit(allocator);
-        try locate.ancestorChain(allocator, ast, offset, src.len, &chain);
-        if (locate.innermostOfKind(ast, chain.items, .cell) == null) return error.NoBlock;
+        try locate.ancestorChain(allocator, &self.splicer.doc, offset, &chain);
+        if (locate.innermostOfKind(&self.splicer.doc, chain.items, .cell) == null) return error.NoBlock;
 
         return self.commitSplice(offset, offset, spelling);
     }
@@ -736,21 +734,20 @@ const BlockRange = struct {
 /// block and drag the whole document in.
 fn coveredBlocks(
     allocator: Allocator,
-    ast: *const AST,
-    src: []const u8,
+    doc: *const Document,
     start: usize,
     end: usize,
 ) !BlockRange {
     var last_off = if (end > start) end - 1 else start;
-    while (last_off > start and (src[last_off] == '\n' or src[last_off] == '\r')) last_off -= 1;
+    while (last_off > start and (doc.source[last_off] == '\n' or doc.source[last_off] == '\r')) last_off -= 1;
 
     var chain_a: std.ArrayList(AST.Node.Id) = .empty;
     errdefer chain_a.deinit(allocator);
-    try locate.ancestorChain(allocator, ast, start, src.len, &chain_a);
+    try locate.ancestorChain(allocator, doc, start, &chain_a);
 
     var chain_b: std.ArrayList(AST.Node.Id) = .empty;
     defer chain_b.deinit(allocator);
-    try locate.ancestorChain(allocator, ast, last_off, src.len, &chain_b);
+    try locate.ancestorChain(allocator, doc, last_off, &chain_b);
 
     var i: usize = 0;
     while (i + 1 < chain_a.items.len and i + 1 < chain_b.items.len and
@@ -759,7 +756,7 @@ fn coveredBlocks(
     // Climb to the nearest ancestor that holds blocks: the deepest shared node
     // may be an inline (a `str`), and a container wraps blocks, not words.
     var p = i;
-    while (p > 0 and !locate.isBlockParent(ast.nodes[chain_a.items[p]].kind)) p -= 1;
+    while (p > 0 and !locate.isBlockParent(doc.ast.nodes[chain_a.items[p]].kind)) p -= 1;
 
     if (p + 1 >= chain_a.items.len) return error.NoBlock;
     const first = chain_a.items[p + 1];
@@ -781,21 +778,20 @@ fn coveredBlocks(
 /// paragraph). Comparing spans there reads a fully-covered quote as partial and
 /// nests forever.
 fn containerFullyCovered(
-    ast: *const AST,
-    src: []const u8,
+    doc: *const Document,
     target: AST.Node.Id,
     region_start: usize,
     region_end: usize,
 ) bool {
-    const first = ast.nodes[target].first_child orelse return false;
+    const first = doc.ast.nodes[target].first_child orelse return false;
     var last = first;
     var cur: ?AST.Node.Id = first;
     while (cur) |c| {
         last = c;
-        cur = ast.nodes[c].next_sibling;
+        cur = doc.ast.nodes[c].next_sibling;
     }
-    const lo = locate.lineStartAt(src, ast.nodes[first].span.start);
-    const hi = locate.lineEndAt(src, ast.nodes[last].span.end -| 1);
+    const lo = locate.lineStartAt(doc.source, doc.span(first).start);
+    const hi = locate.lineEndAt(doc.source, doc.span(last).end -| 1);
     return region_start <= lo and region_end >= hi;
 }
 
@@ -852,22 +848,22 @@ fn listMarkerAt(line: []const u8) ?struct { start: usize, end: usize } {
 /// test for "this line opens a new list item". Djot starts a quoted block at its
 /// text (after `> `), Markdown at the line start; either way it lands on the
 /// block's first line, which is all this asks.
-fn blockStartsOnLine(ast: *const AST, blocks: BlockRange, line_start: usize, line_end: usize) bool {
+fn blockStartsOnLine(doc: *const Document, blocks: BlockRange, line_start: usize, line_end: usize) bool {
     var cur: ?AST.Node.Id = blocks.first;
     while (cur) |id| {
-        const s = ast.nodes[id].span.start;
+        const s = doc.span(id).start;
         if (s >= line_start and s < line_end) return true;
         if (id == blocks.last) break;
-        cur = ast.nodes[id].next_sibling;
+        cur = doc.ast.nodes[id].next_sibling;
     }
     return false;
 }
 
 /// True if one of `list`'s items begins on `[line_start, line_end)`.
-fn itemStartsOnLine(ast: *const AST, list: AST.Node.Id, line_start: usize, line_end: usize) bool {
-    var it = ast.children(list);
+fn itemStartsOnLine(doc: *const Document, list: AST.Node.Id, line_start: usize, line_end: usize) bool {
+    var it = doc.children(list);
     while (it.next()) |item| {
-        const s = item.span.start;
+        const s = doc.span(item.id).start;
         if (s >= line_start and s < line_end) return true;
     }
     return false;
@@ -879,7 +875,7 @@ fn itemStartsOnLine(ast: *const AST, list: AST.Node.Id, line_start: usize, line_
 fn buildContainerAdd(
     allocator: Allocator,
     src: []const u8,
-    ast: *const AST,
+    doc: *const Document,
     blocks: BlockRange,
     region_start: usize,
     region_end: usize,
@@ -907,7 +903,7 @@ fn buildContainerAdd(
             continue;
         }
 
-        if (blockStartsOnLine(ast, blocks, line_start, line_end)) {
+        if (blockStartsOnLine(doc, blocks, line_start, line_end)) {
             var num_buf: [24]u8 = undefined;
             const marker = if (sp.numbered)
                 std.fmt.bufPrint(&num_buf, "{d}. ", .{ordinal}) catch unreachable
@@ -973,7 +969,7 @@ fn buildQuoteStrip(
 fn buildListRewrite(
     allocator: Allocator,
     src: []const u8,
-    ast: *const AST,
+    doc: *const Document,
     target: AST.Node.Id,
     region_start: usize,
     region_end: usize,
@@ -998,7 +994,7 @@ fn buildListRewrite(
             continue;
         }
 
-        if (itemStartsOnLine(ast, target, line_start, line_end)) {
+        if (itemStartsOnLine(doc, target, line_start, line_end)) {
             // Only when the list is going away: a conversion keeps the items as
             // items, so it must not loosen a tight list.
             if (sp == null and seen_item and !last_blank) try out.append(allocator, '\n');
@@ -1199,9 +1195,9 @@ fn writeLiteral(
 /// `<mailto:a@b.dev>` parses as a `url` in Markdown and an `email` in djot, so
 /// picking one kind per format would miss half the autolinks it was meant to
 /// catch.
-fn autolinkCovering(ast: *const AST, chain: []const AST.Node.Id, start: usize, end: usize) ?AST.Node.Id {
-    const id = locate.innermostCovering(ast, chain, &.{.text_leaf}, start, end) orelse return null;
-    const l = ast.nodes[id].kind.text_leaf;
+fn autolinkCovering(doc: *const Document, chain: []const AST.Node.Id, start: usize, end: usize) ?AST.Node.Id {
+    const id = locate.innermostCovering(doc, chain, &.{.text_leaf}, start, end) orelse return null;
+    const l = doc.ast.nodes[id].kind.text_leaf;
     return if (l.kind == .url or l.kind == .email) id else null;
 }
 
@@ -1213,12 +1209,12 @@ fn autolinkCovering(ast: *const AST, chain: []const AST.Node.Id, start: usize, e
 /// Builds its own chain because the caller's is rooted at `start`, and the offset
 /// that lands inside can be `end` (a selection running from ordinary text into
 /// the middle of a URL).
-fn splitsAutolink(allocator: Allocator, ast: *const AST, source_len: usize, pos: usize) Allocator.Error!bool {
+fn splitsAutolink(allocator: Allocator, doc: *const Document, pos: usize) Allocator.Error!bool {
     var chain: std.ArrayList(AST.Node.Id) = .empty;
     defer chain.deinit(allocator);
-    try locate.ancestorChain(allocator, ast, pos, source_len, &chain);
-    const id = autolinkCovering(ast, chain.items, pos, pos) orelse return false;
-    const span = ast.nodes[id].span;
+    try locate.ancestorChain(allocator, doc, pos, &chain);
+    const id = autolinkCovering(doc, chain.items, pos, pos) orelse return false;
+    const span = doc.span(id);
     return span.start < pos and pos < span.end;
 }
 

@@ -190,7 +190,10 @@ fn convertSource(
             stderr.flush() catch {};
             return error.ActionFailed;
         },
-        .ast => ast_json.encode(doc.ast(), stdout) catch |err| {
+        .ast => blk: {
+            const d = doc.document();
+            break :blk ast_json.encode(&d, stdout);
+        }  catch |err| {
             stderr.print("error: failed to write the AST dump for '{s}': {t}\n", .{ display_name, err }) catch {};
             stderr.flush() catch {};
             return error.ActionFailed;
@@ -256,8 +259,9 @@ fn convertSource(
 pub fn runQuery(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, opts: args_mod.QueryOptions) ActionError!void {
     const source = try readSource(allocator, io, opts.file, stderr);
 
-    // Editing/querying only needs the bare AST — reuse the editor's per-format
-    // reparse adapter (which discards any `Document` side tables).
+    // Querying needs the tree AND the spans it reports, so this is the shared
+    // `Document` — the per-format reparse adapter discards only the LANGUAGE
+    // side tables (djot references, Markdown link refs), never the positions.
     var ast = format.entryFor(opts.input).parseToAst(&opts.parse_config, allocator, source) catch |err| {
         stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ opts.file, @tagName(opts.input), err }) catch {};
         stderr.flush() catch {};
@@ -431,7 +435,7 @@ fn applyEditByLocator(
     };
     defer editor.deinit();
 
-    const id = try resolveLocator(allocator, editor.astView(), locator, stderr);
+    const id = try resolveLocator(allocator, &editor.doc, locator, stderr);
 
     const result = switch (op) {
         .replace => editor.replaceNodeById(id, text),
@@ -469,9 +473,9 @@ fn applyEditByLocator(
 /// naming which of the two forms failed, and listing the candidates on an
 /// ambiguous match so the user can refine (add `:nth(k)`, be more specific, or
 /// use a path).
-fn resolveLocator(allocator: Allocator, ast: *const twig.AST, locator: []const u8, stderr: *Writer) ActionError!twig.AST.Node.Id {
+fn resolveLocator(allocator: Allocator, doc: *const twig.Document, locator: []const u8, stderr: *Writer) ActionError!twig.AST.Node.Id {
     const is_path = twig.locator.isIndexPath(locator);
-    return twig.locator.resolve(allocator, ast, locator) catch |err| switch (err) {
+    return twig.locator.resolve(allocator, doc, locator) catch |err| switch (err) {
         error.OutOfMemory => error.ActionFailed,
         error.InvalidLocator => {
             if (is_path) {
@@ -497,10 +501,10 @@ fn resolveLocator(allocator: Allocator, ast: *const twig.AST, locator: []const u
             // keep the resolution rule itself in exactly one place.
             var selector = twig.Select.parse(allocator, locator) catch return error.ActionFailed;
             defer selector.deinit();
-            const matches = twig.Select.resolveAll(allocator, ast, &selector) catch return error.ActionFailed;
+            const matches = twig.Select.resolveAll(allocator, doc, &selector) catch return error.ActionFailed;
             defer allocator.free(matches);
             stderr.print("error: selector '{s}' is ambiguous — {d} nodes match. Refine it, add :nth(k), or use an index path:\n", .{ locator, matches.len }) catch {};
-            for (matches) |m| printMatchLine(allocator, ast, m.id, stderr) catch {};
+            for (matches) |m| printMatchLine(allocator, &doc.ast, m.id, stderr) catch {};
             stderr.flush() catch {};
             return error.ActionFailed;
         },
