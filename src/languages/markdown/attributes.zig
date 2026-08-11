@@ -36,6 +36,15 @@ const KeyVal = AST.KeyVal;
 /// them into the AST's own owned storage).
 pub const Parsed = struct {
     entries: []KeyVal,
+    /// Byte index of the opening `{` — i.e. whatever `start` was passed to
+    /// `parse`. Paired with `end` it is the block's range, which is what
+    /// `Document.attrs_spans` records so a serializer can re-emit the author's
+    /// bytes rather than the flattened `entries` projection.
+    ///
+    /// Relative to the `text` handed to `parse`, NOT to the whole source: this
+    /// parser is handed indent-stripped lines. Callers rebase it (see
+    /// `block.zig`'s `attrsSpanIn`).
+    start: usize,
     /// Byte index just past the closing `}`.
     end: usize,
 
@@ -133,7 +142,7 @@ pub fn parse(allocator: Allocator, text: []const u8, start: usize) Allocator.Err
         }
         if (c == '}') {
             const entries = try acc.entries.toOwnedSlice(allocator);
-            return .{ .entries = entries, .end = i + 1 };
+            return .{ .entries = entries, .start = start, .end = i + 1 };
         }
         if (c == '#') {
             const name_end = scanNameLoose(text, i + 1);

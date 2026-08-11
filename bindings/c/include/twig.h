@@ -310,6 +310,23 @@ TwigStatus twig_document_node_content_span(
     TwigSpan *out_span
 );
 
+// The source span of the `{...}` attribute block attached to node `node_id` —
+// the range a lossless serializer re-emits instead of the flattened
+// TwigFlatNode.attrs projection (a multi-line option block, or a nested or
+// array-valued entry, says more than the flat (key, value) pairs preserve).
+// TWIG_STATUS_NOT_FOUND when the node has no attributes, or has some with no
+// single recorded range (a synthesized set, or one merged from several source
+// blocks). TWIG_STATUS_INVALID_ARGUMENT for an out-of-range id.
+//
+// A new function rather than a field on TwigFlatNode: the range is per
+// attribute BLOCK, not per (key, value) pair, so TwigKeyVal is the wrong home,
+// and growing TwigFlatNode would bump TWIG_ABI_VERSION. Additive in ABI v4.
+TwigStatus twig_document_attrs_span(
+    TwigDocument *doc,
+    uint32_t node_id,
+    TwigSpan *out_span
+);
+
 // ── Document tree read-back ─────────────────────────────────────────────────
 // The JSON-free tree walk, for any document: a parse (twig_parse) or an
 // editor's live tree (twig_editor_document). These five predate this section as

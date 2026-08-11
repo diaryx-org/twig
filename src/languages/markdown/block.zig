@@ -111,6 +111,9 @@ pub const BlockResult = struct {
     node_spans: []const Span = &.{},
     node_content_spans: []const ?Span = &.{},
     node_spelling: []const ?TwigDocument.Spelling = &.{},
+    /// Indexed by `AST.Attrs.Id`, not by node id — see
+    /// `TwigDocument.attrs_spans`.
+    attrs_spans: []const ?Span = &.{},
     link_references: std.StringHashMapUnmanaged(Node.Id),
     /// Label (normalized via `normalizeLabel`, same as `link_references`) ->
     /// the `footnote` definition node with that label (`self.options
@@ -130,6 +133,7 @@ pub const BlockResult = struct {
         allocator.free(self.node_spans);
         allocator.free(self.node_content_spans);
         allocator.free(self.node_spelling);
+        allocator.free(self.attrs_spans);
         self.ast.deinit();
     }
 
@@ -807,6 +811,11 @@ const Container = struct {
     directive_name: []const u8 = "",
     directive_fence_len: usize = 0,
     directive_attrs: ?attrs_mod.Parsed = null,
+    /// The `{attrs}` block's ABSOLUTE source span, rebased by `attrsSpanIn`
+    /// when the opening fence was scanned. Stored rather than re-derived
+    /// because `Parsed`'s own offsets are relative to a line slice that is out
+    /// of scope by the time `popContainer` attaches the attributes.
+    directive_attrs_span: ?Span = null,
 
     fn deinit(self: *Container, allocator: Allocator) void {
         self.children.deinit(allocator);
@@ -1057,6 +1066,7 @@ pub const Parser = struct {
             .node_spans = doc.node_spans,
             .node_content_spans = doc.node_content_spans,
             .node_spelling = doc.node_spelling,
+            .attrs_spans = doc.attrs_spans,
             .link_references = refs,
             .footnotes = fns,
         };
@@ -1098,6 +1108,21 @@ pub const Parser = struct {
     }
     fn lineEnd(self: *Parser, idx: usize) usize {
         return self.line_starts[idx] + self.lines[idx].len;
+    }
+
+    /// The absolute source span of an attribute block that `attrs_mod.parse`
+    /// found inside `text` -- a genuine BORROWED slice of `self.source` (an
+    /// indent-stripped line), so its base is recoverable by the same pointer
+    /// arithmetic `appendMappedSource` documents below. `Parsed.start`/`.end`
+    /// are relative to `text`; this is what `Document.attrs_spans` wants.
+    ///
+    /// Must be called while `text` is still in scope. A container directive's
+    /// attributes are attached at `popContainer` time, lines later, by which
+    /// point the slice is gone -- which is why `Container` stores the rebased
+    /// span rather than re-deriving it.
+    fn attrsSpanIn(self: *Parser, text: []const u8, p: attrs_mod.Parsed) Span {
+        const base = @intFromPtr(text.ptr) - @intFromPtr(self.source.ptr);
+        return Span.init(base + p.start, base + p.end);
     }
 
     /// Append `slice` -- a genuine BORROWED slice of `self.source` (e.g.
@@ -1265,7 +1290,10 @@ pub const Parser = struct {
             const syntactic = Span.init(self.lineStart(c.start_line), self.lineEnd(@min(c.end_line, line_idx)));
             self.builder.setSpan(id, containerSpanExtended(&self.builder, id, syntactic));
             setContentSpanFromChildren(&self.builder, id);
-            if (c.directive_attrs) |p| try self.builder.setAttrs(id, .{ .entries = p.entries });
+            if (c.directive_attrs) |p| {
+                try self.builder.setAttrs(id, .{ .entries = p.entries });
+                if (c.directive_attrs_span) |sp| self.builder.setAttrsSpan(id, sp);
+            }
             try self.appendToTop(id);
             return;
         }
@@ -1985,7 +2013,10 @@ pub const Parser = struct {
             self.builder.setSpan(nid, Span.init(self.lineStart(idx), self.lineEnd(idx)));
             break :blk nid;
         };
-        if (attrs) |p| try self.builder.setAttrs(id, .{ .entries = p.entries });
+        if (attrs) |p| {
+            try self.builder.setAttrs(id, .{ .entries = p.entries });
+            self.builder.setAttrsSpan(id, self.attrsSpanIn(s, p));
+        }
         try self.appendToTop(id);
         return true;
     }
@@ -2017,6 +2048,7 @@ pub const Parser = struct {
                 c.directive_name = open.name;
                 c.directive_fence_len = n;
                 c.directive_attrs = open.attrs;
+                if (open.attrs) |p| c.directive_attrs_span = self.attrsSpanIn(s, p);
                 return true;
             }
             return false;

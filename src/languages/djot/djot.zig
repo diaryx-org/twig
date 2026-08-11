@@ -54,6 +54,9 @@ pub const Document = struct {
     node_spans: []const Span = &.{},
     node_content_spans: []const ?Span = &.{},
     node_spelling: []const ?TwigDocument.Spelling = &.{},
+    /// Indexed by `AST.Attrs.Id`, not by node id — see
+    /// `TwigDocument.attrs_spans`.
+    attrs_spans: []const ?Span = &.{},
 
     /// Label (normalized) -> the `reference` definition node with that label.
     /// Populated during parsing; never consulted during parsing itself —
@@ -82,6 +85,7 @@ pub const Document = struct {
         allocator.free(self.node_spans);
         allocator.free(self.node_content_spans);
         allocator.free(self.node_spelling);
+        allocator.free(self.attrs_spans);
         self.ast.deinit();
     }
 
@@ -97,6 +101,7 @@ pub const Document = struct {
             .node_spans = self.node_spans,
             .node_content_spans = self.node_content_spans,
             .node_spelling = self.node_spelling,
+            .attrs_spans = self.attrs_spans,
         };
     }
 

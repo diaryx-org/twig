@@ -28,6 +28,10 @@ allocator: Allocator,
 nodes: std.ArrayList(Node) = .empty,
 owned_strings: std.ArrayList([]const u8) = .empty,
 attrs: std.ArrayList(AST.Attrs) = .empty,
+/// Parallel to `attrs` — NOT to `nodes` — so it is indexed by `AST.Attrs.Id`,
+/// exactly like `Document.attrs_spans` (see there for the contract). Kept in
+/// lockstep by `setAttrs`, the only place an attrs index is minted.
+attrs_spans: std.ArrayList(?Span) = .empty,
 /// Parallel to `nodes` — `spans.items[id]` is node `id`'s source span. Kept in
 /// lockstep by `addNode`, which is the only place a node id is minted, so the
 /// two arrays cannot drift. Handed to `Document` by `finishDocument`; dropped
@@ -53,6 +57,7 @@ pub fn deinit(self: *Builder) void {
         self.allocator.free(a.entries);
     }
     self.attrs.deinit(self.allocator);
+    self.attrs_spans.deinit(self.allocator);
 }
 
 /// Add a node with no children (yet) and the given kind, copying any string
@@ -138,7 +143,23 @@ pub fn setAttrs(self: *Builder, id: Node.Id, attrs: AST.Attrs) Allocator.Error!v
 
     const idx: AST.Attrs.Id = @intCast(self.attrs.items.len);
     try self.attrs.append(self.allocator, .{ .entries = entries });
+    // Grows with the attrs table so every index is addressable in both.
+    // `null` is the "no recorded range" default; `setAttrsSpan` fills it.
+    try self.attrs_spans.append(self.allocator, null);
     self.nodes.items[id].attrs = idx;
+}
+
+/// Record the source range of the attribute block attached to `id` — see
+/// `Document.attrs_spans` for the contract. Left `null` when never called,
+/// which is always correct, just less useful to a lossless serializer.
+///
+/// Must follow the `setAttrs` call it annotates: it addresses the entry that
+/// call minted, and a node with no attributes has no slot to record against.
+/// A no-op in that case rather than a panic, matching `setAttrs`'s own
+/// tolerance for being handed an empty set.
+pub fn setAttrsSpan(self: *Builder, id: Node.Id, span: Span) void {
+    const idx = self.nodes.items[id].attrs orelse return;
+    self.attrs_spans.items[idx] = span;
 }
 
 /// Copy the entire tree of `src` into this builder, shifting every node's
@@ -177,7 +198,13 @@ pub fn graftDocument(self: *Builder, src: *const Document, offset: usize) Alloca
         self.spellings.items[id] = src.spelling(node.id);
         // `setAttrs` copies the entries' strings; it touches only `attrs`, so
         // the `dst` node pointer stays valid across it.
-        if (node.attrs) |ai| try self.setAttrs(id, src.ast.attrs[ai]);
+        if (node.attrs) |ai| {
+            try self.setAttrs(id, src.ast.attrs[ai]);
+            // An attribute block is a source range like any other, so it
+            // shifts with the graft. A `null` stays null.
+            if (src.attrsSpan(node.id)) |as|
+                self.setAttrsSpan(id, .{ .start = as.start + offset, .end = as.end + offset });
+        }
     }
     return base + src.ast.root;
 }
@@ -201,6 +228,9 @@ pub fn finish(self: *Builder, root: Node.Id) Allocator.Error!AST {
     self.spans.clearAndFree(self.allocator);
     self.content_spans.clearAndFree(self.allocator);
     self.spellings.clearAndFree(self.allocator);
+    // Positions, so they go the way of `spans` — an `AST` from `finish` knows
+    // nothing about where its attributes were written.
+    self.attrs_spans.clearAndFree(self.allocator);
     return .{
         .allocator = self.allocator,
         .owned_strings = owned_strings,
@@ -225,6 +255,9 @@ pub fn finishDocument(self: *Builder, source: []const u8, root: Node.Id) Allocat
     const spellings = try self.spellings.toOwnedSlice(self.allocator);
     errdefer self.allocator.free(spellings);
     self.spellings = .empty;
+    const attrs_spans = try self.attrs_spans.toOwnedSlice(self.allocator);
+    errdefer self.allocator.free(attrs_spans);
+    self.attrs_spans = .empty;
     // `finish` clears the (now-empty) position lists, which is a no-op here.
     const ast = try self.finish(root);
     return .{
@@ -233,6 +266,7 @@ pub fn finishDocument(self: *Builder, source: []const u8, root: Node.Id) Allocat
         .node_spans = spans,
         .node_content_spans = content_spans,
         .node_spelling = spellings,
+        .attrs_spans = attrs_spans,
     };
 }
 
@@ -266,6 +300,7 @@ pub fn viewDocument(self: *const Builder, source: []const u8, root: Node.Id) Doc
         .node_spans = self.spans.items,
         .node_content_spans = self.content_spans.items,
         .node_spelling = self.spellings.items,
+        .attrs_spans = self.attrs_spans.items,
     };
 }
 

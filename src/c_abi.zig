@@ -649,6 +649,34 @@ pub export fn twig_document_node_content_span(
     return .ok;
 }
 
+/// The source span of the `{...}` attribute block attached to node `node_id` —
+/// the range a lossless serializer re-emits instead of the flattened
+/// `TwigFlatNode.attrs` projection (a multi-line option block, or a nested or
+/// array-valued entry, says more than the flat `(key, value)` pairs preserve).
+/// `not_found` when the node has no attributes, or has some with no single
+/// recorded range (a synthesized set, or one merged from several source blocks).
+/// `invalid_argument` for an out-of-range id.
+///
+/// A NEW FUNCTION rather than a field on `TwigFlatNode`, deliberately: the
+/// range is per attribute BLOCK, not per `(key, value)` pair, so `TwigKeyVal`
+/// is the wrong home for it, and growing `TwigFlatNode` again would bump
+/// `TWIG_ABI_VERSION` for every existing consumer. Adding a `twig_*` symbol
+/// does not — see the versioning contract above. Additive (ABI v4).
+pub export fn twig_document_attrs_span(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_span: ?*TwigSpan,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const out = out_span orelse return .invalid_argument;
+    const handle = asHandle(raw);
+    const d = handle.document();
+    if (node_id >= d.ast.nodes.len) return .invalid_argument;
+    const as = d.attrsSpan(node_id) orelse return .not_found;
+    out.* = .{ .start = as.start, .end = as.end };
+    return .ok;
+}
+
 // ── Document read surface (shared with the editor) ───────────────────────────
 // These five are the tree read-back that used to exist only on `TwigEditor`.
 // They take a `TwigDocument`, so a parse-only consumer no longer needs an
@@ -3220,6 +3248,41 @@ test "twig_document_node_span accessors mirror the query match fields" {
     try std.testing.expectEqual(
         TwigStatus.invalid_argument,
         twig_document_node_span(doc, 0xFFFF_0000, &span),
+    );
+}
+
+test "twig_document_attrs_span reports the block a node's attrs were written as" {
+    const source = "::note[x]{#a .b}\n";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_parse_ext(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), TWIG_MD_DIRECTIVES, &doc),
+    );
+    defer twig_document_destroy(doc);
+
+    var ptr: ?[*]const TwigQueryMatch = null;
+    var len: usize = 0;
+    const sel = "container";
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_document_query(doc, sel.ptr, sel.len, &ptr, &len),
+    );
+    try std.testing.expectEqual(@as(usize, 1), len);
+    const node_id = ptr.?[0].node_id;
+
+    var span: TwigSpan = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_attrs_span(doc, node_id, &span));
+    try std.testing.expectEqualStrings("{#a .b}", source[span.start..span.end]);
+
+    // The document root carries no attributes, so there is nothing to report —
+    // `not_found`, not a bogus zero span.
+    var none: TwigSpan = undefined;
+    try std.testing.expectEqual(TwigStatus.not_found, twig_document_attrs_span(doc, 0, &none));
+
+    // Out-of-range ids are refused, not read.
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_document_attrs_span(doc, 0xFFFF_0000, &span),
     );
 }
 

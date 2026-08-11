@@ -143,6 +143,11 @@ pub fn run(
             .node_spans = try spans.toOwnedSlice(allocator),
             .node_content_spans = try content_spans.toOwnedSlice(allocator),
             .node_spelling = try spellings.toOwnedSlice(allocator),
+            // Keyed by `Attrs.Id`, not by node id, and the attrs table is not
+            // renumbered here (see this function's doc) — so unlike every
+            // table above, this one needs no rebuild and is simply carried
+            // over. Ownership moves with it; the caller's `doc` is consumed.
+            .attrs_spans = doc.attrs_spans,
         },
         .map = map,
     };

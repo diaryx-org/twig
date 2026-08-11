@@ -101,6 +101,46 @@ node_content_spans: []const ?Span,
 /// the table exists.
 node_spelling: []const ?Spelling = &.{},
 
+/// Indexed by `AST.Attrs.Id` (NOT by node id — see `AST.attrs`, the side-table
+/// this parallels): the byte range of the `{...}` / `:key: value` block the
+/// attributes were written as.
+///
+/// ── Why this is here and not on `AST.Attrs` ────────────────────────────────
+/// `proposals/twig-native-language.md`'s Part 4 spells this as a `span: ?Span`
+/// field *inside* `AST.Attrs`. That would put source positions back into the
+/// tree, which is the exact fusion this file's header exists to undo: a
+/// serializer takes `*const AST` and must not be able to reach a byte offset.
+/// It also passes this file's criterion trivially — two documents whose
+/// attribute blocks sit at different offsets render identically — so it belongs
+/// here, keyed by the same index `Node.attrs` already holds.
+///
+/// Keying by `Attrs.Id` is also what makes the table free to maintain:
+/// `ast/compact.zig` deliberately does NOT renumber the attrs side-table (see
+/// its `run` doc), so unlike `node_spans` this table needs no remapping when a
+/// tree is compacted — it passes straight through.
+///
+/// ── Why the projection needs it ────────────────────────────────────────────
+/// `Attrs.entries` is a FLATTENED projection: strings only, one value per key.
+/// A source block can say more than that survives — a multi-line rST option
+/// block with indented continuations, a nested or array-valued config entry —
+/// so a serializer that wants to be lossless re-emits `source[attrsSpan]`
+/// verbatim and falls back to printing the projection only when an edit has
+/// invalidated it. That is the same "reflow only what you edited" rule
+/// `ast/splicer.zig` already follows, and without a span an attribute edit has
+/// no splice target at all.
+///
+/// `null` = no recorded span, which is the honest answer in two cases beyond
+/// "the parser didn't bother": a synthesized attribute set (`AST.Builder` with
+/// no `setAttrsSpan` call), and one assembled from MORE THAN ONE source region
+/// — djot merges consecutive `{...}` blocks into a single `Attrs`
+/// (`languages/djot/parser.zig`'s `PendingAttrs.mergeFrom`), and no single
+/// range describes the result. A consumer that finds `null` prints the
+/// projection.
+///
+/// Like `node_spelling` (and unlike `node_spans`), this table may be SHORTER
+/// than `ast.attrs`, including empty. Read it through `attrsSpan`.
+attrs_spans: []const ?Span = &.{},
+
 /// One recorded spelling. The variant says which kind of node it annotates;
 /// a slot whose variant doesn't match its node's kind is ignored.
 pub const Spelling = union(enum) {
@@ -119,6 +159,7 @@ pub fn deinit(self: *Document) void {
     allocator.free(self.node_spans);
     allocator.free(self.node_content_spans);
     allocator.free(self.node_spelling);
+    allocator.free(self.attrs_spans);
 }
 
 /// The source span of `id`. Panics on an out-of-range id, like `ast.nodes[id]`
@@ -138,6 +179,27 @@ pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
 pub fn spelling(self: *const Document, id: AST.Node.Id) ?Spelling {
     if (id >= self.node_spelling.len) return null;
     return self.node_spelling[id];
+}
+
+/// The source span of the attribute block attached to NODE `id`, or `null` when
+/// the node has no attributes, or has some with no single recorded range. See
+/// `attrs_spans` for what `null` means and why it is keyed the way it is.
+///
+/// Takes a node id rather than an `Attrs.Id` because that is what every caller
+/// holds; `AST.Attrs.Id` is an internal index into a side-table, and nothing
+/// outside `AST` mints one.
+pub fn attrsSpan(self: *const Document, id: AST.Node.Id) ?Span {
+    const idx = self.ast.nodes[id].attrs orelse return null;
+    if (idx >= self.attrs_spans.len) return null;
+    return self.attrs_spans[idx];
+}
+
+/// The raw source bytes of `id`'s attribute block — what a lossless serializer
+/// re-emits instead of the flattened projection. `null` whenever `attrsSpan`
+/// is.
+pub fn attrsText(self: *const Document, id: AST.Node.Id) ?[]const u8 {
+    const s = self.attrsSpan(id) orelse return null;
+    return Span.of(u8, s, self.source);
 }
 
 /// Iterate `id`'s children — a pass-through to the tree, so a caller holding a
@@ -168,6 +230,17 @@ pub fn spansEql(self: Document, other: Document) bool {
     }
     if (self.node_content_spans.len != other.node_content_spans.len) return false;
     for (self.node_content_spans, other.node_content_spans) |a, b| {
+        if ((a == null) != (b == null)) return false;
+        if (a) |x| if (!x.eql(b.?)) return false;
+    }
+    // Compared over the longer table rather than requiring equal lengths: this
+    // one may be short or absent (see `attrs_spans`), and a short table and a
+    // full table of `null`s say the same thing — the same tolerance
+    // `spellingEql` applies for the same reason.
+    const n = @max(self.attrs_spans.len, other.attrs_spans.len);
+    for (0..n) |i| {
+        const a = if (i < self.attrs_spans.len) self.attrs_spans[i] else null;
+        const b = if (i < other.attrs_spans.len) other.attrs_spans[i] else null;
         if ((a == null) != (b == null)) return false;
         if (a) |x| if (!x.eql(b.?)) return false;
     }
@@ -282,6 +355,88 @@ test "a spelling difference alone does not change the AST" {
     defer b.deinit();
 
     try testing.expect(a.ast.eql(b.ast));
+}
+
+test "an attribute block's source span rides in the Document layer" {
+    const testing = std.testing;
+    const Markdown = @import("languages/markdown/markdown.zig");
+
+    // A container directive and a leaf directive, each carrying a `{...}`
+    // block. The spans survive `ast/compact.zig`, which the parse runs.
+    const src =
+        \\:::note{#a .b}
+        \\body
+        \\:::
+        \\
+        \\::warn[label]{key=val}
+        \\
+    ;
+    var parsed = try Markdown.parse(testing.allocator, src, .{ .directives = true });
+    defer parsed.deinit();
+    const doc = parsed.document();
+
+    const note = doc.ast.nodes[doc.ast.root].first_child.?;
+    const warn = doc.ast.nodes[note].next_sibling.?;
+
+    // The recorded range slices the ORIGINAL source — the projection's own
+    // spelling (`class="b"`) is not what the author wrote.
+    try testing.expectEqualStrings("{#a .b}", doc.attrsText(note).?);
+    try testing.expectEqualStrings("{key=val}", doc.attrsText(warn).?);
+    try testing.expectEqualStrings("b", doc.ast.attrsOf(note).get("class").?);
+
+    // A node with no attributes has no span, and asking is not an error.
+    const body = doc.ast.nodes[note].first_child.?;
+    try testing.expectEqual(@as(?Span, null), doc.attrsSpan(body));
+}
+
+test "attrs spans are a Document layer, so they never affect AST.eql" {
+    const testing = std.testing;
+    const Markdown = @import("languages/markdown/markdown.zig");
+
+    // The same attributes written at different offsets: equal as meaning,
+    // distinguishable through `spansEql`. This is the property that would be
+    // lost if the span lived on `AST.Attrs` as the proposal spells it.
+    var a = try Markdown.parse(testing.allocator, "::x{#i}\n", .{ .directives = true });
+    defer a.deinit();
+    var b = try Markdown.parse(testing.allocator, "\n\n::x{#i}\n", .{ .directives = true });
+    defer b.deinit();
+
+    try testing.expect(a.ast.eql(b.ast));
+    try testing.expect(!a.document().spansEql(b.document()));
+}
+
+test "Builder: an attrs span defaults to null and shifts with a graft" {
+    const testing = std.testing;
+
+    // A source whose `{#i}` sits at offset 4.
+    const src = "::x{#i}";
+    var b1 = AST.Builder.init(testing.allocator);
+    defer b1.deinit();
+    const n1 = try b1.addNode(.{ .container = .{ .name = "x", .form = .block_leaf } });
+    try b1.setAttrs(n1, .{ .entries = &.{.{ .key = "id", .value = "i" }} });
+    b1.setAttrsSpan(n1, Span.init(3, 7));
+    var d1 = try b1.finishDocument(src, n1);
+    defer d1.deinit();
+    try testing.expectEqualStrings("{#i}", d1.attrsText(n1).?);
+
+    // Grafting the subtree 2 bytes to the right moves the attrs block with it,
+    // exactly as it moves the node spans.
+    var b2 = AST.Builder.init(testing.allocator);
+    defer b2.deinit();
+    const grafted = try b2.graftDocument(&d1, 2);
+    var d2 = try b2.finishDocument("  " ++ src, grafted);
+    defer d2.deinit();
+    try testing.expectEqual(Span.init(5, 9), d2.attrsSpan(grafted).?);
+    try testing.expectEqualStrings("{#i}", d2.attrsText(grafted).?);
+
+    // Never recorded => null, which is always a correct answer.
+    var b3 = AST.Builder.init(testing.allocator);
+    defer b3.deinit();
+    const n3 = try b3.addNode(.para);
+    try b3.setAttrs(n3, .{ .entries = &.{.{ .key = "id", .value = "j" }} });
+    var d3 = try b3.finishDocument("", n3);
+    defer d3.deinit();
+    try testing.expectEqual(@as(?Span, null), d3.attrsSpan(n3));
 }
 
 test "a list marker difference lives in the spelling layer, not the AST" {

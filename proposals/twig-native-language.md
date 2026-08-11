@@ -270,6 +270,30 @@ default, reflow only what you edited" rule the `Splicer` already follows.
 
 **This is the only AST change the proposal requires.**
 
+#### Landed differently (2026-08-10): it is not an AST change at all
+
+`span` shipped as `Document.attrs_spans`, a side table keyed by `AST.Attrs.Id`,
+not as a field on `AST.Attrs`. Putting it on `Attrs` would have undone the
+`AST`/`Document` split: a serializer takes `*const AST` and must not be able to
+reach a byte offset, and `src/document.zig`'s criterion ("a fact belongs in
+`Document` iff two documents differing only in that fact render identically")
+covers positions trivially. Keying by `Attrs.Id` also costs nothing to maintain —
+`ast/compact.zig` deliberately does not renumber the attrs table, so the table
+passes straight through compaction where `node_spans` has to be rebuilt.
+
+Two other corrections from the docutils corpus:
+
+- **`lang` did not ship.** rST needs no tagged `{toml: …}` form, and fig is not
+  yet a dependency (`build.zig.zon` has `.dependencies = .{}`). It stays with
+  the rest of this proposal.
+- **Body field lists are not attribute data.** docutils parses `:Author: Me` in
+  body position to `field_list`/`field`/`field_name`/`field_body`, where the
+  body holds arbitrary blocks — a structural kind, not `entries`. Only DIRECTIVE
+  OPTIONS are `Attrs` data, and those are flat scalars that today's `entries`
+  already holds. The corpus also contains **zero `docinfo` cases** (docinfo is a
+  post-parse docutils transform), so Part 3 is not on rST's critical path the
+  way the deferral note above assumed.
+
 ---
 
 ## Part 5 — Blocks

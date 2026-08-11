@@ -547,6 +547,13 @@ pub const TreeBuilder = struct {
             .node_spans = compacted.node_spans,
             .node_content_spans = compacted.node_content_spans,
             .node_spelling = compacted.node_spelling,
+            // Empty for now: this parser accumulates attributes in
+            // `PendingAttrs`, which MERGES consecutive `{...}` blocks into one
+            // `Attrs`, so a single range does not always describe the result.
+            // Recording it only for the unmerged case is a follow-up; `null`
+            // throughout is the correct conservative answer meanwhile (see
+            // `Document.attrs_spans`).
+            .attrs_spans = compacted.attrs_spans,
             .references = self.references,
             .auto_references = self.auto_references,
             .footnotes = self.footnotes,
