@@ -31,7 +31,9 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const AST = @import("../../ast/ast.zig");
 const doctree = @import("doctree.zig");
+const system_message = @import("system_message.zig");
 
 const corpus_json = @embedFile("testdata/docutils-rst-corpus.json");
 
@@ -229,6 +231,135 @@ pub fn writeCoverage(w: *std.Io.Writer, coverage: doctree.Coverage) std.Io.Write
         printed.insert(tag);
         try w.print("    {d:>5}  {s}\n", .{ best_n, tag.name() });
     }
+}
+
+/// Tier A message instances in the corpus that `system_message.recognize`
+/// claims and `system_message.write` reproduces byte-for-byte: 158 of the 299
+/// messages, clearing 107 of the 219 error-asserting cases outright. Ratchets
+/// like `SEMANTIC_BASELINE`. The remainder are Tier B (107 messages, 80 cases —
+/// directive/role machinery, deferred to the directive milestone) and Tier C
+/// (34 messages, 32 cases — Python implementation leakage, out of scope). See
+/// `diagnostic.zig` for that split and why it falls where it does.
+pub const MESSAGE_BASELINE: u32 = 158;
+
+/// Every `<system_message>` in the corpus, tallied by whether twig can account
+/// for its wording.
+pub const MessageStats = struct {
+    total: u32 = 0,
+    recognized: u32 = 0,
+    /// Recognized but re-written differently — always a bug, never a scope gap.
+    mismatched: u32 = 0,
+    /// A message whose paragraph is not a lone text run (an inline element
+    /// inside it, or no paragraph at all). Counted rather than assumed absent.
+    unreadable: u32 = 0,
+    /// Cases in which EVERY message is recognized — the number that matters for
+    /// the corpus ceiling, since one unclaimed message blocks a whole case.
+    cases_fully_recognized: u32 = 0,
+    /// Cases with at least one message, i.e. `Case.asserts_error`.
+    cases_with_messages: u32 = 0,
+};
+
+/// Walk every decoded case for `<system_message>` nodes and check each one's
+/// wording against `system_message.write` ∘ `recognize`. `unclaimed`, when
+/// non-null, collects the messages twig has no code for — the worklist for the
+/// next tier.
+pub fn runMessages(
+    allocator: Allocator,
+    unclaimed: ?*std.ArrayList([]const u8),
+) !MessageStats {
+    var parsed = try std.json.parseFromSlice(Corpus, allocator, corpus_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    var stats: MessageStats = .{};
+    for (parsed.value.cases) |case| {
+        if (!case.asserts_error) continue;
+        stats.cases_with_messages += 1;
+        var ast = try doctree.decode(allocator, case.doctree, null);
+        defer ast.deinit();
+
+        var all_claimed = true;
+        for (ast.nodes) |node| {
+            switch (node.kind) {
+                .container => |c| if (!std.mem.eql(u8, c.name, "system_message")) continue,
+                else => continue,
+            }
+            stats.total += 1;
+
+            const text = messageTextOf(&ast, node.id) orelse {
+                stats.unreadable += 1;
+                all_claimed = false;
+                continue;
+            };
+            const found = system_message.recognize(text) orelse {
+                all_claimed = false;
+                if (unclaimed) |list| try list.append(allocator, try allocator.dupe(u8, text));
+                continue;
+            };
+            stats.recognized += 1;
+            const again = try system_message.writeAlloc(allocator, found.code, found.args);
+            defer allocator.free(again);
+            if (!std.mem.eql(u8, again, text)) stats.mismatched += 1;
+        }
+        if (all_claimed) stats.cases_fully_recognized += 1;
+    }
+    return stats;
+}
+
+/// The message text of a `system_message`: its first child is a `<paragraph>`
+/// (decoded to `.para`) holding one text run. `null` when it is shaped
+/// otherwise.
+fn messageTextOf(ast: *const AST, id: AST.Node.Id) ?[]const u8 {
+    const para = ast.nodes[id].first_child orelse return null;
+    if (ast.nodes[para].kind != .para) return null;
+    const text = ast.nodes[para].first_child orelse return null;
+    // A lone text run, and nothing after it — an inline element in the message
+    // means twig cannot compare it as a flat string.
+    if (ast.nodes[text].next_sibling != null) return null;
+    return switch (ast.nodes[text].kind) {
+        .str => |s| s,
+        else => null,
+    };
+}
+
+test "docutils system_message wording round-trips for every Tier A code" {
+    const allocator = std.testing.allocator;
+    var unclaimed = std.ArrayList([]const u8).empty;
+    defer {
+        for (unclaimed.items) |m| allocator.free(m);
+        unclaimed.deinit(allocator);
+    }
+    const stats = try runMessages(allocator, &unclaimed);
+
+    if (stats.mismatched > 0 or stats.recognized != MESSAGE_BASELINE) {
+        std.debug.print(
+            "\nrST system_message wording: {d}/{d} messages recognized ({d} mismatched, {d} unreadable); " ++
+                "{d}/{d} error-asserting cases fully accounted for\n",
+            .{
+                stats.recognized,      stats.total,
+                stats.mismatched,      stats.unreadable,
+                stats.cases_fully_recognized, stats.cases_with_messages,
+            },
+        );
+        // Deduplicated, so the worklist reads as distinct messages rather than
+        // instances.
+        var seen = std.ArrayList([]const u8).empty;
+        defer seen.deinit(allocator);
+        outer: for (unclaimed.items) |m| {
+            for (seen.items) |s| {
+                if (std.mem.eql(u8, s, m)) continue :outer;
+            }
+            seen.append(allocator, m) catch {};
+            std.debug.print("    unclaimed: {s}\n", .{m});
+        }
+    }
+
+    // A recognized message that does not re-write identically is a bug in the
+    // wording table, never a scope gap — so this is zero, not a ratchet.
+    try std.testing.expectEqual(@as(u32, 0), stats.mismatched);
+    try std.testing.expectEqual(@as(u32, 299), stats.total);
+    try std.testing.expect(stats.recognized >= MESSAGE_BASELINE);
 }
 
 test "docutils doctree corpus round-trips through the codec" {

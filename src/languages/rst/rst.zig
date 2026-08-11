@@ -74,37 +74,82 @@
 //! records, each a typed `code` plus a byte span, with `describe`/`shortLabel`
 //! teaching messages and shared caret rendering. The tree stays markup.
 //!
-//! The harness therefore owes a PROJECTION step — sidecar back into
-//! `<system_message>` nodes — before those 219 cases can be compared. What that
-//! projection has to reproduce, measured against the corpus rather than
-//! guessed:
+//! That model is now built, in two files whose split IS the scope decision:
+//! `diagnostic.zig` holds twig's record (a typed `Code`, a `Severity`, a byte
+//! span, and interpolation `Args`), and `system_message.zig` holds everything
+//! that is a fact about DOCUTILS' OUTPUT rather than about the error — its exact
+//! wording, and eventually the tree placement. Nothing that exists only to match
+//! a corpus is allowed onto the record twig hands a caller.
 //!
-//!   - **Severity** is docutils' `level`/`type` pair, which is a superset of
-//!     fig's two-way error/warning split: 113 ERROR (3), 113 WARNING (2), 57
-//!     INFO (1), 16 SEVERE (4). So the `code` enum needs a severity per code,
-//!     not one enum per severity.
-//!   - **Message text** is 171 distinct strings over 299 instances, and they
-//!     interpolate (`Duplicate explicit target name: "target".`). So a code
-//!     carries arguments — fig's `describe(code) []const u8` is not enough on
-//!     its own. Docutils' exact wording should live in a projection-side table
-//!     used by the harness, NOT in twig's own `describe`: matching docutils
-//!     byte-for-byte is a conformance requirement, and twig's user-facing
-//!     message quality is a separate concern that should not be hostage to it.
-//!   - **The quoted excerpt.** 132 messages carry a `<literal_block>` child
-//!     holding the offending source. That is derivable from the diagnostic's
-//!     `[offset, end)` span, which is precisely why the span belongs on the
-//!     record — fig's `failSpan` exists for the same reason.
-//!   - **Position in the tree**, which is the hard part. 249 of 299 sit at
-//!     document level, but 50 are nested (section 14, definition 12, topic 5,
-//!     block_quote 5, footnote 3, and eight more parents with one or two each).
-//!     A flat list keyed by byte offset does not by itself say where in the
-//!     tree a message goes, so the projection needs an insertion point, not
-//!     just a line number.
+//! ── Message fidelity is TIERED, and the tiers are not arbitrary ────────────
+//! The 299 messages divide by what reproducing them would actually require:
 //!
-//! One caveat that survives regardless: `problematic` (48 instances) is a real
-//! markup node, not a message. Docutils wraps inline markup that failed to
-//! parse in one, pointing at the corresponding system message. The tree changes
-//! shape on an inline error whatever twig does with diagnostics.
+//!   - **Tier A — core parser (158 messages; 107 of the 219 cases contain
+//!     nothing else). IN SCOPE, done.** Unclosed inline markup, unexpected
+//!     indentation, a block that ends by dedenting, malformed tables, section
+//!     title/underline problems, duplicate target names. Every one is a problem
+//!     twig's own parser will have to detect and would want to report on its own
+//!     terms anyway.
+//!   - **Tier B — directive/role machinery (107 messages, 80 cases). DEFERRED
+//!     to the directive milestone.** Not because it is verbose, but because
+//!     these messages are GENERATED FROM A SCHEMA twig does not have:
+//!     `%d argument(s) required, %d supplied`, `unknown option: "%s"`, and
+//!     `not a positive measure of one of the following units` are readouts of a
+//!     directive's registered arity, option names, and per-option converter.
+//!     Twig has no directive registry at all — Markdown's `:::note` accepts any
+//!     name and validates nothing — and it needs one to PARSE rST regardless.
+//!     Moving Tier B here would mean building that registry under a diagnostics
+//!     heading; building it under a directive heading gets these messages free.
+//!   - **Tier C — implementation leakage (34 messages, 32 cases). OUT OF SCOPE,
+//!     permanently.** Python module paths (`in module
+//!     "docutils.parsers.rst.languages.de"`), `repr` output (`arguments=['x'],
+//!     options={}`), and errno text (`InputError: [Errno 2]`). Twelve come from
+//!     a docutils TEST FIXTURE directive that exists only to echo its own
+//!     arguments. Matching these byte-for-byte means emitting Python's `repr`
+//!     from Zig — imitating docutils' implementation, not conforming to
+//!     reStructuredText.
+//!
+//! ── What the projection still owes ─────────────────────────────────────────
+//! `system_message.subtree` builds the message NODE; three things remain before
+//! the 107 Tier A cases can actually be compared against a parse:
+//!
+//!   - **Position in the tree**, the hard part. 249 of 299 sit at document
+//!     level, but 50 nest (section 14, definition 12, topic 5, block_quote 5,
+//!     footnote 3, and eight more with one or two each). Byte offset does not
+//!     determine it: for `Unexpected indentation.` docutils places the message
+//!     at document level BEFORE the block quote, while the offending offset
+//!     falls INSIDE that block quote's range. The rule is per-code knowledge
+//!     about a docutils message, so it belongs in `system_message.zig`, not on
+//!     `Diagnostic` — and it is deferred rather than guessed, because with no
+//!     parser there is no tree to insert into and any rule written now would be
+//!     untestable.
+//!   - **`ids`/`backrefs`** (35 and 50 messages) linking a message to its
+//!     `<problematic>` node. Outputs of id resolution, which arrives with the
+//!     `target`/`problematic` mapping work.
+//!   - **The quoted excerpt** is already handled: 132 messages carry a
+//!     `<literal_block>` of the offending source, which is exactly
+//!     `source[span]` — the reason `Diagnostic` carries a span rather than a
+//!     bare offset, mirroring fig's `failSpan`.
+//!
+//! One caveat survives regardless: `problematic` (48 instances) is a real markup
+//! node, not a message. Docutils wraps inline markup that failed to parse in
+//! one, pointing at the corresponding system message. The tree changes shape on
+//! an inline error whatever twig does with diagnostics.
+//!
+//! ── Conversion lossiness is a DIFFERENT system ─────────────────────────────
+//! "Djot's multi-line heading has no Markdown spelling" is not a parse
+//! diagnostic and does not belong in this layer — fig keeps it in a separate
+//! `diagnostics.zig` (`analyze(ast, target_format, options)` returning
+//! `comment_dropped`/`value_dropped`/`type_degraded` with a `format_limitation`
+//! vs `explicit_option` cause), and twig should too. The separation is
+//! structural: a parse diagnostic anchors to a byte span in the SOURCE, while a
+//! conversion warning has no source offset to point at (the output does not
+//! exist yet) and anchors to a node PATH; and a parse diagnostic is a fact about
+//! one document while a conversion warning is a fact about a (document, target,
+//! options) triple, so it cannot be stored alongside a `Document` at all.
+//! Twig already has evidence it wants one: `format.zig`'s cross-format
+//! round-trip tests exist precisely because a construct the target serializer
+//! cannot spell is silently written as something that reparses differently.
 //!
 //! ── What twig's AST does not yet hold ──────────────────────────────────────
 //! `conformance.zig`'s coverage ratchet measures this continuously; as of the
@@ -159,6 +204,16 @@ pub const doctree = @import("doctree.zig");
 /// The vendored docutils corpus runner and its ratchets. See its module doc
 /// comment for what it asserts before a parser exists and what changes after.
 pub const conformance = @import("conformance.zig");
+
+/// rST parse diagnostics — twig's own typed `Code`/`Severity`/`Diagnostic`
+/// records, collected in a `Report` sidecar rather than built into the tree.
+/// See its module doc comment for the Tier A/B/C scope split.
+pub const diagnostic = @import("diagnostic.zig");
+
+/// The docutils `<system_message>` projection: docutils' exact message wording
+/// and the doctree node it lives in, kept apart from twig's own diagnostics so
+/// conformance never dictates what twig says to a user.
+pub const system_message = @import("system_message.zig");
 
 test {
     std.testing.refAllDecls(@This());

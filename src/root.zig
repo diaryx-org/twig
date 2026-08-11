@@ -51,6 +51,13 @@ pub const Markdown = @import("languages/markdown/markdown.zig");
 /// deliberately no `format.zig` registry entry until `parse` exists.
 pub const Rst = @import("languages/rst/rst.zig");
 
+/// Shared parse-diagnostic machinery: locating a byte offset in source
+/// (`locateOffset`) and rendering the compiler-style `file:line:col` report with
+/// a caret. Each language keeps its own typed `Code` enums and teaching
+/// messages; only this offset-independent-of-code half is shared. Ported from
+/// fig. See `parse_diagnostic.zig`.
+pub const parse_diagnostic = @import("parse_diagnostic.zig");
+
 /// The span-splice engine: lossless, in-place edits to a parsed document via
 /// index paths into the shared `AST`. Language-agnostic by construction —
 /// construct it with a `parse_fn` for the source's format and it never learns
@@ -137,4 +144,5 @@ test {
     _ = ast_json;
     _ = @import("ast/compact.zig");
     _ = Rst;
+    _ = parse_diagnostic;
 }
