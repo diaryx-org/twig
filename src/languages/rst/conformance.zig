@@ -286,7 +286,15 @@ pub const MESSAGE_BASELINE: u32 = 158;
 /// numerals" case, whose `iiii. iiii` — correctly refused as an enumerator —
 /// must become a DEFINITION list, so it clears with that construct rather than
 /// with this one.
-pub const PARSE_BASELINE: u32 = 84;
+///
+/// 94 after definition lists (`test_definition_lists.py`, 7/11): +7 there, +1
+/// clearing that enumerated holdout, +2 in `comments`. Three groups are now
+/// whole — `bullet_lists` 7/7, `enumerated_lists` 15/15, `comments` 15/15. All
+/// four definition-list holdouts want the inline pass: three carry a
+/// `<literal>` or `<reference>` inside a term or classifier, and the fourth
+/// needs a backslash ESCAPE removed from its term text (twig already declines
+/// to split the classifier there, which is the structural half).
+pub const PARSE_BASELINE: u32 = 94;
 
 /// Decode every expected doctree and encode it straight back, collecting the
 /// round-trip tally, the vocabulary coverage, and (up to `max_failures`)

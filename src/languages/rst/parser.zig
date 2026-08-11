@@ -8,14 +8,16 @@
 //! simplicity rather than by docutils' own test-file order (see the "Bottom-up
 //! by corpus weight" call in the session this landed in): paragraphs, section
 //! titles/nesting, transitions, block quotes, and comments — plus, added
-//! since, bullet lists (`test_bullet_lists.py`, 7/7) and enumerated lists
-//! (`test_enumerated_lists.py`, 14/15). No inline markup parsing yet —
+//! since, bullet lists (`test_bullet_lists.py`, 7/7), enumerated lists
+//! (`test_enumerated_lists.py`, 15/15) and definition lists
+//! (`test_definition_lists.py`, 7/11). No inline markup parsing yet —
 //! a paragraph's whole text becomes ONE `.str` child, so any case whose
 //! expected doctree contains `emphasis`/`strong`/`reference`/etc. inside a
-//! paragraph will not compare equal yet. Everything else (definition/field
-//! lists, literal blocks, directives, the hyperlink/footnote/citation/
-//! substitution clusters, tables) is unimplemented and deliberately out of
-//! this file for now.
+//! paragraph will not compare equal yet, and no backslash ESCAPE is removed
+//! anywhere (docutils strips those during inline parsing). Everything else
+//! (field/option lists, literal blocks, directives, the hyperlink/footnote/
+//! citation/substitution clusters, tables) is unimplemented and deliberately
+//! out of this file for now.
 //!
 //! ── Lists ────────────────────────────────────────────────────────────────
 //! Both list constructs share `parseListItem`, which is docutils' own
@@ -51,6 +53,12 @@
 //! See `isEnumeratedListItem`; it is what keeps prose like `(LCD) is an
 //! acronym` out of the list machinery, together with the strict roman-numeral
 //! validation in `fromRoman`.
+//!
+//! A definition list's term is stranger still: it looks like nothing at all,
+//! and its evidence is entirely BELOW it — a plain line with a deeper line
+//! immediately under it. `classify` is where that ordering lives, and having
+//! it in one function is what lets `parseDefinitionList` decide when to stop
+//! by asking the same question `parseBody` asks to start.
 //!
 //! ── Why this shape ───────────────────────────────────────────────────────
 //! Bottom-up onto `AST.Builder` (a container's children are fully known
@@ -165,6 +173,18 @@ const TitleMatch = struct {
 };
 
 const BodyResult = struct { items: []Node.Id, stopped_at: usize };
+
+/// The block construct a line opens — `Parser.classify`'s answer, and the one
+/// place `parseBody`'s dispatch precedence is written down.
+const BlockStart = union(enum) {
+    title: TitleMatch,
+    transition,
+    comment,
+    bullet: BulletMatch,
+    enumerator: EnumMatch,
+    definition_term,
+    paragraph,
+};
 
 const Parser = struct {
     allocator: Allocator,
@@ -476,8 +496,6 @@ const Parser = struct {
                 i += 1;
                 continue;
             }
-            if (indent == 0 and self.matchTitle(i) != null) break;
-
             const line_indent = self.leadingSpaces(i);
             if (line_indent > indent) {
                 const ext = self.findElevatedExtent(i, hi, indent);
@@ -491,47 +509,85 @@ const Parser = struct {
             }
             if (line_indent < indent) break; // defensive; callers should not slice across a dedent
 
-            const content = self.trimmedContent(i, indent);
-            if (isTransitionLine(content)) {
-                const id = try self.b.addLeaf(.thematic_break);
-                self.b.setSpan(id, Span.init(self.lines[i].start, self.lines[i].end));
-                try children.append(self.allocator, id);
-                i += 1;
-                continue;
+            switch (self.classify(i, hi, indent)) {
+                // The one early stop: `parseDocument` takes the title over,
+                // since a section wraps everything after it.
+                .title => break,
+                .transition => {
+                    const id = try self.b.addLeaf(.thematic_break);
+                    self.b.setSpan(id, Span.init(self.lines[i].start, self.lines[i].end));
+                    try children.append(self.allocator, id);
+                    i += 1;
+                },
+                .comment => {
+                    const cm = try self.parseComment(i, hi, indent);
+                    try children.append(self.allocator, cm.id);
+                    i = cm.next;
+                },
+                .bullet => |bm| {
+                    const bl = try self.parseBulletList(i, hi, indent, bm.marker);
+                    try children.append(self.allocator, bl.id);
+                    i = bl.next;
+                },
+                .enumerator => |em| {
+                    const el = try self.parseEnumeratedList(i, hi, indent, em);
+                    try children.append(self.allocator, el.id);
+                    i = el.next;
+                },
+                .definition_term => {
+                    const dl = try self.parseDefinitionList(i, hi, indent);
+                    try children.append(self.allocator, dl.id);
+                    i = dl.next;
+                },
+                .paragraph => {
+                    const para_end = self.findParagraphEnd(i, hi, indent);
+                    const text = try self.assembleText(i, para_end, indent);
+                    const str_id = try self.b.addLeaf(.{ .str = text });
+                    self.allocator.free(text);
+                    self.b.setSpan(str_id, Span.init(self.lines[i].start, self.lines[para_end - 1].end));
+                    const para_id = try self.b.addContainer(.para, &.{str_id});
+                    self.b.setSpan(para_id, Span.init(self.lines[i].start, self.lines[para_end - 1].end));
+                    try children.append(self.allocator, para_id);
+                    i = para_end;
+                },
             }
-            if (isCommentStart(content)) {
-                const cm = try self.parseComment(i, hi, indent);
-                try children.append(self.allocator, cm.id);
-                i = cm.next;
-                continue;
-            }
-            if (matchBulletMarker(content)) |bm| {
-                const bl = try self.parseBulletList(i, hi, indent, bm.marker);
-                try children.append(self.allocator, bl.id);
-                i = bl.next;
-                continue;
-            }
-            // No overlap with the bullet check above: a bullet marker is one of
-            // `-+*` or a Unicode bullet, while an enumerator starts with an
-            // alphanumeric, `#` or `(`. Order between the two is therefore free.
-            if (self.matchEnumeratorStart(i, hi, indent)) |em| {
-                const el = try self.parseEnumeratedList(i, hi, indent, em);
-                try children.append(self.allocator, el.id);
-                i = el.next;
-                continue;
-            }
-
-            const para_end = self.findParagraphEnd(i, hi, indent);
-            const text = try self.assembleText(i, para_end, indent);
-            const str_id = try self.b.addLeaf(.{ .str = text });
-            self.allocator.free(text);
-            self.b.setSpan(str_id, Span.init(self.lines[i].start, self.lines[para_end - 1].end));
-            const para_id = try self.b.addContainer(.para, &.{str_id});
-            self.b.setSpan(para_id, Span.init(self.lines[i].start, self.lines[para_end - 1].end));
-            try children.append(self.allocator, para_id);
-            i = para_end;
         }
         return .{ .items = try children.toOwnedSlice(self.allocator), .stopped_at = i };
+    }
+
+    /// What block line `i` opens, given that it is non-blank and sits at
+    /// exactly `indent`. Docutils spells this as an ordered transition list on
+    /// its `Body` state, and the ORDER is the content: a bullet beats a term,
+    /// explicit markup beats both, and plain text is the last resort.
+    ///
+    /// It is a function rather than a chain inlined into `parseBody` because
+    /// `parseDefinitionList` has to ask the identical question. A definition
+    /// list continues only across lines that would otherwise have started a
+    /// PARAGRAPH — which is docutils' `SpecializedBody` rule, where every
+    /// transition except `text` aborts the specialized state and hands the
+    /// line back to `Body`.
+    fn classify(self: *const Parser, i: usize, hi: usize, indent: usize) BlockStart {
+        // Titles are recognized only at document top level, never inside a
+        // block quote's or a list item's recursive call, matching docutils (a
+        // title indented inside a block quote is a parse error there, out of
+        // this slice's scope).
+        if (indent == 0) {
+            if (self.matchTitle(i)) |tm| return .{ .title = tm };
+        }
+        const content = self.trimmedContent(i, indent);
+        if (isTransitionLine(content)) return .transition;
+        if (isCommentStart(content)) return .comment;
+        if (matchBulletMarker(content)) |bm| return .{ .bullet = bm };
+        // No overlap with the bullet check above: a bullet marker is one of
+        // `-+*` or a Unicode bullet, while an enumerator starts with an
+        // alphanumeric, `#` or `(`. Order between the two is therefore free.
+        if (self.matchEnumeratorStart(i, hi, indent)) |em| return .{ .enumerator = em };
+        // A term is a line whose evidence is entirely BELOW it: docutils
+        // reaches its `Text` state first and only then sees the indent. So a
+        // line that looks like nothing else, followed immediately (no blank
+        // line) by a deeper one, is a term over its definition.
+        if (i + 1 < hi and !self.isBlankLine(i + 1) and self.leadingSpaces(i + 1) > indent) return .definition_term;
+        return .paragraph;
     }
 
     fn findParagraphEnd(self: *const Parser, lo: usize, hi: usize, indent: usize) usize {
@@ -868,6 +924,114 @@ const Parser = struct {
         }
         try self.b.setAttrs(list_id, .{ .entries = entries[0..n] });
         return .{ .id = list_id, .next = i };
+    }
+
+    // ── definition lists ────────────────────────────────────────────────
+
+    /// A maximal run of `term` / indented-`definition` pairs at `indent`.
+    ///
+    /// The definition's extent is `findElevatedExtent` — blank-tolerant, and
+    /// dedented to the run's own minimum, exactly a block quote's — which is
+    /// what makes a definition list nested inside a definition fall out for
+    /// free: the corpus's `term 1a` sits two columns in, so it is simply part
+    /// of `definition 1`'s block and gets classified afresh down there.
+    ///
+    /// The list continues only while `classify` keeps answering
+    /// `definition_term`; a bullet, an enumerator, explicit markup or a term
+    /// with nothing indented under it all end it, and `parseBody` then sees
+    /// that line fresh. That is docutils' `SpecializedBody.invalid_input`.
+    fn parseDefinitionList(self: *Parser, lo: usize, hi: usize, indent: usize) Allocator.Error!struct { id: Node.Id, next: usize } {
+        var items: std.ArrayList(Node.Id) = .empty;
+        errdefer items.deinit(self.allocator);
+        var i = lo;
+        var list_end = self.lines[lo].end;
+        while (i < hi) {
+            if (self.isBlankLine(i)) {
+                i += 1;
+                continue;
+            }
+            if (self.leadingSpaces(i) != indent) break;
+            if (i != lo and self.classify(i, hi, indent) != .definition_term) break;
+
+            const term_line = i;
+            const term_span = Span.init(self.lines[term_line].start, self.lines[term_line].end);
+            var item_children: std.ArrayList(Node.Id) = .empty;
+            errdefer item_children.deinit(self.allocator);
+
+            var parts = TermParts{ .line = self.trimmedContent(term_line, indent) };
+            const term_text = parts.next().?;
+            const term_str = try self.b.addLeaf(.{ .str = term_text });
+            self.b.setSpan(term_str, term_span);
+            const term_id = try self.b.addContainer(.term, &.{term_str});
+            self.b.setSpan(term_id, term_span);
+            try item_children.append(self.allocator, term_id);
+            while (parts.next()) |classifier| {
+                const c_str = try self.b.addLeaf(.{ .str = classifier });
+                self.b.setSpan(c_str, term_span);
+                const c_id = try self.b.addContainer(.{ .container = .{ .name = "classifier" } }, &.{c_str});
+                self.b.setSpan(c_id, term_span);
+                try item_children.append(self.allocator, c_id);
+            }
+
+            const ext = self.findElevatedExtent(term_line + 1, hi, indent);
+            const body = try self.parseBody(term_line + 1, ext.end, ext.min_indent);
+            defer self.allocator.free(body.items);
+            const def_id = try self.b.addContainer(.definition, body.items);
+            self.b.setSpan(def_id, Span.init(self.lines[term_line + 1].start, self.lines[ext.end - 1].end));
+            try item_children.append(self.allocator, def_id);
+
+            const parts_ids = try item_children.toOwnedSlice(self.allocator);
+            const item_id = try self.b.addContainer(.definition_list_item, parts_ids);
+            self.allocator.free(parts_ids);
+            self.b.setSpan(item_id, Span.init(self.lines[term_line].start, self.lines[ext.end - 1].end));
+            try items.append(self.allocator, item_id);
+
+            list_end = self.lines[ext.end - 1].end;
+            i = ext.end;
+        }
+
+        const item_ids = try items.toOwnedSlice(self.allocator);
+        const list_id = try self.b.addContainer(.definition_list, item_ids);
+        self.allocator.free(item_ids);
+        self.b.setSpan(list_id, Span.init(self.lines[lo].start, list_end));
+        return .{ .id = list_id, .next = i };
+    }
+};
+
+/// A term line split on docutils' `classifier_delimiter`, ` +: +`. The first
+/// piece is the term; every later one is a `<classifier>`. Always yields at
+/// least one piece, so the first `next()` never returns null.
+///
+/// A backslash-escaped colon needs no special handling, and pleasingly so:
+/// docutils avoids splitting `Term \: x` because its inline pass has already
+/// replaced the backslash with a null byte, leaving no SPACE immediately
+/// before the colon — and requiring that space verbatim, as here, reaches the
+/// same answer without an escape pass existing yet. What is still missing is
+/// the other half, removing the backslash from the term's text; that belongs
+/// to the inline pass with every other escape, so the corpus's "escaped
+/// colon" case stays one item short.
+const TermParts = struct {
+    line: []const u8,
+    pos: usize = 0,
+    done: bool = false,
+
+    fn next(self: *TermParts) ?[]const u8 {
+        if (self.done) return null;
+        var k = self.pos;
+        while (k < self.line.len) : (k += 1) {
+            if (self.line[k] != ':') continue;
+            if (k == 0 or self.line[k - 1] != ' ') continue;
+            if (k + 1 >= self.line.len or self.line[k + 1] != ' ') continue;
+            var start = k;
+            while (start > self.pos and self.line[start - 1] == ' ') start -= 1;
+            var end = k + 1;
+            while (end < self.line.len and self.line[end] == ' ') end += 1;
+            const piece = self.line[self.pos..start];
+            self.pos = end;
+            return piece;
+        }
+        self.done = true;
+        return self.line[self.pos..];
     }
 };
 
@@ -1425,6 +1589,107 @@ test "a different enumerator format ends the list" {
     const second = ast.nodes[first].next_sibling.?;
     try testing.expect(ast.nodes[second].kind == .ordered_list);
     try testing.expectEqualStrings(")", ast.attrsOf(second).get("suffix").?);
+}
+
+test "a term over an indented line makes a definition list, and a nested one nests" {
+    var result = try parse(testing.allocator,
+        \\term 1
+        \\  definition 1
+        \\
+        \\  term 1a
+        \\    definition 1a
+        \\
+        \\term 2
+        \\  definition 2
+        \\
+    , .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[list].kind == .definition_list);
+
+    const item1 = ast.nodes[list].first_child.?;
+    const term1 = ast.nodes[item1].first_child.?;
+    try testing.expect(ast.nodes[term1].kind == .term);
+    try testing.expectEqualStrings("term 1", ast.nodes[ast.nodes[term1].first_child.?].kind.str);
+
+    // The nested list is inside definition 1's own block, not a sibling: it
+    // is simply indented content that `classify` met again further down.
+    const def1 = ast.nodes[term1].next_sibling.?;
+    try testing.expect(ast.nodes[def1].kind == .definition);
+    const nested = ast.nodes[ast.nodes[def1].first_child.?].next_sibling.?;
+    try testing.expect(ast.nodes[nested].kind == .definition_list);
+
+    const item2 = ast.nodes[item1].next_sibling.?;
+    try testing.expect(ast.nodes[item2].kind == .definition_list_item);
+    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[item2].next_sibling);
+}
+
+test "items with no blank line between them stay one definition list" {
+    var result = try parse(testing.allocator, "term 1\n  definition 1\nterm 2\n  definition 2\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[list].next_sibling);
+    const item1 = ast.nodes[list].first_child.?;
+    try testing.expect(ast.nodes[item1].next_sibling != null);
+}
+
+test "` : ` splits a term into classifiers, and only with a space on both sides" {
+    var result = try parse(testing.allocator,
+        \\Term : one : two
+        \\    definition
+        \\Term: not a classifier
+        \\    definition
+        \\Term :not a classifier
+        \\    definition
+        \\
+    , .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+
+    const item1 = ast.nodes[list].first_child.?;
+    const term = ast.nodes[item1].first_child.?;
+    try testing.expectEqualStrings("Term", ast.nodes[ast.nodes[term].first_child.?].kind.str);
+    const c1 = ast.nodes[term].next_sibling.?;
+    try testing.expectEqualStrings("classifier", ast.nodes[c1].kind.container.name);
+    try testing.expectEqualStrings("one", ast.nodes[ast.nodes[c1].first_child.?].kind.str);
+    const c2 = ast.nodes[c1].next_sibling.?;
+    try testing.expectEqualStrings("two", ast.nodes[ast.nodes[c2].first_child.?].kind.str);
+    try testing.expect(ast.nodes[ast.nodes[c2].next_sibling.?].kind == .definition);
+
+    for ([_]?Node.Id{ ast.nodes[item1].next_sibling, ast.nodes[ast.nodes[item1].next_sibling.?].next_sibling }, 0..) |maybe, k| {
+        const item = maybe.?;
+        const t = ast.nodes[item].first_child.?;
+        // No classifier: the definition follows the term directly.
+        try testing.expect(ast.nodes[ast.nodes[t].next_sibling.?].kind == .definition);
+        const want: []const u8 = if (k == 0) "Term: not a classifier" else "Term :not a classifier";
+        try testing.expectEqualStrings(want, ast.nodes[ast.nodes[t].first_child.?].kind.str);
+    }
+}
+
+test "an escaped colon does not split a term" {
+    // The backslash itself survives, which is the documented inline-pass gap:
+    // docutils removes it while parsing the term's inline text.
+    var result = try parse(testing.allocator, "Term \\: not a classifier\n    definition\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const item = ast.nodes[ast.nodes[ast.nodes[ast.root].first_child.?].first_child.?];
+    const term = item.first_child.?;
+    try testing.expect(ast.nodes[ast.nodes[term].next_sibling.?].kind == .definition);
+    try testing.expectEqualStrings("Term \\: not a classifier", ast.nodes[ast.nodes[term].first_child.?].kind.str);
+}
+
+test "a bullet beats a term at the same column" {
+    // `classify`'s precedence: docutils' `bullet` transition is ahead of its
+    // `text` one, so an indented line under `- foo` is the item's body rather
+    // than a definition.
+    var result = try parse(testing.allocator, "- foo\n  bar\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[list].kind == .bullet_list);
 }
 
 test "roman numerals accept only their canonical spelling" {
