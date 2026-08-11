@@ -278,6 +278,16 @@ unsafe extern "C" {
         node_id: u32,
         out_span: *mut TwigSpan,
     ) -> TwigStatus;
+    pub fn twig_document_cell_colspan(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_colspan: *mut u32,
+    ) -> TwigStatus;
+    pub fn twig_document_cell_rowspan(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_rowspan: *mut u32,
+    ) -> TwigStatus;
     pub fn twig_document_nodes(
         doc: *mut TwigDocument,
         out_ptr: *mut *const TwigFlatNode,
@@ -654,6 +664,14 @@ unsafe extern "C" {
     pub fn twig_builder_add_task_list_item(builder: *mut TwigBuilder, checked: c_int, out_id: *mut u32) -> TwigStatus;
     pub fn twig_builder_add_row(builder: *mut TwigBuilder, head: c_int, out_id: *mut u32) -> TwigStatus;
     pub fn twig_builder_add_cell(builder: *mut TwigBuilder, head: c_int, alignment: c_int, out_id: *mut u32) -> TwigStatus;
+    pub fn twig_builder_add_cell_spanning(
+        builder: *mut TwigBuilder,
+        head: c_int,
+        alignment: c_int,
+        colspan: u32,
+        rowspan: u32,
+        out_id: *mut u32,
+    ) -> TwigStatus;
     pub fn twig_builder_set_children(
         builder: *mut TwigBuilder,
         parent: u32,

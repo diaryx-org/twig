@@ -180,6 +180,10 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.write(c.head);
             try w.objectField("alignment");
             try w.write(c.alignment);
+            try w.objectField("colspan");
+            try w.write(c.colspan);
+            try w.objectField("rowspan");
+            try w.write(c.rowspan);
         },
         .footnote => |f| {
             try w.objectField("label");

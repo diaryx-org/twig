@@ -256,7 +256,31 @@ pub const Node = struct {
         pub const TaskList = struct { tight: bool };
         pub const TaskListItem = struct { checked: bool };
         pub const Row = struct { head: bool };
-        pub const Cell = struct { head: bool, alignment: Alignment };
+        /// `colspan`/`rowspan` are the cell's GRID EXTENT — how many columns and
+        /// rows it occupies — and they are always ≥ 1, `1` meaning the ordinary
+        /// one-square cell. They are semantic, not spelling: `<td colspan=2>`
+        /// and `<td>` are different documents, so they live here rather than in
+        /// `Document`'s side tables (contrast a bullet's `-` vs `*`).
+        ///
+        /// Only formats with a real grid produce anything but `1`: HTML's
+        /// `colspan`/`rowspan` attributes today, rST's grid tables next
+        /// (docutils spells them `morecols`/`morerows` — extent MINUS one — so
+        /// that boundary converts). GFM and djot pipe tables cannot express a
+        /// span at all and always leave both at `1`.
+        ///
+        /// HTML's two oddities stay out of the shared model and ride in `attrs`
+        /// instead, where the source spelling is preserved verbatim: `colspan=0`
+        /// (a parse error UAs treat as 1) and `rowspan=0` ("to the end of the
+        /// row group", a count nobody can resolve without the whole table).
+        /// Both normalize to `1` here, and because the HTML serializer only
+        /// synthesizes the attribute when the extent is not `1`, the original
+        /// `rowspan="0"` still round-trips off the node's own attributes.
+        pub const Cell = struct {
+            head: bool,
+            alignment: Alignment,
+            colspan: u32 = 1,
+            rowspan: u32 = 1,
+        };
         pub const Footnote = struct { label: []const u8 };
         pub const Reference = struct { label: []const u8, destination: []const u8 };
         pub const TextLeaf = struct { kind: TextLeafKind, text: []const u8 };
@@ -552,7 +576,10 @@ pub const Node = struct {
                 .task_list => |v| v.tight == other.task_list.tight,
                 .task_list_item => |v| v.checked == other.task_list_item.checked,
                 .row => |v| v.head == other.row.head,
-                .cell => |v| v.head == other.cell.head and v.alignment == other.cell.alignment,
+                .cell => |v| v.head == other.cell.head and
+                    v.alignment == other.cell.alignment and
+                    v.colspan == other.cell.colspan and
+                    v.rowspan == other.cell.rowspan,
                 .footnote => |v| eqlStr(v.label, other.footnote.label),
                 .reference => |v| eqlStr(v.label, other.reference.label) and
                     eqlStr(v.destination, other.reference.destination),

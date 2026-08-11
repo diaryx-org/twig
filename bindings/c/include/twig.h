@@ -327,6 +327,32 @@ TwigStatus twig_document_attrs_span(
     TwigSpan *out_span
 );
 
+// How many COLUMNS the cell at `node_id` occupies — HTML's colspan, rST's
+// morecols plus one. Always at least 1; 1 is the ordinary one-square cell.
+// TWIG_STATUS_NOT_FOUND when the node is not a cell (*out_colspan untouched),
+// TWIG_STATUS_INVALID_ARGUMENT for an out-of-range id.
+//
+// An accessor rather than a TwigFlatNode field, for the reason
+// twig_document_attrs_span gives: growing the struct bumps TWIG_ABI_VERSION for
+// every consumer and a new symbol does not. A table renderer pays one extra
+// call per cell. Additive in ABI v4.
+TwigStatus twig_document_cell_colspan(
+    TwigDocument *doc,
+    uint32_t node_id,
+    uint32_t *out_colspan
+);
+
+// How many ROWS the cell at `node_id` occupies — HTML's rowspan, rST's morerows
+// plus one. Always at least 1. HTML's rowspan="0" ("to the end of the row
+// group") is not a count and reports 1; the source spelling survives on the
+// node's attributes. Same contract as twig_document_cell_colspan. Additive in
+// ABI v4.
+TwigStatus twig_document_cell_rowspan(
+    TwigDocument *doc,
+    uint32_t node_id,
+    uint32_t *out_rowspan
+);
+
 // ── Document tree read-back ─────────────────────────────────────────────────
 // The JSON-free tree walk, for any document: a parse (twig_parse) or an
 // editor's live tree (twig_editor_document). These five predate this section as
@@ -1319,8 +1345,24 @@ TwigStatus twig_builder_add_task_list(TwigBuilder *builder, int tight, uint32_t 
 TwigStatus twig_builder_add_task_list_item(TwigBuilder *builder, int checked, uint32_t *out_id);
 TwigStatus twig_builder_add_row(TwigBuilder *builder, int head, uint32_t *out_id);
 
-// Add a table cell; `alignment` is a TwigAlignment code.
+// Add a one-square table cell; `alignment` is a TwigAlignment code.
 TwigStatus twig_builder_add_cell(TwigBuilder *builder, int head, int alignment, uint32_t *out_id);
+
+// Add a table cell occupying `colspan` columns and `rowspan` rows — a grid
+// table's merged cell. Both must be at least 1 (TWIG_STATUS_INVALID_ARGUMENT
+// otherwise); 1 and 1 is exactly twig_builder_add_cell. Read back with
+// twig_document_cell_colspan / twig_document_cell_rowspan.
+//
+// A second entry point rather than two more parameters on
+// twig_builder_add_cell: an existing signature never changes in place.
+TwigStatus twig_builder_add_cell_spanning(
+    TwigBuilder *builder,
+    int head,
+    int alignment,
+    uint32_t colspan,
+    uint32_t rowspan,
+    uint32_t *out_id
+);
 
 // Set `parent`'s children to `ids` (in order), replacing any it had. Every id
 // (parent and each child) must name a node already added; a child id should

@@ -677,6 +677,59 @@ pub export fn twig_document_attrs_span(
     return .ok;
 }
 
+/// How many COLUMNS the `cell` at `node_id` occupies — HTML's `colspan`, rST's
+/// `morecols` plus one. Always at least 1; 1 is the ordinary one-square cell.
+/// `not_found` when the node is not a cell (out is untouched),
+/// `invalid_argument` for an out-of-range id.
+///
+/// An accessor rather than a `TwigFlatNode` field, for the reason
+/// `twig_document_attrs_span` gives at length: growing the struct bumps
+/// `TWIG_ABI_VERSION` for every existing consumer, and adding a `twig_*` symbol
+/// does not. A table renderer pays one extra call per cell, which is nothing
+/// next to a rebuild of the world. Additive (ABI v4).
+pub export fn twig_document_cell_colspan(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_colspan: ?*u32,
+) TwigStatus {
+    return cellExtent(doc, node_id, out_colspan, .columns);
+}
+
+/// How many ROWS the `cell` at `node_id` occupies — HTML's `rowspan`, rST's
+/// `morerows` plus one. Always at least 1. HTML's `rowspan="0"` ("to the end of
+/// the row group") is not a count and reports 1; the source spelling survives on
+/// the node's attributes. Same contract and same rationale as
+/// `twig_document_cell_colspan`. Additive (ABI v4).
+pub export fn twig_document_cell_rowspan(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_rowspan: ?*u32,
+) TwigStatus {
+    return cellExtent(doc, node_id, out_rowspan, .rows);
+}
+
+fn cellExtent(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out: ?*u32,
+    axis: enum { columns, rows },
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const out_ptr = out orelse return .invalid_argument;
+    const handle = asHandle(raw);
+    const d = handle.document();
+    if (node_id >= d.ast.nodes.len) return .invalid_argument;
+    const cell = switch (d.ast.nodes[node_id].kind) {
+        .cell => |c| c,
+        else => return .not_found,
+    };
+    out_ptr.* = switch (axis) {
+        .columns => cell.colspan,
+        .rows => cell.rowspan,
+    };
+    return .ok;
+}
+
 // ── Document read surface (shared with the editor) ───────────────────────────
 // These five are the tree read-back that used to exist only on `TwigEditor`.
 // They take a `TwigDocument`, so a parse-only consumer no longer needs an
@@ -2762,15 +2815,42 @@ fn alignmentOf(alignment: c_int) ?twig.AST.Alignment {
     };
 }
 
+/// Add a one-square table cell. `twig_builder_add_cell_spanning` is the same
+/// call with an explicit grid extent.
 pub export fn twig_builder_add_cell(
     b: ?*TwigBuilder,
     head: c_int,
     alignment: c_int,
     out_id: ?*u32,
 ) TwigStatus {
+    return twig_builder_add_cell_spanning(b, head, alignment, 1, 1, out_id);
+}
+
+/// Add a table cell occupying `colspan` columns and `rowspan` rows — a grid
+/// table's merged cell. Both must be at least 1 (`invalid_argument` otherwise);
+/// 1 and 1 is exactly `twig_builder_add_cell`. Read back with
+/// `twig_document_cell_colspan`/`twig_document_cell_rowspan`.
+///
+/// A second entry point rather than two more parameters on
+/// `twig_builder_add_cell`: an existing signature never changes in place (see
+/// the versioning contract in `twig.h`).
+pub export fn twig_builder_add_cell_spanning(
+    b: ?*TwigBuilder,
+    head: c_int,
+    alignment: c_int,
+    colspan: u32,
+    rowspan: u32,
+    out_id: ?*u32,
+) TwigStatus {
     const handle = asBuilder(b orelse return .invalid_argument);
     const a = alignmentOf(alignment) orelse return .invalid_argument;
-    return emitNode(out_id, handle.builder.addNode(.{ .cell = .{ .head = head != 0, .alignment = a } }));
+    if (colspan == 0 or rowspan == 0) return .invalid_argument;
+    return emitNode(out_id, handle.builder.addNode(.{ .cell = .{
+        .head = head != 0,
+        .alignment = a,
+        .colspan = colspan,
+        .rowspan = rowspan,
+    } }));
 }
 
 // ── structure & attributes ───────────────────────────────────────────────────
@@ -3284,6 +3364,98 @@ test "twig_document_attrs_span reports the block a node's attrs were written as"
         TwigStatus.invalid_argument,
         twig_document_attrs_span(doc, 0xFFFF_0000, &span),
     );
+}
+
+test "twig_document_cell_colspan/_rowspan report a merged cell's grid extent" {
+    const source = "<table><tr><td colspan=\"2\" rowspan=\"3\">a</td><td>b</td></tr></table>";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.html), &doc),
+    );
+    defer twig_document_destroy(doc);
+
+    var ptr: ?[*]const TwigQueryMatch = null;
+    var len: usize = 0;
+    const sel = "cell";
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_query(doc, sel.ptr, sel.len, &ptr, &len));
+    try std.testing.expectEqual(@as(usize, 2), len);
+
+    var cols: u32 = 0;
+    var rows: u32 = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_cell_colspan(doc, ptr.?[0].node_id, &cols));
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_cell_rowspan(doc, ptr.?[0].node_id, &rows));
+    try std.testing.expectEqual(@as(u32, 2), cols);
+    try std.testing.expectEqual(@as(u32, 3), rows);
+
+    // A plain cell is one square — 1, never 0.
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_cell_colspan(doc, ptr.?[1].node_id, &cols));
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_cell_rowspan(doc, ptr.?[1].node_id, &rows));
+    try std.testing.expectEqual(@as(u32, 1), cols);
+    try std.testing.expectEqual(@as(u32, 1), rows);
+
+    // Not a cell: `not_found`, and the out-param is left alone rather than
+    // being given a meaningless 1.
+    var untouched: u32 = 0xABCD;
+    try std.testing.expectEqual(TwigStatus.not_found, twig_document_cell_colspan(doc, 0, &untouched));
+    try std.testing.expectEqual(@as(u32, 0xABCD), untouched);
+
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_document_cell_rowspan(doc, 0xFFFF_0000, &untouched),
+    );
+}
+
+test "twig_builder_add_cell_spanning builds a merged cell; add_cell is its (1,1) case" {
+    var b: ?*TwigBuilder = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_create(&b));
+    defer twig_builder_destroy(b);
+    const bld = b.?;
+
+    const wide_text = try bAddText(bld, .str, "wide");
+    var wide: u32 = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_cell_spanning(
+        bld,
+        0,
+        @intFromEnum(TwigAlignment.default),
+        2,
+        3,
+        &wide,
+    ));
+    try bSetChildren(bld, wide, &.{wide_text});
+
+    const plain_text = try bAddText(bld, .str, "one");
+    var plain: u32 = undefined;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_builder_add_cell(bld, 0, @intFromEnum(TwigAlignment.default), &plain),
+    );
+    try bSetChildren(bld, plain, &.{plain_text});
+
+    // A zero extent is no cell anyone can lay out — refused at the wire.
+    var rejected: u32 = undefined;
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_builder_add_cell_spanning(
+        bld,
+        0,
+        @intFromEnum(TwigAlignment.default),
+        0,
+        1,
+        &rejected,
+    ));
+
+    var row: u32 = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_row(bld, 0, &row));
+    try bSetChildren(bld, row, &.{ wide, plain });
+    const table = try bAdd(bld, .table);
+    try bSetChildren(bld, table, &.{row});
+
+    var ptr: ?[*]const u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_render_html(bld, table, &ptr, &len));
+    const html = ptr.?[0..len];
+    try std.testing.expect(std.mem.indexOf(u8, html, "<td colspan=\"2\" rowspan=\"3\">wide</td>") != null);
+    // `add_cell` is the one-square case: the default extent writes no attribute.
+    try std.testing.expect(std.mem.indexOf(u8, html, "<td>one</td>") != null);
 }
 
 test "twig_document_nodes / _children / _subtree / _node_at walk a parse-only document" {

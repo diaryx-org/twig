@@ -454,6 +454,33 @@ test "eql sees a difference that lives only on an unattached definition" {
     try testing.expect(x.ast.eql(z.ast));
 }
 
+test "eql tells a merged cell from a plain one" {
+    const Html = @import("../languages/html/html.zig");
+    const a = testing.allocator;
+
+    // A cell's grid extent is semantic, not spelling: these two lay out
+    // differently, so they are not the same document. That is the whole reason
+    // colspan/rowspan live on `Kind.Cell` rather than in a `Document` side
+    // table the way a bullet's `-`-vs-`*` does.
+    var merged = try Html.parse(a, "<table><tr><td colspan=\"2\">a</td></tr></table>");
+    defer merged.deinit();
+    var plain = try Html.parse(a, "<table><tr><td>a</td></tr></table>");
+    defer plain.deinit();
+    try testing.expect(!merged.ast.eql(plain.ast));
+
+    // `rowspan="0"` is not a count, so it does NOT reach the extent — the two
+    // trees differ only in the raw attribute `attrsEql` compares.
+    var zero = try Html.parse(a, "<table><tr><td rowspan=\"0\">a</td></tr></table>");
+    defer zero.deinit();
+    try testing.expect(!zero.ast.eql(plain.ast));
+    try testing.expect(firstCellKind(zero.ast).eql(firstCellKind(plain.ast)));
+}
+
+fn firstCellKind(ast: AST) AST.Node.Kind {
+    for (ast.nodes) |n| if (n.kind == .cell) return n.kind;
+    unreachable;
+}
+
 test "an unused link reference definition is part of the document" {
     const Markdown = @import("../languages/markdown/markdown.zig");
     const a = testing.allocator;

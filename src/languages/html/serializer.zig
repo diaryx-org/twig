@@ -876,14 +876,29 @@ pub const Renderer = struct {
             },
             .row => try self.inTags("tr", id, 2, &.{}),
             .cell => |v| {
-                var extra: [1]KV = undefined;
+                var extra: [3]KV = undefined;
                 var n: usize = 0;
                 if (v.alignment != .default) {
-                    extra[0] = if (self.options.gfm_cell_align_attr)
+                    extra[n] = if (self.options.gfm_cell_align_attr)
                         .{ .key = "align", .value = alignName(v.alignment) }
                     else
                         .{ .key = "style", .value = alignStyle(v.alignment) };
-                    n = 1;
+                    n += 1;
+                }
+                // An extent of 1 is the default a `<td>` already has, so it is
+                // written only when it isn't 1 — which also leaves a parsed
+                // `rowspan="0"` (normalized to 1 on the node, see
+                // `AST.Kind.Cell`) to pass through from `attrs` untouched
+                // rather than being overwritten by a synthesized `rowspan="1"`.
+                var col_buf: [16]u8 = undefined;
+                if (v.colspan != 1) {
+                    extra[n] = .{ .key = "colspan", .value = std.fmt.bufPrint(&col_buf, "{d}", .{v.colspan}) catch "1" };
+                    n += 1;
+                }
+                var row_buf: [16]u8 = undefined;
+                if (v.rowspan != 1) {
+                    extra[n] = .{ .key = "rowspan", .value = std.fmt.bufPrint(&row_buf, "{d}", .{v.rowspan}) catch "1" };
+                    n += 1;
                 }
                 try self.inTags(if (v.head) "th" else "td", id, 1, extra[0..n]);
             },
@@ -1340,4 +1355,33 @@ test "cdata renders its contents as escaped text" {
     const html = try serializeAlloc(testing.allocator, &ast, null);
     defer testing.allocator.free(html);
     try testing.expectEqualStrings("a &lt; b &amp; c", html);
+}
+
+test "a merged cell writes colspan/rowspan, and a one-square cell writes neither" {
+    var b = Builder.init(testing.allocator);
+    defer b.deinit();
+    const merged_text = try b.addLeaf(.{ .str = "wide" });
+    const merged = try b.addContainer(.{ .cell = .{
+        .head = false,
+        .alignment = .center,
+        .colspan = 2,
+        .rowspan = 3,
+    } }, &.{merged_text});
+    const plain_text = try b.addLeaf(.{ .str = "one" });
+    const plain = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{plain_text});
+    const row = try b.addContainer(.{ .row = .{ .head = false } }, &.{ merged, plain });
+    const table = try b.addContainer(.table, &.{row});
+
+    var ast = try b.finish(table);
+    defer ast.deinit();
+
+    const html = try serializeAlloc(testing.allocator, &ast, null);
+    defer testing.allocator.free(html);
+    try testing.expectEqualStrings(
+        "<table>\n<tr>\n" ++
+            "<td style=\"text-align: center;\" colspan=\"2\" rowspan=\"3\">wide</td>\n" ++
+            "<td>one</td>\n" ++
+            "</tr>\n</table>\n",
+        html,
+    );
 }

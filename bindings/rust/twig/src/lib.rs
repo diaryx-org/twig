@@ -354,6 +354,33 @@ impl Document {
         }
     }
 
+    /// The grid extent of the cell at `node` — how many `(columns, rows)` it
+    /// occupies — or `None` when the node is not a cell. Both are at least 1,
+    /// and `(1, 1)` is the ordinary one-square cell; anything larger is a merged
+    /// cell from a format with a real grid (HTML's `colspan`/`rowspan`, an rST
+    /// grid table). GFM and djot pipe tables always report `(1, 1)`.
+    ///
+    /// HTML's `rowspan="0"` ("to the end of the row group") is not a count and
+    /// reports 1; the source spelling survives on the node's attributes.
+    ///
+    /// This is an accessor rather than a [`FlatNode`] field because the C struct
+    /// it snapshots is ABI-frozen — see [`Document::span`] for the same shape.
+    pub fn cell_extent(&mut self, node: NodeId) -> Result<Option<(u32, u32)>, Error> {
+        let raw = self.raw.as_ptr();
+        let mut colspan: u32 = 0;
+        let status = unsafe { ffi::twig_document_cell_colspan(raw, node.0, &mut colspan) };
+        match status.0 {
+            ffi::TwigStatus::OK => {}
+            ffi::TwigStatus::NOT_FOUND => return Ok(None),
+            _ => return Err(Error::from_status(status).unwrap_err()),
+        }
+        let mut rowspan: u32 = 0;
+        Error::from_status(unsafe {
+            ffi::twig_document_cell_rowspan(raw, node.0, &mut rowspan)
+        })?;
+        Ok(Some((colspan, rowspan)))
+    }
+
     /// Snapshot the whole tree as a flat [`FlatNode`] array (the JSON-free read
     /// path for a renderer), indexed so `nodes[i].id == NodeId(i)`. Walk it via
     /// the `parent`/`first_child`/`next_sibling` links; the root is the node
@@ -1821,9 +1848,25 @@ impl Builder {
         self.emit(|b, out| unsafe { ffi::twig_builder_add_row(b, head as c_int, out) })
     }
 
-    /// Add a table cell (`head` marks a header cell).
+    /// Add a one-square table cell (`head` marks a header cell).
     pub fn add_cell(&mut self, head: bool, alignment: Alignment) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe { ffi::twig_builder_add_cell(b, head as c_int, alignment.to_c(), out) })
+    }
+
+    /// Add a table cell occupying `colspan` columns and `rowspan` rows — a grid
+    /// table's merged cell. Both must be at least 1
+    /// ([`Error::InvalidArgument`] otherwise); `(1, 1)` is exactly
+    /// [`Builder::add_cell`]. Read back with [`Document::cell_extent`].
+    pub fn add_cell_spanning(
+        &mut self,
+        head: bool,
+        alignment: Alignment,
+        colspan: u32,
+        rowspan: u32,
+    ) -> Result<NodeId, Error> {
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_cell_spanning(b, head as c_int, alignment.to_c(), colspan, rowspan, out)
+        })
     }
 
     /// Set `parent`'s children to `children` (in order), replacing any it had.
@@ -2367,6 +2410,64 @@ mod tests {
         let pnodes = plain.nodes().expect("nodes");
         let pcell = pnodes.iter().find(|n| n.kind == "cell").expect("a cell");
         assert_eq!(pcell.alignment, Some(Alignment::Default));
+    }
+
+    #[test]
+    fn cell_extent_reports_merged_cells_and_nothing_else() {
+        let src = "<table><tr><td colspan=\"2\" rowspan=\"3\">a</td><td>b</td></tr></table>";
+        let mut doc = Document::parse_str(src, Format::Html).expect("parse");
+        let cells: Vec<NodeId> = doc
+            .nodes()
+            .expect("nodes")
+            .iter()
+            .filter(|n| n.kind == "cell")
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(doc.cell_extent(cells[0]).expect("extent"), Some((2, 3)));
+        // A plain cell is one square — 1, never 0.
+        assert_eq!(doc.cell_extent(cells[1]).expect("extent"), Some((1, 1)));
+
+        // A pipe table cannot express a span at all, so every cell is (1, 1).
+        let mut pipe = Document::parse_str("| a |\n| --- |\n| b |\n", Format::Markdown).expect("parse");
+        let pipe_cell = pipe
+            .nodes()
+            .expect("nodes")
+            .iter()
+            .find(|n| n.kind == "cell")
+            .expect("a cell")
+            .id;
+        assert_eq!(pipe.cell_extent(pipe_cell).expect("extent"), Some((1, 1)));
+
+        // Not a cell at all: None, distinct from any extent.
+        let root = NodeId(0);
+        assert_eq!(pipe.cell_extent(root).expect("extent"), None);
+    }
+
+    #[test]
+    fn builder_add_cell_spanning_renders_colspan_and_rowspan() {
+        let mut b = Builder::new().expect("builder");
+        let wide_text = b.add_text(TextKind::Str, "wide").expect("str");
+        let wide = b.add_cell_spanning(false, Alignment::Default, 2, 3).expect("cell");
+        b.set_children(wide, &[wide_text]).expect("children");
+        let plain_text = b.add_text(TextKind::Str, "one").expect("str");
+        let plain = b.add_cell(false, Alignment::Default).expect("cell");
+        b.set_children(plain, &[plain_text]).expect("children");
+        let row = b.add_row(false).expect("row");
+        b.set_children(row, &[wide, plain]).expect("children");
+        let table = b.add(VoidKind::Table).expect("table");
+        b.set_children(table, &[row]).expect("children");
+
+        let html = String::from_utf8(b.render_html(table).expect("html")).expect("utf-8");
+        assert!(html.contains("<td colspan=\"2\" rowspan=\"3\">wide</td>"), "{html}");
+        // `add_cell` is the one-square case: the default extent writes nothing.
+        assert!(html.contains("<td>one</td>"), "{html}");
+
+        // A zero extent is no cell anyone can lay out.
+        assert!(matches!(
+            b.add_cell_spanning(false, Alignment::Default, 0, 1),
+            Err(Error::InvalidArgument)
+        ));
     }
 
     #[test]

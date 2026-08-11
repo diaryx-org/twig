@@ -108,6 +108,49 @@ static void test_align_codes_match_runtime(void) {
     twig_editor_destroy(editor);
 }
 
+static void test_cell_extent_accessors(void) {
+    // colspan/rowspan are accessors, not TwigFlatNode fields — growing the
+    // struct would bump TWIG_ABI_VERSION for every consumer. A table renderer
+    // walks the flat nodes and asks per cell, which is what this pins.
+    static const char src[] =
+        "<table><tr><td colspan=\"2\" rowspan=\"3\">a</td><td>b</td></tr></table>";
+
+    TwigDocument *doc = NULL;
+    TwigStatus st = twig_parse(
+        (const uint8_t *)src, sizeof(src) - 1, TWIG_FORMAT_HTML, &doc);
+    CHECK(st == TWIG_STATUS_OK);
+    if (st != TWIG_STATUS_OK || doc == NULL) return;
+
+    const TwigFlatNode *nodes = NULL;
+    size_t len = 0;
+    st = twig_document_nodes(doc, &nodes, &len);
+    CHECK(st == TWIG_STATUS_OK);
+    if (st != TWIG_STATUS_OK) { twig_document_destroy(doc); return; }
+
+    uint32_t extents[2][2];
+    size_t n = 0;
+    for (size_t i = 0; i < len && n < 2; i++) {
+        if (strcmp(nodes[i].kind, "cell") != 0) continue;
+        CHECK(twig_document_cell_colspan(doc, nodes[i].id, &extents[n][0]) == TWIG_STATUS_OK);
+        CHECK(twig_document_cell_rowspan(doc, nodes[i].id, &extents[n][1]) == TWIG_STATUS_OK);
+        n++;
+    }
+    CHECK(n == 2);
+    if (n != 2) { twig_document_destroy(doc); return; }
+    CHECK(extents[0][0] == 2 && extents[0][1] == 3);
+    // The one-square default is 1, never 0.
+    CHECK(extents[1][0] == 1 && extents[1][1] == 1);
+
+    // A non-cell node is NOT_FOUND, and the out-param is left alone — the same
+    // distinction TWIG_ALIGN_NONE draws for alignment, spelled as a status
+    // because every u32 is a legal extent.
+    uint32_t untouched = 0xABCDu;
+    CHECK(twig_document_cell_colspan(doc, 0, &untouched) == TWIG_STATUS_NOT_FOUND);
+    CHECK(untouched == 0xABCDu);
+
+    twig_document_destroy(doc);
+}
+
 static void test_editor_document_shares_the_read_surface(void) {
     // twig_editor_document hands the document-side read functions the editor's
     // live tree, so an embedder needn't learn two spellings of the same walk —
@@ -178,6 +221,7 @@ static void test_abi_version_matches_header(void) {
 int main(void) {
     test_abi_version_matches_header();
     test_align_codes_match_runtime();
+    test_cell_extent_accessors();
     test_editor_document_shares_the_read_surface();
     if (failures != 0) {
         fprintf(stderr, "c header test: %d check(s) failed\n", failures);

@@ -303,6 +303,8 @@ pub const Parser = struct {
             return .{ .cell = .{
                 .head = std.mem.eql(u8, name, "th"),
                 .alignment = cellAlignment(attrs),
+                .colspan = cellExtent(attrs, "colspan"),
+                .rowspan = cellExtent(attrs, "rowspan"),
             } };
         }
         if (std.mem.eql(u8, name, "em") or std.mem.eql(u8, name, "i")) return .{ .inline_mark = .emph };
@@ -421,6 +423,17 @@ pub const Parser = struct {
             if (alignmentFromName(value)) |alignment| return alignment;
         }
         return .default;
+    }
+
+    /// A cell's `colspan`/`rowspan` as the shared model's grid extent: at least
+    /// 1, and 1 for anything that isn't a positive integer. `rowspan="0"` — the
+    /// one HTML spelling that means something other than a count ("to the end of
+    /// the row group") — normalizes to 1 here and survives on the node's own
+    /// attributes instead; see `AST.Kind.Cell`.
+    fn cellExtent(attrs: []const AST.KeyVal, key: []const u8) u32 {
+        const value = attrValue(attrs, key) orelse return 1;
+        const n = std.fmt.parseInt(u32, std.mem.trim(u8, value, " \t\r\n"), 10) catch return 1;
+        return if (n == 0) 1 else n;
     }
 
     fn alignmentFromName(name: []const u8) ?AST.Alignment {
@@ -830,6 +843,34 @@ test "HTML parser reads cell alignment from style and from the legacy attribute"
     try testing.expectEqual(AST.Alignment.default, ast.ast.nodes[third].kind.cell.alignment);
 }
 
+test "HTML parser reads cell colspan and rowspan, normalizing the non-counts to 1" {
+    var parser = Parser.init(testing.allocator, "<table><tr>" ++
+        "<td colspan=\"2\" rowspan=\"3\">a</td>" ++
+        "<td>b</td>" ++
+        "<td rowspan=\"0\">c</td>" ++
+        "<td colspan=\"nope\">d</td>" ++
+        "</tr></table>");
+    defer parser.deinit();
+    var ast = try parser.parse();
+    defer ast.deinit();
+    const row = ast.ast.nodes[ast.ast.nodes[ast.ast.root].first_child.?].first_child.?;
+    const a = ast.ast.nodes[row].first_child.?;
+    const b = ast.ast.nodes[a].next_sibling.?;
+    const c = ast.ast.nodes[b].next_sibling.?;
+    const d = ast.ast.nodes[c].next_sibling.?;
+    try testing.expectEqual(@as(u32, 2), ast.ast.nodes[a].kind.cell.colspan);
+    try testing.expectEqual(@as(u32, 3), ast.ast.nodes[a].kind.cell.rowspan);
+    // A cell with no attribute is the one-square default.
+    try testing.expectEqual(@as(u32, 1), ast.ast.nodes[b].kind.cell.colspan);
+    try testing.expectEqual(@as(u32, 1), ast.ast.nodes[b].kind.cell.rowspan);
+    // `rowspan="0"` means "to the end of the row group", not a count — the
+    // shared model says 1 and the raw attribute carries the real spelling.
+    try testing.expectEqual(@as(u32, 1), ast.ast.nodes[c].kind.cell.rowspan);
+    try testing.expectEqualStrings("0", ast.ast.attrsOf(c).get("rowspan").?);
+    // Neither is a garbage value.
+    try testing.expectEqual(@as(u32, 1), ast.ast.nodes[d].kind.cell.colspan);
+}
+
 test "HTML parser closes li and p implicitly and keeps script raw" {
     var parser = Parser.init(testing.allocator, "<ul><li>one<li>two</ul><p>a<div>b</div><script>a < b &amp;</script>");
     defer parser.deinit();
@@ -912,6 +953,23 @@ fn parseToHtml(source: []const u8) ![]u8 {
     var ast = try parser.parse();
     defer ast.deinit();
     return @import("serializer.zig").serializeAlloc(testing.allocator, &ast.ast, null);
+}
+
+test "cell spans survive parse->serialize, and rowspan=0 rides the raw attribute" {
+    // A counted span goes out through the semantic field (and the duplicate raw
+    // attribute is deduped away, so neither doubles up). `rowspan="0"` is HTML's
+    // "to the end of the row group", not a count: it normalizes to an extent of
+    // 1, the serializer synthesizes nothing for it, and the node's own attribute
+    // is what reaches the output — see `AST.Kind.Cell`.
+    const html = try parseToHtml("<table><tr>" ++
+        "<td colspan=\"2\" rowspan=\"3\">a</td>" ++
+        "<td rowspan=\"0\">b</td>" ++
+        "</tr></table>");
+    defer testing.allocator.free(html);
+    try testing.expectEqualStrings("<table>\n<tr>\n" ++
+        "<td colspan=\"2\" rowspan=\"3\">a</td>\n" ++
+        "<td rowspan=\"0\">b</td>\n" ++
+        "</tr>\n</table>\n", html);
 }
 
 test "HTML raw-text elements are serialized literally, not escaped" {
