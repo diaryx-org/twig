@@ -443,14 +443,13 @@ const Renderer = struct {
                         break;
                     }
                 }
-                var row_it = self.ast.children(id);
+                // Only rows produce a pipe line; `tableRows` skips the caption
+                // and any `column` children (which djot has no spelling for and
+                // every rST table carries).
+                var row_it = self.ast.tableRows(id);
                 var is_first = true;
                 while (row_it.next()) |row| {
-                    if (self.ast.nodes[row.id].kind == .caption) continue;
-                    const head = switch (self.ast.nodes[row.id].kind) {
-                        .row => |r| r.head,
-                        else => false,
-                    };
+                    const head = row.head;
                     // Alignment on a table that opens with a body row can only
                     // be spelled as a leading separator — one with no row above
                     // it sets the columns for the rows that follow without

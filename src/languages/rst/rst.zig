@@ -224,22 +224,37 @@
 //!     mode the table was built to prevent. They now spell every kind.
 //!
 //! ── What twig's AST does not yet hold ──────────────────────────────────────
-//! `conformance.zig`'s coverage ratchet measures this continuously; 3450 of 5682
-//! element instances (61%) decode to a semantic twig kind and the rest fall back
+//! `conformance.zig`'s coverage ratchet measures this continuously; 4075 of 5682
+//! element instances (72%) decode to a semantic twig kind and the rest fall back
 //! to `Kind.container`. Reading that table,
 //! the structural work rST implies, in rough order of corpus weight:
 //!
-//!   - **The table subtree** (`entry` 266, `colspec` 142, `row` 124, `table` 65,
-//!     `tgroup` 65, `tbody` 65, `thead` 12). Docutils puts a `tgroup` carrying
-//!     `cols` and per-column `colwidth` between a table and its rows, and marks
-//!     header rows by nesting them under `thead`; twig's `table` holds
-//!     `[caption, row...]` and marks headers with `row.head`. One restructuring
-//!     decision, to be made as a unit. Cell spans already landed
-//!     (`Kind.Cell.colspan`/`rowspan`); docutils spells them `morecols`/
-//!     `morerows`, extent MINUS one, so the parser converts at its boundary.
-//!   - **`title` (101).** Twig spells it `heading`, which carries a `level` the
-//!     doctree does not write — it would have to come from section nesting
-//!     depth, and `title` also appears under `topic`/`sidebar`/`table` where
+//!   - ~~**The table subtree**~~ **DONE** — the biggest single mapping in the
+//!     corpus, and the one that had to move as a unit. The corpus says why
+//!     numerically: `colspec` appears in ALL 65 tables, so mapping
+//!     `table`/`row`/`entry` while leaving it generic unlocks exactly ZERO
+//!     additional cases; together they unlock 38, and 51 once a table's
+//!     `<title>` is read as its caption.
+//!
+//!     Twig gained ONE kind for it, `Kind.column`, and gained it payload-free:
+//!     rST's `colwidth` is a unitless relative integer while HTML's `<col>`
+//!     width is a CSS length, so the width rides in `attrs` as written until a
+//!     second format needs to act on one. docutils itself treats the number as
+//!     soft — only 6 of the 65 tables have author-given widths, flagged
+//!     `classes="colwidths-given"`; the other 59 are measured off how the author
+//!     drew the grid.
+//!
+//!     `tgroup`/`thead`/`tbody` (142 instances) gained NO kind and are DISSOLVED
+//!     instead: `tgroup`'s only attribute, `cols`, is the colspec count in all
+//!     65 tables, and `thead`/`tbody` say what `row.head` already says — the
+//!     same trade twig's HTML parser makes in `flattenRowGroups`. Cell spans
+//!     landed earlier (`Kind.Cell.colspan`/`rowspan`) and convert at the
+//!     boundary as planned, docutils' `morecols`/`morerows` being extent MINUS
+//!     one.
+//!   - **`title` (101, now 83).** The 18 under a `table` are that table's
+//!     CAPTION, and are mapped. The rest twig spells `heading`, which carries a
+//!     `level` the doctree does not write — it would have to come from section
+//!     nesting depth, and `title` also appears under `topic`/`sidebar` where
 //!     there is no such depth.
 //!   - **Hyperlink machinery**, now half mapped. `reference` (134) is twig's
 //!     `link` down to the payload, the external `target` (29 of 73) is its
@@ -269,8 +284,8 @@
 //!     marker, not the name, and the citation mapping is where the corpus proves
 //!     it: `.. [TARGET]` writes `names="target"` over a `<label>TARGET`.
 //!
-//!     ⚠ A substitution is `dropped` by every serializer — the only kind in the
-//!     vocabulary that is. Its body belongs at its USE sites and no printer
+//!     ⚠ A substitution is `dropped` by every serializer — the only kind whose
+//!     CONTENT no target holds. Its body belongs at its USE sites and no printer
 //!     resolves one, so converting rST away loses the content outright. That is
 //!     reported rather than silent, which is the whole point of having built
 //!     `diagnostics.zig` first; resolving it (a side table, as djot's footnotes

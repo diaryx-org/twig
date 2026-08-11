@@ -2362,6 +2362,11 @@ pub const TwigNodeKind = enum(c_int) {
     substitution = 57,
     citation_reference = 58,
     substitution_reference = 59,
+    /// A table's column axis — appended for the same reason the four above are,
+    /// rather than slotted in beside `row`/`cell`. Payload-free, so it is
+    /// selectable through `twig_builder_add` like any other void-payload kind;
+    /// its width and stub data are ordinary attributes (see `Kind.column`).
+    column = 60,
 };
 
 pub const TwigBulletStyle = enum(c_int) { dash = 0, plus = 1, star = 2 };
@@ -2462,6 +2467,7 @@ fn voidKind(kind: c_int) ?twig.AST.Node.Kind {
         @intFromEnum(TwigNodeKind.term) => .term,
         @intFromEnum(TwigNodeKind.definition) => .definition,
         @intFromEnum(TwigNodeKind.caption) => .caption,
+        @intFromEnum(TwigNodeKind.column) => .column,
         @intFromEnum(TwigNodeKind.soft_break) => .soft_break,
         @intFromEnum(TwigNodeKind.hard_break) => .hard_break,
         @intFromEnum(TwigNodeKind.non_breaking_space) => .non_breaking_space,

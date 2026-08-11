@@ -31,6 +31,48 @@ pub fn children(self: *const AST, id: Node.Id) ChildIterator {
     return .{ .ast = self, .next_id = self.nodes[id].first_child };
 }
 
+/// One row yielded by `tableRows`, with `head` lifted off the `Kind.Row`
+/// payload so a caller never has to re-open the union to ask the only question
+/// it wants answered.
+pub const TableRow = struct {
+    /// The row node, spelled as a field rather than reached through `node` so a
+    /// call site reads exactly as it did under `ChildIterator`.
+    id: Node.Id,
+    node: *const Node,
+    /// True for a header row — `Kind.Row.head`.
+    head: bool,
+};
+
+/// Iterate a `table`'s ROW children, skipping everything else it may hold.
+///
+/// This exists because "a table's children are `[caption?, column*, row*]`, and
+/// only a `row` carries `head`" is a fact three serializers and the table editor
+/// each used to rediscover on their own — and two of them got it wrong the same
+/// way, filtering out the `caption` by name and then reading `kind.row.head` off
+/// whatever else turned up. That was harmless only while `caption` was the sole
+/// non-row child; adding `Kind.column` (which every reStructuredText table has)
+/// turned it into a crash in one serializer and a spurious empty row in another.
+/// One iterator that yields rows and nothing else is what stops the next child
+/// kind from doing it again.
+pub const TableRowIterator = struct {
+    inner: ChildIterator,
+
+    pub fn next(self: *TableRowIterator) ?TableRow {
+        while (self.inner.next()) |node| switch (node.kind) {
+            .row => |r| return .{ .id = node.id, .node = node, .head = r.head },
+            else => {},
+        };
+        return null;
+    }
+};
+
+/// Iterate `table`'s rows in source order. `table` need not actually be a
+/// `table` node — the filter is on the CHILDREN's kind — which keeps this
+/// usable on a subtree whose root a caller has not yet classified.
+pub fn tableRows(self: *const AST, table: Node.Id) TableRowIterator {
+    return .{ .inner = children(self, table) };
+}
+
 /// The `Attrs` attached to `id`, or the empty value if it has none.
 pub fn attrsOf(self: *const AST, id: Node.Id) AST.Attrs {
     const idx = self.nodes[id].attrs orelse return .{};
@@ -158,6 +200,44 @@ test "subtreeIds returns the root first, then every descendant" {
     const all = try ast.subtreeIds(testing.allocator, doc);
     defer testing.allocator.free(all);
     try testing.expectEqual(ast.nodes.len, all.len);
+}
+
+test "tableRows yields only rows, skipping a caption and a column axis" {
+    const testing = std.testing;
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+
+    // The child list that broke two serializers: a caption AND a column run
+    // ahead of the rows. A filter that only knows to skip the caption reads the
+    // wrong union field on the columns.
+    const cap = try b.addContainer(.caption, &.{});
+    const c1 = try b.addContainer(.column, &.{});
+    const c2 = try b.addContainer(.column, &.{});
+    const head = try b.addContainer(.{ .row = .{ .head = true } }, &.{});
+    const body = try b.addContainer(.{ .row = .{ .head = false } }, &.{});
+    const table = try b.addContainer(.table, &.{ cap, c1, c2, head, body });
+
+    var ast = try b.finish(table);
+    defer ast.deinit();
+
+    var it = ast.tableRows(table);
+    const first = it.next() orelse return error.TestExpectedNonNull;
+    try testing.expectEqual(head, first.id);
+    try testing.expect(first.head);
+    const second = it.next() orelse return error.TestExpectedNonNull;
+    try testing.expectEqual(body, second.id);
+    try testing.expect(!second.head);
+    try testing.expectEqual(@as(?AST.TableRow, null), it.next());
+
+    // A table with a column axis and no rows at all yields nothing, rather than
+    // falling back to the columns.
+    var b2 = AST.Builder.init(testing.allocator);
+    defer b2.deinit();
+    const only_cols = try b2.addContainer(.table, &.{try b2.addContainer(.column, &.{})});
+    var ast2 = try b2.finish(only_cols);
+    defer ast2.deinit();
+    var it2 = ast2.tableRows(only_cols);
+    try testing.expectEqual(@as(?AST.TableRow, null), it2.next());
 }
 
 test "children walks first_child/next_sibling in order" {

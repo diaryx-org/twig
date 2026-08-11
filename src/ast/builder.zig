@@ -385,6 +385,7 @@ fn dupeKind(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Kind {
         .definition,
         .row,
         .cell,
+        .column,
         .caption,
         .soft_break,
         .hard_break,

@@ -205,23 +205,36 @@ pub const Tag = enum {
 // to the generic `container` escape hatch. The split is the harness's real
 // measurement, so the rule for adding a row is strict: a mapping earns its
 // place only if `encode` can inverse it EXACTLY, attributes and all. Anything
-// that would need a normalization step, a defaulted field the doctree cannot
-// see, or knowledge of an ancestor stays generic and is counted as such.
+// that would need a normalization step, or a defaulted field the doctree cannot
+// see, stays generic and is counted as such.
 //
-// Three families are deliberately still generic, and their absence is the
-// finding rather than an oversight:
+// That rule used to also bar any mapping that needed KNOWLEDGE OF AN ANCESTOR,
+// and the table subtree is what showed the bar was in the wrong place. What the
+// rule protects is EXACT INVERSION, and a parent is available on both sides —
+// `closeTop` holds the enclosing frame, `writeNode` recurses through the parent
+// on its way down — so a mapping that reads one inverts as exactly as any
+// other. One does: `title` is a table's caption or a section's heading
+// depending on where it sits, and `caption`/`title` is the inverse pair on the
+// way out. It is checked by the same corpus identity as everything else. What
+// remains barred is an ancestor mapping that cannot be inverted, which is a
+// special case of the real rule rather than a rule of its own.
 //
-//   - The table subtree (`table`/`tgroup`/`colspec`/`thead`/`tbody`/`row`/
-//     `entry`). docutils nests a `tgroup` with `colspec` widths between the
-//     table and its rows, and marks header rows by putting them under `thead`;
-//     twig's `table` holds `[caption, row...]` directly and marks headers with
-//     `row.head`. That is one restructuring decision — where `cols`/`colwidth`/
-//     `stub` live — and it should be made as a unit with the parser, not
-//     smuggled in one tag at a time.
-//   - `title`. Twig spells it `heading`, which carries a `level`; the doctree
-//     does not write one, so decoding would have to synthesize it from section
-//     nesting depth and encoding would have to recompute it. `title` also
-//     appears under `topic`/`sidebar`/`table`, where no such depth exists.
+// A DEEPER ancestor is still out of reach, and `entry` is the case that shows
+// where the line falls: a header cell is a cell in a header row, which is two
+// levels up (`thead > row > entry`) and not yet read when the entry closes. It
+// is handled by rewriting the cells when the `thead` dissolves, not by widening
+// this argument — see `markHeadRows`.
+//
+// Two families are deliberately still generic, and their absence is the finding
+// rather than an oversight:
+//
+//   - `title` OUTSIDE a table (83 of 101), under `section`/`topic`/`sidebar`/
+//     `admonition`. Twig spells it `heading`, which carries a `level`; the
+//     doctree does not write one, so decoding would have to synthesize it from
+//     section nesting depth and encoding would have to recompute it — and under
+//     `topic`/`sidebar` there is no such depth to synthesize from. The 18 under
+//     a `table` are a different construct with a different answer; see
+//     `decodeKind`.
 //   - What is LEFT of the hyperlink cluster, which is now the two `target`
 //     shapes and nothing else. `reference`, the external `target` and
 //     `footnote` were mapped first because twig already had their kinds;
@@ -237,14 +250,61 @@ pub const Tag = enum {
 //
 //       The internal `target` (30) — an anchor; see `decodeTarget`.
 
+// ── the table subtree ──────────────────────────────────────────────────────
+//
+// The one family that could not be mapped a tag at a time, and the corpus says
+// so numerically: `colspec` appears in ALL 65 tables, so mapping
+// `table`/`row`/`entry` while leaving `colspec` generic unlocks exactly ZERO
+// additional cases. Mapped together they unlock 38, and 51 with `title`.
+//
+// docutils' shape is `table -> title?, tgroup`, `tgroup cols=N -> colspec×N,
+// thead?, tbody`, and twig's is `table -> caption?, column*, row*`. Three
+// elements have no twig node and are DISSOLVED — they contribute their children
+// to their parent and vanish (see `dissolves`):
+//
+//   - `tgroup` carries only `cols`, which is the number of `colspec` children
+//     in all 65 tables without exception. Nothing to store, so nothing is:
+//     `encode` counts the columns back.
+//   - `thead`/`tbody` are docutils' way of saying which rows are header rows,
+//     which twig says with `row.head`. Exactly HTML's `<thead>`/`<tbody>`
+//     problem, and it gets HTML's answer — `html/parser.zig`'s
+//     `flattenRowGroups`. `thead` never follows `tbody` in the corpus, so the
+//     flat `head`-flagged run re-groups without ambiguity.
+//
+// What each row group knows has to reach the rows before the wrapper is gone,
+// so dissolving `thead` REWRITES the rows it is dissolving (`markHeadRows`).
+// That is the one place this decoder edits a node it already built, and it is
+// safe because a doctree is written parents-last: a `thead` closes only after
+// every row inside it has closed.
+//
+// `entry` -> `cell` is the mapping that needs its parent, and only for `head`:
+// docutils writes nothing on the entry itself, so a header cell is one whose
+// row is a header row. `colspec`'s `stub` — an entire column of header cells —
+// is deliberately NOT folded in; see `Kind.column`.
+
+/// The three elements that produce no node of their own. Their children are
+/// spliced into their parent's child list, and their attributes must therefore
+/// be either derivable (`tgroup`'s `cols`) or moved onto the children
+/// (`thead`'s header-ness). An element with an attribute that is neither cannot
+/// dissolve, because `encode` would have nowhere to read it back from.
+fn dissolves(tag: Tag) bool {
+    return switch (tag) {
+        .tgroup, .thead, .tbody => true,
+        else => false,
+    };
+}
+
 /// The twig `Kind` `tag` decodes to, or `null` for the generic `container`
 /// fallback. `children` are the already-built child ids, needed by the three
 /// text-carrying mappings — see `soleStr`; `attrs` are the element's own,
 /// borrowed from the input and safe to hand to the builder, which dupes every
-/// payload string (`Builder.dupeKind`).
+/// payload string (`Builder.dupeKind`). `parent` is the enclosing element's
+/// tag, `null` at the root — read by the one mapping whose twig kind depends on
+/// where the element sits (`title`).
 fn decodeKind(
     b: *const AST.Builder,
     tag: Tag,
+    parent: ?Tag,
     children: []const Node.Id,
     attrs: []const AST.KeyVal,
 ) ?Node.Kind {
@@ -268,6 +328,47 @@ fn decodeKind(
         .definition => .definition,
         .section => .section,
         .transition => .thematic_break,
+
+        // ── the table subtree ──────────────────────────────────────────────
+        // See the block comment above for why these move as a unit.
+        .table => .table,
+        .colspec => .column,
+        .row => .{ .row = .{ .head = false } },
+        // `head` starts false and is NOT decided here, even though a header
+        // cell is exactly a cell in a header row. An entry's parent is always
+        // `row` — never `thead`, which is the row's parent — so the answer is
+        // two levels up, and at the moment an entry closes that `thead` has not
+        // been read yet (pformat writes parents last). `markHeadRows` sets this
+        // flag and the row's together when the `thead` finally dissolves, which
+        // is the first point either can be known.
+        //
+        // `alignment` has no doctree spelling at all: docutils puts alignment
+        // on the TABLE (`align="left"`, 3 in the corpus), never on a cell, so
+        // this is pinned to `.default` and `encode` never writes it — the same
+        // arrangement `bullet_list.tight` has, and honest for the same reason.
+        //
+        // `morecols`/`morerows` are the extent MINUS ONE (docutils counts the
+        // ADDITIONAL cells spanned), so they convert here. They also stay in
+        // `attrs` untouched, which is what `encode` writes back from — the
+        // payload is a READING, exactly as `refuri` is for a `link`.
+        .entry => .{ .cell = .{
+            .head = false,
+            .alignment = .default,
+            .colspan = spanExtent(attrs, "morecols"),
+            .rowspan = spanExtent(attrs, "morerows"),
+        } },
+        // docutils spells a table's caption `<title>`, the same element it uses
+        // for a section heading — one word for two constructs, told apart by
+        // where it sits. Under a `table` it is twig's `caption`, which is
+        // exactly what `table`'s content model expects to lead with. Everywhere
+        // else it stays generic; see the decode-table comment.
+        .title => if (parent == .table) .caption else null,
+        // And the reverse spelling: docutils ALSO has a `<caption>`, which is a
+        // FIGURE's caption and never a table's. Same twig kind, so the two
+        // docutils elements converge here and `encodeTag` tells them apart
+        // again by parent. All 10 in the corpus hold text and nothing else,
+        // which is `caption`'s `.inlines` content model exactly.
+        .caption => .caption,
 
         // A hyperlink USE. docutils' `reference` and twig's `link` are the same
         // node down to the payload: `refuri` is a resolved destination and
@@ -343,7 +444,10 @@ fn decodeKind(
 /// doctree spelling at all. Every arm is spelled so that a new `Kind` variant
 /// fails this build until it declares one — the same exhaustiveness property
 /// `Kind.level`/`contentModel` have.
-fn encodeTag(kind: Node.Kind) ?Tag {
+///
+/// `parent` is the enclosing node's kind, mirroring `decodeKind`'s argument and
+/// inverting the same two mappings.
+fn encodeTag(kind: Node.Kind, parent: ?Node.Kind) ?Tag {
     return switch (kind) {
         .doc => .document,
         .para => .paragraph,
@@ -357,6 +461,19 @@ fn encodeTag(kind: Node.Kind) ?Tag {
         .section => .section,
         .thematic_break => .transition,
         .code_block => .literal_block,
+
+        // The table subtree. `tgroup`/`thead`/`tbody` have no arm because they
+        // have no twig node — `writeTable` synthesizes all three on the way
+        // out, which is where the shape difference is reconciled.
+        .table => .table,
+        .column => .colspec,
+        .row => .row,
+        .cell => .entry,
+        // The inverse of the `title`/`caption` split: a caption inside a table
+        // is docutils' `<title>`, and one inside a `figure` (which is a generic
+        // `container` here, since no rST directive is parsed yet) is its own
+        // `<caption>`. The parent decides, in both directions.
+        .caption => if (parent != null and parent.? == .table) .title else .caption,
         // The two hyperlink arms cross names, which is confusing exactly once:
         // docutils' `<reference>` is the USE and its `<target>` is the
         // DEFINITION, while twig's `link` is the use and its `reference` is the
@@ -395,11 +512,7 @@ fn encodeTag(kind: Node.Kind) ?Tag {
         .metadata,
         .ordered_list,
         .task_list,
-        .table,
         .task_list_item,
-        .row,
-        .cell,
-        .caption,
         .soft_break,
         .hard_break,
         .non_breaking_space,
@@ -450,6 +563,20 @@ fn definitionName(attrs: []const AST.KeyVal) []const u8 {
     return attrValue(attrs, "names") orelse attrValue(attrs, "dupnames") orelse "";
 }
 
+/// A cell's grid extent, read from docutils' `morecols`/`morerows` — which
+/// count the ADDITIONAL columns or rows the cell covers, so the extent is one
+/// more than the attribute. Absent means the ordinary one-square cell, `1`.
+///
+/// A value that is not a number is treated as absent rather than as an error:
+/// this decodes a docutils dump, and a malformed one should fail the corpus
+/// round-trip (which compares the whole text) rather than the decode. Every one
+/// of the 21 in the corpus parses.
+fn spanExtent(attrs: []const AST.KeyVal, key: []const u8) u32 {
+    const raw = attrValue(attrs, key) orelse return 1;
+    const more = std.fmt.parseInt(u32, raw, 10) catch return 1;
+    return more + 1;
+}
+
 /// The value of `attrs`'s `key`, or `null` when it is absent. First match, which
 /// is the whole story here: `scanAttrs` reads a docutils `attlist()` dump, and
 /// docutils' attribute dictionaries cannot repeat a key.
@@ -485,6 +612,19 @@ pub const Coverage = struct {
     /// Per `Tag`, how many fell back to a generic `container`. For the three
     /// conditional mappings this is the count that failed the condition.
     generic: [Tag.count]u32 = @splat(0),
+    /// Per `Tag`, how many produced NO node because twig's shape has no place
+    /// for the element itself — `tgroup`/`thead`/`tbody`, whose children move
+    /// up into the parent (see `dissolves`).
+    ///
+    /// A third category and not a bucket of `semantic`, because it answers a
+    /// different question. `semantic` counts elements twig's vocabulary HOLDS;
+    /// these are elements it deliberately does not hold and does not need to,
+    /// their content having been absorbed losslessly. Folding them into
+    /// `semantic` would inflate the coverage ratio with elements that have no
+    /// twig node, and folding them into `generic` would claim a gap that is not
+    /// there. The round-trip is what proves the absorption is lossless; this
+    /// number just keeps the books honest about which elements it applied to.
+    dissolved: [Tag.count]u32 = @splat(0),
     /// `Text` nodes decoded to `str`.
     text_nodes: u32 = 0,
     /// Text lines that LOOK like an element but whose name is not a known
@@ -504,9 +644,15 @@ pub const Coverage = struct {
         return n;
     }
 
+    pub fn dissolvedTotal(self: Coverage) u32 {
+        var n: u32 = 0;
+        for (self.dissolved) |c| n += c;
+        return n;
+    }
+
     /// Elements decoded, text nodes excluded.
     pub fn elementTotal(self: Coverage) u32 {
-        return self.semanticTotal() + self.genericTotal();
+        return self.semanticTotal() + self.genericTotal() + self.dissolvedTotal();
     }
 };
 
@@ -701,6 +847,37 @@ pub fn decode(allocator: Allocator, text: []const u8, coverage: ?*Coverage) Deco
     return b.finish(root orelse return error.NoRoot);
 }
 
+/// Flag every row in a dissolving `<thead>`, and every cell in those rows, as a
+/// header — the information the wrapper was carrying, moved to where twig keeps
+/// it before the wrapper disappears.
+///
+/// This is the decoder's only in-place edit of an already-built node, and it is
+/// well-founded rather than a shortcut: pformat writes a parent AFTER all of its
+/// children, so when a `thead` frame closes, its rows and their cells are
+/// finished nodes that nothing else will touch again. Both flags are set here
+/// rather than at `entry` time because at that point the row does not yet know
+/// it is a header row (see `decodeKind`'s `.entry` arm).
+fn markHeadRows(b: *AST.Builder, rows: []const Node.Id) void {
+    for (rows) |row_id| {
+        const row = &b.nodes.items[row_id];
+        switch (row.kind) {
+            // Only rows are flagged. A `thead` holds nothing else in the
+            // corpus, and a non-row child (which would have to be a decode of
+            // something docutils does not produce) is passed through untouched
+            // rather than reinterpreted.
+            .row => row.kind.row.head = true,
+            else => continue,
+        }
+        var cell = row.first_child;
+        while (cell) |id| : (cell = b.nodes.items[id].next_sibling) {
+            switch (b.nodes.items[id].kind) {
+                .cell => b.nodes.items[id].kind.cell.head = true,
+                else => {},
+            }
+        }
+    }
+}
+
 /// Attach the open text run (if any) to the deepest frame as a `str`.
 fn flushRun(
     allocator: Allocator,
@@ -732,6 +909,24 @@ fn closeTop(
 ) DecodeError!void {
     var frame = stack.pop().?;
     defer frame.children.deinit(allocator);
+    const parent: ?Tag = if (stack.items.len == 0) null else stack.items[stack.items.len - 1].tag;
+
+    // An element with no twig node of its own: hand its children to its parent
+    // and vanish. This happens BEFORE attributes are scanned because a
+    // dissolving element has none worth keeping by construction — see
+    // `dissolves`. `thead` is the one that carries information rather than
+    // structure, and it moves that information onto its rows here.
+    if (dissolves(frame.tag)) {
+        if (frame.tag == .thead) markHeadRows(b, frame.children.items);
+        if (coverage) |c| c.dissolved[@intFromEnum(frame.tag)] += 1;
+        // A dissolving element at the root would leave the document with no
+        // node; pformat never produces one (a doctree's root is always
+        // `<document>`), so this cannot fire, and returning without recording a
+        // root makes `decode` report `NoRoot` rather than crash if it ever does.
+        if (stack.items.len == 0) return;
+        try stack.items[stack.items.len - 1].children.appendSlice(allocator, frame.children.items);
+        return;
+    }
 
     // Attributes are scanned BEFORE the kind is chosen: a mapping may read one
     // into its payload (`reference`'s `refuri` becomes `Kind.Link.destination`).
@@ -740,7 +935,7 @@ fn closeTop(
     attr_buf.clearRetainingCapacity();
     try scanAttrs(frame.attrs_src, attr_buf, allocator);
 
-    const semantic = decodeKind(b, frame.tag, frame.children.items, attr_buf.items);
+    const semantic = decodeKind(b, frame.tag, parent, frame.children.items, attr_buf.items);
     const kind: Node.Kind = semantic orelse .{ .container = .{ .name = frame.tag.name() } };
     if (coverage) |c| {
         const slot = @intFromEnum(frame.tag);
@@ -772,7 +967,7 @@ pub const EncodeError = error{
 
 /// Write `ast` as a docutils pformat doctree.
 pub fn encode(allocator: Allocator, ast: *const AST, w: *Writer) EncodeError!void {
-    try writeNode(allocator, ast, ast.root, 0, w);
+    try writeNode(allocator, ast, ast.root, null, 0, w);
 }
 
 /// `encode` into an owned buffer.
@@ -803,14 +998,21 @@ fn lessByKey(_: void, a: AST.KeyVal, b: AST.KeyVal) bool {
     return std.mem.order(u8, a.key, b.key) == .lt;
 }
 
-fn writeNode(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usize, w: *Writer) EncodeError!void {
+fn writeNode(
+    allocator: Allocator,
+    ast: *const AST,
+    id: Node.Id,
+    parent: ?Node.Kind,
+    depth: usize,
+    w: *Writer,
+) EncodeError!void {
     const node = ast.nodes[id];
     if (node.kind == .str) {
         try writeText(w, depth, node.kind.str);
         return;
     }
 
-    const tag = encodeTag(node.kind) orelse return error.UnrepresentableKind;
+    const tag = encodeTag(node.kind, parent) orelse return error.UnrepresentableKind;
     try writeIndent(w, depth);
     try w.writeByte('<');
     try w.writeAll(tag.name());
@@ -855,10 +1057,104 @@ fn writeNode(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usize, w
         else => {},
     }
 
+    // A table's children are re-nested under the `tgroup`/`thead`/`tbody`
+    // wrappers `decode` dissolved.
+    if (node.kind == .table) {
+        try writeTable(allocator, ast, id, depth, w);
+        return;
+    }
+
     var it = ast.children(id);
     while (it.next()) |child| {
-        try writeNode(allocator, ast, child.id, depth + 1, w);
+        try writeNode(allocator, ast, child.id, node.kind, depth + 1, w);
     }
+}
+
+/// Write a table's children back into docutils' shape: the caption stays a
+/// direct child, and the columns and rows are re-nested under a synthesized
+/// `<tgroup>` with the header rows under `<thead>` and the rest under
+/// `<tbody>`. The exact inverse of the three dissolutions in `closeTop`.
+///
+/// Everything synthesized here is DERIVED, which is what made dissolving safe
+/// in the first place: `cols` is the number of `column` children, and the row
+/// grouping is `row.head`. Nothing is read back from a field `decode` had to
+/// invent.
+///
+/// A table with no columns and no rows writes no `tgroup` at all rather than an
+/// empty one — docutils cannot produce such a table (a table always has at
+/// least one column), so there is no corpus answer to match, and emitting
+/// `<tgroup cols="0">` would be inventing one.
+fn writeTable(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usize, w: *Writer) EncodeError!void {
+    // One pass does both jobs: it measures the grid, and it writes the children
+    // that are NOT part of it (the caption) in place at the table's own depth.
+    // The two are independent, and the grid cannot start being written until the
+    // measurement is complete anyway — `<tgroup cols="N">` needs the count.
+    var cols: usize = 0;
+    var head_rows: usize = 0;
+    var body_rows: usize = 0;
+    var it = ast.children(id);
+    while (it.next()) |child| switch (ast.nodes[child.id].kind) {
+        .column => cols += 1,
+        .row => |r| if (r.head) {
+            head_rows += 1;
+        } else {
+            body_rows += 1;
+        },
+        else => try writeNode(allocator, ast, child.id, .table, depth + 1, w),
+    };
+
+    if (cols == 0 and head_rows == 0 and body_rows == 0) return;
+
+    try writeIndent(w, depth + 1);
+    try w.print("<tgroup cols=\"{d}\">\n", .{cols});
+
+    var columns = ast.children(id);
+    while (columns.next()) |child| {
+        if (ast.nodes[child.id].kind != .column) continue;
+        try writeNode(allocator, ast, child.id, .table, depth + 2, w);
+    }
+
+    // docutils always writes a `<tbody>`, even where twig's flat row list has
+    // no body rows — all 65 corpus tables have one, and 12 also have a
+    // `<thead>`, never the other way round.
+    if (head_rows > 0) try writeRowGroup(allocator, ast, id, true, depth + 2, w);
+    try writeRowGroup(allocator, ast, id, false, depth + 2, w);
+}
+
+/// Write one `<thead>`/`<tbody>` and the rows belonging to it, in document order
+/// within the group.
+///
+/// Grouping by FLAG rather than by RUN is the deliberate half of this, and it is
+/// where the doctree parts company with `html/serializer.zig`'s
+/// `renderSectionedTable` — which solves the same flat-rows-to-sectioned-output
+/// problem, in one pass, by opening a new section every time `head` changes.
+/// That is right for HTML, whose `<table>` admits any number of `<thead>`/
+/// `<tbody>` groups. A docutils `<tgroup>` does not: every one of the 65 in the
+/// corpus has AT MOST ONE `<thead>` and EXACTLY ONE `<tbody>`, which is also
+/// what docutils' DTD allows. Run-grouping a table whose header rows are
+/// INTERLEAVED with body rows would therefore emit `<thead><tbody><thead>…` —
+/// output docutils could never produce and its own reader would reject.
+///
+/// So an interleaved table (which twig's flat model permits and docutils' shape
+/// cannot express) is REORDERED into the one legal grouping rather than
+/// faithfully sectioned. Nothing in the corpus exercises it — decoded groups
+/// were contiguous to begin with — and the alternative is emitting an invalid
+/// doctree.
+fn writeRowGroup(
+    allocator: Allocator,
+    ast: *const AST,
+    table: Node.Id,
+    head: bool,
+    depth: usize,
+    w: *Writer,
+) EncodeError!void {
+    try writeIndent(w, depth);
+    try w.writeAll(if (head) "<thead>\n" else "<tbody>\n");
+    var it = ast.children(table);
+    while (it.next()) |child| switch (ast.nodes[child.id].kind) {
+        .row => |r| if (r.head == head) try writeNode(allocator, ast, child.id, .table, depth + 1, w),
+        else => {},
+    };
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────
@@ -1102,6 +1398,121 @@ test "a substitution definition holds its body inline" {
     try testing.expectEqual(AST.Node.Kind.ContentModel.inlines, ast.nodes[sub].kind.contentModel());
     const body = ast.nodes[sub].first_child.?;
     try testing.expectEqualStrings("reStructuredText", ast.nodes[body].kind.str);
+
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "a table is flattened out of tgroup/thead/tbody and built back into them" {
+    // The whole restructuring in one document: a caption spelled `<title>`, a
+    // `<tgroup>` whose `cols` is derivable, per-column `<colspec>`s, and a
+    // header row that is a header only because of the `<thead>` around it.
+    const src =
+        \\<document source="test data">
+        \\    <table>
+        \\        <title>
+        \\            Prices
+        \\        <tgroup cols="2">
+        \\            <colspec colwidth="10" stub="1">
+        \\            <colspec colwidth="20">
+        \\            <thead>
+        \\                <row>
+        \\                    <entry>
+        \\                        <paragraph>
+        \\                            Treat
+        \\                    <entry>
+        \\                        <paragraph>
+        \\                            Price
+        \\            <tbody>
+        \\                <row>
+        \\                    <entry morecols="1">
+        \\                        <paragraph>
+        \\                            Sold out
+        \\
+    ;
+    var cov: Coverage = .{};
+    var ast = try decode(testing.allocator, src, &cov);
+    defer ast.deinit();
+
+    // Twig's shape: the three wrappers are gone and the table holds its caption,
+    // its columns and its rows directly.
+    const table = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[table].kind == .table);
+    var kinds = std.ArrayList(std.meta.Tag(Node.Kind)).empty;
+    defer kinds.deinit(testing.allocator);
+    var it = ast.children(table);
+    while (it.next()) |child| try kinds.append(testing.allocator, std.meta.activeTag(ast.nodes[child.id].kind));
+    try testing.expectEqualSlices(
+        std.meta.Tag(Node.Kind),
+        &.{ .caption, .column, .column, .row, .row },
+        kinds.items,
+    );
+
+    // `<title>` under a table is the caption; the columns keep their width and
+    // stub as attributes, since `Kind.column` carries no payload.
+    const caption = ast.nodes[table].first_child.?;
+    const stub_col = ast.nodes[caption].next_sibling.?;
+    try testing.expectEqualStrings("10", ast.attrsOf(stub_col).get("colwidth").?);
+    try testing.expectEqualStrings("1", ast.attrsOf(stub_col).get("stub").?);
+
+    // The `<thead>` moved its header-ness onto the row AND its cells before
+    // dissolving — neither carries a marker of its own in the doctree.
+    var rows = ast.children(table);
+    var head: ?Node.Id = null;
+    var body: ?Node.Id = null;
+    while (rows.next()) |child| switch (ast.nodes[child.id].kind) {
+        .row => |r| if (r.head) {
+            head = child.id;
+        } else {
+            body = child.id;
+        },
+        else => {},
+    };
+    try testing.expect(ast.nodes[head.?].kind.row.head);
+    try testing.expect(ast.nodes[ast.nodes[head.?].first_child.?].kind.cell.head);
+    try testing.expect(!ast.nodes[body.?].kind.row.head);
+    try testing.expect(!ast.nodes[ast.nodes[body.?].first_child.?].kind.cell.head);
+
+    // `morecols` counts the ADDITIONAL columns spanned, so the extent is one
+    // more — and the attribute stays put for `encode` to write back from.
+    const spanning = ast.nodes[body.?].first_child.?;
+    try testing.expectEqual(@as(u32, 2), ast.nodes[spanning].kind.cell.colspan);
+    try testing.expectEqual(@as(u32, 1), ast.nodes[spanning].kind.cell.rowspan);
+    try testing.expectEqualStrings("1", ast.attrsOf(spanning).get("morecols").?);
+
+    // The three wrappers produced no node, and are counted as neither semantic
+    // nor generic.
+    try testing.expectEqual(@as(u32, 1), cov.dissolved[@intFromEnum(Tag.tgroup)]);
+    try testing.expectEqual(@as(u32, 1), cov.dissolved[@intFromEnum(Tag.thead)]);
+    try testing.expectEqual(@as(u32, 1), cov.dissolved[@intFromEnum(Tag.tbody)]);
+    try testing.expectEqual(@as(u32, 0), cov.generic[@intFromEnum(Tag.tgroup)]);
+    try testing.expectEqual(@as(u32, 2), cov.semantic[@intFromEnum(Tag.colspec)]);
+
+    // And it all comes back — `cols="2"` recounted, the groups re-nested, the
+    // caption spelled `<title>` again.
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "a caption is a table's <title> but a figure's <caption>" {
+    // The one mapping that reads its parent, in the direction that proves it is
+    // not simply `title -> caption`: a `figure` is still a generic container
+    // here, and the `<caption>` inside it stays a `<caption>`.
+    const src =
+        \\<document source="test data">
+        \\    <figure>
+        \\        <caption>
+        \\            A picture
+        \\
+    ;
+    var ast = try decode(testing.allocator, src, null);
+    defer ast.deinit();
+
+    const figure = ast.nodes[ast.root].first_child.?;
+    const caption = ast.nodes[figure].first_child.?;
+    try testing.expect(ast.nodes[caption].kind == .caption);
 
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);

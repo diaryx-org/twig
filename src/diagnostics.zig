@@ -210,9 +210,18 @@ fn djotFidelity(kind: Node.Kind) Fidelity {
         .markup_leaf, .processing_instruction => .dropped,
         // A substitution definition renders nothing at the point of definition
         // in any format (its body belongs at the use sites), and djot has no
-        // `|name|` splice to carry it there — so the body goes nowhere. The one
-        // kind twig has that is `dropped` by every target.
+        // `|name|` splice to carry it there — so the body goes nowhere. The
+        // only kind whose CONTENT no target holds; `column` below is dropped by
+        // all three too, but what it loses is metadata about content that
+        // survives elsewhere.
         .substitution => .dropped,
+        // A pipe table has no column axis to write one into — djot describes a
+        // column only through the alignment of its cells. Nothing is emitted,
+        // so the width and the stub flag go with it. Content is not at risk
+        // (the cells are children of the ROWS), which is why this is a
+        // metadata loss rather than a body one, but `Fidelity` measures the
+        // node and the node does not survive. See `Kind.column`.
+        .column => .dropped,
         // Djot writes a metadata block as a `{lang}`-tagged div, and its own
         // parser reads that back as a div, not as metadata.
         .metadata => .degraded,
@@ -310,6 +319,8 @@ fn markdownFidelity(kind: Node.Kind) Fidelity {
         // again, and it has no substitution mechanism either.
         .citation => .degraded,
         .substitution => .dropped,
+        // GFM's pipe table has no column axis either — same as djot.
+        .column => .dropped,
         .text_leaf => |l| switch (l.kind) {
             .verbatim, .url, .email, .footnote_reference => .faithful,
             .symb, .inline_math, .display_math, .citation_reference, .substitution_reference => .degraded,
@@ -385,6 +396,15 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
         // lost outright, which is the strongest reason this whole module was
         // built before the vocabulary that needs it.
         .substitution => .dropped,
+        // The one target that HAS the construct — `<colgroup><col>` — and still
+        // does not write it. Emitting a bare `<col>` among the rows would be
+        // invalid (HTML's table content model puts `col` inside a `colgroup`),
+        // so spelling this means teaching the serializer's thead/tbody state
+        // machine a third group, and reading it back means mapping `<col>` in
+        // the HTML parser. Both are worth doing and neither is done, so the
+        // honest entry today is the same as the other two targets'. This is the
+        // arm to revisit first if `Kind.column` ever grows a typed payload.
+        .column => .dropped,
         // Rendered as Unicode glyphs, which come back as ordinary text.
         .smart_punctuation, .non_breaking_space => .degraded,
         .inline_mark => |m| switch (m) {
@@ -677,6 +697,18 @@ const probes = [_]Probe{
             const c2 = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{try str(b, "1")});
             const r2 = try b.addContainer(.{ .row = .{ .head = false } }, &.{c2});
             return blockDoc(b, .table, &.{ cap, r1, r2 });
+        }
+    }.f },
+    // The same table with a COLUMN AXIS. Probed separately from `table` so the
+    // two claims stay independent: the table survives every target and the
+    // column survives none, and a single probe asserting both would pass on the
+    // table alone.
+    .{ .label = "column", .want = .{ .tag = .column }, .kind = .column, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            const col = try b.addContainer(.column, &.{});
+            const c = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{try str(b, "1")});
+            const r = try b.addContainer(.{ .row = .{ .head = false } }, &.{c});
+            return blockDoc(b, .table, &.{ col, r });
         }
     }.f },
     .{ .label = "footnote", .want = .{ .tag = .footnote }, .kind = .{ .footnote = .{ .label = "" } }, .build = struct {

@@ -11,6 +11,11 @@
 //! cell's `content_span`, per-column ALIGNMENT from the header cells — and the
 //! delimiter line is re-spelled from the alignments on the way back out.
 //!
+//! A table can also hold a run of `column` nodes describing its column axis (see
+//! `Kind.column`), but only a format with a real one produces them, and pipe
+//! tables — all this file edits — never do. The row scan skips any non-`row`
+//! child regardless.
+//!
 //! ── Why re-emit the whole table ────────────────────────────────────────────
 //! Column ops touch every row and the delimiter at once; row ops shift the lines
 //! below. Rebuilding the table's line region in one buffer and splicing it once
@@ -102,10 +107,9 @@ pub fn extract(allocator: Allocator, doc: *const Document, offset: usize) Error!
 
     var row_index: usize = 0;
     var found_caret = false;
-    var it = ast.children(table);
+    var it = ast.tableRows(table);
     while (it.next()) |child| {
-        if (std.meta.activeTag(child.kind) != .row) continue; // skip the caption
-        const is_head = child.kind.row.head;
+        const is_head = child.head;
         if (is_head and grid.header_rows == row_index) grid.header_rows += 1;
 
         var cells: std.ArrayList([]const u8) = .empty;

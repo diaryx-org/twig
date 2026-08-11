@@ -1147,6 +1147,11 @@ typedef enum TwigNodeKind {
     TWIG_KIND_SUBSTITUTION = 57,
     TWIG_KIND_CITATION_REFERENCE = 58,
     TWIG_KIND_SUBSTITUTION_REFERENCE = 59,
+    // A table's COLUMN AXIS: one node per column, sitting among the table's
+    // children before its rows. Payload-free, so it is built with
+    // twig_builder_add like any other void-payload kind; per-column data (a
+    // width, reStructuredText's stub flag) is ordinary node attributes.
+    TWIG_KIND_COLUMN = 60,
 } TwigNodeKind;
 
 typedef enum TwigBulletStyle {

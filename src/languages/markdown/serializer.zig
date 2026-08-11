@@ -350,10 +350,12 @@ const Renderer = struct {
                 }
             },
             .table => {
-                var row_it = self.ast.children(id);
+                // Only rows produce a pipe line; `tableRows` skips the caption
+                // and any `column` children, and hands over `head` without
+                // reopening the union.
+                var row_it = self.ast.tableRows(id);
                 var saw_header = false;
                 while (row_it.next()) |row| {
-                    if (self.ast.nodes[row.id].kind == .caption) continue;
                     try self.writePrefix(ctx);
                     try self.writer.writeByte('|');
                     var cell_it = self.ast.children(row.id);
@@ -369,7 +371,7 @@ const Renderer = struct {
                     }
                     try self.writer.writeByte('\n');
 
-                    if (!saw_header and self.ast.nodes[row.id].kind.row.head) {
+                    if (!saw_header and row.head) {
                         saw_header = true;
                         try self.writePrefix(ctx);
                         try self.writer.writeByte('|');

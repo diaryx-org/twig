@@ -120,6 +120,9 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .definition_list_item,
         .term,
         .definition,
+        // Its width/stub data lives in `attrs`, which is written for every
+        // node — see `Kind.column`.
+        .column,
         .caption,
         .soft_break,
         .hard_break,

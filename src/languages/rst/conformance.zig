@@ -38,20 +38,27 @@ const system_message = @import("system_message.zig");
 const corpus_json = @embedFile("testdata/docutils-rst-corpus.json");
 
 /// Ratchet floor: docutils element instances across the whole corpus that
-/// decode to a twig SEMANTIC kind rather than a generic `container` — 3450 of
-/// 5682 (61%), against 2989 text nodes, up from 3185 at the initial harness and
-/// 3378 after the free half of the hyperlink cluster. The last +72 is the
-/// citation and substitution vocabulary, and it is the whole population of all
-/// four elements (`citation` 14, `substitution_definition` 33,
-/// `citation_reference` 7, `substitution_reference` 18) — no instance failed the
-/// sole-`str` condition the two reference mappings carry.
+/// decode to a twig SEMANTIC kind rather than a generic `container` — 4075 of
+/// 5682 (72%), against 2989 text nodes, up from 3185 at the initial harness,
+/// 3378 after the free half of the hyperlink cluster, and 3450 after the
+/// citation and substitution vocabulary.
+///
+/// The last +625 is the table subtree, the biggest single mapping the corpus
+/// has to give and the only one that had to move as a unit: `entry` 266,
+/// `colspec` 142, `row` 124, `table` 65, and the 18 `title` elements that are a
+/// table's caption. A further 142 (`tgroup` 65, `tbody` 65, `thead` 12) are
+/// DISSOLVED rather than mapped — they produce no twig node, so they count in
+/// neither total; see `doctree.Coverage.dissolved`. The last 10 are docutils'
+/// OTHER caption element, `<caption>`, which is a figure's — mapped alongside
+/// because it lands on the same twig kind from the other direction.
+///
 /// See this file's module doc comment. Raise it whenever `doctree.zig`'s decode
 /// table grows a row; never lower it.
 ///
 /// The test prints the full per-element coverage table whenever the live count
 /// DIFFERS from this floor in either direction, so mapping a new element both
 /// shows you what moved and tells you the number to put here.
-pub const SEMANTIC_BASELINE: u32 = 3450;
+pub const SEMANTIC_BASELINE: u32 = 4075;
 
 /// Tag-shaped text lines whose name is not a docutils element, corpus-wide.
 /// This is EXACTLY one — an option list documenting `--source-url=<URL>`, whose
@@ -210,11 +217,13 @@ fn groupStat(allocator: Allocator, groups: *std.ArrayList(GroupStat), case: Case
 /// helper rather than something buried in the test's failure path.
 pub fn writeCoverage(w: *std.Io.Writer, coverage: doctree.Coverage) std.Io.Writer.Error!void {
     try w.print(
-        "  vocabulary: {d}/{d} element instances decode to a semantic kind ({d} generic containers), {d} text nodes\n",
+        "  vocabulary: {d}/{d} element instances decode to a semantic kind " ++
+            "({d} generic containers, {d} dissolved), {d} text nodes\n",
         .{
             coverage.semanticTotal(),
             coverage.elementTotal(),
             coverage.genericTotal(),
+            coverage.dissolvedTotal(),
             coverage.text_nodes,
         },
     );

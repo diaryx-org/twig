@@ -1077,6 +1077,14 @@ pub const Renderer = struct {
             // arm), so the body goes nowhere at all. `diagnostics.zig` records
             // that as `dropped` for every target — the honest answer until the
             // rST parser lands and a resolution table exists to fill.
+            //
+            // `column` lands here too, and it is the one kind HTML actually HAS
+            // a spelling for: `<colgroup><col>`. Writing it means teaching
+            // `renderSectionedTable` a third group (a bare `<col>` among the
+            // rows is invalid — HTML's table content model nests it in a
+            // `colgroup`) and mapping `<col>` back in the parser. Until both
+            // exist, emitting nothing is what `diagnostics.zig` claims and what
+            // its probe verifies.
             else => {},
         }
     }

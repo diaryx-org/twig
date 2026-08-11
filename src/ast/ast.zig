@@ -58,6 +58,9 @@ pub const Builder = @import("builder.zig");
 
 pub const children = reader.children;
 pub const ChildIterator = reader.ChildIterator;
+pub const tableRows = reader.tableRows;
+pub const TableRowIterator = reader.TableRowIterator;
+pub const TableRow = reader.TableRow;
 pub const attrsOf = reader.attrsOf;
 pub const getIdByPath = reader.getIdByPath;
 pub const getNodeByPath = reader.getNodeByPath;
@@ -149,8 +152,11 @@ pub const Node = struct {
         ordered_list: OrderedList,
         task_list: TaskList,
         definition_list,
-        /// Children: `[Caption, Row, Row, ...]` — the first child is always
-        /// a `caption` (possibly an empty one), matching djot.js's tuple type.
+        /// Children: `[Caption, Column…, Row, Row, ...]`. The `caption` comes
+        /// first when present — djot.js's tuple type always writes one, even
+        /// empty, while the HTML and rST parsers emit one only when the source
+        /// has one. The `column` run, when present, describes the COLUMN AXIS
+        /// and precedes every row; see `Kind.column`.
         table,
 
         // ── Container children of the above ──────────────────────────────
@@ -161,6 +167,36 @@ pub const Node = struct {
         definition,
         row: Row,
         cell: Cell,
+        /// One column of a table's COLUMN AXIS — a description of a column as
+        /// a whole, sitting alongside the rows rather than inside them. rST
+        /// spells it `<colspec colwidth="33">`, HTML `<col>` inside a
+        /// `<colgroup>`, DocBook `<colspec>` again.
+        ///
+        /// A table does not need one: GFM and djot pipe tables have no column
+        /// axis at all, and their tables have no `column` children. Where a
+        /// format does have one it is not optional in practice — every one of
+        /// the 65 tables in the docutils corpus carries a full run of them,
+        /// which is why the rST table subtree could not be mapped without this
+        /// kind (`doctree.zig`'s decode table has the measurement).
+        ///
+        /// ── Why it carries no payload ──────────────────────────────────────
+        /// A column's interesting content is its WIDTH, and the two formats
+        /// that have one disagree about what a width is: rST's `colwidth` is a
+        /// unitless relative integer, HTML's is a CSS length (`25%`, `3em`).
+        /// Picking a representation on the evidence of one format would be
+        /// guessing, so the width rides in the normal `attrs` side-table as
+        /// written, which is where every other un-normalized source value
+        /// already lives (a `bullet="*"`, a `refuri`). rST's `stub` — the
+        /// column is a row-header column — is there for the same reason; it is
+        /// deliberately NOT projected onto the `head` flag of each cell in the
+        /// column, since that is a per-column fact and re-deriving it from the
+        /// cells would be lossy in both directions.
+        ///
+        /// So this is a marker: it says a column axis exists and how many
+        /// columns are in it, and it gives per-column data somewhere to attach.
+        /// A typed payload is the obvious next step the moment a SECOND format
+        /// needs to act on one.
+        column,
         caption,
         footnote: Footnote,
         reference: Reference,
@@ -492,6 +528,7 @@ pub const Node = struct {
                 .definition,
                 .row,
                 .cell,
+                .column,
                 .caption,
                 .markup_leaf,
                 .processing_instruction,
@@ -530,6 +567,9 @@ pub const Node = struct {
                 .non_breaking_space,
                 .reference,
                 .processing_instruction,
+                // A column DESCRIBES a column; the cells that sit in it are
+                // children of the rows, not of it.
+                .column,
                 => .empty,
 
                 .doc,
@@ -614,6 +654,7 @@ pub const Node = struct {
                 .definition_list_item,
                 .term,
                 .definition,
+                .column,
                 .caption,
                 .soft_break,
                 .hard_break,
