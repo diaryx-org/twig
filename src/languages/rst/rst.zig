@@ -208,9 +208,9 @@
 //! cannot spell is silently written as something that reparses differently.
 //!
 //! ── What twig's AST does not yet hold ──────────────────────────────────────
-//! `conformance.zig`'s coverage ratchet measures this continuously; as of the
-//! initial harness, 3185 of 5682 element instances (56%) decode to a semantic
-//! twig kind and the rest fall back to `Kind.container`. Reading that table,
+//! `conformance.zig`'s coverage ratchet measures this continuously; 3378 of 5682
+//! element instances (59%) decode to a semantic twig kind and the rest fall back
+//! to `Kind.container`. Reading that table,
 //! the structural work rST implies, in rough order of corpus weight:
 //!
 //!   - **The table subtree** (`entry` 266, `colspec` 142, `row` 124, `table` 65,
@@ -225,11 +225,28 @@
 //!     doctree does not write — it would have to come from section nesting
 //!     depth, and `title` also appears under `topic`/`sidebar`/`table` where
 //!     there is no such depth.
-//!   - **Hyperlink machinery**: `reference` (134), `target` (73),
-//!     `footnote_reference` (32), `footnote` (30), `substitution_definition`
-//!     (33), `substitution_reference` (18), `citation` (14),
-//!     `citation_reference` (7). Citations are a namespace DISTINCT from
-//!     footnotes in rST; twig has one `Kind.footnote`.
+//!   - **Hyperlink machinery**, now half mapped. `reference` (134) is twig's
+//!     `link` down to the payload, the external `target` (29 of 73) is its
+//!     `reference`, and `footnote` (30) its `footnote` — 193 instances that
+//!     needed no new vocabulary at all, only the observation that a definition's
+//!     name is docutils' `names` attribute rather than its `<label>` child.
+//!
+//!     What remains is the part that DOES need vocabulary, and it is a single
+//!     decision repeated: rST has four resolvable namespaces (hyperlink,
+//!     footnote, citation, substitution) where twig has two. `citation` (14) and
+//!     `citation_reference` (7) are footnotes in a second registry;
+//!     `substitution_definition` (33) and `substitution_reference` (18) are a
+//!     definition whose body is inline, which twig has no shape for; the
+//!     indirect `target` (14) is an alias `Kind.Reference` cannot hold; the
+//!     internal `target` (30) is an anchor, which twig models as an ATTRIBUTE
+//!     and docutils resolves the same way, in a transform. `label` (23) stays
+//!     generic on purpose — it is the rendered marker, not the name.
+//!
+//!     Each commits twig's published vocabulary (`ast/json.zig`, `c_abi.zig`)
+//!     to a construct only rST has, and hands the djot/Markdown/HTML
+//!     serializers a node their format cannot spell — the conversion-lossiness
+//!     system below, which does not exist yet. That is the gate, not the
+//!     mapping work.
 //!   - **Field lists** (`field` 54, `field_name` 54, `field_body` 54,
 //!     `field_list` 21). Structural, NOT attribute data — docutils parses a
 //!     body-position `:Author: Me` into a real subtree whose body holds

@@ -38,15 +38,15 @@ const system_message = @import("system_message.zig");
 const corpus_json = @embedFile("testdata/docutils-rst-corpus.json");
 
 /// Ratchet floor: docutils element instances across the whole corpus that
-/// decode to a twig SEMANTIC kind rather than a generic `container` — 3185 of
-/// 5682 as of the initial harness (56%), against 2989 text nodes. See this
-/// file's module doc comment. Raise it whenever `doctree.zig`'s decode table
-/// grows a row; never lower it.
+/// decode to a twig SEMANTIC kind rather than a generic `container` — 3378 of
+/// 5682 (59%), against 2989 text nodes, up from 3185 at the initial harness.
+/// See this file's module doc comment. Raise it whenever `doctree.zig`'s decode
+/// table grows a row; never lower it.
 ///
 /// The test prints the full per-element coverage table whenever the live count
 /// DIFFERS from this floor in either direction, so mapping a new element both
 /// shows you what moved and tells you the number to put here.
-pub const SEMANTIC_BASELINE: u32 = 3185;
+pub const SEMANTIC_BASELINE: u32 = 3378;
 
 /// Tag-shaped text lines whose name is not a docutils element, corpus-wide.
 /// This is EXACTLY one — an option list documenting `--source-url=<URL>`, whose

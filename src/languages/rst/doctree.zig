@@ -208,7 +208,7 @@ pub const Tag = enum {
 // that would need a normalization step, a defaulted field the doctree cannot
 // see, or knowledge of an ancestor stays generic and is counted as such.
 //
-// Two families are deliberately still generic, and their absence is the
+// Three families are deliberately still generic, and their absence is the
 // finding rather than an oversight:
 //
 //   - The table subtree (`table`/`tgroup`/`colspec`/`thead`/`tbody`/`row`/
@@ -222,11 +222,44 @@ pub const Tag = enum {
 //     does not write one, so decoding would have to synthesize it from section
 //     nesting depth and encoding would have to recompute it. `title` also
 //     appears under `topic`/`sidebar`/`table`, where no such depth exists.
+//   - The REST of the hyperlink cluster. `reference`, the external `target`,
+//     and `footnote` are mapped below because twig already has their kinds; the
+//     four that remain each want a NEW entry in twig's shared vocabulary, and
+//     the corpus cannot decide any of them:
+//
+//       `citation` (14) + `citation_reference` (7) — structurally identical to
+//       footnotes, differing only in which name registry they resolve in. So
+//       either `Kind.Footnote` grows a namespace or `citation` becomes its own
+//       kind; and those two choices differ in whether the serializers are FORCED
+//       to notice (a payload field compiles everywhere unchanged, a new kind
+//       fails every exhaustive switch until it is answered).
+//
+//       `substitution_definition` (33) + `substitution_reference` (18) — a
+//       definition whose body is INLINE, unlike every definition twig has.
+//
+//       The indirect `target` (14) — an alias naming another definition rather
+//       than a URI, which `Kind.Reference` has no field for.
+//
+//       The internal `target` (30) — an anchor; see `decodeTarget`.
+//
+//     What they share is that mapping any of them commits twig's PUBLISHED
+//     vocabulary (`ast/json.zig`'s `kind`, `c_abi.zig`'s `TwigNodeKind`) to a
+//     construct only rST has, and hands three serializers a node their format
+//     cannot spell — which is the conversion-lossiness layer `rst.zig` names as
+//     a separate system that does not exist yet. Deliberately not smuggled in
+//     under a coverage ratchet.
 
 /// The twig `Kind` `tag` decodes to, or `null` for the generic `container`
 /// fallback. `children` are the already-built child ids, needed by the three
-/// text-carrying mappings — see `soleStr`.
-fn decodeKind(b: *const AST.Builder, tag: Tag, children: []const Node.Id) ?Node.Kind {
+/// text-carrying mappings — see `soleStr`; `attrs` are the element's own,
+/// borrowed from the input and safe to hand to the builder, which dupes every
+/// payload string (`Builder.dupeKind`).
+fn decodeKind(
+    b: *const AST.Builder,
+    tag: Tag,
+    children: []const Node.Id,
+    attrs: []const AST.KeyVal,
+) ?Node.Kind {
     return switch (tag) {
         .document => .doc,
         .paragraph => .para,
@@ -247,6 +280,33 @@ fn decodeKind(b: *const AST.Builder, tag: Tag, children: []const Node.Id) ?Node.
         .definition => .definition,
         .section => .section,
         .transition => .thematic_break,
+
+        // A hyperlink USE. docutils' `reference` and twig's `link` are the same
+        // node down to the payload: `refuri` is a resolved destination and
+        // `refname` is an unresolved name to look up later, which is exactly the
+        // `{destination, reference}` pair `Kind.Link` already carries for djot's
+        // `[text][label]`. All four corpus shapes fit — `refuri` alone (26),
+        // `name refuri` (20), `name refname` (52), `anonymous name` (33) — with
+        // the two that describe the reference rather than its target (`name`,
+        // the normalized link text; `anonymous`) riding in `attrs`.
+        .reference => .{ .link = .{
+            .destination = attrValue(attrs, "refuri"),
+            .reference = attrValue(attrs, "refname"),
+        } },
+
+        // A hyperlink DEFINITION — and only ONE of the three things docutils
+        // spells `<target>`. See `decodeTarget`.
+        .target => decodeTarget(children, attrs),
+
+        // A footnote definition. The label is `names` — the normalized name
+        // resolution uses — and NOT the `<label>` child, which is a different
+        // thing wearing the same word: `<label>` is the RENDERED marker (`1`
+        // for `[1]`), it is absent from all 21 auto-numbered footnotes because
+        // a transform supplies their number, and for the 9 that have one it
+        // merely repeats `names`. So it stays an ordinary child element and
+        // `Kind.Footnote.label` gets the value it is actually for, matching how
+        // `decodeTarget` reads a definition's name.
+        .footnote => .{ .footnote = .{ .label = definitionName(attrs) } },
 
         // The three text-carrying mappings. Each holds its payload as opaque
         // text on the node, so it can only absorb a lone `Text` child — a
@@ -280,6 +340,13 @@ fn encodeTag(kind: Node.Kind) ?Tag {
         .section => .section,
         .thematic_break => .transition,
         .code_block => .literal_block,
+        // The two hyperlink arms cross names, which is confusing exactly once:
+        // docutils' `<reference>` is the USE and its `<target>` is the
+        // DEFINITION, while twig's `link` is the use and its `reference` is the
+        // definition. Same two constructs, opposite words.
+        .link => .reference,
+        .reference => .target,
+        .footnote => .footnote,
         .inline_mark => |m| switch (m) {
             .emph => .emphasis,
             .strong => .strong,
@@ -312,18 +379,64 @@ fn encodeTag(kind: Node.Kind) ?Tag {
         .row,
         .cell,
         .caption,
-        .footnote,
-        .reference,
         .soft_break,
         .hard_break,
         .non_breaking_space,
         .raw_inline,
         .smart_punctuation,
-        .link,
         .image,
         .processing_instruction,
         => null,
     };
+}
+
+/// docutils spells three different constructs `<target>`, and only one of them
+/// is a link reference definition. The corpus separates them cleanly:
+///
+///   - **External** (29) — `.. _name: http://x`, carrying `refuri`. This IS
+///     twig's `Kind.reference`, the same node djot's `[name]: /url` produces,
+///     and it is what this decodes.
+///   - **Indirect** (14) — `.. _a: b_`, carrying `refname`: an ALIAS, pointing
+///     at another definition rather than at a URI. `Kind.Reference.destination`
+///     is a URI and has no second field to hold a name, so this stays generic.
+///   - **Internal** (30; 13 empty and 17 inline, the only targets with children)
+///     — `.. _name:` alone, an ANCHOR naming a position rather than a
+///     destination. Deliberately NOT forced into a destination-less
+///     `Kind.reference`: docutils resolves an internal target by moving its name
+///     onto the FOLLOWING element's `ids` in a transform, which is how twig
+///     already models an anchor too (an attribute on a node, not a node). What
+///     the parser emits here is that transform's placeholder, so the twig
+///     construct it corresponds to is an attribute twig cannot attach until it
+///     knows what comes next.
+///
+/// See `definitionName` for the label.
+fn decodeTarget(children: []const Node.Id, attrs: []const AST.KeyVal) ?Node.Kind {
+    if (children.len != 0) return null;
+    const destination = attrValue(attrs, "refuri") orelse return null;
+    return .{ .reference = .{ .label = definitionName(attrs), .destination = destination } };
+}
+
+/// The name a definition is resolved by: docutils' `names`, which is the
+/// NORMALIZED form (`Title 1` is stored as `title\ 1` — a list serialization
+/// whose members escape their spaces, though every one in the corpus has exactly
+/// one member). `dupnames` is that same value under a different key, used when
+/// docutils has flagged the name as a duplicate, so it is read as a fallback.
+///
+/// `""` when a definition has neither, which is not a failure: an anonymous
+/// target (`__ http://x`) and an unnamed auto-footnote (`[#]_`) genuinely have
+/// no name and are resolved by position.
+fn definitionName(attrs: []const AST.KeyVal) []const u8 {
+    return attrValue(attrs, "names") orelse attrValue(attrs, "dupnames") orelse "";
+}
+
+/// The value of `attrs`'s `key`, or `null` when it is absent. First match, which
+/// is the whole story here: `scanAttrs` reads a docutils `attlist()` dump, and
+/// docutils' attribute dictionaries cannot repeat a key.
+fn attrValue(attrs: []const AST.KeyVal, key: []const u8) ?[]const u8 {
+    for (attrs) |kv| {
+        if (std.mem.eql(u8, kv.key, key)) return kv.value;
+    }
+    return null;
 }
 
 /// The text a text-carrying mapping absorbs: `children` must be exactly one
@@ -599,7 +712,14 @@ fn closeTop(
     var frame = stack.pop().?;
     defer frame.children.deinit(allocator);
 
-    const semantic = decodeKind(b, frame.tag, frame.children.items);
+    // Attributes are scanned BEFORE the kind is chosen: a mapping may read one
+    // into its payload (`reference`'s `refuri` becomes `Kind.Link.destination`).
+    // They are still attached to the node afterwards either way — see `encode`
+    // for why the payload never becomes a second source of truth.
+    attr_buf.clearRetainingCapacity();
+    try scanAttrs(frame.attrs_src, attr_buf, allocator);
+
+    const semantic = decodeKind(b, frame.tag, frame.children.items, attr_buf.items);
     const kind: Node.Kind = semantic orelse .{ .container = .{ .name = frame.tag.name() } };
     if (coverage) |c| {
         const slot = @intFromEnum(frame.tag);
@@ -613,9 +733,6 @@ fn closeTop(
         else => false,
     };
     const id = try b.addContainer(kind, if (absorbed) &.{} else frame.children.items);
-
-    attr_buf.clearRetainingCapacity();
-    try scanAttrs(frame.attrs_src, attr_buf, allocator);
     if (attr_buf.items.len > 0) try b.setAttrs(id, .{ .entries = attr_buf.items });
 
     if (stack.items.len == 0) {
@@ -677,6 +794,16 @@ fn writeNode(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usize, w
     try w.writeByte('<');
     try w.writeAll(tag.name());
 
+    // Attributes come from `attrs` and ONLY from `attrs`, never from a kind's
+    // payload — including where `decode` read one into the payload (a `link`'s
+    // `destination` came from `refuri`). Synthesizing `refuri=` from
+    // `Kind.Link.destination` would give the same byte here and make the pair a
+    // second source of truth, so that a payload edited without its attribute
+    // would silently win. The one direction is: attributes are the record, and a
+    // payload read out of them is a READING. Whether the eventual parser also
+    // populates `attrs` is a question for the parser (it must anyway — docutils
+    // `ids`/`names` have nowhere else to live), not one to prejudge here.
+    //
     // docutils' `attlist()` sorts by name, so a doctree's attribute order is
     // canonical rather than as-written. `AST.Attrs` is order-preserving (djot
     // needs that), so the sort happens here on a copy.
