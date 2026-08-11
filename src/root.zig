@@ -51,11 +51,13 @@ pub const Markdown = @import("languages/markdown/markdown.zig");
 /// deliberately no `format.zig` registry entry until `parse` exists.
 pub const Rst = @import("languages/rst/rst.zig");
 
-/// AsciiDoc: NOT a parser yet — the conformance harness (`Asciidoc.conformance`,
-/// the vendored AsciiDoc TCK corpus) and the ASG codec it compares through
-/// (`Asciidoc.asg`). See `languages/asciidoc/asciidoc.zig`. Mirrors where `Rst`
-/// started; there is deliberately no `format.zig` registry entry until `parse`
-/// exists.
+/// AsciiDoc: the conformance harness (`Asciidoc.conformance`, the vendored
+/// AsciiDoc TCK corpus), the ASG codec it compares through (`Asciidoc.asg`),
+/// and a first-slice parser (`Asciidoc.parser`). See
+/// `languages/asciidoc/asciidoc.zig`. Mirrors where `Rst` went; there is
+/// deliberately no `format.zig` registry entry, same reason `Rst` still has
+/// none — see `parser.zig`'s own doc comment for how far short of full
+/// AsciiDoc support this slice is.
 pub const Asciidoc = @import("languages/asciidoc/asciidoc.zig");
 
 /// Shared parse-diagnostic machinery: locating a byte offset in source
