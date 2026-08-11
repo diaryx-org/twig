@@ -3,37 +3,36 @@
 //! `test/test_parsers/test_rst` — see `scripts/extract-rst-corpus.py` for how it
 //! was lifted out of Python source) against `doctree.zig`'s codec.
 //!
-//! ── What it asserts TODAY, before a parser exists ──────────────────────────
-//! There is no rST parser yet, so there is nothing to compare a parse against.
-//! What there IS to check is the comparison format itself, and that turns out
-//! to be most of the risk: the corpus's expectations are docutils DOCTREES, and
-//! a harness that mishandles them would report green against a parser that is
-//! wrong. So the assertion is the codec round-trip —
-//! `encode(decode(expected)) == expected` over all 713 — which pins the pformat
-//! grammar against every shape real docutils output takes, and, through
-//! `Coverage`, measures how much of docutils' element vocabulary twig's shared
-//! `AST` can hold semantically rather than behind the `container` escape hatch.
+//! ── The codec round-trip (`run`/`SEMANTIC_BASELINE`) ────────────────────────
+//! Before a parser existed there was nothing to compare a parse against; what
+//! there WAS to check is the comparison format itself, which turned out to be
+//! most of the risk (the corpus's expectations are docutils DOCTREES, and a
+//! harness that mishandled them would report green against a parser that is
+//! wrong). That check — `encode(decode(expected)) == expected` over all 713 —
+//! stays, as the codec's own regression test independent of the parser: it
+//! pins the pformat grammar against every shape real docutils output takes,
+//! and, through `Coverage`, measures how much of docutils' element vocabulary
+//! twig's shared `AST` can hold semantically rather than behind the
+//! `container` escape hatch — the input the parser work needs ("which
+//! docutils elements have nowhere to live in twig's `Kind` today?"). A
+//! RATCHET, like the CommonMark harness's `BASELINE`
+//! (`markdown/conformance.zig`).
 //!
-//! That second number is the point. It is the input the parser work needs
-//! ("which docutils elements have nowhere to live in twig's `Kind` today?"),
-//! and it is a RATCHET: `SEMANTIC_BASELINE` pins it, so mapping a new element
-//! in `doctree.zig` moves the number up and a regression fails the build. The
-//! CommonMark harness climbed the same way (`markdown/conformance.zig`'s
-//! `BASELINE`), from 496 to the full 652.
-//!
-//! ── What it will assert once the parser lands ──────────────────────────────
-//! `rst.parse(source)` → `encode` → compare against `case.doctree`, with the
-//! round-trip check retained as the codec's own regression test. `asserts_error`
-//! marks the 219 cases whose expectation contains a `<system_message>`; those
-//! need the diagnostics projection described in `rst.zig`'s scope statement
-//! before they can be compared, and are counted separately here so the two
-//! populations never blur together.
+//! ── The parse comparison (`runParse`/`PARSE_BASELINE`) ───────────────────────
+//! `parser.parse(case.rst)` → `encode` → compare against `case.doctree`, for
+//! the 494 cases whose expectation has no `<system_message>` (`!
+//! asserts_error`). The other 219 need the diagnostics-to-tree projection
+//! `parser.zig`'s module doc comment describes as deferred before they have an
+//! honest pass/fail answer, so `runParse` skips them outright rather than
+//! counting them as failures — and they stay counted separately here so the
+//! two populations never blur together.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("../../ast/ast.zig");
 const doctree = @import("doctree.zig");
 const system_message = @import("system_message.zig");
+const rst_parser = @import("parser.zig");
 
 const corpus_json = @embedFile("testdata/docutils-rst-corpus.json");
 
@@ -256,6 +255,109 @@ pub fn writeCoverage(w: *std.Io.Writer, coverage: doctree.Coverage) std.Io.Write
 /// `diagnostic.zig` for that split and why it falls where it does.
 pub const MESSAGE_BASELINE: u32 = 158;
 
+/// Ratchet floor for `runParse`: of the 494 corpus cases with no
+/// `<system_message>` in their expectation (`!asserts_error` — see
+/// `parser.zig`'s module doc comment for why those are excluded until the
+/// diagnostics-to-tree projection exists), how many does
+/// `parser.parse(case.rst)` -> `encode` reproduce byte-for-byte against
+/// `case.doctree`. Raise it whenever the parser's coverage grows; never lower
+/// it. The full per-group breakdown prints whenever the live count differs,
+/// same convention as `SEMANTIC_BASELINE`.
+///
+/// 60 at the parser's first landing: the paragraph/section/transition/block-
+/// quote/comment slice, plus every case elsewhere in the corpus that happens
+/// to contain none of the unimplemented constructs (a plain paragraph inside
+/// a `bullet_lists` or `basics` case, for instance — see the per-group
+/// breakdown this test prints on a mismatch for exactly which groups still
+/// have gaps and how big).
+pub const PARSE_BASELINE: u32 = 60;
+
+/// Decode every expected doctree and encode it straight back, collecting the
+/// round-trip tally, the vocabulary coverage, and (up to `max_failures`)
+/// detailed failure records.
+pub fn runParse(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !RunResult {
+    var parsed = try std.json.parseFromSlice(Corpus, allocator, corpus_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    var result: RunResult = .{};
+    errdefer result.deinit(allocator);
+
+    for (parsed.value.cases) |case| {
+        // Excluded rather than counted as a failure: comparing these needs
+        // the diagnostics-to-tree projection `parser.zig`'s module doc
+        // comment says is deferred, so a case in this bucket has no honest
+        // pass/fail answer yet.
+        if (case.asserts_error) continue;
+
+        result.summary.total += 1;
+        const stat = try groupStat(allocator, &result.groups, case);
+        stat.total += 1;
+
+        const actual = parseAndEncode(allocator, case.rst) catch |err|
+            try std.fmt.allocPrint(allocator, "<parse error: {s}>", .{@errorName(err)});
+        if (std.mem.eql(u8, actual, case.doctree)) {
+            result.summary.passed += 1;
+            stat.passed += 1;
+            allocator.free(actual);
+        } else {
+            result.summary.failed += 1;
+            if (failures.items.len < max_failures) {
+                try failures.append(allocator, .{
+                    .file = try allocator.dupe(u8, case.file),
+                    .group = try allocator.dupe(u8, case.group),
+                    .index = case.index,
+                    .line = case.line,
+                    .rst = try allocator.dupe(u8, case.rst),
+                    .expected = try allocator.dupe(u8, case.doctree),
+                    .actual = actual,
+                });
+            } else {
+                allocator.free(actual);
+            }
+        }
+    }
+    return result;
+}
+
+fn parseAndEncode(allocator: Allocator, source: []const u8) ![]u8 {
+    var result = try rst_parser.parse(allocator, source, .{ .source_name = "test data" });
+    defer result.deinit(allocator);
+    return doctree.encodeAlloc(allocator, &result.document.ast);
+}
+
+test "rST parser reproduces expected doctrees for error-free corpus cases" {
+    const allocator = std.testing.allocator;
+    var failures = std.ArrayList(Failure).empty;
+    defer {
+        for (failures.items) |f| f.deinit(allocator);
+        failures.deinit(allocator);
+    }
+    var result = try runParse(allocator, 10, &failures);
+    defer result.deinit(allocator);
+
+    if (result.summary.passed != PARSE_BASELINE) {
+        std.debug.print(
+            "\nrST parse: {d}/{d} error-free cases match ({d} failed)\n",
+            .{ result.summary.passed, result.summary.total, result.summary.failed },
+        );
+        for (result.groups.items) |g| {
+            if (g.passed == g.total) continue;
+            std.debug.print("    {s}::{s}  {d}/{d}\n", .{ g.file, g.group, g.passed, g.total });
+        }
+        for (failures.items) |f| {
+            std.debug.print(
+                "\n-- {s}::{s}[{d}] (docutils source line {d}) --\nrST:\n{s}\nexpected:\n{s}\nactual:\n{s}\n",
+                .{ f.file, f.group, f.index, f.line, f.rst, f.expected, f.actual },
+            );
+        }
+    }
+
+    // `>=`, not `==`: the ratchet climbs as the parser's coverage grows.
+    try std.testing.expect(result.summary.passed >= PARSE_BASELINE);
+}
+
 /// Every `<system_message>` in the corpus, tallied by whether twig can account
 /// for its wording.
 pub const MessageStats = struct {
@@ -351,8 +453,8 @@ test "docutils system_message wording round-trips for every Tier A code" {
             "\nrST system_message wording: {d}/{d} messages recognized ({d} mismatched, {d} unreadable); " ++
                 "{d}/{d} error-asserting cases fully accounted for\n",
             .{
-                stats.recognized,      stats.total,
-                stats.mismatched,      stats.unreadable,
+                stats.recognized,             stats.total,
+                stats.mismatched,             stats.unreadable,
                 stats.cases_fully_recognized, stats.cases_with_messages,
             },
         );

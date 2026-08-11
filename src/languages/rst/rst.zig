@@ -1,13 +1,16 @@
 //! reStructuredText — the conformance harness and, written down before any of
 //! it is built, THE SCOPE LINE.
 //!
-//! Nothing here parses rST yet. What exists is the machinery that will say
-//! whether a parser is right (`conformance.zig`) and the format it will be
-//! judged in (`doctree.zig`), plus this file's statement of how much rST twig
-//! is agreeing to support. That order is deliberate: rST is the first format
-//! twig has taken on whose "support it" boundary is genuinely contested, and a
-//! boundary decided later is a boundary decided by whatever the first bug
-//! report happens to ask for.
+//! The machinery that says whether a parser is right (`conformance.zig`) and
+//! the format it is judged in (`doctree.zig`) came first, plus this file's
+//! statement of how much rST twig is agreeing to support — deliberately, since
+//! rST is the first format twig has taken on whose "support it" boundary is
+//! genuinely contested, and a boundary decided later is a boundary decided by
+//! whatever the first bug report happens to ask for.
+//!
+//! `parser.zig` now exists and covers the first vertical slice (paragraphs,
+//! sections, transitions, block quotes, comments — see its own module doc
+//! comment for the exact boundary and for what's still unimplemented).
 //!
 //! There is no `format.zig` registry entry for rST, and there should not be one
 //! until `parse` exists — the registry is a claim of capability.
@@ -364,10 +367,17 @@
 
 const std = @import("std");
 
+/// Source bytes -> twig's shared `AST`. See its module doc comment for what
+/// this slice covers today (paragraphs, sections, transitions, block quotes,
+/// comments — no inline markup yet) and for why the shape is bottom-up onto
+/// `AST.Builder` rather than djot's flat-event approach.
+pub const parser = @import("parser.zig");
+
 /// The docutils pseudo-XML doctree codec: `decode` a `document.pformat()` dump
 /// into twig's shared `AST`, `encode` it back. The comparison format the
-/// conformance harness is built on, and — once a parser exists — the printer it
-/// compares through. See its module doc comment for the pformat grammar.
+/// conformance harness is built on, and now also the printer `parser.parse`'s
+/// output is compared through. See its module doc comment for the pformat
+/// grammar.
 pub const doctree = @import("doctree.zig");
 
 /// The vendored docutils corpus runner and its ratchets. See its module doc
