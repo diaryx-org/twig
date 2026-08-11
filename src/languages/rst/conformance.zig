@@ -51,13 +51,18 @@ const corpus_json = @embedFile("testdata/docutils-rst-corpus.json");
 /// OTHER caption element, `<caption>`, which is a figure's — mapped alongside
 /// because it lands on the same twig kind from the other direction.
 ///
+/// The last +46 is `enumerated_list`, which cost no vocabulary at all:
+/// `Kind.ordered_list` already carried `numbering`/`start`, and docutils'
+/// `enumtype` names line up one for one with `AST.ListNumbering`. It was the
+/// only list construct left decoding generic.
+///
 /// See this file's module doc comment. Raise it whenever `doctree.zig`'s decode
 /// table grows a row; never lower it.
 ///
 /// The test prints the full per-element coverage table whenever the live count
 /// DIFFERS from this floor in either direction, so mapping a new element both
 /// shows you what moved and tells you the number to put here.
-pub const SEMANTIC_BASELINE: u32 = 4301;
+pub const SEMANTIC_BASELINE: u32 = 4347;
 
 /// Tag-shaped text lines whose name is not a docutils element, corpus-wide.
 /// This is EXACTLY one — an option list documenting `--source-url=<URL>`, whose
@@ -275,7 +280,13 @@ pub const MESSAGE_BASELINE: u32 = 158;
 /// group) landed: +7 there, +3 more incidentally in `comments` (a comment
 /// whose body happened to contain a bullet-marker-shaped line was previously
 /// misparsed).
-pub const PARSE_BASELINE: u32 = 72;
+///
+/// 84 after enumerated lists (`test_enumerated_lists.py`, 14/15): all +12 in
+/// that one group, nothing incidental elsewhere. The holdout is the "Bad Roman
+/// numerals" case, whose `iiii. iiii` — correctly refused as an enumerator —
+/// must become a DEFINITION list, so it clears with that construct rather than
+/// with this one.
+pub const PARSE_BASELINE: u32 = 84;
 
 /// Decode every expected doctree and encode it straight back, collecting the
 /// round-trip tally, the vocabulary coverage, and (up to `max_failures`)

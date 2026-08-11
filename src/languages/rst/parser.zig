@@ -7,34 +7,50 @@
 //! The first vertical slice, chosen by corpus weight and structural
 //! simplicity rather than by docutils' own test-file order (see the "Bottom-up
 //! by corpus weight" call in the session this landed in): paragraphs, section
-//! titles/nesting, transitions, block quotes, and comments — plus, added next,
-//! bullet lists (`test_bullet_lists.py`, 7/7). No inline markup parsing yet —
+//! titles/nesting, transitions, block quotes, and comments — plus, added
+//! since, bullet lists (`test_bullet_lists.py`, 7/7) and enumerated lists
+//! (`test_enumerated_lists.py`, 14/15). No inline markup parsing yet —
 //! a paragraph's whole text becomes ONE `.str` child, so any case whose
 //! expected doctree contains `emphasis`/`strong`/`reference`/etc. inside a
-//! paragraph will not compare equal yet. Everything else (enumerated/
-//! definition/field lists, literal blocks, directives, the hyperlink/
-//! footnote/citation/substitution clusters, tables) is unimplemented and
-//! deliberately out of this file for now.
+//! paragraph will not compare equal yet. Everything else (definition/field
+//! lists, literal blocks, directives, the hyperlink/footnote/citation/
+//! substitution clusters, tables) is unimplemented and deliberately out of
+//! this file for now.
 //!
-//! ── Bullet lists ─────────────────────────────────────────────────────────
-//! `parseBulletList` (dispatched from `parseBody` via `matchBulletMarker`)
-//! reuses `findElevatedExtent` for an item's body — same shape as a block
-//! quote's, since "everything indented at least to the item's content column,
-//! blank-tolerant" is the same question either way, just with a caller-known
-//! fixed indent (the marker's own width) rather than one inferred from the
-//! content's own minimum. The one thing block quotes don't need and items do:
-//! the marker line's OWN remainder is the first paragraph's first line, but
-//! it isn't indented to the content column IN THE SOURCE (the marker sits
-//! where the indent would be), so it can't be handed to the generic
-//! `parseBody`/`findParagraphEnd` path — `parseBulletList` merges it with any
-//! immediately-following continuation lines by hand, then hands the rest of
-//! the item to `parseBody` same as always. A same-column marker with a
-//! DIFFERENT character ends the list without special-casing: the loop just
-//! stops and `parseBody`'s own dispatch loop sees that line fresh, starting a
-//! new list — which is exactly what the corpus's "different bullets" case
-//! (asserts_error, so not asserted on the tree, but the shape still matters)
-//! wants: back-to-back `<bullet_list>` siblings, not one list refusing a
-//! foreign bullet.
+//! ── Lists ────────────────────────────────────────────────────────────────
+//! Both list constructs share `parseListItem`, which is docutils' own
+//! arrangement — one `list_item` method serves its bullet and enumerated
+//! states alike, and the two differ only in how a marker is recognized. An
+//! item's body reuses `findElevatedExtent`, the same function block quotes
+//! use, since "everything indented at least to the item's content column,
+//! blank-tolerant" is the same question either way.
+//!
+//! The one thing block quotes don't need and items do: the marker line's OWN
+//! remainder is the first paragraph's first line, but it isn't indented to
+//! the content column IN THE SOURCE (the marker sits where the indent would
+//! be), so it can't be handed to the generic `parseBody`/`findParagraphEnd`
+//! path — `parseListItem` merges it with any immediately-following
+//! continuation lines by hand, then hands the rest of the item to `parseBody`
+//! same as always. An item with NOTHING after its marker takes the other
+//! branch, docutils' `get_first_known_indented`: its content column is not
+//! the marker's reserved width but the minimum indent of whatever follows.
+//!
+//! A same-column BULLET with a different character ends the list without
+//! special-casing: the loop just stops and `parseBody`'s own dispatch loop
+//! sees that line fresh, starting a new list — which is exactly what the
+//! corpus's "different bullets" case (asserts_error, so not asserted on the
+//! tree, but the shape still matters) wants: back-to-back `<bullet_list>`
+//! siblings, not one list refusing a foreign bullet. Enumerated lists end the
+//! same way, on a richer test (format, sequence and ordinal must all
+//! continue) spelled out at `parseEnumeratedList`.
+//!
+//! Enumerators bring one rule nothing else in the parser has: an enumerator
+//! is not self-evidently a list marker. `1.` at the head of a line is a list
+//! only if the line BELOW it is blank, indented, or carries the next
+//! enumerator in the sequence — otherwise the two lines are one paragraph.
+//! See `isEnumeratedListItem`; it is what keeps prose like `(LCD) is an
+//! acronym` out of the list machinery, together with the strict roman-numeral
+//! validation in `fromRoman`.
 //!
 //! ── Why this shape ───────────────────────────────────────────────────────
 //! Bottom-up onto `AST.Builder` (a container's children are fully known
@@ -495,6 +511,15 @@ const Parser = struct {
                 i = bl.next;
                 continue;
             }
+            // No overlap with the bullet check above: a bullet marker is one of
+            // `-+*` or a Unicode bullet, while an enumerator starts with an
+            // alphanumeric, `#` or `(`. Order between the two is therefore free.
+            if (self.matchEnumeratorStart(i, hi, indent)) |em| {
+                const el = try self.parseEnumeratedList(i, hi, indent, em);
+                try children.append(self.allocator, el.id);
+                i = el.next;
+                continue;
+            }
 
             const para_end = self.findParagraphEnd(i, hi, indent);
             const text = try self.assembleText(i, para_end, indent);
@@ -636,60 +661,10 @@ const Parser = struct {
             const bm = matchBulletMarker(content) orelse break;
             if (!std.mem.eql(u8, bm.marker, marker)) break;
 
-            const item_line = i;
-            const content_col = indent + bm.rel_start;
-            // Everything below the marker line that stays indented at least
-            // to `content_col` — same shape as a block quote's extent
-            // (`findElevatedExtent`), blank-tolerant, stopping at the next
-            // item's marker (which sits back at `indent`, always shallower
-            // than `content_col`) or any other dedent.
-            const ext = self.findElevatedExtent(item_line + 1, hi, content_col - 1);
-
-            var item_children: std.ArrayList(Node.Id) = .empty;
-            errdefer item_children.deinit(self.allocator);
-            var body_start = item_line + 1;
-            if (bm.has_content) {
-                // The marker line's own remainder is the first paragraph's
-                // first line; merge in any immediately-following (no blank
-                // line between) continuation at `content_col`, the same rule
-                // `findParagraphEnd` uses for an ordinary paragraph — it just
-                // can't be called directly here since line `item_line` isn't
-                // indented to `content_col` in the SOURCE (the marker sits
-                // where the indent would be).
-                var para_end = item_line + 1;
-                while (para_end < ext.end and !self.isBlankLine(para_end) and self.leadingSpaces(para_end) == content_col) para_end += 1;
-
-                var buf: std.ArrayList(u8) = .empty;
-                errdefer buf.deinit(self.allocator);
-                try buf.appendSlice(self.allocator, content[bm.rel_start..]);
-                var ln = item_line + 1;
-                while (ln < para_end) : (ln += 1) {
-                    try buf.append(self.allocator, '\n');
-                    try buf.appendSlice(self.allocator, self.trimmedContent(ln, content_col));
-                }
-                const text = try buf.toOwnedSlice(self.allocator);
-                const str_id = try self.b.addLeaf(.{ .str = text });
-                self.allocator.free(text);
-                self.b.setSpan(str_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
-                const para_id = try self.b.addContainer(.para, &.{str_id});
-                self.b.setSpan(para_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
-                try item_children.append(self.allocator, para_id);
-                body_start = para_end;
-            }
-
-            const rest = try self.parseBody(body_start, ext.end, content_col);
-            defer self.allocator.free(rest.items);
-            try item_children.appendSlice(self.allocator, rest.items);
-
-            const item_items = try item_children.toOwnedSlice(self.allocator);
-            const item_id = try self.b.addContainer(.list_item, item_items);
-            self.allocator.free(item_items);
-            const item_end = rest.stopped_at;
-            self.b.setSpan(item_id, Span.init(self.lines[item_line].start, self.lines[item_end - 1].end));
-            try items.append(self.allocator, item_id);
-
-            list_end = self.lines[item_end - 1].end;
-            i = item_end;
+            const it = try self.parseListItem(i, hi, indent, content, bm.rel_start, bm.has_content);
+            try items.append(self.allocator, it.id);
+            list_end = self.lines[it.next - 1].end;
+            i = it.next;
         }
 
         const item_ids = try items.toOwnedSlice(self.allocator);
@@ -697,6 +672,201 @@ const Parser = struct {
         self.allocator.free(item_ids);
         self.b.setSpan(list_id, Span.init(self.lines[lo].start, list_end));
         try self.b.setAttrs(list_id, .{ .entries = &.{.{ .key = "bullet", .value = marker }} });
+        return .{ .id = list_id, .next = i };
+    }
+
+    /// One `<list_item>`, shared by bullet and enumerated lists — the two
+    /// differ only in how their marker is recognized, never in what follows
+    /// it, which is docutils' own arrangement (a single `list_item` method
+    /// serves both states). `content` is the marker line already stripped of
+    /// `indent` and trailing whitespace; `rel_start` is where the item's own
+    /// text begins within it.
+    ///
+    /// The two branches below are docutils' `get_known_indented` and
+    /// `get_first_known_indented`, and the difference between them is the
+    /// whole reason this is one function rather than an inlined loop. With
+    /// text after the marker the item's column is KNOWN (it is where that text
+    /// starts), so the body is everything indented at least that far. With
+    /// nothing after the marker the column is UNKNOWN, and docutils takes it
+    /// from the minimum indent of whatever follows instead — which is why
+    /// `1.` over a 1-space-indented `foo` is a list item holding `foo` rather
+    /// than a list item holding nothing (corpus: the enumerated-list
+    /// "0/1/2/3-space indent" case walks all four widths).
+    fn parseListItem(
+        self: *Parser,
+        item_line: usize,
+        hi: usize,
+        indent: usize,
+        content: []const u8,
+        rel_start: usize,
+        has_content: bool,
+    ) Allocator.Error!struct { id: Node.Id, next: usize } {
+        var item_children: std.ArrayList(Node.Id) = .empty;
+        errdefer item_children.deinit(self.allocator);
+
+        const content_col = indent + rel_start;
+        var body_col = content_col;
+        var body_start = item_line + 1;
+        const ext = self.findElevatedExtent(item_line + 1, hi, if (has_content) content_col - 1 else indent);
+        if (has_content) {
+            // The marker line's own remainder is the first paragraph's first
+            // line; merge in any immediately-following (no blank line between)
+            // continuation at `content_col`, the same rule `findParagraphEnd`
+            // uses for an ordinary paragraph — it just can't be called
+            // directly here since line `item_line` isn't indented to
+            // `content_col` in the SOURCE (the marker sits where the indent
+            // would be).
+            var para_end = item_line + 1;
+            while (para_end < ext.end and !self.isBlankLine(para_end) and self.leadingSpaces(para_end) == content_col) para_end += 1;
+
+            var buf: std.ArrayList(u8) = .empty;
+            errdefer buf.deinit(self.allocator);
+            try buf.appendSlice(self.allocator, content[rel_start..]);
+            var ln = item_line + 1;
+            while (ln < para_end) : (ln += 1) {
+                try buf.append(self.allocator, '\n');
+                try buf.appendSlice(self.allocator, self.trimmedContent(ln, content_col));
+            }
+            const text = try buf.toOwnedSlice(self.allocator);
+            const str_id = try self.b.addLeaf(.{ .str = text });
+            self.allocator.free(text);
+            self.b.setSpan(str_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
+            const para_id = try self.b.addContainer(.para, &.{str_id});
+            self.b.setSpan(para_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
+            try item_children.append(self.allocator, para_id);
+            body_start = para_end;
+        } else {
+            body_col = ext.min_indent;
+        }
+
+        const rest = try self.parseBody(body_start, ext.end, body_col);
+        defer self.allocator.free(rest.items);
+        try item_children.appendSlice(self.allocator, rest.items);
+
+        const item_items = try item_children.toOwnedSlice(self.allocator);
+        const item_id = try self.b.addContainer(.list_item, item_items);
+        self.allocator.free(item_items);
+        const item_end = rest.stopped_at;
+        self.b.setSpan(item_id, Span.init(self.lines[item_line].start, self.lines[item_end - 1].end));
+        return .{ .id = item_id, .next = item_end };
+    }
+
+    // ── enumerated lists ────────────────────────────────────────────────
+
+    /// Does line `i` START an enumerated list? Called from `parseBody`'s
+    /// dispatch with no expected sequence, which is what lets `i.`/`I.` be
+    /// read as roman rather than as the alphabetic letters they also are.
+    fn matchEnumeratorStart(self: *const Parser, i: usize, hi: usize, indent: usize) ?EnumMatch {
+        const em = matchEnumerator(self.trimmedContent(i, indent), null) orelse return null;
+        if (!self.isEnumeratedListItem(i, hi, indent, em)) return null;
+        return em;
+    }
+
+    /// docutils' `is_enumerated_list_item`, and the reason `1.` over an
+    /// unindented `foo` is a two-line PARAGRAPH while `1.` over an indented
+    /// one is a list: an enumerator alone proves nothing, so a second piece of
+    /// evidence is required from the line below it — either that line is blank
+    /// or indented (so the enumerator owns it), or it carries the NEXT
+    /// enumerator in the sequence (so the two are siblings).
+    ///
+    /// The trailing space docutils puts on the enumerator it looks for is
+    /// load-bearing and kept here: a bare `2.` under `1. foo` fails the test,
+    /// because docutils rstrips every input line, so an enumerator with
+    /// nothing after it can never match a `"2. "` prefix.
+    fn isEnumeratedListItem(self: *const Parser, i: usize, hi: usize, indent: usize, em: EnumMatch) bool {
+        const ordinal = em.ordinal orelse return false;
+        // End of the enclosing block is docutils' EOFError arm: nothing below
+        // to contradict the enumerator, so it stands.
+        if (i + 1 >= hi) return true;
+        if (self.isBlankLine(i + 1)) return true;
+        if (self.leadingSpaces(i + 1) > indent) return true;
+
+        const next = self.trimmedContent(i + 1, indent);
+        var buf: [40]u8 = undefined;
+        if (makeEnumerator(&buf, ordinal + 1, em.sequence, em.format)) |e| {
+            if (std.mem.startsWith(u8, next, e)) return true;
+        }
+        // `#` may take over from a numbered enumerator at any point, so the
+        // auto form is always an acceptable successor.
+        if (makeEnumerator(&buf, 1, .auto, em.format)) |e| {
+            if (std.mem.startsWith(u8, next, e)) return true;
+        }
+        return false;
+    }
+
+    /// A maximal run of enumerated items, `lo` being the first — already
+    /// matched and validated by `matchEnumeratorStart`.
+    ///
+    /// What ends the list is docutils' `EnumeratedList.enumerator` test, and
+    /// every clause of it earns its place in the corpus: a different FORMAT
+    /// (`1.` then `1)`) starts a new list, a different SEQUENCE (`3.` then
+    /// `A.`) starts a new list, and an ordinal that isn't the last plus one
+    /// starts a new list — which is what keeps `C.` / `I.` apart as an
+    /// upper-alpha list followed by an upper-roman one (`I` reads as ordinal
+    /// 9 in the open list, and 9 != 4). Once `#` has appeared, `auto` bars
+    /// any further explicit enumerator from continuing the same list.
+    fn parseEnumeratedList(self: *Parser, lo: usize, hi: usize, indent: usize, first: EnumMatch) Allocator.Error!struct { id: Node.Id, next: usize } {
+        var items: std.ArrayList(Node.Id) = .empty;
+        errdefer items.deinit(self.allocator);
+
+        // docutils writes `enumtype="arabic"` for a list that opens with `#`.
+        const enumtype: Sequence = if (first.sequence == .auto) .arabic else first.sequence;
+        var auto = first.sequence == .auto;
+        var last_ordinal: u32 = first.ordinal.?;
+
+        var i = lo;
+        var list_end = self.lines[lo].end;
+        while (i < hi) {
+            if (self.isBlankLine(i)) {
+                i += 1;
+                continue;
+            }
+            const content = self.trimmedContent(i, indent);
+            const em = if (i == lo) first else blk: {
+                const cand = matchEnumerator(content, enumtype) orelse break;
+                if (cand.format != first.format) break;
+                if (cand.sequence != .auto) {
+                    if (auto or cand.sequence != enumtype) break;
+                    const ord = cand.ordinal orelse break;
+                    if (ord != last_ordinal + 1) break;
+                }
+                if (!self.isEnumeratedListItem(i, hi, indent, cand)) break;
+                break :blk cand;
+            };
+
+            const it = try self.parseListItem(i, hi, indent, content, em.rel_start, em.has_content);
+            try items.append(self.allocator, it.id);
+            list_end = self.lines[it.next - 1].end;
+            i = it.next;
+
+            if (em.sequence == .auto) auto = true else last_ordinal = em.ordinal.?;
+        }
+
+        const item_ids = try items.toOwnedSlice(self.allocator);
+        const list_id = try self.b.addContainer(.{ .ordered_list = .{
+            .numbering = enumtype.numbering(),
+            .tight = false,
+            .start = if (first.ordinal.? != 1) first.ordinal.? else null,
+        } }, item_ids);
+        self.allocator.free(item_ids);
+        self.b.setSpan(list_id, Span.init(self.lines[lo].start, list_end));
+
+        // All four attributes are written even where the kind holds the same
+        // fact, because `doctree.zig`'s encoder takes attributes from `attrs`
+        // and only from `attrs` (see the comment on `writeNode`) — the payload
+        // there is a reading, and this is the record it was read from.
+        var start_buf: [12]u8 = undefined;
+        const fi = first.format.info();
+        var entries: [4]AST.KeyVal = undefined;
+        entries[0] = .{ .key = "enumtype", .value = enumtype.doctreeName() };
+        entries[1] = .{ .key = "prefix", .value = fi.prefix };
+        entries[2] = .{ .key = "suffix", .value = fi.suffix };
+        var n: usize = 3;
+        if (first.ordinal.? != 1) {
+            entries[3] = .{ .key = "start", .value = std.fmt.bufPrint(&start_buf, "{d}", .{first.ordinal.?}) catch unreachable };
+            n = 4;
+        }
+        try self.b.setAttrs(list_id, .{ .entries = entries[0..n] });
         return .{ .id = list_id, .next = i };
     }
 };
@@ -780,9 +950,8 @@ const BulletMatch = struct {
     marker: []const u8,
     /// Byte offset within `content` (already indent-stripped and
     /// trailing-trimmed by `trimmedContent`) where the item's own text
-    /// starts, valid whether or not `has_content` — the caller uses it as
-    /// the item body's dedent column either way, matching docutils' rule
-    /// that an empty item still reserves `len(marker) + 1` columns.
+    /// starts. Only read when `has_content`: an empty item's column comes
+    /// from the lines below it instead — see `parseListItem`.
     rel_start: usize,
     has_content: bool,
 };
@@ -799,6 +968,262 @@ fn matchBulletMarker(content: []const u8) ?BulletMatch {
     while (k < content.len and content[k] == ' ') k += 1;
     if (k == content.len) return .{ .marker = content[0..mlen], .rel_start = mlen + 1, .has_content = false };
     return .{ .marker = content[0..mlen], .rel_start = k, .has_content = true };
+}
+
+// ── enumerators ──────────────────────────────────────────────────────────
+//
+// docutils spells all of this as one regex plus `parse_enumerator`; it is
+// unrolled here because the pieces are needed separately — `makeEnumerator`
+// runs the same table BACKWARDS to synthesize the successor enumerator
+// `isEnumeratedListItem` looks for.
+
+/// How an enumerator is punctuated. Three forms, and they are part of a list's
+/// identity: `1.` and `1)` never continue each other.
+const Format = enum {
+    parens,
+    rparen,
+    period,
+
+    fn info(self: Format) struct { prefix: []const u8, suffix: []const u8 } {
+        return switch (self) {
+            .parens => .{ .prefix = "(", .suffix = ")" },
+            .rparen => .{ .prefix = "", .suffix = ")" },
+            .period => .{ .prefix = "", .suffix = "." },
+        };
+    }
+};
+
+/// The counting system an enumerator is written in. `auto` is rST's `#`, which
+/// has no sequence of its own — it continues whatever list it lands in, and a
+/// list that OPENS with it is recorded as arabic.
+const Sequence = enum {
+    arabic,
+    loweralpha,
+    upperalpha,
+    lowerroman,
+    upperroman,
+    auto,
+
+    /// Every candidate `parse_enumerator`'s fallback loop tries, in docutils'
+    /// order — which matters, since `[a-z]` and `[ivxlcdm]+` both accept `i`.
+    const ordered = [_]Sequence{ .arabic, .loweralpha, .upperalpha, .lowerroman, .upperroman };
+
+    fn doctreeName(self: Sequence) []const u8 {
+        return switch (self) {
+            .arabic, .auto => "arabic",
+            .loweralpha => "loweralpha",
+            .upperalpha => "upperalpha",
+            .lowerroman => "lowerroman",
+            .upperroman => "upperroman",
+        };
+    }
+
+    fn numbering(self: Sequence) AST.ListNumbering {
+        return switch (self) {
+            .arabic, .auto => .decimal,
+            .loweralpha => .lower_alpha,
+            .upperalpha => .upper_alpha,
+            .lowerroman => .lower_roman,
+            .upperroman => .upper_roman,
+        };
+    }
+
+    /// docutils' `sequenceregexps` — a CHARACTER-SET test only. Roman validity
+    /// is deliberately not checked here: `iiii` is a well-formed lowerroman
+    /// enumerator whose ORDINAL is undefined, and that distinction is what
+    /// makes `iiii. iiii` fall out of the list and into a definition list
+    /// rather than being rejected as unrecognized text.
+    fn accepts(self: Sequence, text: []const u8) bool {
+        return switch (self) {
+            .auto => std.mem.eql(u8, text, "#"),
+            .arabic => allOf(text, std.ascii.isDigit),
+            .loweralpha => text.len == 1 and text[0] >= 'a' and text[0] <= 'z',
+            .upperalpha => text.len == 1 and text[0] >= 'A' and text[0] <= 'Z',
+            .lowerroman => allOf(text, isLowerRomanDigit),
+            .upperroman => allOf(text, isUpperRomanDigit),
+        };
+    }
+};
+
+fn allOf(text: []const u8, pred: fn (u8) bool) bool {
+    if (text.len == 0) return false;
+    for (text) |c| {
+        if (!pred(c)) return false;
+    }
+    return true;
+}
+
+fn isLowerRomanDigit(c: u8) bool {
+    return std.mem.indexOfScalar(u8, "ivxlcdm", c) != null;
+}
+
+fn isUpperRomanDigit(c: u8) bool {
+    return std.mem.indexOfScalar(u8, "IVXLCDM", c) != null;
+}
+
+const EnumMatch = struct {
+    format: Format,
+    sequence: Sequence,
+    /// `null` when the enumerator is well-formed but names no number — the
+    /// only source is a roman numeral that isn't one (`iiii`, `LCD`).
+    ordinal: ?u32,
+    /// Byte offset within the indent-stripped line where the item's own text
+    /// starts, mirroring `BulletMatch.rel_start`.
+    rel_start: usize,
+    has_content: bool,
+};
+
+/// Split `content` into an enumerator and its remainder, or `null` when it
+/// doesn't open with one. This is docutils' `enumerator` regex: an optional
+/// `(`, a run of enumerator characters, a `)` or `.`, then a space or the end
+/// of the line.
+///
+/// Scanning to the punctuation instead of alternating over the five sequence
+/// patterns is equivalent because none of the five accepts `.` or `)`, so the
+/// regex's backtracking has exactly one place to stop; `accepts` then does the
+/// validation the alternation would have done.
+fn matchEnumerator(content: []const u8, expected: ?Sequence) ?EnumMatch {
+    if (content.len == 0) return null;
+    const parens = content[0] == '(';
+    const text_start: usize = if (parens) 1 else 0;
+    var k = text_start;
+    while (k < content.len and (std.ascii.isAlphanumeric(content[k]) or content[k] == '#')) k += 1;
+    if (k == text_start or k >= content.len) return null;
+    const format: Format = if (parens)
+        (if (content[k] == ')') .parens else return null)
+    else if (content[k] == ')')
+        .rparen
+    else if (content[k] == '.')
+        .period
+    else
+        return null;
+
+    const text = content[text_start..k];
+    const sequence = resolveSequence(text, expected) orelse return null;
+
+    var rest = k + 1;
+    if (rest == content.len) {
+        return .{ .format = format, .sequence = sequence, .ordinal = ordinalOf(text, sequence), .rel_start = rest + 1, .has_content = false };
+    }
+    if (content[rest] != ' ') return null;
+    while (rest < content.len and content[rest] == ' ') rest += 1;
+    // `content` is already trailing-trimmed, so "spaces then nothing" cannot
+    // occur; a marker line ending in whitespace arrives here as the case above.
+    return .{ .format = format, .sequence = sequence, .ordinal = ordinalOf(text, sequence), .rel_start = rest, .has_content = true };
+}
+
+/// docutils' `parse_enumerator` sequence resolution. `expected` is the open
+/// list's `enumtype` when there is one, and giving it priority is what lets a
+/// loweralpha list absorb `i` as its ninth item instead of restarting as roman.
+///
+/// The `i`/`I` special case applies ONLY when there is no expectation — a bare
+/// `i.` opens a lowerroman list even though `[a-z]` would accept it first.
+fn resolveSequence(text: []const u8, expected: ?Sequence) ?Sequence {
+    if (std.mem.eql(u8, text, "#")) return .auto;
+    if (expected) |e| {
+        if (e.accepts(text)) return e;
+    } else {
+        if (std.mem.eql(u8, text, "i")) return .lowerroman;
+        if (std.mem.eql(u8, text, "I")) return .upperroman;
+    }
+    for (Sequence.ordered) |s| {
+        if (s.accepts(text)) return s;
+    }
+    // Reachable where docutils' version is not: the scan above accepts any
+    // alphanumeric run, so `1a.` gets here and is correctly not an enumerator.
+    return null;
+}
+
+fn ordinalOf(text: []const u8, sequence: Sequence) ?u32 {
+    return switch (sequence) {
+        .auto => 1,
+        .arabic => std.fmt.parseInt(u32, text, 10) catch null,
+        .loweralpha => text[0] - 'a' + 1,
+        .upperalpha => text[0] - 'A' + 1,
+        .lowerroman, .upperroman => fromRoman(text),
+    };
+}
+
+/// The enumerator that would follow `ordinal - 1` in this sequence and format,
+/// with docutils' trailing space, written into `buf`. `null` for an ordinal the
+/// sequence cannot spell (past `z`, or outside roman's 1..4999).
+fn makeEnumerator(buf: []u8, ordinal: u32, sequence: Sequence, format: Format) ?[]const u8 {
+    var body_buf: [16]u8 = undefined;
+    const body: []const u8 = switch (sequence) {
+        .auto => "#",
+        .arabic => std.fmt.bufPrint(&body_buf, "{d}", .{ordinal}) catch return null,
+        .loweralpha, .upperalpha => blk: {
+            if (ordinal == 0 or ordinal > 26) return null;
+            const base: u8 = if (sequence == .loweralpha) 'a' else 'A';
+            body_buf[0] = base + @as(u8, @intCast(ordinal - 1));
+            break :blk body_buf[0..1];
+        },
+        .lowerroman, .upperroman => blk: {
+            const roman = toRoman(&body_buf, ordinal) orelse return null;
+            if (sequence == .lowerroman) {
+                for (roman) |*c| c.* = std.ascii.toLower(c.*);
+            }
+            break :blk roman;
+        },
+    };
+    const fi = format.info();
+    return std.fmt.bufPrint(buf, "{s}{s}{s} ", .{ fi.prefix, body, fi.suffix }) catch null;
+}
+
+const roman_values = [_]u32{ 1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1 };
+const roman_symbols = [_][]const u8{ "M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I" };
+
+fn toRoman(buf: []u8, n: u32) ?[]u8 {
+    // docutils' `roman.toRoman` range; `M{0,4}`-through-`IX` is 4999.
+    if (n == 0 or n > 4999) return null;
+    var rem = n;
+    var len: usize = 0;
+    for (roman_values, roman_symbols) |v, s| {
+        while (rem >= v) : (rem -= v) {
+            @memcpy(buf[len..][0..s.len], s);
+            len += s.len;
+        }
+    }
+    return buf[0..len];
+}
+
+/// docutils' `roman.fromRoman`, whose validity rule is a regex accepting only
+/// the CANONICAL spelling of each number. Rather than transcribe the regex,
+/// this evaluates the numeral by the ordinary subtractive rule and then checks
+/// that `toRoman` writes it back the same way — the two are equivalent, since
+/// the regex describes exactly `toRoman`'s output.
+///
+/// This is what separates `iii` (a third list item) from `iiii` (not a numeral,
+/// so not an enumerator, so the start of a definition list).
+fn fromRoman(text: []const u8) ?u32 {
+    var total: i64 = 0;
+    for (text, 0..) |c, k| {
+        const v = romanDigit(c) orelse return null;
+        const next: u32 = if (k + 1 < text.len) (romanDigit(text[k + 1]) orelse return null) else 0;
+        total += if (v < next) -@as(i64, v) else @as(i64, v);
+    }
+    if (total < 1 or total > 4999) return null;
+    const n: u32 = @intCast(total);
+    var buf: [16]u8 = undefined;
+    const canonical = toRoman(&buf, n) orelse return null;
+    if (canonical.len != text.len) return null;
+    for (canonical, text) |a, b| {
+        if (a != std.ascii.toUpper(b)) return null;
+    }
+    return n;
+}
+
+fn romanDigit(c: u8) ?u32 {
+    return switch (std.ascii.toUpper(c)) {
+        'I' => 1,
+        'V' => 5,
+        'X' => 10,
+        'L' => 50,
+        'C' => 100,
+        'D' => 500,
+        'M' => 1000,
+        else => null,
+    };
 }
 
 const testing = std.testing;
@@ -902,6 +1327,116 @@ test "an empty bullet list item has no children, and a dedented line after it is
     try testing.expectEqual(@as(?Node.Id, null), ast.nodes[item].first_child);
     const after = ast.nodes[list].next_sibling.?;
     try testing.expect(ast.nodes[after].kind == .para);
+}
+
+test "an enumerated list records enumtype, prefix and suffix" {
+    var result = try parse(testing.allocator, "(a) Item a.\n(b) Item b.\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[list].kind.ordered_list.numbering == .lower_alpha);
+    try testing.expectEqual(@as(?u32, null), ast.nodes[list].kind.ordered_list.start);
+    try testing.expectEqualStrings("loweralpha", ast.attrsOf(list).get("enumtype").?);
+    try testing.expectEqualStrings("(", ast.attrsOf(list).get("prefix").?);
+    try testing.expectEqualStrings(")", ast.attrsOf(list).get("suffix").?);
+    try testing.expectEqual(@as(?[]const u8, null), ast.attrsOf(list).get("start"));
+    const item = ast.nodes[list].first_child.?;
+    try testing.expect(ast.nodes[ast.nodes[item].next_sibling.?].next_sibling == null);
+}
+
+test "a first enumerator that is not ordinal-1 sets start" {
+    var result = try parse(testing.allocator, "3. Item three.\n4. Item four.\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqual(@as(?u32, 3), ast.nodes[list].kind.ordered_list.start);
+    try testing.expectEqualStrings("3", ast.attrsOf(list).get("start").?);
+}
+
+test "a bare enumerator over an unindented line is a paragraph, over an indented one a list" {
+    // docutils' `is_enumerated_list_item`: the line below is the only evidence
+    // that `1.` is a marker rather than the first word of a sentence.
+    {
+        var result = try parse(testing.allocator, "1.\nempty item above, no blank line\n", .{});
+        defer result.deinit(testing.allocator);
+        const ast = result.document.ast;
+        const first = ast.nodes[ast.root].first_child.?;
+        try testing.expect(ast.nodes[first].kind == .para);
+        try testing.expectEqualStrings("1.\nempty item above, no blank line", ast.nodes[ast.nodes[first].first_child.?].kind.str);
+    }
+    {
+        // One space is enough, and the item's content column is that one
+        // space — not the three the enumerator's width would reserve.
+        var result = try parse(testing.allocator, "1.\n foo\n", .{});
+        defer result.deinit(testing.allocator);
+        const ast = result.document.ast;
+        const list = ast.nodes[ast.root].first_child.?;
+        try testing.expect(ast.nodes[list].kind == .ordered_list);
+        const item = ast.nodes[list].first_child.?;
+        const para = ast.nodes[item].first_child.?;
+        try testing.expectEqualStrings("foo", ast.nodes[ast.nodes[para].first_child.?].kind.str);
+    }
+}
+
+test "an ambiguous alpha/roman enumerator splits the list on the ordinal, not the letter" {
+    // `I` continues an open upperalpha list only when it is the NEXT ordinal.
+    // After `C.` (3) it reads as 9, so it opens an upperroman list instead —
+    // the corpus's "Potentially ambiguous cases".
+    var result = try parse(testing.allocator, "A. Item A.\nB. Item B.\nC. Item C.\n\nI. Item I.\nII. Item II.\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const alpha = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[alpha].kind.ordered_list.numbering == .upper_alpha);
+    const roman = ast.nodes[alpha].next_sibling.?;
+    try testing.expect(ast.nodes[roman].kind.ordered_list.numbering == .upper_roman);
+    try testing.expectEqual(@as(?u32, null), ast.nodes[roman].kind.ordered_list.start);
+}
+
+test "`#` continues whatever list it lands in and reports that list's own enumtype" {
+    var result = try parse(testing.allocator, "i. Item one.\nii. Item two.\n#. Item three.\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("lowerroman", ast.attrsOf(list).get("enumtype").?);
+    var count: usize = 0;
+    var child = ast.nodes[list].first_child;
+    while (child) |c| : (child = ast.nodes[c].next_sibling) count += 1;
+    try testing.expectEqual(@as(usize, 3), count);
+}
+
+test "a malformed roman numeral is not an enumerator at all" {
+    // `iiii` fails docutils' canonical-spelling rule, so this is prose. Same
+    // reason `(LCD) is an acronym...` stays a paragraph.
+    var result = try parse(testing.allocator, "iiii. iiii\n\n(LCD) is an acronym\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const first = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[first].kind == .para);
+    const second = ast.nodes[first].next_sibling.?;
+    try testing.expect(ast.nodes[second].kind == .para);
+}
+
+test "a different enumerator format ends the list" {
+    var result = try parse(testing.allocator, "1. Item 1.\n\n1) Item 1).\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const first = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings(".", ast.attrsOf(first).get("suffix").?);
+    const second = ast.nodes[first].next_sibling.?;
+    try testing.expect(ast.nodes[second].kind == .ordered_list);
+    try testing.expectEqualStrings(")", ast.attrsOf(second).get("suffix").?);
+}
+
+test "roman numerals accept only their canonical spelling" {
+    try testing.expectEqual(@as(?u32, 1), fromRoman("I"));
+    try testing.expectEqual(@as(?u32, 3), fromRoman("iii"));
+    try testing.expectEqual(@as(?u32, 4), fromRoman("IV"));
+    try testing.expectEqual(@as(?u32, 1990), fromRoman("MCMXC"));
+    try testing.expectEqual(@as(?u32, null), fromRoman("iiii"));
+    try testing.expectEqual(@as(?u32, null), fromRoman("LCD"));
+    try testing.expectEqual(@as(?u32, null), fromRoman("CIVIL"));
+    try testing.expectEqual(@as(?u32, null), fromRoman("IVXLCDM"));
+    try testing.expectEqual(@as(?u32, null), fromRoman(""));
 }
 
 test "a different bullet character at the same column starts a new list" {

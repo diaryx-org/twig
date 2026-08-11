@@ -378,6 +378,23 @@ fn decodeKind(
         // to `Document.Spelling`, because this codec produces a bare `AST` (see
         // `decode`) and a spelling table would have nowhere to live.
         .bullet_list => .{ .bullet_list = .{ .tight = false } },
+        // `enumtype` and `start` are READINGS, the same arrangement `refuri` has
+        // for a `link`: all four of docutils' attributes (`enumtype`, `prefix`,
+        // `suffix`, `start`) stay in `attrs` and are what `encode` writes back
+        // from. Only two of them have a twig payload — `prefix`/`suffix` have no
+        // `Kind.OrderedList` field at all, which is exactly why the attributes
+        // must remain the record rather than the payload.
+        //
+        // An unrecognized or absent `enumtype` decodes to `null`, leaving the
+        // list a generic `container` that round-trips as itself, rather than
+        // guessing `.decimal`: docutils writes the attribute on every one of the
+        // corpus's 46 enumerated lists, so a missing one is a doctree this codec
+        // has no reading for, not a default.
+        .enumerated_list => if (decodeNumbering(attrs)) |n| .{ .ordered_list = .{
+            .numbering = n,
+            .tight = false,
+            .start = decodeStart(attrs),
+        } } else null,
         .list_item => .list_item,
         .definition_list => .definition_list,
         .definition_list_item => .definition_list_item,
@@ -577,6 +594,7 @@ fn encodeTag(kind: Node.Kind, where: Where) ?Tag {
         .para => .paragraph,
         .block_quote => .block_quote,
         .bullet_list => .bullet_list,
+        .ordered_list => .enumerated_list,
         .list_item => .list_item,
         // The definition-list four double as the option-list four; which
         // construct this is was settled at the list by `isOptionList` and rides
@@ -642,7 +660,6 @@ fn encodeTag(kind: Node.Kind, where: Where) ?Tag {
         .heading,
         .raw_block,
         .metadata,
-        .ordered_list,
         .task_list,
         .task_list_item,
         .soft_break,
@@ -693,6 +710,33 @@ fn decodeTarget(children: []const Node.Id, attrs: []const AST.KeyVal) ?Node.Kind
 /// no name and are resolved by position.
 fn definitionName(attrs: []const AST.KeyVal) []const u8 {
     return attrValue(attrs, "names") orelse attrValue(attrs, "dupnames") orelse "";
+}
+
+/// docutils' `enumtype` as twig's `ListNumbering`. The five names line up one
+/// for one, which is why `enumerated_list` needs no vocabulary of its own —
+/// `Kind.ordered_list` already carried this axis for Markdown/djot.
+fn decodeNumbering(attrs: []const AST.KeyVal) ?AST.ListNumbering {
+    const raw = attrValue(attrs, "enumtype") orelse return null;
+    const table = .{
+        .{ "arabic", AST.ListNumbering.decimal },
+        .{ "loweralpha", AST.ListNumbering.lower_alpha },
+        .{ "upperalpha", AST.ListNumbering.upper_alpha },
+        .{ "lowerroman", AST.ListNumbering.lower_roman },
+        .{ "upperroman", AST.ListNumbering.upper_roman },
+    };
+    inline for (table) |row| {
+        if (std.mem.eql(u8, raw, row[0])) return row[1];
+    }
+    return null;
+}
+
+/// docutils writes `start` only when the first enumerator is not ordinal-1, so
+/// its absence means 1 and `Kind.OrderedList.start` is `null` there — the same
+/// "absent means the ordinary case" reading `spanExtent` makes. A non-numeric
+/// value is treated as absent for the reason given there.
+fn decodeStart(attrs: []const AST.KeyVal) ?u32 {
+    const raw = attrValue(attrs, "start") orelse return null;
+    return std.fmt.parseInt(u32, raw, 10) catch null;
 }
 
 /// A cell's grid extent, read from docutils' `morecols`/`morerows` — which
@@ -1876,6 +1920,50 @@ test "an option list nested in a description does not infect the list around it"
     ;
     var ast = try decode(testing.allocator, src, null);
     defer ast.deinit();
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "an enumerated list reads enumtype/start into the kind and leaves all four attributes alone" {
+    const src =
+        \\<document source="test data">
+        \\    <enumerated_list enumtype="lowerroman" prefix="(" start="3" suffix=")">
+        \\        <list_item>
+        \\            <paragraph>
+        \\                Item iii.
+        \\
+    ;
+    var ast = try decode(testing.allocator, src, null);
+    defer ast.deinit();
+
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[list].kind.ordered_list.numbering == .lower_roman);
+    try testing.expectEqual(@as(?u32, 3), ast.nodes[list].kind.ordered_list.start);
+    // `prefix`/`suffix` have no payload to move to, which is why the record
+    // stays in `attrs` for all four rather than for only the two twig can hold.
+    try testing.expectEqualStrings("(", ast.attrsOf(list).get("prefix").?);
+    try testing.expectEqualStrings(")", ast.attrsOf(list).get("suffix").?);
+
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "an enumerated list with no enumtype stays a generic container" {
+    // Not a default of `.decimal`: docutils writes `enumtype` on every list it
+    // emits, so one without it is a doctree this codec has no reading for.
+    const src =
+        \\<document source="test data">
+        \\    <enumerated_list>
+        \\        <list_item>
+        \\
+    ;
+    var ast = try decode(testing.allocator, src, null);
+    defer ast.deinit();
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("enumerated_list", ast.nodes[list].kind.container.name);
+
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings(src, out);
