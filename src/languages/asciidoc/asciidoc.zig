@@ -42,8 +42,9 @@ pub const asg = @import("asg.zig");
 
 /// Source bytes -> twig's shared `AST`. See its module doc comment for what
 /// this first slice covers (the document header, paragraphs, section
-/// nesting, unordered lists, listing blocks, sidebars, constrained `*strong*`
-/// spans) and for what's still unimplemented.
+/// nesting, unordered lists, listing blocks, sidebars, and four constrained
+/// spans — `*strong*`, `_emphasis_`, `` `code` `` and `#mark#`) and for what's
+/// still unimplemented.
 pub const parser = @import("parser.zig");
 
 /// The vendored TCK corpus runner and its ratchets. See its module doc

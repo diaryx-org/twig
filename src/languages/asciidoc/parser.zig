@@ -15,14 +15,20 @@
 //! principal text, blank lines between items), every delimited block the ASG
 //! has a name for (`listing`, `literal`, `pass`, `example`, `quote`,
 //! `sidebar`, `open`) plus comment blocks, line comments, thematic and page
-//! breaks, and constrained `*strong*` spans.
+//! breaks, and four constrained spans: `*strong*`, `_emphasis_`, `` `code` ``
+//! (monospace) and `#mark#` (highlight).
 //!
 //! Not yet: ordered and callout lists, description lists, nested lists, list
 //! continuation, block metadata (`[attrlist]`, `.Title`, ids, roles, options)
 //! and everything it unlocks (admonitions, discrete headings, `[verse]`,
 //! `[source]`), block macros (`image::`, `audio::`, `video::`, `toc::`), and
-//! every inline besides strong spans and plain text. Tables are not on the
-//! list at all: the ASG does not model them as of draft-01.
+//! every inline besides the four constrained spans and plain text —
+//! unconstrained forms (`**`, `__`, `` `` ` `` ``, `##`), superscript,
+//! subscript, attribute references, anchors, cross references, links, images,
+//! footnotes, inline passthrough and line breaks all remain unimplemented, and
+//! several of them (superscript, subscript, footnotes, inline images) have no
+//! shape in the ASG schema yet either. Tables are not on the list at all: the
+//! ASG does not model them as of draft-01.
 //!
 //! ── Why this shape ───────────────────────────────────────────────────────
 //! Bottom-up onto `AST.Builder`, the same posture `languages/rst/parser.zig`
@@ -666,38 +672,87 @@ fn emitText(b: *Builder, s: []const u8, offset: usize) Allocator.Error!Node.Id {
     return id;
 }
 
+/// The single-character constrained spans that nest — `*strong*`, `_emphasis_`,
+/// `#mark#` — spelled by `parseInlines`' shared word-boundary algorithm and
+/// distinguished only by delimiter byte and which `AST.InlineMark` they build.
+/// `` `monospace` `` follows the identical boundary rule but is handled
+/// separately (see `tryMonospace`): its ASG shape is a `code` span like these
+/// three, but `AST.InlineMark` is deliberately scoped to exactly the marks
+/// djot itself spells (see `languages/djot/syntax.zig`'s doc comment), so
+/// monospace text is kept as a `text_leaf{.verbatim}` leaf instead of growing
+/// that enum for one AsciiDoc-only member.
+const MARK_SPANS = [_]struct { char: u8, mark: AST.InlineMark }{
+    .{ .char = '*', .mark = .strong },
+    .{ .char = '_', .mark = .emph },
+    .{ .char = '#', .mark = .mark },
+};
+const MONOSPACE_CHAR: u8 = '`';
+
+fn markForChar(c: u8) ?AST.InlineMark {
+    for (MARK_SPANS) |m| {
+        if (m.char == c) return m.mark;
+    }
+    return null;
+}
+
+/// May `text[i]`, a candidate delimiter byte, OPEN a constrained span? Not
+/// preceded by a word character, not followed by whitespace or end of text —
+/// AsciiDoc's constrained-span word-boundary rule, checked independently of
+/// the matching close.
+fn opensConstrained(text: []const u8, i: usize) bool {
+    if (i > 0 and isWordByte(text[i - 1])) return false;
+    if (i + 1 >= text.len) return false;
+    const next = text[i + 1];
+    return !(next == ' ' or next == '\t' or next == '\n');
+}
+
+/// The index of the delimiter byte `delim` that CLOSES a span opened at
+/// `open_idx`, if any: not preceded by whitespace, not followed by a word
+/// character — the closing half of the same rule.
+fn findConstrainedClose(text: []const u8, delim: u8, open_idx: usize) ?usize {
+    var j = open_idx + 1;
+    while (j < text.len) : (j += 1) {
+        if (text[j] != delim) continue;
+        const before_space = text[j - 1] == ' ' or text[j - 1] == '\t' or text[j - 1] == '\n';
+        const after_word = j + 1 < text.len and isWordByte(text[j + 1]);
+        if (!before_space and !after_word) return j;
+    }
+    return null;
+}
+
 /// Scan `text` (a slice of `source` starting at byte offset `base`) for
-/// constrained `*strong*` spans, returning the resulting run of `str` and
-/// `inline_mark{.strong}` nodes. An opening `*` cannot be preceded by a word
-/// character or followed by whitespace; a closing `*` cannot be preceded by
-/// whitespace or followed by a word character — AsciiDoc's constrained-span
-/// word-boundary rule, checked on both delimiters independently.
+/// constrained spans, returning the resulting run of `str`, `inline_mark` and
+/// monospace `text_leaf` nodes. See `MARK_SPANS`'s doc comment for which
+/// delimiters are recognized.
 fn parseInlines(b: *Builder, text: []const u8, base: usize) Allocator.Error![]Node.Id {
     var ids: std.ArrayList(Node.Id) = .empty;
     errdefer ids.deinit(b.allocator);
     var plain_start: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        if (text[i] == '*') open: {
-            const prev_word = i > 0 and isWordByte(text[i - 1]);
-            if (prev_word or i + 1 >= text.len) break :open;
-            const next = text[i + 1];
-            if (next == ' ' or next == '\t' or next == '\n') break :open;
-
-            var j = i + 1;
-            const close_idx = while (j < text.len) : (j += 1) {
-                if (text[j] != '*') continue;
-                const before_space = text[j - 1] == ' ' or text[j - 1] == '\t' or text[j - 1] == '\n';
-                const after_word = j + 1 < text.len and isWordByte(text[j + 1]);
-                if (!before_space and !after_word) break j;
-            } else break :open;
+        if (markForChar(text[i])) |mark| open: {
+            if (!opensConstrained(text, i)) break :open;
+            const close_idx = findConstrainedClose(text, text[i], i) orelse break :open;
 
             if (i > plain_start) try ids.append(b.allocator, try emitText(b, text[plain_start..i], base + plain_start));
             const inner = try parseInlines(b, text[i + 1 .. close_idx], base + i + 1);
             defer b.allocator.free(inner);
-            const span_id = try b.addContainer(.{ .inline_mark = .strong }, inner);
+            const span_id = try b.addContainer(.{ .inline_mark = mark }, inner);
             b.setSpan(span_id, Span.init(base + i, base + close_idx + 1));
             try ids.append(b.allocator, span_id);
+            i = close_idx + 1;
+            plain_start = i;
+            continue;
+        } else if (text[i] == MONOSPACE_CHAR) mono: {
+            if (!opensConstrained(text, i)) break :mono;
+            const close_idx = findConstrainedClose(text, MONOSPACE_CHAR, i) orelse break :mono;
+
+            if (i > plain_start) try ids.append(b.allocator, try emitText(b, text[plain_start..i], base + plain_start));
+            const interior = text[i + 1 .. close_idx];
+            const leaf_id = try b.addLeaf(.{ .text_leaf = .{ .kind = .verbatim, .text = interior } });
+            b.setSpan(leaf_id, Span.init(base + i, base + close_idx + 1));
+            b.setContentSpan(leaf_id, Span.init(base + i + 1, base + close_idx));
+            try ids.append(b.allocator, leaf_id);
             i = close_idx + 1;
             plain_start = i;
             continue;
@@ -827,4 +882,33 @@ test "a constrained strong span" {
     try testing.expect(ast.nodes[span].kind.inline_mark == .strong);
     const str = ast.nodes[span].first_child.?;
     try testing.expectEqualStrings("s", ast.nodes[str].kind.str);
+}
+
+test "a constrained emphasis span" {
+    var doc = try parseInlineList(testing.allocator, "_s_\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const span = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[span].kind.inline_mark == .emph);
+    const str = ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("s", ast.nodes[str].kind.str);
+}
+
+test "a constrained mark span" {
+    var doc = try parseInlineList(testing.allocator, "#s#\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const span = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[span].kind.inline_mark == .mark);
+    const str = ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("s", ast.nodes[str].kind.str);
+}
+
+test "a constrained monospace span is a verbatim text leaf, not a nested mark" {
+    var doc = try parseInlineList(testing.allocator, "`s`\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const leaf = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqual(AST.TextLeafKind.verbatim, ast.nodes[leaf].kind.text_leaf.kind);
+    try testing.expectEqualStrings("s", ast.nodes[leaf].kind.text_leaf.text);
 }

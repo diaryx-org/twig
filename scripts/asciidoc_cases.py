@@ -643,3 +643,116 @@ def define(*, case, doc, header, para, leaf, parent, section, heading, ulist,
         [text("two words")],
         level="inline",
     )
+
+    # ── emphasis, monospace and mark spans ──────────────────────────────────
+    # docs/modules/text/pages/emphasis.adoc, monospace.adoc, highlight.adoc.
+    # Asciidoctor applies the same single-character constrained word-boundary
+    # rule strong-span.adoc states for `*` to each of these; there is no
+    # per-construct normative page that restates it, so these expectations
+    # follow the strong-span cases directly above by construction.
+
+    case(
+        "block/paragraph/emphasis-span-mid-line",
+        "one _two_ three\n",
+        doc(
+            para(
+                text("one "),
+                span("emphasis", text("two"), at="_two_"),
+                text(" three"),
+                at=lines(1),
+            ),
+            at=lines(1),
+        ),
+    )
+
+    case(
+        "inline/span/emphasis/not-constrained-by-word-character",
+        "a_b_c\n",
+        [text("a_b_c")],
+        level="inline",
+    )
+
+    case(
+        "inline/span/emphasis/unterminated",
+        "_not closed\n",
+        [text("_not closed")],
+        level="inline",
+    )
+
+    case(
+        "block/paragraph/monospace-span-mid-line",
+        "one `two` three\n",
+        doc(
+            para(
+                text("one "),
+                span("code", text("two"), at="`two`"),
+                text(" three"),
+                at=lines(1),
+            ),
+            at=lines(1),
+        ),
+        note="A monospace span decodes to twig's own `text_leaf` verbatim leaf "
+             "rather than a nested mark (see asg.zig's doc comment), but the "
+             "ASG shape asserted here is the ordinary `span`/`code` one — that "
+             "choice is invisible at this level.",
+    )
+
+    case(
+        "inline/span/code/not-constrained-by-word-character",
+        "a`b`c\n",
+        [text("a`b`c")],
+        level="inline",
+    )
+
+    case(
+        "inline/span/code/unterminated",
+        "`not closed\n",
+        [text("`not closed")],
+        level="inline",
+    )
+
+    case(
+        "block/paragraph/mark-span-mid-line",
+        "one #two# three\n",
+        doc(
+            para(
+                text("one "),
+                span("mark", text("two"), at="#two#"),
+                text(" three"),
+                at=lines(1),
+            ),
+            at=lines(1),
+        ),
+    )
+
+    case(
+        "inline/span/mark/not-constrained-by-word-character",
+        "a#b#c\n",
+        [text("a#b#c")],
+        level="inline",
+    )
+
+    case(
+        "inline/span/mark/unterminated",
+        "#not closed\n",
+        [text("#not closed")],
+        level="inline",
+    )
+
+    case(
+        "inline/span/four-constrained-spans-in-one-line",
+        "*bold* _emphasis_ `mono` #mark#\n",
+        [
+            span("strong", text("bold"), at="*bold*"),
+            text(" "),
+            span("emphasis", text("emphasis"), at="_emphasis_"),
+            text(" "),
+            span("code", text("mono"), at="`mono`"),
+            text(" "),
+            span("mark", text("mark"), at="#mark#"),
+        ],
+        level="inline",
+        note="The four single-character constrained spans dispatch off the "
+             "same byte-scan loop in parser.zig; this checks it doesn't "
+             "confuse one delimiter for another mid-line.",
+    )

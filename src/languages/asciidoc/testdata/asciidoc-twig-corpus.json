@@ -7,9 +7,9 @@
   "format": "Identical to asciidoc-tck-corpus.json's, so conformance.zig runs both through one path and any case here can be exported as a TCK -input.adoc/-output.json pair (--export-tck) and offered upstream.",
   "license": "EPL-2.0, matching the AsciiDoc TCK's, so cases can be contributed upstream unchanged.",
   "counts": {
-   "cases": 49,
-   "block": 44,
-   "inline": 5
+   "cases": 59,
+   "block": 47,
+   "inline": 12
   }
  },
  "cases": [
@@ -3625,6 +3625,634 @@
      ]
     }
    ]
+  },
+  {
+   "id": "block/paragraph/emphasis-span-mid-line",
+   "level": "block",
+   "adoc": "one _two_ three\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "one ",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 4
+         }
+        ]
+       },
+       {
+        "name": "span",
+        "type": "inline",
+        "variant": "emphasis",
+        "form": "constrained",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 1,
+            "col": 6
+           },
+           {
+            "line": 1,
+            "col": 8
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 5
+         },
+         {
+          "line": 1,
+          "col": 9
+         }
+        ]
+       },
+       {
+        "name": "text",
+        "type": "string",
+        "value": " three",
+        "location": [
+         {
+          "line": 1,
+          "col": 10
+         },
+         {
+          "line": 1,
+          "col": 15
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 15
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 15
+     }
+    ]
+   }
+  },
+  {
+   "id": "inline/span/emphasis/not-constrained-by-word-character",
+   "level": "inline",
+   "adoc": "a_b_c\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a_b_c",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 5
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/emphasis/unterminated",
+   "level": "inline",
+   "adoc": "_not closed\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "_not closed",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 11
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "block/paragraph/monospace-span-mid-line",
+   "level": "block",
+   "adoc": "one `two` three\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "one ",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 4
+         }
+        ]
+       },
+       {
+        "name": "span",
+        "type": "inline",
+        "variant": "code",
+        "form": "constrained",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 1,
+            "col": 6
+           },
+           {
+            "line": 1,
+            "col": 8
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 5
+         },
+         {
+          "line": 1,
+          "col": 9
+         }
+        ]
+       },
+       {
+        "name": "text",
+        "type": "string",
+        "value": " three",
+        "location": [
+         {
+          "line": 1,
+          "col": 10
+         },
+         {
+          "line": 1,
+          "col": 15
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 15
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 15
+     }
+    ]
+   },
+   "note": "A monospace span decodes to twig's own `text_leaf` verbatim leaf rather than a nested mark (see asg.zig's doc comment), but the ASG shape asserted here is the ordinary `span`/`code` one — that choice is invisible at this level."
+  },
+  {
+   "id": "inline/span/code/not-constrained-by-word-character",
+   "level": "inline",
+   "adoc": "a`b`c\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a`b`c",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 5
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/code/unterminated",
+   "level": "inline",
+   "adoc": "`not closed\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "`not closed",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 11
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "block/paragraph/mark-span-mid-line",
+   "level": "block",
+   "adoc": "one #two# three\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "one ",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 4
+         }
+        ]
+       },
+       {
+        "name": "span",
+        "type": "inline",
+        "variant": "mark",
+        "form": "constrained",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 1,
+            "col": 6
+           },
+           {
+            "line": 1,
+            "col": 8
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 5
+         },
+         {
+          "line": 1,
+          "col": 9
+         }
+        ]
+       },
+       {
+        "name": "text",
+        "type": "string",
+        "value": " three",
+        "location": [
+         {
+          "line": 1,
+          "col": 10
+         },
+         {
+          "line": 1,
+          "col": 15
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 15
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 15
+     }
+    ]
+   }
+  },
+  {
+   "id": "inline/span/mark/not-constrained-by-word-character",
+   "level": "inline",
+   "adoc": "a#b#c\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a#b#c",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 5
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/mark/unterminated",
+   "level": "inline",
+   "adoc": "#not closed\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "#not closed",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 11
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/four-constrained-spans-in-one-line",
+   "level": "inline",
+   "adoc": "*bold* _emphasis_ `mono` #mark#\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "strong",
+     "form": "constrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "bold",
+       "location": [
+        {
+         "line": 1,
+         "col": 2
+        },
+        {
+         "line": 1,
+         "col": 5
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 6
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " ",
+     "location": [
+      {
+       "line": 1,
+       "col": 7
+      },
+      {
+       "line": 1,
+       "col": 7
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "emphasis",
+     "form": "constrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "emphasis",
+       "location": [
+        {
+         "line": 1,
+         "col": 9
+        },
+        {
+         "line": 1,
+         "col": 16
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 8
+      },
+      {
+       "line": 1,
+       "col": 17
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " ",
+     "location": [
+      {
+       "line": 1,
+       "col": 18
+      },
+      {
+       "line": 1,
+       "col": 18
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "code",
+     "form": "constrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "mono",
+       "location": [
+        {
+         "line": 1,
+         "col": 20
+        },
+        {
+         "line": 1,
+         "col": 23
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 19
+      },
+      {
+       "line": 1,
+       "col": 24
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " ",
+     "location": [
+      {
+       "line": 1,
+       "col": 25
+      },
+      {
+       "line": 1,
+       "col": 25
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "mark",
+     "form": "constrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "mark",
+       "location": [
+        {
+         "line": 1,
+         "col": 27
+        },
+        {
+         "line": 1,
+         "col": 30
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 26
+      },
+      {
+       "line": 1,
+       "col": 31
+      }
+     ]
+    }
+   ],
+   "note": "The four single-character constrained spans dispatch off the same byte-scan loop in parser.zig; this checks it doesn't confuse one delimiter for another mid-line."
   }
  ]
 }

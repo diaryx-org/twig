@@ -94,7 +94,8 @@ fn bump(coverage: ?*Coverage, comptime field: []const u8) void {
 }
 
 /// A decode failure: an ASG shape the 13-case corpus doesn't yet exercise
-/// (an ordered list, a `span` variant other than `strong`, ...). Surfaced as a
+/// (an ordered list, a `span` variant other than `strong`/`emphasis`/`mark`/
+/// `code`, ...). Surfaced as a
 /// normal error rather than `unreachable` so a TCK refresh that adds coverage
 /// fails the harness loudly instead of crashing the test binary — the same
 /// posture `rst/doctree.zig`'s `DecodeError` takes.
@@ -394,10 +395,32 @@ fn decodeInline(b: *AST.Builder, source: []const u8, value: std.json.Value, cove
     }
 
     if (std.mem.eql(u8, name, "span")) {
-        if (!std.mem.eql(u8, str(o.get("variant").?), "strong")) return error.UnsupportedAsgNode;
+        const variant = str(o.get("variant").?);
+
+        // `code` (monospace) shares the `span` shape with the three
+        // `inline_mark` variants below but decodes to a `text_leaf{.verbatim}`
+        // LEAF instead: `AST.InlineMark` is deliberately scoped to exactly the
+        // marks djot itself spells (see `languages/djot/syntax.zig`'s doc
+        // comment), so monospace doesn't grow that enum for one AsciiDoc-only
+        // member. That does mean a `code` span whose `inlines` isn't exactly
+        // one `text` node — real nested formatting inside monospace — has
+        // nowhere to go yet.
+        if (std.mem.eql(u8, variant, "code")) {
+            const inlines = arr(o.get("inlines").?);
+            if (inlines.len != 1) return error.UnsupportedAsgNode;
+            const inner = obj(inlines[0]);
+            if (!std.mem.eql(u8, str(inner.get("name").?), "text")) return error.UnsupportedAsgNode;
+            const id = try b.addLeaf(.{ .text_leaf = .{ .kind = .verbatim, .text = str(inner.get("value").?) } });
+            b.setSpan(id, spanFromLoc(source, o.get("location").?));
+            b.setContentSpan(id, spanFromLoc(source, inner.get("location").?));
+            bump(coverage, "semantic");
+            return id;
+        }
+
+        const mark = markFromVariant(variant) orelse return error.UnsupportedAsgNode;
         const inlines = try decodeInlineList(b, source, arr(o.get("inlines").?), coverage);
         defer b.allocator.free(inlines);
-        const id = try b.addContainer(.{ .inline_mark = .strong }, inlines);
+        const id = try b.addContainer(.{ .inline_mark = mark }, inlines);
         b.setSpan(id, spanFromLoc(source, o.get("location").?));
         if (o.get("form")) |f| try b.setAttrs(id, .{ .entries = &.{.{ .key = "form", .value = str(f) }} });
         bump(coverage, "semantic");
@@ -405,6 +428,29 @@ fn decodeInline(b: *AST.Builder, source: []const u8, value: std.json.Value, cove
     }
 
     return error.UnsupportedAsgNode;
+}
+
+/// The ASG `span` variants that become an `AST.InlineMark` — everything
+/// except `code`, which `decodeInline`/`writeInline` handle separately (see
+/// there for why). `emphasis` doesn't match `AST.InlineMark.emph`'s own
+/// spelling; `strong` and `mark` happen to.
+fn markFromVariant(variant: []const u8) ?AST.InlineMark {
+    if (std.mem.eql(u8, variant, "strong")) return .strong;
+    if (std.mem.eql(u8, variant, "emphasis")) return .emph;
+    if (std.mem.eql(u8, variant, "mark")) return .mark;
+    return null;
+}
+
+/// The inverse of `markFromVariant`, total over the three marks AsciiDoc's
+/// codec ever produces — `unreachable` on anything else is a bug in this
+/// file's own `decodeInline`, not a document twig legitimately can't print.
+fn variantFromMark(mark: AST.InlineMark) []const u8 {
+    return switch (mark) {
+        .strong => "strong",
+        .emph => "emphasis",
+        .mark => "mark",
+        else => unreachable,
+    };
 }
 
 // ── encode ──────────────────────────────────────────────────────────────────
@@ -730,7 +776,7 @@ fn writeInline(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer
             try w.objectField("type");
             try w.write("inline");
             try w.objectField("variant");
-            try w.write(@tagName(m));
+            try w.write(variantFromMark(m));
             const attrs = doc.ast.attrsOf(id);
             try w.objectField("form");
             try w.write(attrGet(attrs, "form") orelse "constrained");
@@ -738,6 +784,42 @@ fn writeInline(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer
             try w.beginArray();
             var it = doc.children(id);
             while (it.next()) |c| try writeInline(w, doc, c.id);
+            try w.endArray();
+            try writeLoc(w, doc, id);
+            try w.endObject();
+        },
+        // A monospace `code` span — see `decodeInline`'s doc comment for why
+        // this is a leaf rather than an `inline_mark`. Its interior's own
+        // location comes from `contentSpan`, exactly the split
+        // `writeBlock`'s `.code_block` arm already makes between a node's own
+        // span and its inner text's.
+        .text_leaf => |leaf| {
+            std.debug.assert(leaf.kind == .verbatim);
+            try w.beginObject();
+            try w.objectField("name");
+            try w.write("span");
+            try w.objectField("type");
+            try w.write("inline");
+            try w.objectField("variant");
+            try w.write("code");
+            try w.objectField("form");
+            try w.write("constrained");
+            try w.objectField("inlines");
+            try w.beginArray();
+            try w.beginObject();
+            try w.objectField("name");
+            try w.write("text");
+            try w.objectField("type");
+            try w.write("string");
+            try w.objectField("value");
+            try w.write(leaf.text);
+            const cs = doc.contentSpan(id).?;
+            try w.objectField("location");
+            try w.beginArray();
+            try writePoint(w, doc.source, cs.start);
+            try writePoint(w, doc.source, cs.end - 1);
+            try w.endArray();
+            try w.endObject();
             try w.endArray();
             try writeLoc(w, doc, id);
             try w.endObject();
