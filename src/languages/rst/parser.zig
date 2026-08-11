@@ -7,13 +7,34 @@
 //! The first vertical slice, chosen by corpus weight and structural
 //! simplicity rather than by docutils' own test-file order (see the "Bottom-up
 //! by corpus weight" call in the session this landed in): paragraphs, section
-//! titles/nesting, transitions, block quotes, and comments. No inline markup
-//! parsing yet — a paragraph's whole text becomes ONE `.str` child, so any
-//! case whose expected doctree contains `emphasis`/`strong`/`reference`/etc.
-//! inside a paragraph will not compare equal yet. Everything else
-//! (bullet/enumerated/definition lists, literal blocks, directives, the
-//! hyperlink/footnote/citation/substitution clusters, tables) is unimplemented
-//! and deliberately out of this file for now.
+//! titles/nesting, transitions, block quotes, and comments — plus, added next,
+//! bullet lists (`test_bullet_lists.py`, 7/7). No inline markup parsing yet —
+//! a paragraph's whole text becomes ONE `.str` child, so any case whose
+//! expected doctree contains `emphasis`/`strong`/`reference`/etc. inside a
+//! paragraph will not compare equal yet. Everything else (enumerated/
+//! definition/field lists, literal blocks, directives, the hyperlink/
+//! footnote/citation/substitution clusters, tables) is unimplemented and
+//! deliberately out of this file for now.
+//!
+//! ── Bullet lists ─────────────────────────────────────────────────────────
+//! `parseBulletList` (dispatched from `parseBody` via `matchBulletMarker`)
+//! reuses `findElevatedExtent` for an item's body — same shape as a block
+//! quote's, since "everything indented at least to the item's content column,
+//! blank-tolerant" is the same question either way, just with a caller-known
+//! fixed indent (the marker's own width) rather than one inferred from the
+//! content's own minimum. The one thing block quotes don't need and items do:
+//! the marker line's OWN remainder is the first paragraph's first line, but
+//! it isn't indented to the content column IN THE SOURCE (the marker sits
+//! where the indent would be), so it can't be handed to the generic
+//! `parseBody`/`findParagraphEnd` path — `parseBulletList` merges it with any
+//! immediately-following continuation lines by hand, then hands the rest of
+//! the item to `parseBody` same as always. A same-column marker with a
+//! DIFFERENT character ends the list without special-casing: the loop just
+//! stops and `parseBody`'s own dispatch loop sees that line fresh, starting a
+//! new list — which is exactly what the corpus's "different bullets" case
+//! (asserts_error, so not asserted on the tree, but the shape still matters)
+//! wants: back-to-back `<bullet_list>` siblings, not one list refusing a
+//! foreign bullet.
 //!
 //! ── Why this shape ───────────────────────────────────────────────────────
 //! Bottom-up onto `AST.Builder` (a container's children are fully known
@@ -468,6 +489,12 @@ const Parser = struct {
                 i = cm.next;
                 continue;
             }
+            if (matchBulletMarker(content)) |bm| {
+                const bl = try self.parseBulletList(i, hi, indent, bm.marker);
+                try children.append(self.allocator, bl.id);
+                i = bl.next;
+                continue;
+            }
 
             const para_end = self.findParagraphEnd(i, hi, indent);
             const text = try self.assembleText(i, para_end, indent);
@@ -584,6 +611,94 @@ const Parser = struct {
         try self.b.setAttrs(id, .{ .entries = &.{.{ .key = "xml:space", .value = "preserve" }} });
         return .{ .id = id, .next = next };
     }
+
+    /// A maximal run of consecutive bullet-list items sharing `marker`, all
+    /// at column `indent` — `lo` is the FIRST item's marker line, already
+    /// matched by the caller (`parseBody`'s dispatch). A different-character
+    /// marker at the same column ends the list without being consumed (the
+    /// corpus's "different bullets" case makes each a separate `<bullet_list>`
+    /// back to back, no intervening paragraph), which falls out for free here:
+    /// the loop simply stops and hands the line back to `parseBody`, which
+    /// dispatches it fresh and starts a new list.
+    fn parseBulletList(self: *Parser, lo: usize, hi: usize, indent: usize, marker: []const u8) Allocator.Error!struct { id: Node.Id, next: usize } {
+        var items: std.ArrayList(Node.Id) = .empty;
+        errdefer items.deinit(self.allocator);
+        var i = lo;
+        var list_end = self.lines[lo].end;
+        while (i < hi) {
+            // Blank lines between items don't end the list — only reaching
+            // `hi`, or a non-blank line that doesn't match `marker`, does.
+            if (self.isBlankLine(i)) {
+                i += 1;
+                continue;
+            }
+            const content = self.trimmedContent(i, indent);
+            const bm = matchBulletMarker(content) orelse break;
+            if (!std.mem.eql(u8, bm.marker, marker)) break;
+
+            const item_line = i;
+            const content_col = indent + bm.rel_start;
+            // Everything below the marker line that stays indented at least
+            // to `content_col` — same shape as a block quote's extent
+            // (`findElevatedExtent`), blank-tolerant, stopping at the next
+            // item's marker (which sits back at `indent`, always shallower
+            // than `content_col`) or any other dedent.
+            const ext = self.findElevatedExtent(item_line + 1, hi, content_col - 1);
+
+            var item_children: std.ArrayList(Node.Id) = .empty;
+            errdefer item_children.deinit(self.allocator);
+            var body_start = item_line + 1;
+            if (bm.has_content) {
+                // The marker line's own remainder is the first paragraph's
+                // first line; merge in any immediately-following (no blank
+                // line between) continuation at `content_col`, the same rule
+                // `findParagraphEnd` uses for an ordinary paragraph — it just
+                // can't be called directly here since line `item_line` isn't
+                // indented to `content_col` in the SOURCE (the marker sits
+                // where the indent would be).
+                var para_end = item_line + 1;
+                while (para_end < ext.end and !self.isBlankLine(para_end) and self.leadingSpaces(para_end) == content_col) para_end += 1;
+
+                var buf: std.ArrayList(u8) = .empty;
+                errdefer buf.deinit(self.allocator);
+                try buf.appendSlice(self.allocator, content[bm.rel_start..]);
+                var ln = item_line + 1;
+                while (ln < para_end) : (ln += 1) {
+                    try buf.append(self.allocator, '\n');
+                    try buf.appendSlice(self.allocator, self.trimmedContent(ln, content_col));
+                }
+                const text = try buf.toOwnedSlice(self.allocator);
+                const str_id = try self.b.addLeaf(.{ .str = text });
+                self.allocator.free(text);
+                self.b.setSpan(str_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
+                const para_id = try self.b.addContainer(.para, &.{str_id});
+                self.b.setSpan(para_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
+                try item_children.append(self.allocator, para_id);
+                body_start = para_end;
+            }
+
+            const rest = try self.parseBody(body_start, ext.end, content_col);
+            defer self.allocator.free(rest.items);
+            try item_children.appendSlice(self.allocator, rest.items);
+
+            const item_items = try item_children.toOwnedSlice(self.allocator);
+            const item_id = try self.b.addContainer(.list_item, item_items);
+            self.allocator.free(item_items);
+            const item_end = rest.stopped_at;
+            self.b.setSpan(item_id, Span.init(self.lines[item_line].start, self.lines[item_end - 1].end));
+            try items.append(self.allocator, item_id);
+
+            list_end = self.lines[item_end - 1].end;
+            i = item_end;
+        }
+
+        const item_ids = try items.toOwnedSlice(self.allocator);
+        const list_id = try self.b.addContainer(.{ .bullet_list = .{ .tight = false } }, item_ids);
+        self.allocator.free(item_ids);
+        self.b.setSpan(list_id, Span.init(self.lines[lo].start, list_end));
+        try self.b.setAttrs(list_id, .{ .entries = &.{.{ .key = "bullet", .value = marker }} });
+        return .{ .id = list_id, .next = i };
+    }
 };
 
 fn computeLines(allocator: Allocator, source: []const u8) Allocator.Error![]LineInfo {
@@ -644,6 +759,46 @@ fn isTransitionLine(s: []const u8) bool {
 fn isCommentStart(content: []const u8) bool {
     if (content.len < 2 or content[0] != '.' or content[1] != '.') return false;
     return content.len == 2 or content[2] == ' ';
+}
+
+/// Byte length of a bullet-list marker character at the start of `s`, or
+/// `null` if `s` doesn't start with one. docutils' bullet set is `-+*` plus
+/// three Unicode marks (corpus-pinned by the "Unicode bullets" case): BULLET
+/// U+2022 `•`, TRIANGULAR BULLET U+2023 `‣`, HYPHEN BULLET U+2043 `⁃` — all
+/// three encode to 3 UTF-8 bytes starting `0xE2`.
+fn bulletMarkerLen(s: []const u8) ?usize {
+    if (s.len == 0) return null;
+    if (s[0] == '-' or s[0] == '*' or s[0] == '+') return 1;
+    if (s.len >= 3 and s[0] == 0xE2) {
+        if (s[1] == 0x80 and (s[2] == 0xA2 or s[2] == 0xA3)) return 3; // • ‣
+        if (s[1] == 0x81 and s[2] == 0x83) return 3; // ⁃
+    }
+    return null;
+}
+
+const BulletMatch = struct {
+    marker: []const u8,
+    /// Byte offset within `content` (already indent-stripped and
+    /// trailing-trimmed by `trimmedContent`) where the item's own text
+    /// starts, valid whether or not `has_content` — the caller uses it as
+    /// the item body's dedent column either way, matching docutils' rule
+    /// that an empty item still reserves `len(marker) + 1` columns.
+    rel_start: usize,
+    has_content: bool,
+};
+
+/// A bullet marker: one marker character, then either end-of-content or a
+/// space and more text. `content` has already had trailing whitespace
+/// trimmed (`trimmedContent`), so "a space with nothing real after it" and
+/// "nothing after it at all" collapse to the same `has_content = false` case.
+fn matchBulletMarker(content: []const u8) ?BulletMatch {
+    const mlen = bulletMarkerLen(content) orelse return null;
+    if (content.len == mlen) return .{ .marker = content[0..mlen], .rel_start = mlen + 1, .has_content = false };
+    if (content[mlen] != ' ') return null;
+    var k = mlen;
+    while (k < content.len and content[k] == ' ') k += 1;
+    if (k == content.len) return .{ .marker = content[0..mlen], .rel_start = mlen + 1, .has_content = false };
+    return .{ .marker = content[0..mlen], .rel_start = k, .has_content = true };
 }
 
 const testing = std.testing;
@@ -722,4 +877,41 @@ test "a comment absorbs its indented continuation" {
     const ast = result.document.ast;
     const comment = ast.nodes[ast.root].first_child.?;
     try testing.expectEqualStrings("A comment\nblock.", ast.nodes[comment].kind.markup_leaf.text);
+}
+
+test "a bullet list item merges its marker line with its unindented continuation" {
+    var result = try parse(testing.allocator, "- item 1, line 1\n  item 1, line 2\n- item 2\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[list].kind.bullet_list.tight == false);
+    try testing.expectEqualStrings("-", ast.attrsOf(list).get("bullet").?);
+    const item1 = ast.nodes[list].first_child.?;
+    const para1 = ast.nodes[item1].first_child.?;
+    try testing.expectEqualStrings("item 1, line 1\nitem 1, line 2", ast.nodes[ast.nodes[para1].first_child.?].kind.str);
+    const item2 = ast.nodes[item1].next_sibling.?;
+    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[item2].next_sibling);
+}
+
+test "an empty bullet list item has no children, and a dedented line after it is a sibling" {
+    var result = try parse(testing.allocator, "-\n\nempty item above\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    const item = ast.nodes[list].first_child.?;
+    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[item].first_child);
+    const after = ast.nodes[list].next_sibling.?;
+    try testing.expect(ast.nodes[after].kind == .para);
+}
+
+test "a different bullet character at the same column starts a new list" {
+    var result = try parse(testing.allocator, "- item 1\n\n+ item 1\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const first = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("-", ast.attrsOf(first).get("bullet").?);
+    const second = ast.nodes[first].next_sibling.?;
+    try testing.expect(ast.nodes[second].kind == .bullet_list);
+    try testing.expectEqualStrings("+", ast.attrsOf(second).get("bullet").?);
+    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[second].next_sibling);
 }

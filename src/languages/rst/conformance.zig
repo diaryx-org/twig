@@ -270,7 +270,12 @@ pub const MESSAGE_BASELINE: u32 = 158;
 /// a `bullet_lists` or `basics` case, for instance — see the per-group
 /// breakdown this test prints on a mismatch for exactly which groups still
 /// have gaps and how big).
-pub const PARSE_BASELINE: u32 = 60;
+///
+/// 72 after bullet lists (`test_bullet_lists.py`, 7/7 — the whole non-error
+/// group) landed: +7 there, +3 more incidentally in `comments` (a comment
+/// whose body happened to contain a bullet-marker-shaped line was previously
+/// misparsed).
+pub const PARSE_BASELINE: u32 = 72;
 
 /// Decode every expected doctree and encode it straight back, collecting the
 /// round-trip tally, the vocabulary coverage, and (up to `max_failures`)
