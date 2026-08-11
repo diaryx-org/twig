@@ -160,6 +160,7 @@ test {
     _ = Filter;
     _ = ast_json;
     _ = @import("ast/compact.zig");
+    _ = @import("ast/containment_test.zig");
     _ = Rst;
     _ = Asciidoc;
     _ = parse_diagnostic;

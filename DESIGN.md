@@ -12,6 +12,13 @@ Twig is published independently ([crates.io](https://crates.io/crates/twig-doc),
 [docs.rs](https://docs.rs/twig-doc)), so everything a reader needs travels
 with the repo. This file is deliberately self-contained.
 
+One topic has its own file. The rationale behind the shared AST's kind
+vocabulary — why it is one flat union rather than a nesting, what the three
+classifiers (`level`, `contentModel`, `structuralChildren`) are for, and why
+each kind exists rather than a cheaper alternative — lives in
+[AST-KINDS.md](/AST-KINDS.md). `src/ast/ast.zig`'s comments say what a kind
+*is* and point there for why.
+
 ---
 
 ## Relationship to `fig`

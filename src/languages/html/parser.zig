@@ -333,9 +333,18 @@ pub const Parser = struct {
                 return .{ .image = .{ .destination = destination, .reference = null } };
             }
         }
+        // Both of the next two mappings ABSORB their child into an opaque text
+        // payload, so the child has to be dropped: `verbatim` and `code_block`
+        // are `.text` in `Kind.contentModel`, which means the bytes and no
+        // children. Left unreferenced rather than deleted, exactly as
+        // `dropFormattingWhitespace` and `flattenRowGroups` leave theirs —
+        // `ast/compact.zig` collects them at the end of the parse.
         if (std.mem.eql(u8, name, "code") and children.*.len == 1) {
             switch (self.builder.nodes.items[children.*[0]].kind) {
-                .str => |text| return .{ .text_leaf = .{ .kind = .verbatim, .text = text } },
+                .str => |text| {
+                    children.* = &.{};
+                    return .{ .text_leaf = .{ .kind = .verbatim, .text = text } };
+                },
                 else => {},
             }
         }
@@ -345,6 +354,7 @@ pub const Parser = struct {
                 .text_leaf => |l| if (l.kind == .verbatim) {
                     const class = self.builderAttrs(child).get("class") orelse "";
                     const lang = languageFromClass(class);
+                    children.* = &.{};
                     return .{ .code_block = .{ .lang = lang, .text = l.text } };
                 },
                 else => {},

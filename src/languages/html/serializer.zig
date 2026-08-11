@@ -1097,7 +1097,7 @@ pub const Renderer = struct {
     /// so this opens and closes wrappers as the indent rises and falls. That is
     /// the same walk `rst/doctree.zig` uses to rebuild docutils' nested tree
     /// from the flat one, in HTML's vocabulary rather than the doctree's; see
-    /// `AST.Kind.line` for why the flat form is what twig stores.
+    /// `AST-KINDS.md` for why the flat form is what twig stores.
     ///
     /// Nothing reads this back as a `line_block` — twig's HTML parser has no
     /// mapping for a classed div — so `diagnostics.zig` claims `degraded`.

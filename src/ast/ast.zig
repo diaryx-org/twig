@@ -1,54 +1,39 @@
 //! AST = Abstract Syntax Tree for a parsed document.
 //!
-//! This is Twig's SHARED node vocabulary: every language module
-//! (`src/languages/djot/` today; XML/HTML next) parses into this one node
-//! model, so structural operations and printers written against `AST` work
-//! regardless of which format produced the tree. The kinds below form a
-//! common semantic core (headings, emphasis, lists, tables, ...) plus a
-//! small generic-markup escape hatch (`element`, `comment`, `doctype`, ...)
-//! for constructs with no semantic mapping — languages map what they can to
-//! semantic kinds (`<em>` → `emph`) and fall back to `element` for the rest,
-//! which is what keeps this vocabulary closed. Djot's tag-by-tag mapping
-//! (mirroring djot.js's `src/ast.ts`) is one language's mapping, not this
-//! file's definition; anything djot-specific (the reference/footnote
-//! side-tables, the block/inline dichotomy) lives in the djot module.
+//! This is Twig's SHARED node vocabulary: every language module parses into
+//! this one node model, so structural operations and printers written against
+//! `AST` work regardless of which format produced the tree. The kinds below
+//! form a common semantic core (headings, emphasis, lists, tables, ...) plus a
+//! small generic-markup escape hatch (`container`, `markup_leaf`,
+//! `processing_instruction`) for constructs with no semantic mapping, which is
+//! what keeps this vocabulary closed. Djot's tag-by-tag mapping (mirroring
+//! djot.js's `src/ast.ts`) is one language's mapping, not this file's
+//! definition; anything djot-specific (the reference/footnote side-tables, the
+//! block/inline dichotomy) lives in the djot module.
 //!
 //! Structurally this is the document-format counterpart to fig's config-tree
 //! `AST` https://github.com/diaryx-org/fig/blob/main/src/ast/ast.zig`
-//! and follows the same conventions:
-//! an index-based arena (`Node.Id = u32`, a flat `[]Node`),
-//! containers link their children via `first_child`/`next_sibling`
-//! rather than owning a `[]Node.Id` slice per node, and the AST is fully self-contained —
-//! every string a node carries is copied into `owned_strings` at build time,
-//! so a finished `AST` never borrows the original source text and printers can take `*const AST` alone.
+//! and follows the same conventions: an index-based arena (`Node.Id = u32`, a
+//! flat `[]Node`), containers linking their children via
+//! `first_child`/`next_sibling` rather than owning a `[]Node.Id` slice per
+//! node, and an AST that is fully self-contained — every string a node carries
+//! is copied into `owned_strings` at build time, so a finished `AST` never
+//! borrows the original source text and printers can take `*const AST` alone.
 //!
 //! ── This file holds MEANING, not POSITION ──────────────────────────────────
 //! Byte offsets are NOT here. A node's `span`/`content_span` live in
 //! `src/document.zig`'s id-indexed side-tables, alongside the `source` they
-//! address — again following fig, whose `Node` is likewise `{id, kind,
-//! next_sibling}` with positions in a sibling `Document`.
+//! address. The rule for which side a new field lands on: a fact belongs in
+//! `Document` iff two documents differing only in that fact RENDER
+//! IDENTICALLY. A list's `tight` flag fails that test (it elides the `<p>`),
+//! so it stays in `Kind`; a bullet's `-`-vs-`*` spelling passes it.
 //!
-//! The split is what makes `eql` (below) possible: two parses can be compared
-//! for *meaning* because there are no positions left in the tree to disagree
-//! about, with `Document.spansEql` as the separate layer for "…and were
-//! written the same way". It also makes the boundary enforceable rather than
-//! conventional — a printer taking `*const AST` cannot reach a byte offset,
-//! while the edit layer takes a `*const Document` because splicing needs both
-//! halves.
-//!
-//! The rule for which side a new field lands on: a fact belongs in `Document`
-//! iff two documents differing only in that fact RENDER IDENTICALLY. A list's
-//! `tight` flag fails that test (it elides the `<p>`), so it stays in `Kind`;
-//! a bullet's `-`-vs-`*` spelling passes it.
-//!
-//! Node *shape* is much more heterogeneous here than in fig's config AST
-//! (~50 kinds vs. ~8), so unlike fig — which folds a container's child
-//! pointer directly into its `Kind` union payload (`sequence: ?Id`) — every
-//! `Node` carries its own `first_child`/`next_sibling` fields uniformly,
-//! regardless of kind. `Kind` then only needs to carry each kind's *extra*
-//! data (a heading's level, a code block's language/text, ...); kinds with no
-//! extra data beyond their children (e.g. `emph`, `block_quote`) are `void`
-//! payloads, following fig's `null_,` shorthand.
+//! ── Where the rationale lives ──────────────────────────────────────────────
+//! `AST-KINDS.md` at the repo root. Why the vocabulary is one flat union
+//! rather than a nesting, what each of the three classifiers is for, why a
+//! given kind exists rather than a cheaper alternative, and which alternatives
+//! were tried and rejected. The comments here say what a kind IS and point
+//! there for why.
 
 const AST = @This();
 const std = @import("std");
@@ -104,20 +89,20 @@ pub const Node = struct {
 
     pub const Id = u32;
 
-    // There is deliberately no `Node.eql`. A node's identity here is its
-    // `id`/`first_child`/`next_sibling` — arena slots, which are a parsing
-    // artifact, not part of the document (see `AST.eql`). A node-level
-    // equality that compared them would be a trap; one that ignored them
-    // would just be `kind.eql`. Compare kinds, or compare trees.
+    // There is deliberately no `Node.eql` — see `AST-KINDS.md`.
 
     /// The shared kind vocabulary: a semantic core (one kind per djot.js
     /// `ast.ts` tag) plus generic-markup kinds for what XML/HTML can't map
     /// semantically. Container kinds (whose payload is `void` below) still
     /// get children like any other node, via the uniform
-    /// `first_child`/`next_sibling` fields on `Node` itself — see this
-    /// file's module doc comment for why that's a `Node`-level field rather
-    /// than folded into each variant here (as fig does for its much smaller,
-    /// config-oriented `Kind`).
+    /// `first_child`/`next_sibling` fields on `Node` itself.
+    ///
+    /// The banners below group the arms for a READER only. They are not a
+    /// classification and have been wrong before — `footnote`, `reference`,
+    /// `citation` and `substitution` sat under "container children" while
+    /// `level` called all four blocks. The three classifiers at the bottom of
+    /// this type are the answers; `AST-KINDS.md` has why they are functions
+    /// and not a nesting of this union.
     pub const Kind = union(enum) {
         // ── Document root ───────────────────────────────────────────────
         doc,
@@ -127,25 +112,15 @@ pub const Node = struct {
         heading: Heading,
         thematic_break,
         /// A heading-implied nesting wrapper; never appears in raw djot
-        /// syntax, only synthesized by the parser (see djot.js's `parse.ts`
-        /// section handling).
+        /// syntax, only synthesized by the parser.
         section,
         code_block: CodeBlock,
         raw_block: RawBlock,
         /// Document-level metadata (front/end matter) as an inert,
-        /// self-describing data island — NOT markup. `lang` is the config
-        /// language it's written in, stored exactly as the fence tag was
-        /// written (`yaml`, `toml`, `fig`, `figl`, `json`, …; a bare `---`
-        /// fence defaults to `yaml`, `+++` to `toml`) — no normalization, so
-        /// it round-trips losslessly. The HTML printer derives the data-island
-        /// MIME mechanically as `application/<lang>`.
-        /// `text` is the block body as written. Distinct from `code_block`
-        /// (a *rendered* code sample) and `raw_block` (verbatim output for a
-        /// target format): metadata is *about* the document and never renders
-        /// into the body — the HTML printer projects it to a
-        /// `<script type=mime>` data island. See `document-metadata.md`.
-        /// Produced by the Markdown parser's frontmatter path; a future pass
-        /// hoists front+end blocks into one parsed doc-level `fig` record.
+        /// self-describing data island — NOT markup, and distinct from both
+        /// `code_block` and `raw_block`. `lang` is the config language it is
+        /// written in, stored exactly as the fence tag was written; `text` is
+        /// the body as written. See `AST-KINDS.md`.
         metadata: Metadata,
         block_quote,
         bullet_list: BulletList,
@@ -155,127 +130,53 @@ pub const Node = struct {
         /// A LINE BLOCK — a run of lines whose BREAKS ARE THE CONTENT. rST
         /// spells it `| ` per line (or `.. line-block::`), AsciiDoc `[verse]`,
         /// docutils' HTML writer `<div class="line-block">`. Verse, addresses,
-        /// anything where reflowing the text would destroy it.
-        ///
-        /// Children are `line` nodes and nothing else. It is NOT a `code_block`
-        /// with the monospace turned off: a code block's payload is opaque text,
-        /// while every line here is a normal inline container — the docutils
-        /// corpus has `emphasis`, `reference` and `target` inside lines.
-        /// The right reading is "a list whose items are single lines".
+        /// anything where reflowing the text would destroy it. Read it as "a
+        /// list whose items are single lines" — see `structuralChildren`.
         line_block,
-        /// Children: `[Caption, Column…, Row, Row, ...]`. The `caption` comes
-        /// first when present — djot.js's tuple type always writes one, even
-        /// empty, while the HTML and rST parsers emit one only when the source
-        /// has one. The `column` run, when present, describes the COLUMN AXIS
-        /// and precedes every row; see `Kind.column`.
+        /// Children are a `caption`, a `column` run describing the COLUMN
+        /// AXIS, and the rows, in that order — see `structuralChildren`.
         table,
 
-        // ── Container children of the above ──────────────────────────────
+        // ── Container children, and the document-level definitions ───────
+        // NOT a classification: `footnote`/`reference`/`citation`/
+        // `substitution` below are `level() == .block`. See `Kind`'s doc.
         list_item,
         task_list_item: TaskListItem,
         definition_list_item,
         term,
         definition,
-        /// ONE LINE of a `line_block`, holding that line's inlines.
-        ///
-        /// ── Why `indent` is a number and not a nested `line_block` ──────────
-        /// docutils models a line's leading whitespace by NESTING: an indented
-        /// run becomes a child `<line_block>`, recursively, by grouping every
-        /// line indented past the current group's minimum. The corpus reaches
-        /// three levels deep, and the encoding is lossy on its own terms — in
-        /// `test_line_blocks.py:8` a 2-space line lands DEEPER than an earlier
-        /// 4-space one, because the depth is a line's rank within its group and
-        /// not its column. docutils' own HTML writer then flattens the tree back
-        /// to one `<div class="line-block">` per level for a CSS margin.
-        ///
-        /// So the nesting is an ENCODING of a per-line number, not a grouping
-        /// anything reads as a unit, and twig stores the number: `indent` is the
-        /// line's depth, `0` for flush-left. The two forms are mutually
-        /// recoverable — a depth SEQUENCE rebuilds docutils' tree by opening and
-        /// closing blocks on demand — so `doctree.zig` still round-trips the
-        /// corpus exactly, including its 0→2 jumps.
-        ///
-        /// An EMPTY line (no children) is content, not a separator: it is the
-        /// stanza break, and 7 of the corpus's 47 lines are one.
+        /// ONE LINE of a `line_block`, holding that line's inlines. `indent`
+        /// is the line's leading-whitespace DEPTH, not a column count, and an
+        /// EMPTY line is content — the stanza break — not a separator. Both
+        /// choices are argued in `AST-KINDS.md`.
         line: Line,
         row: Row,
         cell: Cell,
         /// One column of a table's COLUMN AXIS — a description of a column as
         /// a whole, sitting alongside the rows rather than inside them. rST
         /// spells it `<colspec colwidth="33">`, HTML `<col>` inside a
-        /// `<colgroup>`, DocBook `<colspec>` again.
+        /// `<colgroup>`, DocBook `<colspec>` again. A table need not have one
+        /// (GFM and djot pipe tables have no column axis at all).
         ///
-        /// A table does not need one: GFM and djot pipe tables have no column
-        /// axis at all, and their tables have no `column` children. Where a
-        /// format does have one it is not optional in practice — every one of
-        /// the 65 tables in the docutils corpus carries a full run of them,
-        /// which is why the rST table subtree could not be mapped without this
-        /// kind (`doctree.zig`'s decode table has the measurement).
-        ///
-        /// ── Why it carries no payload ──────────────────────────────────────
-        /// A column's interesting content is its WIDTH, and the two formats
-        /// that have one disagree about what a width is: rST's `colwidth` is a
-        /// unitless relative integer, HTML's is a CSS length (`25%`, `3em`).
-        /// Picking a representation on the evidence of one format would be
-        /// guessing, so the width rides in the normal `attrs` side-table as
-        /// written, which is where every other un-normalized source value
-        /// already lives (a `bullet="*"`, a `refuri`). rST's `stub` — the
-        /// column is a row-header column — is there for the same reason; it is
-        /// deliberately NOT projected onto the `head` flag of each cell in the
-        /// column, since that is a per-column fact and re-deriving it from the
-        /// cells would be lossy in both directions.
-        ///
-        /// So this is a marker: it says a column axis exists and how many
-        /// columns are in it, and it gives per-column data somewhere to attach.
-        /// A typed payload is the obvious next step the moment a SECOND format
-        /// needs to act on one.
+        /// Carries no payload: the two formats with a column axis disagree
+        /// about what a width even is, so it rides in `attrs` as written. See
+        /// `AST-KINDS.md`.
         column,
         caption,
         footnote: Footnote,
         reference: Reference,
-        /// A CITATION definition — `.. [CIT2002] Deep Thought.` — a footnote in
-        /// a second, separate name registry. Structurally it IS a footnote (a
-        /// named definition holding blocks, used from an inline reference), and
-        /// the tempting cheaper move was `Footnote.namespace` rather than a
-        /// kind of its own.
-        ///
-        /// The USE side is what decides it. A footnote reference is a
-        /// `TextLeafKind.footnote_reference`, and that family's members are
-        /// uniformly `{kind, text}` — giving it a namespace field would add a
-        /// second field to all seven for the sake of one (the same reason
-        /// `raw_inline` is not in the family). So the use must split by
-        /// `TextLeafKind` regardless, and a design where the USE is told apart
-        /// by its tag while the DEFINITION is told apart by a payload field is
-        /// incoherent. Both split.
-        ///
-        /// `label` is the name resolution uses, exactly as `footnote.label` is;
-        /// rST spells it the `names` attribute. Docutils NORMALIZES that
-        /// (`.. [TARGET]` resolves as `target`) and keeps the written form in a
-        /// `<label>` child, which stays a generic node — see `doctree.zig`'s
-        /// `definitionName`.
+        /// A CITATION definition — `.. [CIT2002] Deep Thought.` — a footnote
+        /// in a second, separate name registry. Its own kind rather than a
+        /// `Footnote.namespace` field because the USE side has to split
+        /// anyway; see `AST-KINDS.md`. `label` is the name resolution uses.
         citation: Citation,
-        /// A SUBSTITUTION definition — rST's `.. |name| image:: pic.png`, whose
-        /// body is spliced in wherever `|name|` appears.
+        /// A SUBSTITUTION definition — rST's `.. |name| image:: pic.png`,
+        /// whose body is spliced in wherever `|name|` appears. The one named
+        /// definition whose body is INLINE (`footnote` and `citation` hold
+        /// blocks, `reference` holds nothing), so it is block-level with
+        /// inline children — `para`'s combination.
         ///
-        /// The shape twig did not previously have: a NAMED DEFINITION WHOSE
-        /// BODY IS INLINE. `footnote` and `citation` are named definitions
-        /// holding blocks; `reference` is a named definition holding nothing at
-        /// all. This one holds inlines — corpus bodies are an `image` (13),
-        /// plain text (12), or a short inline run (`emph`, `strong`,
-        /// `superscript`, a `link`, a `raw_inline`). So it is `.block` at the
-        /// top level (it is a document-level definition, like the other two)
-        /// with `.inlines` inside, which is `para`'s combination and needs
-        /// nothing new from the model.
-        ///
-        /// Only reStructuredText has this, and that is not disqualifying —
-        /// `task_list` is GFM's alone and `processing_instruction` is XML's.
-        /// What a format-specific kind costs is one honest answer per target in
-        /// `diagnostics.zig`'s `fidelity`, which is exactly the gate it now has
-        /// to pass.
-        ///
-        /// Named `substitution` and not `substitution_definition` to match
-        /// `footnote`, where the bare noun is the definition and the `_reference`
-        /// suffix is the use.
+        /// Named for the definition, not the use, to match `footnote`.
         substitution: Substitution,
 
         // ── Inlines ───────────────────────────────────────────────────────
@@ -286,24 +187,13 @@ pub const Node = struct {
         /// A DELIMITED INLINE TEXT LEAF — a `:name:` shortcode, a `` `code` ``
         /// span, `$math$`, a `<https://…>` autolink, a `[^label]` footnote
         /// reference. Opaque text plus the marker that frames it; which one it
-        /// is rides in the payload. See `TextLeafKind`.
-        ///
-        /// `str` is deliberately NOT one of these: it is the UNdelimited case —
-        /// plain content with no marker at all — and it is by far the most
-        /// common node in any document, so it keeps its own arm rather than
-        /// paying an indirection to join a family it doesn't belong to. fig
-        /// draws the same line between `string` and `extended`.
+        /// is rides in the payload. See `TextLeafKind`. (`str` is the
+        /// UNdelimited case and stays its own arm — `AST-KINDS.md` has why.)
         text_leaf: TextLeaf,
         raw_inline: RawInline,
         /// A `'`/`'`/`"`/`"`/`...`/`--`/`---` run djot recognized as smart
-        /// punctuation. Stays its own arm (rather than folding into
-        /// `text_leaf` or `inline_mark`) because its kind is a SEMANTIC
-        /// choice the HTML printer acts on (which glyph to emit), not a
-        /// spelling — but unlike `text_leaf`/`markup_leaf`, the payload here
-        /// is the bare `SmartPunctuationKind` enum, not `{kind, text}`: the
-        /// source spelling is CANONICAL per kind (the parser normalizes
-        /// djot's explicit `{"` to `"`, same as the implicit form), so
-        /// there is no per-node spelling left to store — it is derived on
+        /// punctuation. The payload is the bare kind, with no stored spelling:
+        /// the source form is canonical per kind, so the text is derived on
         /// demand by `SmartPunctuationKind.ascii`.
         smart_punctuation: SmartPunctuationKind,
         link: Link,
@@ -323,23 +213,12 @@ pub const Node = struct {
         /// (`.. note::`). Children are parsed nodes like any container;
         /// attributes go in the normal `attrs` side-table.
         ///
-        /// ── Why one kind and not four ──────────────────────────────────────
-        /// This replaces `div`, `span`, `directive`, and `element`, which were
-        /// four spellings of ONE concept — a named-or-classed container with
-        /// attributes and children — split by which format's parser produced
-        /// them. That split put SURFACE SYNTAX in `Kind`, which is exactly what
-        /// `syntax.zig` exists to keep out of the shared vocabulary: it meant a
-        /// djot `:::` and an HTML `<div>` were different nodes despite being
-        /// the same construct, every consumer (`ast/select.zig`, `ast/json.zig`,
-        /// `c_abi.zig`, four serializers) grew four near-identical arms, and a
-        /// fifth format could only be added by growing a fifth kind.
-        ///
-        /// What it does NOT do is erase the difference between a NAME and a
-        /// CLASS: djot's `::: note` is a div carrying `class=note` (the name is
-        /// `"div"`, the class is in `attrs`), while Markdown's `:::note` is a
-        /// directive whose TYPE is `note` (the name is `"note"`, `attrs` is
-        /// empty). Those are genuinely different documents and still parse to
-        /// different nodes. The unification is structural, not semantic.
+        /// One kind, not the four (`div`, `span`, `directive`, `element`) it
+        /// replaced — and the unification is structural, not semantic: a
+        /// container's NAME and its CLASS stay distinct, so djot's `::: note`
+        /// (name `"div"`, `class=note` in `attrs`) and Markdown's `:::note`
+        /// (name `"note"`, no attrs) still parse to different nodes. See
+        /// `AST-KINDS.md`.
         ///
         /// `name` is stored as written, including any namespace prefix
         /// (`svg:rect`) — prefix resolution is a reader-side helper, later.
@@ -379,19 +258,8 @@ pub const Node = struct {
         /// and `<td>` are different documents, so they live here rather than in
         /// `Document`'s side tables (contrast a bullet's `-` vs `*`).
         ///
-        /// Only formats with a real grid produce anything but `1`: HTML's
-        /// `colspan`/`rowspan` attributes today, rST's grid tables next
-        /// (docutils spells them `morecols`/`morerows` — extent MINUS one — so
-        /// that boundary converts). GFM and djot pipe tables cannot express a
-        /// span at all and always leave both at `1`.
-        ///
-        /// HTML's two oddities stay out of the shared model and ride in `attrs`
-        /// instead, where the source spelling is preserved verbatim: `colspan=0`
-        /// (a parse error UAs treat as 1) and `rowspan=0` ("to the end of the
-        /// row group", a count nobody can resolve without the whole table).
-        /// Both normalize to `1` here, and because the HTML serializer only
-        /// synthesizes the attribute when the extent is not `1`, the original
-        /// `rowspan="0"` still round-trips off the node's own attributes.
+        /// HTML's `colspan=0`/`rowspan=0` normalize to `1` here and round-trip
+        /// off `attrs` instead — see `AST-KINDS.md`.
         pub const Cell = struct {
             head: bool,
             alignment: Alignment,
@@ -400,11 +268,9 @@ pub const Node = struct {
         };
         pub const Footnote = struct { label: []const u8 };
         pub const Reference = struct { label: []const u8, destination: []const u8 };
-        /// Same shape as `Footnote` on purpose, and a distinct type rather than
-        /// a reuse: the two are the same STRUCTURE in different name registries,
-        /// and naming that separately is what stops a later field added for one
-        /// (an `auto` flag for `[#]_`, which citations cannot have) from
-        /// silently arriving on the other.
+        /// Same shape as `Footnote` on purpose, and a distinct type rather
+        /// than a reuse — so a field added for one cannot silently arrive on
+        /// the other. Contrast `Link`, which `image` shares deliberately.
         pub const Citation = struct { label: []const u8 };
         pub const Substitution = struct { label: []const u8 };
         pub const TextLeaf = struct { kind: TextLeafKind, text: []const u8 };
@@ -427,10 +293,8 @@ pub const Node = struct {
             ///
             /// `null` = UNCLASSIFIED, which is the honest answer for HTML/XML:
             /// whether `<video>` is a block or an inline is a property of the
-            /// tag and the stylesheet, not of the parse, and the HTML parser
-            /// has never decided it — `languages/djot/djot.zig`'s
-            /// `isBlock`/`isInline` report *neither* for such a node, and that
-            /// behaviour is preserved here rather than forced into a guess.
+            /// tag and the stylesheet, not of the parse. `level` reports
+            /// `.neither` for such a node rather than guessing.
             form: ?Form = null,
             /// The directive ARGUMENT: rST's `.. image:: picture.png` puts
             /// `picture.png` here. Positional, so it is neither an attribute
@@ -440,34 +304,24 @@ pub const Node = struct {
             argument: ?[]const u8 = null,
         };
 
-        // ── The two axes ─────────────────────────────────────────────────
-        // `Kind` names WHAT a node is. Two further questions get asked of it
-        // constantly — where it sits in the block/inline hierarchy, and what
-        // it is allowed to contain — and until now each was answered by a
-        // separate hand-maintained list per consumer:
-        // `languages/djot/djot.zig`'s `block_tags`/`inline_tags`,
-        // `ast/locate.zig`'s `isBlockParent`, `languages/html/parser.zig`'s
-        // `isBlockKind`, and `holdsOpaqueText` below. Those lists disagreed
-        // (djot counted `reference`/`footnote` as blocks and HTML didn't;
-        // HTML counted `list_item`/`term` and djot didn't), and every new
-        // kind had to be threaded into each one by hand — with nothing
-        // failing the build if it wasn't.
-        //
-        // `level` and `contentModel` are the canonical answers. Both switch
-        // exhaustively, so a NEW KIND CANNOT BE ADDED WITHOUT DECLARING BOTH
-        // — which is the property the scattered lists never had.
+        // ── The three classifiers ────────────────────────────────────────
+        // `Kind` names WHAT a node is. Three further questions get asked of
+        // it constantly — where it sits in the block/inline hierarchy, what
+        // it may contain, and which children its own model gives meaning to.
+        // `level`, `contentModel`, and `structuralChildren` are the canonical
+        // answers. All three switch exhaustively, so A NEW KIND CANNOT BE
+        // ADDED WITHOUT DECLARING ALL THREE — the property the hand-written
+        // per-consumer lists they replaced never had. `AST-KINDS.md` has the
+        // history of those lists and why the grouping is functions rather
+        // than a nesting of this union.
 
         /// Where a kind sits in the document hierarchy.
         ///
-        /// `neither` is not a shrug: it is the honest answer for three
-        /// groups. The `doc` root is not itself a block. A structural child
-        /// (`list_item`, `row`, `cell`, `term`, `caption`, …) only ever
-        /// appears inside its own parent and never where a paragraph could
-        /// go — which is exactly djot.js's `isBlock` rule, and why those are
-        /// excluded here too. And a generic-markup node (a `markup_leaf`, an
-        /// unclassified `container`) genuinely has no level: whether an HTML
-        /// `<video>` is a block is a property of the stylesheet, not the
-        /// parse.
+        /// `neither` is not a shrug: it is the honest answer for the `doc`
+        /// root, for a structural child (which only ever appears inside its
+        /// own parent, never where a paragraph could go — djot.js's `isBlock`
+        /// rule), and for generic markup (whose level is a property of the
+        /// stylesheet, not the parse).
         pub const Level = enum { block, @"inline", neither };
 
         /// What a kind may hold. The distinction `blocks`/`inlines` vs `text`
@@ -477,14 +331,10 @@ pub const Node = struct {
         /// works). See `Node.content_span`.
         ///
         /// This is what a kind may CONTAIN, not what a given node DOES
-        /// contain. The difference is observable: in one HTML table,
-        /// `<td><p>x</p></td>` parses to `cell > para` while its sibling
-        /// `<td>y</td>` parses to `cell > str`, and djot puts inlines
-        /// directly in every cell. Both are `.blocks` here — an inline run is
-        /// the tight, `<p>`-elided case, exactly as a tight list item holds
-        /// inlines without stopping `list_item` from being a block container.
-        /// Every caller consults this as a PERMISSION ("may children go here
-        /// at all"), which is the only reading the data supports.
+        /// contain — a `.blocks` parent holding inlines is the tight,
+        /// `<p>`-elided case. Every caller reads it as a PERMISSION ("may
+        /// children go here at all"), which is the only reading the corpora
+        /// support; see `AST-KINDS.md`.
         pub const ContentModel = enum {
             /// Children are block-level nodes.
             blocks,
@@ -556,17 +406,15 @@ pub const Node = struct {
                 else
                     .neither,
 
-                // The root, the structural children, and generic markup —
-                // see `Level`.
+                // The root, the structural children (each named by exactly one
+                // parent's `structuralChildren`), and generic markup — see
+                // `Level`.
                 .doc,
                 .list_item,
                 .task_list_item,
                 .definition_list_item,
                 .term,
                 .definition,
-                // A `line` only ever appears inside a `line_block`, exactly as
-                // a `list_item` only appears inside a list — same rule, and the
-                // reason a line block is not just a paragraph full of breaks.
                 .line,
                 .row,
                 .cell,
@@ -584,18 +432,11 @@ pub const Node = struct {
                 .str,
                 .text_leaf,
                 .raw_inline,
-                // Its payload is now a bare `SmartPunctuationKind` (see
-                // `Kind.smart_punctuation`'s doc), not a `{kind, text}`
-                // struct — there is no stored string to point `content_span`
-                // at, and the djot parser never gives it one (`content_span`
-                // stays `null`; `replaceContent` already refuses it via that,
-                // not via this classification). It stays `.text` rather than
-                // moving to `.empty` because `c_abi.zig`'s `kindText` is
-                // documented as extracting exactly the `holdsOpaqueText`
-                // set, and keeps reporting a (derived, via
-                // `SmartPunctuationKind.ascii`) string for it to hold that
-                // external C-surface behavior steady — so "opaque text
-                // payload" here means DERIVED text, not stored text.
+                // `.text` here means DERIVED text: its payload is a bare kind,
+                // with no stored string to point a `content_span` at. It
+                // stays out of `.empty` because `c_abi.zig`'s `kindText` is
+                // documented as extracting exactly the `holdsOpaqueText` set,
+                // and keeps reporting the `ascii()` spelling.
                 .smart_punctuation,
                 .code_block,
                 .raw_block,
@@ -621,8 +462,6 @@ pub const Node = struct {
                 .ordered_list,
                 .task_list,
                 .definition_list,
-                // Children are `line`s and only `line`s — a list whose items
-                // happen to be one line each.
                 .line_block,
                 .table,
                 .list_item,
@@ -645,18 +484,13 @@ pub const Node = struct {
                 .link,
                 .image,
                 .inline_mark,
-                // The named definition with an INLINE body — see
-                // `Kind.substitution`. Block-level, like the other definitions,
-                // but its children are inlines, like a paragraph's.
                 .substitution,
                 => .inlines,
 
                 // A fenced container holds blocks; the inline and
                 // one-line-leaf forms hold the label's inlines. An
-                // UNCLASSIFIED container (an HTML/XML element) may hold
-                // either, and answers `blocks` as the permissive one — every
-                // caller that consults this is asking "may I put children
-                // here at all", and only `text` answers no.
+                // UNCLASSIFIED container answers `blocks` as the permissive
+                // one, since only `text` answers no.
                 .container => |c| if (c.form) |f| switch (f) {
                     .block_fenced => .blocks,
                     .block_leaf, .inline_text => .inlines,
@@ -664,21 +498,128 @@ pub const Node = struct {
             };
         }
 
-        /// True for kinds that carry a TEXT/opaque payload rather than child
-        /// nodes — a code block's body, an inline `verbatim`'s or math node's
-        /// interior, a raw block, a bare `str`, etc. (the same set
-        /// `c_abi.zig`'s `kindText` extracts — `smart_punctuation` included,
-        /// even though its "text" is now DERIVED from the kind rather than
-        /// stored; see `contentModel`'s comment on that arm). When such a
-        /// leaf has a `content_span`, that span addresses opaque text, not a
-        /// child region: there is no child sequence to index into, so
-        /// `insertChild` must refuse it even though it has a `content_span`
-        /// (`replaceContent`, which replaces the whole interior, still
-        /// works). This is the flip side of `content_span` no longer implying
-        /// "container" — see its doc on `Node`.
+        /// The generic-markup kinds, which may appear inside ANY container
+        /// regardless of its structural vocabulary. An HTML comment goes
+        /// anywhere; so does an XML processing instruction; and a `container`
+        /// is the escape hatch every format falls back to for a construct
+        /// with no semantic mapping — rST's `classifier` inside a
+        /// `definition_list_item`, its `system_message` inside a
+        /// `line_block`, HTML's `colgroup` inside a `table`. All three are
+        /// `.neither` in `level` for the same reason.
+        pub const generic_markup = [_]std.meta.Tag(Kind){
+            .container,
+            .markup_leaf,
+            .processing_instruction,
+        };
+
+        /// The closed set of child kinds a parent gives STRUCTURAL meaning to,
+        /// or `null` when its children are constrained only by `contentModel`.
         ///
-        /// Now a thin reading of `contentModel`, kept as its own name because
-        /// that is what the callers mean and because it is public API.
+        /// This is the third classifier, alongside `level` and `contentModel`,
+        /// and it exists for the same reason they do: these facts were prose
+        /// ("children are `line` nodes and nothing else", "Children:
+        /// `[Caption, Column…, Row, Row, ...]`") that nothing checked, on
+        /// kinds whose whole point is that their children are not free-form.
+        /// A list holds items; a row holds cells; the alternative spellings
+        /// are not documents, they are bugs.
+        ///
+        /// Two properties, both deliberate. It switches exhaustively, so a new
+        /// kind must declare whether it constrains its children. And the sets
+        /// are what six parsers and every vendored corpus ACTUALLY produce —
+        /// `generic_markup` is admitted on top of each one (see
+        /// `admitsChild`) because the corpora put a `container` in three of
+        /// these positions, which the prose these sets replace did not say.
+        pub fn structuralChildren(self: Kind) ?[]const std.meta.Tag(Kind) {
+            return switch (self) {
+                .bullet_list, .ordered_list => &.{.list_item},
+                .task_list => &.{.task_list_item},
+                .definition_list => &.{.definition_list_item},
+                .definition_list_item => &.{ .term, .definition },
+                // A list whose items are single lines, and the reason a line
+                // block is not a paragraph full of breaks.
+                .line_block => &.{.line},
+                // `caption` first when present, then the `column` run when
+                // present, then the rows — an ORDER this set does not encode,
+                // because no consumer reads one and every producer writes it.
+                .table => &.{ .caption, .column, .row },
+                .row => &.{.cell},
+
+                // Everything else: `contentModel` is the whole answer. Spelled
+                // out rather than `else`-d, which is what makes adding a kind
+                // a decision instead of a default.
+                .doc,
+                .para,
+                .heading,
+                .thematic_break,
+                .section,
+                .code_block,
+                .raw_block,
+                .metadata,
+                .block_quote,
+                .list_item,
+                .task_list_item,
+                .term,
+                .definition,
+                .line,
+                .cell,
+                .column,
+                .caption,
+                .footnote,
+                .reference,
+                .citation,
+                .substitution,
+                .str,
+                .soft_break,
+                .hard_break,
+                .non_breaking_space,
+                .text_leaf,
+                .raw_inline,
+                .smart_punctuation,
+                .link,
+                .image,
+                .inline_mark,
+                .container,
+                .markup_leaf,
+                .processing_instruction,
+                => null,
+            };
+        }
+
+        /// Whether `child` may sit directly inside `parent` — the permission
+        /// `contentModel` and `structuralChildren` answer together.
+        ///
+        /// It says NO in exactly two places, and is permissive everywhere
+        /// else. An opaque-text or childless kind takes nothing. A kind with
+        /// a closed vocabulary takes that set plus `generic_markup`. The rest
+        /// answer `true`, which is not laziness: a `.blocks` parent
+        /// legitimately holds inlines (the tight, `<p>`-elided case that
+        /// `contentModel`'s doc describes), and a `.inlines` parent holds an
+        /// rST `reference` — a `.block`-level definition node — so the level
+        /// axis does not constrain a general parent the way it looks like it
+        /// should.
+        ///
+        /// The intended caller is an EDIT (`insertChild` and friends) asking
+        /// where a node may be placed. It is not a claim about what a parser
+        /// may produce: a forgiving parser puts a stray HTML `<tr>` straight
+        /// under `doc` when CommonMark's blank-line rule splits the table
+        /// across two HTML blocks (spec examples 190/191), and that parse is
+        /// correct.
+        pub fn admitsChild(parent: Kind, child: Kind) bool {
+            switch (parent.contentModel()) {
+                .text, .empty => return false,
+                .blocks, .inlines => {},
+            }
+            const tag = std.meta.activeTag(child);
+            const set = parent.structuralChildren() orelse return true;
+            for (set) |t| if (t == tag) return true;
+            for (generic_markup) |t| if (t == tag) return true;
+            return false;
+        }
+
+        /// True for kinds that carry a TEXT/opaque payload rather than child
+        /// nodes — the same set `c_abi.zig`'s `kindText` extracts. A thin
+        /// reading of `contentModel`, kept as its own name because that is
+        /// what the callers mean and because it is public API.
         pub fn holdsOpaqueText(self: Kind) bool {
             return self.contentModel() == .text;
         }
@@ -774,24 +715,10 @@ fn eqlOptStr(a: ?[]const u8, b: ?[]const u8) bool {
 /// "two documents of different formats can have the same AST" a claim a test
 /// can check rather than a design aspiration.
 ///
-/// This compares the two node arrays directly, as fig's `AST.eql` does. It can
-/// only do so because `ast/compact.zig` runs at the end of every parse: Twig's
-/// inline grammars are not decidable left to right, so the parsers speculate
-/// and abandon nodes, and without that pass the arena would hold orphaned
-/// delimiter runs whose payloads record the SPELLING (`str "**"` versus
-/// `str "__"`). Compaction drops them and renumbers in pre-order, which is
-/// what makes the arena canonical enough to compare slot by slot.
-///
-/// A walk of the tree from the root would be the obvious alternative, and it
-/// is WRONG here — it was tried, and it has a false positive that matters. A
-/// link reference definition and a footnote definition are live nodes attached
-/// to no parent, so a tree walk never reaches them. Djot resolves reference
-/// labels at RENDER time, so for `[a][r]` the destination lives ONLY on that
-/// unattached `reference` node: two djot documents whose definitions differ
-/// (`[r]: /XXX` versus `[r]: /YYY`) have identical reachable trees and render
-/// to different HTML, and a tree walk calls them equal. Comparing the arena
-/// compares the definitions too, because compaction keeps them (they are
-/// passed in as extra roots) and orders them deterministically.
+/// It compares the two node ARRAYS directly rather than walking from the root,
+/// which is legal because `ast/compact.zig` canonicalizes the arena at the end
+/// of every parse, and necessary because unattached definition nodes carry
+/// meaning a walk would never reach. `AST-KINDS.md` has both arguments.
 ///
 /// Attributes are compared by VALUE rather than by index: `Node.attrs` points
 /// into a side-table that compaction deliberately does not renumber, so two
@@ -821,28 +748,13 @@ fn attrsEql(a: Attrs, b: Attrs) bool {
 
 /// Which paired-delimiter inline a `Kind.inline_mark` is.
 ///
-/// ── Why a nested enum and not nine union arms ──────────────────────────────
-/// Borrowed from fig's `Kind.Extended` (`ast/ast.zig`), whose doc states the
-/// property this is here for: "adding a new such scalar is a new `ExtKind`, not
-/// a new union arm: the outer switches stay closed; only the printers (where
-/// cross-format rendering is inherently type-specific) gain a case."
-///
-/// These nine were nine arms, and every GENERIC consumer treated all nine
-/// identically — `level` and `contentModel` below listed them twice over,
-/// `ast/json.zig` lumped them into one payload-free arm, `ast/select.zig` never
-/// distinguished them. Only the three serializers care, and only because each
-/// mark has its own delimiters — which is `syntax.zig`'s `Delims` table's job,
-/// not `Kind`'s.
-///
-/// Crucially this is NOT string matching and NOT a loss of exhaustiveness: a
-/// serializer still switches over `InlineMark` exhaustively, so a tenth mark
-/// still fails those builds until it is spelled. What it stops doing is failing
-/// the builds that never cared.
-///
-/// The EXTERNAL vocabulary is unchanged: `ast/json.zig` still emits
-/// `"kind": "emph"` and `c_abi.zig`'s `kindName` still reports `"emph"`, both
-/// by projecting the mark name up into the kind name. This is an internal
-/// structuring, not a surface change.
+/// A nested enum and not nine union arms, because every generic consumer
+/// treated all nine identically and only the serializers tell them apart —
+/// the test for nesting a family, argued in `AST-KINDS.md` along with the two
+/// families below. Exhaustiveness is NOT lost: a serializer still switches
+/// over `InlineMark` with every arm spelled, so a tenth mark still fails those
+/// builds. Nor is the published vocabulary affected — `kindName` projects the
+/// mark's name up, so `ast/json.zig` still emits `"kind": "emph"`.
 pub const InlineMark = enum {
     emph,
     strong,
@@ -857,15 +769,9 @@ pub const InlineMark = enum {
 
 /// Which delimited inline text leaf a `Kind.text_leaf` is.
 ///
-/// The same pattern as `InlineMark`, one level down: seven kinds that every
-/// generic consumer handled identically — `ast/json.zig` had seven
-/// byte-identical `{"text": …}` arms, `ast/builder.zig` seven identical dupes,
-/// `level`/`contentModel` listed all seven twice — and that only the printers
-/// tell apart, because only their delimiters differ.
-///
-/// `raw_inline` is excluded: its payload is `{format, text}`, a second field
-/// that would have to be `null` for all seven of these. `str` is excluded for
-/// the opposite reason (see `Kind.text_leaf`).
+/// The same pattern as `InlineMark`. `raw_inline` is excluded because its
+/// payload is `{format, text}`, a second field the members here don't have;
+/// `str` is excluded for the opposite reason (see `Kind.text_leaf`).
 pub const TextLeafKind = enum {
     /// `:name:` — payload is the name, no surrounding colons.
     symb,
@@ -887,18 +793,11 @@ pub const TextLeafKind = enum {
     substitution_reference,
 };
 
-/// Which generic-markup leaf a `Kind.markup_leaf` is.
-///
-/// The same pattern as `InlineMark` and `TextLeafKind`, in the generic-markup
-/// corner: three kinds that every generic consumer handled identically — all
-/// `.neither` in `level`, all `.text` in `contentModel`, near-identical
-/// `{"text": …}` arms in `ast/json.zig` and dupes in `ast/builder.zig` — and
-/// that only the serializers tell apart, because only their delimiters differ
-/// (`<!-- … -->`, `<!DOCTYPE …>`, `<![CDATA[…]]>`).
-///
+/// Which generic-markup leaf a `Kind.markup_leaf` is — the same pattern as
+/// `InlineMark` and `TextLeafKind`, in the generic-markup corner. Only the
+/// delimiters differ (`<!-- … -->`, `<!DOCTYPE …>`, `<![CDATA[…]]>`).
 /// `processing_instruction` is excluded for the same reason `raw_inline`
-/// stayed out of `TextLeafKind`: its payload is `{target, data}`, a second
-/// field that would have to be `null` for all three of these.
+/// stayed out of `TextLeafKind`: its payload has a second field.
 pub const MarkupLeafKind = enum {
     /// HTML/XML `<!-- ... -->`; payload is the text between the delimiters,
     /// as written.
@@ -944,16 +843,9 @@ pub const KeyVal = struct { key: []const u8, value: ?[]const u8 };
 /// attached to a `Node` via `Node.attrs`. See djot.js's `attributes.ts`.
 ///
 /// Deliberately a single ORDER-PRESERVING list rather than separate
-/// `classes`/`id`/`keyvals` fields: djot.js stores attributes as one plain
-/// object whose iteration order is insertion order, and renders them back in
-/// that same order — `{key1=val1 .foo key2=val2}` renders
-/// `key1="val1" class="foo" key2="val2"`, interleaved exactly as written,
-/// not grouped by kind. `class` and `id` are therefore just ordinary keys
-/// here (`class`'s value accumulates multiple `.foo .bar` occurrences
-/// space-joined, at the position of its FIRST occurrence — matching
-/// djot.js's "mutate the existing object property" behavior). Use `get` for
-/// lookups; there is no dedicated `id`/`class` accessor because callers that
-/// care about rendering need the entries in order anyway.
+/// `classes`/`id`/`keyvals` fields, because djot renders attributes back
+/// interleaved exactly as written. `class` and `id` are ordinary keys here;
+/// use `get`/`find` to look them up. See `AST-KINDS.md`.
 pub const Attrs = struct {
     entries: []const KeyVal = &.{},
 
@@ -987,15 +879,11 @@ pub const Attrs = struct {
 /// How a `container` was spelled — the one piece of a generic container's
 /// shape that a per-format `Syntax` table CANNOT hold, because it varies per
 /// NODE rather than per format: one Markdown document may contain both a
-/// `::name` leaf and a `:::name` fence, so the choice has to travel with the
-/// node. Everything else about spelling a container back (the colon, the
-/// angle brackets, the `.. ` prefix) is format-uniform and belongs in
-/// `syntax.zig`.
+/// `::name` leaf and a `:::name` fence. Everything else about spelling a
+/// container back is format-uniform and belongs in `syntax.zig`.
 ///
 /// Also carries the block/inline classification that `div` and `span` used to
-/// encode by being separate kinds: `inline_text` is an inline, the two
-/// `block_*` forms are blocks, and a `null` form is neither (see
-/// `Kind.container.form`).
+/// encode by being separate kinds, which is what `level` reads:
 ///   - `inline_text`: inline — djot `[label]{attrs}`, Markdown `:name[label]`.
 ///   - `block_leaf`: block, no body — Markdown `::name[label]{attrs}`,
 ///     rST `.. name:: argument` with nothing indented under it.
@@ -1018,8 +906,7 @@ pub const Form = enum {
 /// How an ordered list COUNTS (`<ol type="a">` renders differently), which is
 /// why it lives on `Kind`. How its markers are PUNCTUATED (`1.` vs `1)` vs
 /// `(1)`) renders identically and is therefore spelling — see
-/// `Document.Spelling.ordered_delim`, alongside a bullet list's `-`/`+`/`*`
-/// character. Both used to sit here as `BulletListStyle`/`OrderedListStyle`.
+/// `Document.Spelling.ordered_delim`.
 pub const ListNumbering = enum { decimal, lower_alpha, upper_alpha, lower_roman, upper_roman };
 
 pub const Alignment = enum { default, left, right, center };
@@ -1053,15 +940,12 @@ test {
     _ = reader;
 }
 
-// `Kind.kindName` projects THREE namespaces into ONE published vocabulary:
-// the `Kind` tags (minus `inline_mark`/`text_leaf`/`markup_leaf`, whose names
-// are internal), plus every `InlineMark`, `TextLeafKind`, and `MarkupLeafKind`
-// member. `ast/json.zig`'s `"kind"` field and `c_abi.zig`'s
-// `twig_node_kind_name` share that flat namespace, and `twig query` selectors
-// match against it — so a future family member that collides with a `Kind`
-// tag (or with a member of another family) would silently alias two different
-// node kinds under one published name. This comptime check makes such a
-// collision a compile error naming the duplicate.
+// `kindName` projects THREE namespaces into ONE flat published vocabulary
+// (see `AST-KINDS.md`), which `ast/json.zig`, `c_abi.zig`, and `twig query`
+// selectors all share. A future family member colliding with a `Kind` tag, or
+// with a member of another family, would silently alias two different node
+// kinds under one published name. This makes that a compile error naming the
+// duplicate.
 test "published kind names are pairwise distinct" {
     comptime {
         // ~60 names -> ~1800 pairwise `eql`s, each a comptime loop; the
@@ -1087,6 +971,64 @@ test "published kind names are pairwise distinct" {
             }
         }
     }
+}
+
+// The corpus-wide version of this lives in `ast/containment_test.zig`; these
+// are the three shapes of the answer, spelled locally so a reader of `Kind`
+// can see what the classifier claims without running six parsers.
+test "admitsChild: a closed vocabulary takes its own set plus generic markup" {
+    const testing = std.testing;
+    const list: Node.Kind = .{ .bullet_list = .{ .tight = true } };
+    try testing.expect(list.admitsChild(.list_item));
+    try testing.expect(!list.admitsChild(.para));
+    try testing.expect(!list.admitsChild(.{ .task_list_item = .{ .checked = false } }));
+    // rST hangs a `classifier` off a `definition_list_item`, docutils hangs a
+    // `system_message` off a `line_block`, HTML a `colgroup` off a `table`.
+    try testing.expect(list.admitsChild(.{ .container = .{ .name = "note" } }));
+    try testing.expect(list.admitsChild(.{ .markup_leaf = .{ .kind = .comment, .text = "x" } }));
+}
+
+test "admitsChild: an opaque-text or childless kind takes nothing" {
+    const testing = std.testing;
+    const code: Node.Kind = .{ .code_block = .{ .lang = null, .text = "x" } };
+    try testing.expect(!code.admitsChild(.{ .str = "x" }));
+    // The exact pair `languages/html/parser.zig` used to build from
+    // `<pre><code>x</code></pre>`.
+    try testing.expect(!code.admitsChild(.{ .text_leaf = .{ .kind = .verbatim, .text = "x" } }));
+    const rule: Node.Kind = .thematic_break;
+    try testing.expect(!rule.admitsChild(.{ .str = "x" }));
+}
+
+test "admitsChild: a general parent is permissive on the level axis" {
+    const testing = std.testing;
+    // A `.blocks` parent holding inlines is the tight, `<p>`-elided case; a
+    // `.inlines` parent holding a `.block`-level `reference` is what rST does.
+    const item: Node.Kind = .list_item;
+    const para: Node.Kind = .para;
+    try testing.expect(item.admitsChild(.{ .str = "x" }));
+    try testing.expect(para.admitsChild(.{
+        .reference = .{ .label = "r", .destination = "/x" },
+    }));
+}
+
+test "structuralChildren: every constrained kind's set is reachable" {
+    const testing = std.testing;
+    // The parents that constrain, and the sole parent each structural child
+    // belongs to — the containment half of what `Level.neither` means.
+    const table: Node.Kind = .table;
+    const line_block: Node.Kind = .line_block;
+    const doc: Node.Kind = .doc;
+    try testing.expectEqualSlices(
+        std.meta.Tag(Node.Kind),
+        &.{ .caption, .column, .row },
+        table.structuralChildren().?,
+    );
+    try testing.expectEqualSlices(
+        std.meta.Tag(Node.Kind),
+        &.{.line},
+        line_block.structuralChildren().?,
+    );
+    try testing.expectEqual(@as(?[]const std.meta.Tag(Node.Kind), null), doc.structuralChildren());
 }
 
 test "Attrs.find distinguishes a bare attribute from an absent key" {

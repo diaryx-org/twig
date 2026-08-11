@@ -2344,7 +2344,7 @@ pub const Parser = struct {
     /// frontmatter at all (falls through to ordinary parsing — a bare
     /// leading `---` with no closer is just a thematic break, same as with
     /// the flag off). On success, the whole block becomes a single inert
-    /// `metadata{lang,text}` node (see `document-metadata.md`): it never
+    /// `metadata{lang,text}` node (see `AST-KINDS.md`): it never
     /// renders into the HTML body — the printer projects it to a
     /// `<script type=…>` data island — while staying fully inspectable via
     /// `-o ast`. See `tryConsumeEndmatter` for the trailing counterpart.
@@ -2398,7 +2398,7 @@ pub const Parser = struct {
     }
 
     /// A trailing `---<lang>` … `---` endmatter block (the back-of-book
-    /// counterpart to frontmatter; see `document-metadata.md`). Tried ONCE
+    /// counterpart to frontmatter; see `AST-KINDS.md`). Tried ONCE
     /// after `tryConsumeFrontmatter`, before the main scan. Unlike frontmatter,
     /// endmatter MUST carry an explicit language tag: a bare `---` away from
     /// the top is a CommonMark thematic break (and after a paragraph, a setext
