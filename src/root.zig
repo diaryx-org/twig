@@ -121,6 +121,7 @@ test {
     _ = @import("ast/locate.zig");
     _ = @import("ast/locator.zig");
     _ = @import("syntax.zig");
+    _ = @import("attrs_writer.zig");
     _ = @import("format.zig");
     _ = @import("languages/djot/syntax.zig");
     _ = @import("languages/markdown/syntax.zig");

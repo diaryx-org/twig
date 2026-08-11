@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
 const dj_syntax = @import("syntax.zig");
+const attrs_writer = @import("../../attrs_writer.zig");
 const Document = djot.Document;
 const TwigDocument = @import("../../document.zig");
 const AST = djot.AST;
@@ -69,33 +70,13 @@ const Renderer = struct {
         try self.writer.writeAll(p.segment);
     }
 
+    /// Re-emit `{#id .class key="val"}` from the node's `attrs` side-table.
+    /// The walk is `attrs_writer.zig`'s, shared with Markdown; djot's alphabet
+    /// (always-quoted values, `#`/`.` sigils) is the table entry in
+    /// `djot/syntax.zig`. Braces take no continuation indent.
     fn writeDjotAttrs(self: *Renderer, id: Node.Id) Writer.Error!void {
-        const attrs = self.ast.attrsOf(id).entries;
-        if (attrs.len == 0) return;
-        try self.writer.writeAll("{");
-        var first = true;
-        for (attrs) |kv| {
-            if (!first) try self.writer.writeByte(' ');
-            first = false;
-            if (std.mem.eql(u8, kv.key, "id")) {
-                try self.writer.print("#{s}", .{kv.value orelse ""});
-            } else if (std.mem.eql(u8, kv.key, "class")) {
-                const classes = kv.value orelse "";
-                var it = std.mem.tokenizeScalar(u8, classes, ' ');
-                var wrote = false;
-                while (it.next()) |c| {
-                    if (c.len == 0) continue;
-                    try self.writer.print(".{s}", .{c});
-                    wrote = true;
-                }
-                if (!wrote) try self.writer.writeAll("."); // impossible from parser, keeps syntax valid.
-            } else if (kv.value) |v| {
-                try self.writer.print("{s}=\"{s}\"", .{ kv.key, v });
-            } else {
-                try self.writer.writeAll(kv.key);
-            }
-        }
-        try self.writer.writeAll("}");
+        const sp = dj_syntax.table.attr_spelling orelse return;
+        try attrs_writer.write(self.writer, self.ast.attrsOf(id), sp, "");
     }
 
     fn renderBlocks(self: *Renderer, parent: Node.Id, ctx: Ctx, blank_between: bool) Writer.Error!void {

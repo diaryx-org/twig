@@ -51,6 +51,17 @@ pub const table: syntax.Syntax = .{
         .ordered_list = .{ .marker = "", .cont = "", .blank = "", .numbered = true },
     }),
     .heading_marker = '#',
+    // A generic directive's `{#id .class key=val}` shorthand. Unlike djot, a
+    // value is left bare when `attributes.zig`'s `isNameChar` grammar can read
+    // it back, and quoted (escaping `"`/`\`) otherwise.
+    .attr_spelling = .{
+        .open = "{",
+        .close = "}",
+        .quoting = .when_needed,
+        .quote_escapes = "\"\\",
+        .id_sigil = "#",
+        .class_sigil = ".",
+    },
     // `<` and `&` where djot has `{`/`}` and smart punctuation: Markdown reads
     // `<…>` as raw HTML and `&…;` as an entity.
     .link_text_escapes = "\\[]*_^`~<>&",

@@ -52,6 +52,16 @@ pub const table: syntax.Syntax = .{
         .ordered_list = .{ .marker = "", .cont = "", .blank = "", .numbered = true },
     }),
     .heading_marker = '#',
+    // `{#id .class key="val"}`. Djot quotes every value — its attribute grammar
+    // admits a bare value, but the serializer has always quoted, and quoting is
+    // never wrong.
+    .attr_spelling = .{
+        .open = "{",
+        .close = "}",
+        .quoting = .always,
+        .id_sigil = "#",
+        .class_sigil = ".",
+    },
     // Djot has attributes (`{…}`) and smart punctuation (`"`/`'`/`-`/`.`/`:`)
     // where Markdown has entities and raw HTML — hence the divergence from
     // `markdown/syntax.zig`'s set.

@@ -105,6 +105,58 @@ pub const DestEscapes = struct {
     } = null,
 };
 
+/// How a format spells a node's ATTRIBUTES back into its own source.
+///
+/// The formats disagree only on an alphabet, never on the algorithm: walk the
+/// entries in stored order, spell `id`/`class` with their shorthand sigils if
+/// the format has them, spell everything else as a key and (unless bare) a
+/// value. That walk lived twice — `djot/serializer.zig`'s `writeDjotAttrs` and
+/// `markdown/serializer.zig`'s `writeDirectiveAttrs` — as near-identical code
+/// differing in a quoting policy. rST would have made it a third copy, which is
+/// what this table exists to prevent: `.. image::`'s `:width: 50%` options are
+/// the SAME walk with `open`/`close` empty, `between` a newline, and `:` for a
+/// key prefix. See `attrs_writer.zig` for the one algorithm.
+///
+/// `null` = this format has no attribute spelling, so a serializer that reaches
+/// for one writes nothing. HTML is deliberately not a client of this: its
+/// `renderAttributes` merges a synthesized `extra` list, dedups keys against it,
+/// and escapes for a tag's interior — output machinery, not surface spelling —
+/// and HTML carries `none` anyway.
+pub const AttrSpelling = struct {
+    /// Opens and closes the whole block: `{`/`}` for a brace form. Both empty
+    /// when each entry stands on its own (rST's field lines).
+    open: []const u8 = "",
+    close: []const u8 = "",
+    /// Written between two entries: a space inside braces, a newline (plus a
+    /// caller-supplied indent) for field lines.
+    between: []const u8 = " ",
+    /// Written before every key. Empty for a brace form, `:` for rST.
+    key_prefix: []const u8 = "",
+    /// Written between a key and its value. A BARE entry (`KeyVal.value ==
+    /// null` — HTML's `disabled`) omits this and the value both.
+    key_value: []const u8 = "=",
+    /// When to wrap a value in `"`.
+    quoting: Quoting = .never,
+    /// Bytes to backslash-escape inside a quoted value. Empty means the format
+    /// quotes without escaping.
+    quote_escapes: []const u8 = "",
+    /// The `#name` shorthand for the `id` key. `null` spells `id` as an
+    /// ordinary key — which is what rST wants: docutils has no sigils, and
+    /// `:name:` is just another option.
+    id_sigil: ?[]const u8 = null,
+    /// The `.name` shorthand, written once per space-separated class in the
+    /// `class` value (`class="a b"` -> `.a .b`). `null` spells `class` as an
+    /// ordinary key.
+    class_sigil: ?[]const u8 = null,
+};
+
+/// Whether a value needs `"` around it.
+///
+/// `when_needed` means "quote unless the value is spellable bare", where bare
+/// admits only name characters — Markdown's rule, and the reason `key=val` and
+/// `key="a b"` both appear in its output. `always` is djot's.
+pub const Quoting = enum { never, always, when_needed };
+
 /// The spelling of a format that can't be authored into at all — every field
 /// left at "can't spell it". A parse-only language (XML, HTML) carries THIS
 /// rather than a `null`, which is what lets `Editor.syntax` be a plain pointer:
@@ -132,6 +184,10 @@ pub const Syntax = struct {
 
     /// Per-line prefixes per container kind.
     container_spelling: std.EnumArray(ContainerKind, ?ContainerSpelling) = .initFill(null),
+
+    /// How a node's attributes are spelled back. `null` = no spelling, so a
+    /// serializer writes nothing. See `AttrSpelling`.
+    attr_spelling: ?AttrSpelling = null,
 
     /// The byte that opens an ATX heading, repeated `level` times then a space.
     /// `null` = this format has no heading marker, so `setBlock` is unsupported.

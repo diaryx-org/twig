@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const markdown = @import("markdown.zig");
 const md_syntax = @import("syntax.zig");
+const attrs_writer = @import("../../attrs_writer.zig");
 const Document = markdown.Document;
 const TwigDocument = @import("../../document.zig");
 const AST = markdown.AST;
@@ -93,62 +94,17 @@ const Renderer = struct {
     }
 
     /// Re-emit a directive's `{#id .class key=val}` attribute shorthand from
-    /// the node's `attrs` side-table (nothing if it has none). Reverses the
-    /// parse-time accumulation: `id` -> `#id`, `class` -> `.a .b` (its
-    /// space-joined value split back into individual `.`-classes), every other
-    /// key -> `key=value`, quoting the value when it contains characters the
-    /// bare-value grammar can't hold. Order follows the side-table's stored
-    /// order, so a round-trip preserves how the attributes were written.
+    /// the node's `attrs` side-table (nothing if it has none).
+    ///
+    /// The walk is `attrs_writer.zig`'s, shared with djot: `id` -> `#id`,
+    /// `class` -> `.a .b` (its space-joined value split back apart), every other
+    /// key -> `key=value` in the side-table's stored order, so a round-trip
+    /// preserves how the attributes were written. Markdown's alphabet — bare
+    /// values where `attributes.zig`'s grammar can read them back, quoted
+    /// otherwise — is the table entry in `markdown/syntax.zig`.
     fn writeDirectiveAttrs(self: *Renderer, id: Node.Id) Writer.Error!void {
-        const attrs = self.ast.attrsOf(id);
-        if (attrs.isEmpty()) return;
-        try self.writer.writeByte('{');
-        var first = true;
-        for (attrs.entries) |kv| {
-            if (std.mem.eql(u8, kv.key, "id")) {
-                if (kv.value) |v| {
-                    if (!first) try self.writer.writeByte(' ');
-                    try self.writer.print("#{s}", .{v});
-                    first = false;
-                }
-            } else if (std.mem.eql(u8, kv.key, "class")) {
-                const v = kv.value orelse "";
-                var it = std.mem.tokenizeScalar(u8, v, ' ');
-                while (it.next()) |cls| {
-                    if (!first) try self.writer.writeByte(' ');
-                    try self.writer.print(".{s}", .{cls});
-                    first = false;
-                }
-            } else {
-                if (!first) try self.writer.writeByte(' ');
-                try self.writer.writeAll(kv.key);
-                if (kv.value) |v| {
-                    try self.writer.writeByte('=');
-                    if (needsQuoting(v)) {
-                        try self.writer.writeByte('"');
-                        for (v) |c| {
-                            if (c == '"' or c == '\\') try self.writer.writeByte('\\');
-                            try self.writer.writeByte(c);
-                        }
-                        try self.writer.writeByte('"');
-                    } else {
-                        try self.writer.writeAll(v);
-                    }
-                }
-                first = false;
-            }
-        }
-        try self.writer.writeByte('}');
-    }
-
-    /// A bare (unquoted) attribute value may only hold name characters; empty
-    /// or anything else must be quoted.
-    fn needsQuoting(v: []const u8) bool {
-        if (v.len == 0) return true;
-        for (v) |c| {
-            if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == ':')) return true;
-        }
-        return false;
+        const sp = md_syntax.table.attr_spelling orelse return;
+        try attrs_writer.write(self.writer, self.ast.attrsOf(id), sp, "");
     }
 
     fn fenceTicks(text: []const u8, min: usize) usize {
