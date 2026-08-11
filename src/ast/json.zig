@@ -115,6 +115,7 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .section,
         .block_quote,
         .definition_list,
+        .line_block,
         .table,
         .list_item,
         .definition_list_item,
@@ -173,6 +174,10 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         .task_list_item => |t| {
             try w.objectField("checked");
             try w.write(t.checked);
+        },
+        .line => |l| {
+            try w.objectField("indent");
+            try w.write(l.indent);
         },
         .row => |r| {
             try w.objectField("head");

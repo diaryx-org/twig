@@ -152,6 +152,17 @@ pub const Node = struct {
         ordered_list: OrderedList,
         task_list: TaskList,
         definition_list,
+        /// A LINE BLOCK — a run of lines whose BREAKS ARE THE CONTENT. rST
+        /// spells it `| ` per line (or `.. line-block::`), AsciiDoc `[verse]`,
+        /// docutils' HTML writer `<div class="line-block">`. Verse, addresses,
+        /// anything where reflowing the text would destroy it.
+        ///
+        /// Children are `line` nodes and nothing else. It is NOT a `code_block`
+        /// with the monospace turned off: a code block's payload is opaque text,
+        /// while every line here is a normal inline container — the docutils
+        /// corpus has `emphasis`, `reference` and `target` inside lines.
+        /// The right reading is "a list whose items are single lines".
+        line_block,
         /// Children: `[Caption, Column…, Row, Row, ...]`. The `caption` comes
         /// first when present — djot.js's tuple type always writes one, even
         /// empty, while the HTML and rST parsers emit one only when the source
@@ -165,6 +176,28 @@ pub const Node = struct {
         definition_list_item,
         term,
         definition,
+        /// ONE LINE of a `line_block`, holding that line's inlines.
+        ///
+        /// ── Why `indent` is a number and not a nested `line_block` ──────────
+        /// docutils models a line's leading whitespace by NESTING: an indented
+        /// run becomes a child `<line_block>`, recursively, by grouping every
+        /// line indented past the current group's minimum. The corpus reaches
+        /// three levels deep, and the encoding is lossy on its own terms — in
+        /// `test_line_blocks.py:8` a 2-space line lands DEEPER than an earlier
+        /// 4-space one, because the depth is a line's rank within its group and
+        /// not its column. docutils' own HTML writer then flattens the tree back
+        /// to one `<div class="line-block">` per level for a CSS margin.
+        ///
+        /// So the nesting is an ENCODING of a per-line number, not a grouping
+        /// anything reads as a unit, and twig stores the number: `indent` is the
+        /// line's depth, `0` for flush-left. The two forms are mutually
+        /// recoverable — a depth SEQUENCE rebuilds docutils' tree by opening and
+        /// closing blocks on demand — so `doctree.zig` still round-trips the
+        /// corpus exactly, including its 0→2 jumps.
+        ///
+        /// An EMPTY line (no children) is content, not a separator: it is the
+        /// stanza break, and 7 of the corpus's 47 lines are one.
+        line: Line,
         row: Row,
         cell: Cell,
         /// One column of a table's COLUMN AXIS — a description of a column as
@@ -336,6 +369,10 @@ pub const Node = struct {
         pub const TaskList = struct { tight: bool };
         pub const TaskListItem = struct { checked: bool };
         pub const Row = struct { head: bool };
+        /// `indent` is the line's leading-whitespace DEPTH within its block, not
+        /// a column count — see `Kind.line`. Zero is flush-left and by far the
+        /// common case, so it defaults.
+        pub const Line = struct { indent: u32 = 0 };
         /// `colspan`/`rowspan` are the cell's GRID EXTENT — how many columns and
         /// rows it occupies — and they are always ≥ 1, `1` meaning the ordinary
         /// one-square cell. They are semantic, not spelling: `<td colspan=2>`
@@ -491,6 +528,7 @@ pub const Node = struct {
                 .ordered_list,
                 .task_list,
                 .definition_list,
+                .line_block,
                 .table,
                 .footnote,
                 .reference,
@@ -526,6 +564,10 @@ pub const Node = struct {
                 .definition_list_item,
                 .term,
                 .definition,
+                // A `line` only ever appears inside a `line_block`, exactly as
+                // a `list_item` only appears inside a list — same rule, and the
+                // reason a line block is not just a paragraph full of breaks.
+                .line,
                 .row,
                 .cell,
                 .column,
@@ -579,6 +621,9 @@ pub const Node = struct {
                 .ordered_list,
                 .task_list,
                 .definition_list,
+                // Children are `line`s and only `line`s — a list whose items
+                // happen to be one line each.
+                .line_block,
                 .table,
                 .list_item,
                 .task_list_item,
@@ -593,6 +638,9 @@ pub const Node = struct {
                 .para,
                 .heading,
                 .term,
+                // A line holds inlines like a paragraph does; what it does not
+                // hold is a soft break, since the break IS the line boundary.
+                .line,
                 .caption,
                 .link,
                 .image,
@@ -649,6 +697,7 @@ pub const Node = struct {
                 .section,
                 .block_quote,
                 .definition_list,
+                .line_block,
                 .table,
                 .list_item,
                 .definition_list_item,
@@ -674,6 +723,7 @@ pub const Node = struct {
                     v.start == other.ordered_list.start,
                 .task_list => |v| v.tight == other.task_list.tight,
                 .task_list_item => |v| v.checked == other.task_list_item.checked,
+                .line => |v| v.indent == other.line.indent,
                 .row => |v| v.head == other.row.head,
                 .cell => |v| v.head == other.cell.head and
                     v.alignment == other.cell.alignment and

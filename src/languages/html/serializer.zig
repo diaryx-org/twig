@@ -771,6 +771,7 @@ pub const Renderer = struct {
             .definition => try self.inTags("dd", id, 2, &.{}),
             .term => try self.inTags("dt", id, 1, &.{}),
             .definition_list => try self.inTags("dl", id, 2, &.{}),
+            .line_block => try self.renderLineBlock(id),
             .bullet_list => try self.inTags("ul", id, 2, &.{}),
             .task_list => {
                 // GFM's own output is a plain `<ul>`; djot marks it up with a
@@ -1087,6 +1088,41 @@ pub const Renderer = struct {
             // its probe verifies.
             else => {},
         }
+    }
+
+    /// docutils' HTML5 writer's spelling, which is the only established one:
+    /// `<div class="line-block">` around the whole thing, `<div class="line">`
+    /// per line. The INDENT is spelled the way that writer spells it too — as
+    /// extra nested `line-block` divs, which is what carries the CSS margin —
+    /// so this opens and closes wrappers as the indent rises and falls. That is
+    /// the same walk `rst/doctree.zig` uses to rebuild docutils' nested tree
+    /// from the flat one, in HTML's vocabulary rather than the doctree's; see
+    /// `AST.Kind.line` for why the flat form is what twig stores.
+    ///
+    /// Nothing reads this back as a `line_block` — twig's HTML parser has no
+    /// mapping for a classed div — so `diagnostics.zig` claims `degraded`.
+    fn renderLineBlock(self: *Renderer, id: Node.Id) RenderError!void {
+        const line_block_div = "<div class=\"line-block\">\n";
+        try self.renderTag("div", id, &.{.{ .key = "class", .value = "line-block" }});
+        try self.writer.writeByte('\n');
+        var depth: u32 = 0;
+        var it = self.ast.children(id);
+        while (it.next()) |child| {
+            // A `line_block`'s children are `line`s; anything else is a caller
+            // error and is rendered flush-left rather than dropped.
+            const indent = switch (self.ast.nodes[child.id].kind) {
+                .line => |l| l.indent,
+                else => 0,
+            };
+            while (depth < indent) : (depth += 1) try self.writer.writeAll(line_block_div);
+            while (depth > indent) : (depth -= 1) try self.writer.writeAll("</div>\n");
+            try self.writer.writeAll("<div class=\"line\">");
+            try self.renderChildren(child.id);
+            try self.writer.writeAll("</div>\n");
+        }
+        while (depth > 0) : (depth -= 1) try self.writer.writeAll("</div>\n");
+        try self.renderCloseTag("div");
+        try self.writer.writeByte('\n');
     }
 
     fn footnoteIndexFor(self: *Renderer, label: []const u8) Allocator.Error!usize {
@@ -1439,6 +1475,38 @@ test "a merged cell writes colspan/rowspan, and a one-square cell writes neither
             "<td style=\"text-align: center;\" colspan=\"2\" rowspan=\"3\">wide</td>\n" ++
             "<td>one</td>\n" ++
             "</tr>\n</table>\n",
+        html,
+    );
+}
+
+test "a line block's indents render as docutils' nested line-block divs" {
+    var b = Builder.init(testing.allocator);
+    defer b.deinit();
+    // The indent sequence steps 0→2 and back to 1, which is where an
+    // open-two-at-once and a close-one both have to happen.
+    const l0 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "flush" })});
+    const l2 = try b.addContainer(.{ .line = .{ .indent = 2 } }, &.{try b.addLeaf(.{ .str = "deep" })});
+    const l1 = try b.addContainer(.{ .line = .{ .indent = 1 } }, &.{try b.addLeaf(.{ .str = "less" })});
+    // A stanza break: a line with no content at all is still a line.
+    const gap = try b.addContainer(.{ .line = .{} }, &.{});
+    const block = try b.addContainer(.line_block, &.{ l0, l2, l1, gap });
+    const doc = try b.addContainer(.doc, &.{block});
+
+    var ast = try b.finish(doc);
+    defer ast.deinit();
+
+    const html = try serializeAlloc(testing.allocator, &ast, null);
+    defer testing.allocator.free(html);
+    try testing.expectEqualStrings(
+        "<div class=\"line-block\">\n" ++
+            "<div class=\"line\">flush</div>\n" ++
+            "<div class=\"line-block\">\n<div class=\"line-block\">\n" ++
+            "<div class=\"line\">deep</div>\n" ++
+            "</div>\n" ++
+            "<div class=\"line\">less</div>\n" ++
+            "</div>\n" ++
+            "<div class=\"line\"></div>\n" ++
+            "</div>\n",
         html,
     );
 }

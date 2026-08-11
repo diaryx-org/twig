@@ -2367,6 +2367,12 @@ pub const TwigNodeKind = enum(c_int) {
     /// selectable through `twig_builder_add` like any other void-payload kind;
     /// its width and stub data are ordinary attributes (see `Kind.column`).
     column = 60,
+    /// A LINE BLOCK and one of its LINES — verse, addresses, anything whose
+    /// line breaks are content. Payload-free and so `twig_builder_add`-able;
+    /// a line carries an indent depth and has `twig_builder_add_line`, exactly
+    /// as `row` carries `head` and has `twig_builder_add_row`.
+    line_block = 61,
+    line = 62,
 };
 
 pub const TwigBulletStyle = enum(c_int) { dash = 0, plus = 1, star = 2 };
@@ -2468,6 +2474,7 @@ fn voidKind(kind: c_int) ?twig.AST.Node.Kind {
         @intFromEnum(TwigNodeKind.definition) => .definition,
         @intFromEnum(TwigNodeKind.caption) => .caption,
         @intFromEnum(TwigNodeKind.column) => .column,
+        @intFromEnum(TwigNodeKind.line_block) => .line_block,
         @intFromEnum(TwigNodeKind.soft_break) => .soft_break,
         @intFromEnum(TwigNodeKind.hard_break) => .hard_break,
         @intFromEnum(TwigNodeKind.non_breaking_space) => .non_breaking_space,
@@ -2851,6 +2858,14 @@ pub export fn twig_builder_add_task_list_item(b: ?*TwigBuilder, checked: c_int, 
 pub export fn twig_builder_add_row(b: ?*TwigBuilder, head: c_int, out_id: ?*u32) TwigStatus {
     const handle = asBuilder(b orelse return .invalid_argument);
     return emitNode(out_id, handle.builder.addNode(.{ .row = .{ .head = head != 0 } }));
+}
+
+/// Add one line of a line block. `indent` is the line's leading-whitespace
+/// DEPTH within the block (0 for flush-left), not a column count — see
+/// `AST.Kind.line`. The block itself is `twig_builder_add(TWIG_KIND_LINE_BLOCK)`.
+pub export fn twig_builder_add_line(b: ?*TwigBuilder, indent: u32, out_id: ?*u32) TwigStatus {
+    const handle = asBuilder(b orelse return .invalid_argument);
+    return emitNode(out_id, handle.builder.addNode(.{ .line = .{ .indent = indent } }));
 }
 
 fn alignmentOf(alignment: c_int) ?twig.AST.Alignment {

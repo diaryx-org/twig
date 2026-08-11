@@ -282,14 +282,43 @@ pub const Tag = enum {
 // row is a header row. `colspec`'s `stub` — an entire column of header cells —
 // is deliberately NOT folded in; see `Kind.column`.
 
-/// The three elements that produce no node of their own. Their children are
-/// spliced into their parent's child list, and their attributes must therefore
-/// be either derivable (`tgroup`'s `cols`) or moved onto the children
-/// (`thead`'s header-ness). An element with an attribute that is neither cannot
-/// dissolve, because `encode` would have nowhere to read it back from.
-fn dissolves(tag: Tag) bool {
+// ── the line-block subtree ─────────────────────────────────────────────────
+//
+// The second family that dissolves, and for a reason worth stating separately
+// from the table's: a NESTED `<line_block>` is not a construct, it is docutils'
+// encoding of one number. An indented run of lines becomes a child
+// `<line_block>`, recursively, by grouping every line indented past the current
+// group's minimum — so the corpus's 30 blocks are 20 real ones and 10 wrappers,
+// and its deepest case reaches three levels for a single stanza. `Kind.line`'s
+// doc has the argument for storing the depth on the line instead, including why
+// the tree is a worse record of the source than the number is.
+//
+// Dissolving is safe by exactly the rule `dissolves` states: none of the 10
+// nested blocks carries an attribute (the only attributed block in the corpus is
+// a top-level one, from `.. line-block:: :class: linear`), so nothing is lost by
+// splicing them away. What the wrapper MEANT — one more level of indent for
+// everything inside it — is moved onto the lines by `bumpLineIndent`, the same
+// move `markHeadRows` makes for `thead` and well-founded for the same reason:
+// pformat writes a parent after its children, so those lines are finished nodes.
+//
+// `writeLineBlock` rebuilds the nesting on the way out, opening a wrapper when
+// the indent rises and closing one when it falls, which inverts this exactly —
+// including the two-at-once jumps that appear when a group's minimum indent is
+// itself indented.
+
+/// The elements that produce no node of their own. Their children are spliced
+/// into their parent's child list, and their attributes must therefore be either
+/// derivable (`tgroup`'s `cols`), moved onto the children (`thead`'s
+/// header-ness, a nested `line_block`'s indent level), or absent. An element
+/// with an attribute that is none of those cannot dissolve, because `encode`
+/// would have nowhere to read it back from.
+///
+/// `parent` is what makes `line_block` conditional: the OUTERMOST one is the
+/// construct and stays, and only the wrappers inside it dissolve.
+fn dissolves(tag: Tag, parent: ?Tag) bool {
     return switch (tag) {
         .tgroup, .thead, .tbody => true,
+        .line_block => parent == .line_block,
         else => false,
     };
 }
@@ -362,6 +391,17 @@ fn decodeKind(
         // where it sits. Under a `table` it is twig's `caption`, which is
         // exactly what `table`'s content model expects to lead with. Everywhere
         // else it stays generic; see the decode-table comment.
+        // ── the line-block subtree ─────────────────────────────────────────
+        // Only the outermost block reaches here; `dissolves` splices the nested
+        // wrappers away and `bumpLineIndent` moves what they meant onto the
+        // lines. See the block comment above.
+        .line_block => .line_block,
+        // Every line decodes flush-left and is bumped afterwards, once per
+        // wrapper it turns out to be inside. It cannot be decided here: a line
+        // closes before the wrappers above it do, and the count is exactly how
+        // many of those there will be.
+        .line => .{ .line = .{} },
+
         .title => if (parent == .table) .caption else null,
         // And the reverse spelling: docutils ALSO has a `<caption>`, which is a
         // FIGURE's caption and never a table's. Same twig kind, so the two
@@ -458,6 +498,11 @@ fn encodeTag(kind: Node.Kind, parent: ?Node.Kind) ?Tag {
         .definition_list_item => .definition_list_item,
         .term => .term,
         .definition => .definition,
+        // The nested wrappers `decode` dissolved have no arm because they have
+        // no twig node — `writeLineBlock` synthesizes them from each line's
+        // `indent`, as `writeTable` does for `tgroup`/`thead`/`tbody`.
+        .line_block => .line_block,
+        .line => .line,
         .section => .section,
         .thematic_break => .transition,
         .code_block => .literal_block,
@@ -878,6 +923,25 @@ fn markHeadRows(b: *AST.Builder, rows: []const Node.Id) void {
     }
 }
 
+/// Add one level of indent to every line in a dissolving nested `<line_block>`
+/// — the wrapper's entire meaning, moved onto the lines before it disappears.
+///
+/// Shallow by construction, and that is not an oversight: a wrapper nested two
+/// deep has already dissolved into this one by the time this runs (pformat
+/// writes parents last), so its lines are already children here and have already
+/// been bumped once. Each level bumps once and the counts compose.
+fn bumpLineIndent(b: *AST.Builder, children: []const Node.Id) void {
+    for (children) |id| {
+        switch (b.nodes.items[id].kind) {
+            .line => b.nodes.items[id].kind.line.indent += 1,
+            // A line block holds nothing but lines in the corpus. Anything else
+            // is passed through rather than reinterpreted, as `markHeadRows`
+            // does with a non-row child.
+            else => continue,
+        }
+    }
+}
+
 /// Attach the open text run (if any) to the deepest frame as a `str`.
 fn flushRun(
     allocator: Allocator,
@@ -916,8 +980,9 @@ fn closeTop(
     // dissolving element has none worth keeping by construction — see
     // `dissolves`. `thead` is the one that carries information rather than
     // structure, and it moves that information onto its rows here.
-    if (dissolves(frame.tag)) {
+    if (dissolves(frame.tag, parent)) {
         if (frame.tag == .thead) markHeadRows(b, frame.children.items);
+        if (frame.tag == .line_block) bumpLineIndent(b, frame.children.items);
         if (coverage) |c| c.dissolved[@intFromEnum(frame.tag)] += 1;
         // A dissolving element at the root would leave the document with no
         // node; pformat never produces one (a doctree's root is always
@@ -1064,9 +1129,46 @@ fn writeNode(
         return;
     }
 
+    // And a line block's under the nested `line_block` wrappers it dissolved.
+    if (node.kind == .line_block) {
+        try writeLineBlock(allocator, ast, id, depth, w);
+        return;
+    }
+
     var it = ast.children(id);
     while (it.next()) |child| {
         try writeNode(allocator, ast, child.id, node.kind, depth + 1, w);
+    }
+}
+
+/// Write a line block's lines back into docutils' nesting: one wrapper
+/// `<line_block>` per level of `indent`, opened when a line's indent rises above
+/// the level currently open and closed when it falls. The exact inverse of the
+/// dissolution in `closeTop`.
+///
+/// Closing is a decrement and nothing else, because pformat has no closing tags
+/// — a level ends when the next line is written shallower. That is also why a
+/// jump of more than one level costs nothing to reproduce: docutils writes
+/// `<line_block><line_block>` back to back when a group's own minimum indent is
+/// indented, and so does opening two wrappers in a row here.
+///
+/// The indent of anything that is not a `line` reads as zero, which puts a
+/// stray child at the block's own level rather than dropping it — the same
+/// posture `bumpLineIndent` takes on the way in.
+fn writeLineBlock(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usize, w: *Writer) EncodeError!void {
+    var open: u32 = 0;
+    var it = ast.children(id);
+    while (it.next()) |child| {
+        const indent = switch (ast.nodes[child.id].kind) {
+            .line => |l| l.indent,
+            else => 0,
+        };
+        while (open < indent) : (open += 1) {
+            try writeIndent(w, depth + 1 + open);
+            try w.writeAll("<line_block>\n");
+        }
+        open = indent;
+        try writeNode(allocator, ast, child.id, .line_block, depth + 1 + open, w);
     }
 }
 
@@ -1491,6 +1593,101 @@ test "a table is flattened out of tgroup/thead/tbody and built back into them" {
 
     // And it all comes back — `cols="2"` recounted, the groups re-nested, the
     // caption spelled `<title>` again.
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "a line block's nesting flattens to a per-line indent and is rebuilt from it" {
+    // `test_line_blocks.py:8` from the corpus, which is the case the whole
+    // design rests on: SIX `<line_block>` elements for ONE authored block, and a
+    // depth that is a line's rank within its group rather than its column — the
+    // 2-space line ends up DEEPER than the 4-space line three lines above it.
+    const src =
+        \\<document source="test data">
+        \\    <line_block>
+        \\        <line>
+        \\            Initial indentation is also significant and preserved:
+        \\        <line>
+        \\        <line_block>
+        \\            <line>
+        \\                Indented 4 spaces
+        \\        <line>
+        \\            Not indented
+        \\        <line_block>
+        \\            <line_block>
+        \\                <line>
+        \\                    Indented 2 spaces
+        \\                <line_block>
+        \\                    <line>
+        \\                        Indented 4 spaces
+        \\            <line>
+        \\                Only one space
+        \\            <line>
+        \\            <line_block>
+        \\                <line>
+        \\                    Continuation lines may be indented less
+        \\                    than their base lines.
+        \\
+    ;
+    var cov: Coverage = .{};
+    var ast = try decode(testing.allocator, src, &cov);
+    defer ast.deinit();
+
+    // Twig's shape: ONE block holding NINE lines, flat, each carrying the depth
+    // the wrappers around it used to say. Note the 0→2 step — a group whose own
+    // minimum indent is itself indented opens two wrappers at once.
+    const block = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[block].kind == .line_block);
+    var indents = std.ArrayList(u32).empty;
+    defer indents.deinit(testing.allocator);
+    var it = ast.children(block);
+    while (it.next()) |child| try indents.append(testing.allocator, ast.nodes[child.id].kind.line.indent);
+    try testing.expectEqualSlices(u32, &.{ 0, 0, 1, 0, 2, 3, 1, 1, 2 }, indents.items);
+
+    // The two childless lines are the stanza breaks, and they are CONTENT: a
+    // decode that dropped them would still round-trip the indents above.
+    var lines = ast.children(block);
+    var empty: usize = 0;
+    while (lines.next()) |child| {
+        if (ast.nodes[child.id].first_child == null) empty += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), empty);
+
+    // One block is the construct; the other five were wrappers and produced no
+    // node at all, counted as neither semantic nor generic.
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 5), cov.dissolved[@intFromEnum(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 0), cov.generic[@intFromEnum(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 9), cov.semantic[@intFromEnum(Tag.line)]);
+
+    // And all six come back, in the right places, from the nine numbers.
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "only a NESTED line block dissolves; the outermost keeps its attributes" {
+    // `.. line-block:: :class: linear :name: cit:short` — the one attributed
+    // block in the corpus, and the reason `dissolves` had to become conditional
+    // on the parent rather than a property of the tag.
+    const src =
+        \\<document source="test data">
+        \\    <line_block classes="linear" ids="cit-short" names="cit:short">
+        \\        <line>
+        \\            This is a line block with options.
+        \\
+    ;
+    var cov: Coverage = .{};
+    var ast = try decode(testing.allocator, src, &cov);
+    defer ast.deinit();
+
+    const block = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[block].kind == .line_block);
+    try testing.expectEqualStrings("linear", ast.attrsOf(block).get("classes").?);
+    try testing.expectEqual(@as(u32, 0), cov.dissolved[@intFromEnum(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 0), ast.nodes[ast.nodes[block].first_child.?].kind.line.indent);
+
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings(src, out);

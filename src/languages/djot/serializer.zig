@@ -429,6 +429,27 @@ const Renderer = struct {
                     }
                 }
             },
+            // Djot has no verse construct. The closest honest spelling is ONE
+            // paragraph whose lines are separated by hard breaks: the text and
+            // the line boundaries survive, the block's identity and each line's
+            // `indent` do not — djot strips the leading space of a continuation
+            // line, so there is nowhere to put the indent even if it were
+            // written. `diagnostics.zig` claims `degraded` for both kinds.
+            //
+            // The break goes BEFORE the next line rather than after the current
+            // one so the block does not end on a dangling `\`, which djot reads
+            // as a hard break into the following block.
+            .line_block => {
+                var it = self.ast.children(id);
+                var first = true;
+                while (it.next()) |line| {
+                    if (!first) try self.writer.writeAll("\\\n");
+                    try self.writePrefix(ctx);
+                    try self.renderInlineChildren(line.id, ctx);
+                    first = false;
+                }
+                if (!first) try self.writer.writeByte('\n');
+            },
             .table => {
                 // Djot writes the caption as a `^ ` block AFTER the table, so
                 // it has to be found before the rows are walked. The parser
@@ -883,6 +904,26 @@ test "serializeAlloc: backtick-edged verbatim and raw text are space-padded" {
         defer testing.allocator.free(out);
         try testing.expectEqualStrings("`` `x` ``{=html}\n", out);
     }
+}
+
+test "serializeAstAlloc: a line block degrades to one paragraph of hard breaks" {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const l0 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "Roses are red," })});
+    // The indent has nowhere to go: djot strips a continuation line's leading
+    // space, so it is dropped rather than written and lost on re-parse.
+    const l1 = try b.addContainer(.{ .line = .{ .indent = 1 } }, &.{try b.addLeaf(.{ .str = "violets are blue." })});
+    // A stanza break stays a break rather than ending the paragraph, because
+    // `\` is not whitespace.
+    const gap = try b.addContainer(.{ .line = .{} }, &.{});
+    const last = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "Fin." })});
+    const block = try b.addContainer(.line_block, &.{ l0, l1, gap, last });
+    var ast = try b.finish(try b.addContainer(.doc, &.{block}));
+    defer ast.deinit();
+
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("Roses are red,\\\nviolets are blue.\\\n\\\nFin.\n", out);
 }
 
 test "serializeAlloc: a loose bullet list's first paragraph starts on the marker's line, not a bare marker + newline" {

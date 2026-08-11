@@ -318,6 +318,29 @@ const Renderer = struct {
                     first = false;
                 }
             },
+            // As in the djot serializer: one paragraph, hard breaks between the
+            // lines, the block identity and every `indent` lost (CommonMark
+            // strips a continuation line's leading space too).
+            //
+            // The break is spelled `\` rather than the two trailing spaces this
+            // serializer uses everywhere else, and the reason is the STANZA
+            // BREAK: an empty line is real content here (7 of the docutils
+            // corpus's 47 lines are one), and a line holding only two spaces is
+            // a BLANK line to CommonMark, which would end the paragraph and
+            // split the poem in two. `\` is a hard break the parser reads back
+            // (`markdown/inline.zig`'s backslash-before-newline arm) and is not
+            // whitespace-only, so the block survives as one.
+            .line_block => {
+                var it = self.ast.children(id);
+                var first = true;
+                while (it.next()) |line| {
+                    if (!first) try self.writer.writeAll("\\\n");
+                    try self.writePrefix(ctx);
+                    try self.renderInlineChildren(line.id, ctx);
+                    first = false;
+                }
+                if (!first) try self.writer.writeByte('\n');
+            },
             .definition_list => {
                 var it = self.ast.children(id);
                 while (it.next()) |dli| {
@@ -725,6 +748,30 @@ test "non-canonical list markers survive the Document path, canonicalize on the 
     try testing.expect(std.mem.indexOf(u8, canonical, "- a") != null);
     try testing.expect(std.mem.indexOf(u8, canonical, "1. x") != null);
     try testing.expect(std.mem.indexOf(u8, canonical, "* a") == null);
+}
+
+test "a line block's stanza break survives as a break, not as a paragraph split" {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const l0 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "Roses are red," })});
+    const gap = try b.addContainer(.{ .line = .{} }, &.{});
+    const l1 = try b.addContainer(.{ .line = .{ .indent = 1 } }, &.{try b.addLeaf(.{ .str = "violets are blue." })});
+    const block = try b.addContainer(.line_block, &.{ l0, gap, l1 });
+    var ast = try b.finish(try b.addContainer(.doc, &.{block}));
+    defer ast.deinit();
+
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("Roses are red,\\\n\\\nviolets are blue.\n", out);
+
+    // The reason the break is spelled `\` here and `  ` everywhere else: two
+    // trailing spaces on the empty line would make it a BLANK line, which ends
+    // the paragraph and splits the poem in two. Re-parsed, this is one.
+    var back = try markdown.parse(testing.allocator, out, .commonmark);
+    defer back.deinit();
+    const first = back.ast.nodes[back.ast.root].first_child.?;
+    try testing.expect(back.ast.nodes[first].kind == .para);
+    try testing.expectEqual(@as(?Node.Id, null), back.ast.nodes[first].next_sibling);
 }
 
 test "serializeAlloc: fenced code info string abuts the fence, no space" {

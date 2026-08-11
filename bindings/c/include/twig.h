@@ -1152,6 +1152,13 @@ typedef enum TwigNodeKind {
     // twig_builder_add like any other void-payload kind; per-column data (a
     // width, reStructuredText's stub flag) is ordinary node attributes.
     TWIG_KIND_COLUMN = 60,
+    // A LINE BLOCK and one of its LINES: verse, an address, anything whose line
+    // breaks are the content rather than reflowable whitespace. The block is
+    // payload-free and built with twig_builder_add; a line carries an indent
+    // depth, so it has twig_builder_add_line just as a row has
+    // twig_builder_add_row.
+    TWIG_KIND_LINE_BLOCK = 61,
+    TWIG_KIND_LINE = 62,
 } TwigNodeKind;
 
 typedef enum TwigBulletStyle {
@@ -1377,6 +1384,11 @@ TwigStatus twig_builder_add_ordered_list(
 TwigStatus twig_builder_add_task_list(TwigBuilder *builder, int tight, uint32_t *out_id);
 TwigStatus twig_builder_add_task_list_item(TwigBuilder *builder, int checked, uint32_t *out_id);
 TwigStatus twig_builder_add_row(TwigBuilder *builder, int head, uint32_t *out_id);
+
+// Add one line of a line block. `indent` is the line's leading-whitespace DEPTH
+// within the block (0 for flush-left), not a column count. The block itself is
+// twig_builder_add(builder, TWIG_KIND_LINE_BLOCK, &id).
+TwigStatus twig_builder_add_line(TwigBuilder *builder, uint32_t indent, uint32_t *out_id);
 
 // Add a one-square table cell; `alignment` is a TwigAlignment code.
 TwigStatus twig_builder_add_cell(TwigBuilder *builder, int head, int alignment, uint32_t *out_id);

@@ -58,7 +58,7 @@ const corpus_json = @embedFile("testdata/docutils-rst-corpus.json");
 /// The test prints the full per-element coverage table whenever the live count
 /// DIFFERS from this floor in either direction, so mapping a new element both
 /// shows you what moved and tells you the number to put here.
-pub const SEMANTIC_BASELINE: u32 = 4075;
+pub const SEMANTIC_BASELINE: u32 = 4142;
 
 /// Tag-shaped text lines whose name is not a docutils element, corpus-wide.
 /// This is EXACTLY one — an option list documenting `--source-url=<URL>`, whose

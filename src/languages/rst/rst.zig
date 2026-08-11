@@ -224,8 +224,8 @@
 //!     mode the table was built to prevent. They now spell every kind.
 //!
 //! ── What twig's AST does not yet hold ──────────────────────────────────────
-//! `conformance.zig`'s coverage ratchet measures this continuously; 4075 of 5682
-//! element instances (72%) decode to a semantic twig kind and the rest fall back
+//! `conformance.zig`'s coverage ratchet measures this continuously; 4142 of 5682
+//! element instances (73%) decode to a semantic twig kind and the rest fall back
 //! to `Kind.container`. Reading that table,
 //! the structural work rST implies, in rough order of corpus weight:
 //!
@@ -294,10 +294,56 @@
 //!     `field_list` 21). Structural, NOT attribute data — docutils parses a
 //!     body-position `:Author: Me` into a real subtree whose body holds
 //!     arbitrary blocks. Only DIRECTIVE OPTIONS are `Attrs` data.
+//!   - ~~**Line blocks**~~ **DONE** — `Kind.line_block` + `Kind.line`, 67 of the
+//!     77 instances, the other 10 dissolving. Verse, addresses, anything whose
+//!     line breaks are the content; AsciiDoc's `[verse]` is the same construct,
+//!     so the vocabulary is not rST-only even though rST is what asked for it.
+//!
+//!     The decision worth recording is that twig's is NOT recursive. docutils
+//!     encodes a line's leading whitespace by NESTING `<line_block>`s, and that
+//!     tree is an encoding of one number rather than a grouping anything reads:
+//!     it is built by recursive minimum-indent partitioning, so its depth is a
+//!     line's RANK WITHIN ITS GROUP and not its column (`test_line_blocks.py:8`
+//!     puts a 2-space line deeper than a 4-space one three lines above), and
+//!     docutils' own HTML writer flattens it back to one div per level for a CSS
+//!     margin. So `Kind.line` carries an `indent` depth and the wrappers dissolve
+//!     — 10 of the corpus's 30 blocks are wrappers, none of them attributed,
+//!     which is what made dissolving them safe under `dissolves`' rule.
+//!
+//!     It is not a `code_block` with the monospace turned off, which was the
+//!     other tempting shape: lines hold parsed inlines (`emphasis`, `reference`
+//!     and `target` all appear inside one), an empty line is CONTENT (the stanza
+//!     break, 7 of 47), and inline markup cannot span a line boundary — docutils
+//!     emits a `problematic` when it tries. A line is an inline container; the
+//!     block is a list whose items are lines.
+//!
+//!     Every target degrades it and none drops it: djot and Markdown write one
+//!     paragraph of hard breaks (losing the block and every `indent`), HTML
+//!     writes docutils' own `<div class="line-block">` nesting, indent and all,
+//!     and still degrades because a classed div reads back as a `container`.
+//!     Markdown's arm uses the `\` hard break rather than this serializer's usual
+//!     two trailing spaces, and the stanza break is why: a whitespace-only line
+//!     is BLANK to CommonMark and would split the poem into two paragraphs.
 //!   - **Option lists** (`option_string` 54, `option` 54, `description` 48,
 //!     `option_group` 48, `option_list_item` 48, `option_argument` 38,
-//!     `option_list` 15) and **line blocks** (`line` 47, `line_block` 30) —
-//!     two constructs with no counterpart in any format twig parses today.
+//!     `option_list` 15) — a two-column construct documenting a program's
+//!     command-line options, and the plan is to ABSORB it into `definition_list`
+//!     rather than grow vocabulary: `option_list`/`option_list_item`/
+//!     `option_group`/`description` map onto `definition_list`/
+//!     `definition_list_item`/`term`/`definition` (159 of the 305 instances), and
+//!     the option PARSE — `option`/`option_string`/`option_argument`, which is
+//!     where docutils splits `-b file` into a string and an argument with a
+//!     `delimiter` — stays generic inside the term, round-tripping there
+//!     verbatim.
+//!
+//!     The open question is not the mapping but `encode`'s DISCRIMINATOR: today
+//!     these round-trip for free because a generic container names its own tag,
+//!     and the moment `option_list` decodes to `definition_list` the encoder has
+//!     to know which one to write back. The `caption`/`title` trick (read the
+//!     parent) does not apply, since the parent is a `definition_list` either
+//!     way. Reading the CONTENT does: `<option>` appears nowhere else in
+//!     docutils' vocabulary, so "a definition list whose terms hold `option`
+//!     children" is a total discriminator rather than a heuristic.
 //!   - **`inline` (43)**, docutils' generic classed span, and `problematic`
 //!     (48). Both map onto `Kind.container` reasonably; they are listed so the
 //!     count is not mistaken for a gap.

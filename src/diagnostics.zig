@@ -228,6 +228,13 @@ fn djotFidelity(kind: Node.Kind) Fidelity {
         // Djot has no definition-list syntax; the serializer emits the term and
         // definition as ordinary blocks.
         .definition_list => .degraded,
+        // No verse construct either: a line block is written as one paragraph
+        // with hard breaks. The text and the breaks survive, the block does
+        // not, and each line's `indent` goes with it — djot strips the leading
+        // space of a continuation line. Unlike `term`/`row`/`cell`, `line` is
+        // NOT faithful-by-riding-along here, because the parent it rides on
+        // does not come back either; it is reported on its own.
+        .line_block, .line => .degraded,
         // Djot has ONE footnote registry, so a citation is written as a footnote
         // definition and comes back a `footnote`. The content and the
         // definition/use link both survive; the second registry does not, which
@@ -319,6 +326,8 @@ fn markdownFidelity(kind: Node.Kind) Fidelity {
         // again, and it has no substitution mechanism either.
         .citation => .degraded,
         .substitution => .dropped,
+        // Same spelling and same loss as djot's — see that arm.
+        .line_block, .line => .degraded,
         // GFM's pipe table has no column axis either — same as djot.
         .column => .dropped,
         .text_leaf => |l| switch (l.kind) {
@@ -381,6 +390,12 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
         // Definition lists render as `<dl>`, which twig's HTML parser has no
         // semantic mapping for yet.
         .definition_list, .definition_list_item, .term, .definition => .degraded,
+        // The one target that spells a line block the way its source format
+        // does — docutils' `<div class="line-block">`/`<div class="line">`,
+        // indent and all (see the serializer's `renderLineBlock`). It still
+        // degrades, for the `<dl>` reason: a classed div reads back as a
+        // generic `container`, so the output is right and the KIND is gone.
+        .line_block, .line => .degraded,
         // Footnote and link-reference DEFINITIONS are resolved at render time —
         // the reference is inlined into an `<a href>`/endnote and the definition
         // node itself has no output of its own.
@@ -575,6 +590,12 @@ fn inlineDoc(b: *AST.Builder, kind: Node.Kind, children: []const Node.Id) !Node.
     return b.addContainer(.doc, &.{try b.addContainer(.para, &.{n})});
 }
 
+fn buildLineBlock(b: *AST.Builder) anyerror!Node.Id {
+    const l1 = try b.addContainer(.{ .line = .{} }, &.{try str(b, "one")});
+    const l2 = try b.addContainer(.{ .line = .{ .indent = 1 } }, &.{try str(b, "two")});
+    return blockDoc(b, .line_block, &.{ l1, l2 });
+}
+
 const Probe = struct {
     label: []const u8,
     /// What the built document is being probed FOR, and the kind whose
@@ -689,6 +710,11 @@ const probes = [_]Probe{
             return blockDoc(b, .definition_list, &.{item});
         }
     }.f },
+    // A two-line verse with an indented second line, probed for the BLOCK and
+    // for the LINE separately — the two claims are independent, and a probe
+    // asserting both would be satisfied by either surviving alone.
+    .{ .label = "line_block", .want = .{ .tag = .line_block }, .kind = .line_block, .build = buildLineBlock },
+    .{ .label = "line", .want = .{ .tag = .line }, .kind = .{ .line = .{} }, .build = buildLineBlock },
     .{ .label = "table", .want = .{ .tag = .table }, .kind = .table, .build = struct {
         fn f(b: *AST.Builder) anyerror!Node.Id {
             const cap = try b.addContainer(.caption, &.{});
