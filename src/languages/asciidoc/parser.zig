@@ -4,18 +4,25 @@
 //! shapes `asg.zig`'s `decode` already proved have somewhere to live.
 //!
 //! ── Scope of THIS file, today ───────────────────────────────────────────────
-//! The first vertical slice, sized to the 13-case TCK rather than to the full
-//! (still-being-written) AsciiDoc spec: the document header (title + the
-//! attribute entries directly below it, before the first blank line),
-//! paragraphs (single-line, hard-wrapped, and blank-line-separated), section
-//! titles nested by their `=` count (untested past one level by the corpus,
-//! but the nesting itself falls out of the level number for free — see
-//! below), unordered lists (one marker character, one level, one line per
-//! item), delimited listing blocks (` ---- `), sidebars (` **** `, a generic
-//! container — see `asg.zig`'s doc comment for why it has no semantic
-//! `Kind`), and constrained `*strong*` spans. Everything else — ordered
-//! lists, links, images, tables, admonitions, cross references, any other
-//! inline formatting — is unimplemented and deliberately out of this file.
+//! Judged against a target that is finite and known: the official ASG JSON
+//! Schema (vendored as `testdata/asg-schema.json`) enumerates the WHOLE block
+//! and inline vocabulary, so "finished" here means "emits every shape in that
+//! schema" rather than "keeps up with a spec still being written".
+//!
+//! Covered: the document header (title + the attribute entries directly below
+//! it, including the `:!name:` unset spellings), paragraphs, section nesting
+//! by `=` count including level-0 part titles, unordered lists (wrapped
+//! principal text, blank lines between items), every delimited block the ASG
+//! has a name for (`listing`, `literal`, `pass`, `example`, `quote`,
+//! `sidebar`, `open`) plus comment blocks, line comments, thematic and page
+//! breaks, and constrained `*strong*` spans.
+//!
+//! Not yet: ordered and callout lists, description lists, nested lists, list
+//! continuation, block metadata (`[attrlist]`, `.Title`, ids, roles, options)
+//! and everything it unlocks (admonitions, discrete headings, `[verse]`,
+//! `[source]`), block macros (`image::`, `audio::`, `video::`, `toc::`), and
+//! every inline besides strong spans and plain text. Tables are not on the
+//! list at all: the ASG does not model them as of draft-01.
 //!
 //! ── Why this shape ───────────────────────────────────────────────────────
 //! Bottom-up onto `AST.Builder`, the same posture `languages/rst/parser.zig`
@@ -89,6 +96,38 @@ const HeadingMatch = struct {
 /// belong to no node.
 const FlatResult = struct { items: []Node.Id, stopped_at: usize, first_start: usize = 0, last_end: usize = 0 };
 const SectionsResult = struct { items: []Node.Id, stopped_at: usize, first_start: usize = 0, last_end: usize = 0 };
+
+/// One row of the delimited-block table — a delimiter character and what the
+/// block it opens turns into. Content models split two ways, which is the only
+/// structural difference between rows: `.verbatim` blocks keep their interior
+/// as opaque text, `.compound` blocks parse theirs as nested blocks.
+const Delimiter = struct {
+    char: u8,
+    /// The ASG block name (`listing`, `example`, …). Carried through to
+    /// `asg.zig` verbatim; see its doc comment for how each maps to a `Kind`.
+    name: []const u8,
+    content: enum { verbatim, compound, dropped },
+
+    /// `--`, the one delimiter that is not a run of four or more. Not in
+    /// `DELIMITERS` because `matchDelimiter` has to test it by its whole
+    /// spelling rather than by its character.
+    const open: Delimiter = .{ .char = '-', .name = "open", .content = .compound };
+};
+
+/// The delimited blocks of docs/modules/blocks/pages/delimited.adoc, minus the
+/// two the ASG has no node for: a table (`|===`) has no place in the schema at
+/// all — the AsciiDoc ASG as of draft-01 does not model tables — and a comment
+/// block produces no node by definition, so it is `.dropped` rather than
+/// missing.
+const DELIMITERS = [_]Delimiter{
+    .{ .char = '-', .name = "listing", .content = .verbatim },
+    .{ .char = '.', .name = "literal", .content = .verbatim },
+    .{ .char = '+', .name = "pass", .content = .verbatim },
+    .{ .char = '=', .name = "example", .content = .compound },
+    .{ .char = '_', .name = "quote", .content = .compound },
+    .{ .char = '*', .name = "sidebar", .content = .compound },
+    .{ .char = '/', .name = "comment", .content = .dropped },
+};
 
 /// The document root's `current_level` in `parseSectionsLoop`. Not `0`:
 /// AsciiDoc has real level-0 sections (a part title, `= Title` anywhere below
@@ -187,24 +226,31 @@ const Parser = struct {
 
     // ── delimited-block / list-item recognition ─────────────────────────
 
-    fn isDelimLine(self: *const Parser, i: usize, ch: u8) bool {
-        if (self.leadingSpaces(i) != 0) return false;
+    /// A delimited block's opening line, if line `i` is one. See `Delimiter`
+    /// for the table this matches against.
+    fn matchDelimiter(self: *const Parser, i: usize) ?struct { delim: Delimiter, text: []const u8 } {
+        if (i >= self.lines.len) return null;
+        if (self.leadingSpaces(i) != 0) return null;
         const t = std.mem.trimEnd(u8, self.lineText(i), " \t");
-        if (t.len < 4) return false;
-        for (t) |c| {
-            if (c != ch) return false;
+        if (t.len < 2) return null;
+
+        // The open block is the one exception to "four or more": it is spelled
+        // with exactly two hyphens, which is also why it has to be tested
+        // before the run-length check below would read it as a short listing.
+        if (std.mem.eql(u8, t, "--")) return .{ .delim = Delimiter.open, .text = t };
+        if (t.len < 4) return null;
+        for (t[1..]) |c| {
+            if (c != t[0]) return null;
         }
-        return true;
+        for (DELIMITERS) |d| {
+            if (d.char == t[0]) return .{ .delim = d, .text = t };
+        }
+        return null;
     }
 
-    fn isListingDelim(self: *const Parser, i: usize) bool {
-        return self.isDelimLine(i, '-');
-    }
-
-    fn isSidebarDelim(self: *const Parser, i: usize) bool {
-        return self.isDelimLine(i, '*');
-    }
-
+    /// Does line `i` close a block opened with exactly `opening`? A closing
+    /// line must match the opening one character for character — a longer or
+    /// shorter run of the same character does not close it.
     fn matchesDelim(self: *const Parser, i: usize, opening: []const u8) bool {
         if (self.leadingSpaces(i) != 0) return false;
         return std.mem.eql(u8, std.mem.trimEnd(u8, self.lineText(i), " \t"), opening);
@@ -217,8 +263,39 @@ const Parser = struct {
         return (t[0] == '*' or t[0] == '-' or t[0] == '+') and t[1] == ' ';
     }
 
+    /// `'''` — a thematic break. Three or more of `'`, `-`, `*` or `_` on
+    /// their own line is Asciidoctor's "markdown-style" spelling too, but only
+    /// `'''` is unambiguous: the other three collide with the delimited-block
+    /// and list-marker syntax, which is checked first anyway.
+    fn isThematicBreak(self: *const Parser, i: usize) bool {
+        if (self.leadingSpaces(i) != 0) return false;
+        const t = std.mem.trimEnd(u8, self.lineText(i), " \t");
+        if (t.len < 3) return false;
+        for (t) |c| {
+            if (c != '\'') return false;
+        }
+        return true;
+    }
+
+    /// `<<<` — a page break.
+    fn isPageBreak(self: *const Parser, i: usize) bool {
+        if (self.leadingSpaces(i) != 0) return false;
+        return std.mem.eql(u8, std.mem.trimEnd(u8, self.lineText(i), " \t"), "<<<");
+    }
+
+    /// `// ...` — a line comment. Produces no node at all, so it is skipped
+    /// wherever a block could start. `///` and longer are a comment BLOCK's
+    /// delimiter and are matched before this.
+    fn isLineComment(self: *const Parser, i: usize) bool {
+        if (self.leadingSpaces(i) != 0) return false;
+        const t = self.lineText(i);
+        return t.len >= 2 and t[0] == '/' and t[1] == '/' and !(t.len >= 4 and t[2] == '/' and t[3] == '/');
+    }
+
     fn isBlockStart(self: *const Parser, i: usize) bool {
-        return self.matchHeadingLine(i) != null or self.isListingDelim(i) or self.isSidebarDelim(i) or self.isListItem(i);
+        return self.matchHeadingLine(i) != null or self.matchDelimiter(i) != null or
+            self.isListItem(i) or self.isThematicBreak(i) or self.isPageBreak(i) or
+            self.isLineComment(i);
     }
 
     // ── the top-level document scan ─────────────────────────────────────
@@ -367,35 +444,48 @@ const Parser = struct {
                 continue;
             }
             if (self.matchHeadingLine(i) != null) break;
-            if (children.items.len == 0) first_start = self.lines[i].start;
 
-            if (self.isListingDelim(i)) {
-                const r = try self.parseListing(i, hi);
-                try children.append(self.allocator, r.id);
-                last_end = r.end_offset;
-                i = r.next;
+            // Where this iteration's block starts, recorded before `i` moves.
+            // Only committed to `first_start` once a block is actually
+            // appended: a comment produces no node, and a document whose first
+            // line is a comment starts at whatever follows it.
+            const block_start = self.lines[i].start;
+            const had = children.items.len;
+
+            if (self.isLineComment(i)) {
+                i += 1;
                 continue;
-            }
-            if (self.isSidebarDelim(i)) {
-                const r = try self.parseSidebar(i, hi);
-                try children.append(self.allocator, r.id);
-                last_end = r.end_offset;
+            } else if (self.isThematicBreak(i) or self.isPageBreak(i)) {
+                const id = if (self.isThematicBreak(i))
+                    try self.b.addNode(.thematic_break)
+                else
+                    try self.b.addNode(.{ .container = .{ .name = "page-break" } });
+                const span = Span.init(block_start, self.lines[i].end);
+                self.b.setSpan(id, span);
+                try children.append(self.allocator, id);
+                last_end = span.end;
+                i += 1;
+            } else if (self.matchDelimiter(i)) |d| {
+                const r = try self.parseDelimited(i, hi, d.delim, d.text);
+                if (r.id) |id| {
+                    try children.append(self.allocator, id);
+                    last_end = r.end_offset;
+                }
                 i = r.next;
-                continue;
-            }
-            if (self.isListItem(i)) {
+            } else if (self.isListItem(i)) {
                 const r = try self.parseList(i, hi);
                 try children.append(self.allocator, r.id);
                 last_end = r.end_offset;
                 i = r.next;
-                continue;
+            } else {
+                const end = self.paragraphEnd(i, hi);
+                const p = try self.parseParagraph(i, end);
+                try children.append(self.allocator, p.id);
+                last_end = p.end_offset;
+                i = end;
             }
 
-            const end = self.paragraphEnd(i, hi);
-            const p = try self.parseParagraph(i, end);
-            try children.append(self.allocator, p.id);
-            last_end = p.end_offset;
-            i = end;
+            if (had == 0 and children.items.len > 0) first_start = block_start;
         }
         return .{
             .items = try children.toOwnedSlice(self.allocator),
@@ -428,61 +518,67 @@ const Parser = struct {
         return .{ .id = id, .end_offset = span.end };
     }
 
-    fn parseListing(self: *Parser, delim_line: usize, hi: usize) Allocator.Error!struct { id: Node.Id, next: usize, end_offset: usize } {
-        const opening = std.mem.trimEnd(u8, self.lineText(delim_line), " \t");
+    /// One delimited block, from its opening delimiter line. `.verbatim`
+    /// blocks keep their interior as opaque text on a `code_block`;
+    /// `.compound` blocks parse theirs as nested blocks; `.dropped` (a comment
+    /// block) yields no node at all, which is why `id` is optional.
+    ///
+    /// An UNCLOSED block runs to `hi` — the end of its enclosing block, or of
+    /// the document. Asciidoctor warns and does the same; the ASG has nowhere
+    /// to record the warning, so all that is left is the extent, and ending at
+    /// the last content line (rather than at a delimiter that isn't there) is
+    /// the only reading that keeps every location inside the source.
+    fn parseDelimited(
+        self: *Parser,
+        delim_line: usize,
+        hi: usize,
+        delim: Delimiter,
+        opening: []const u8,
+    ) Allocator.Error!struct { id: ?Node.Id, next: usize, end_offset: usize } {
         var close_line = delim_line + 1;
         while (close_line < hi and !self.matchesDelim(close_line, opening)) close_line += 1;
         const closed = close_line < hi;
         const content_lo = delim_line + 1;
         const content_hi = close_line;
+        const has_content = content_hi > content_lo;
 
-        var text: []const u8 = "";
-        var content_span = Span.init(self.lines[delim_line].end, self.lines[delim_line].end);
-        if (content_hi > content_lo) {
-            content_span = Span.init(self.lines[content_lo].start, self.lines[content_hi - 1].end);
-            text = self.source[content_span.start..content_span.end];
-        }
+        const next = if (closed) close_line + 1 else content_hi;
 
-        const id = try self.b.addLeaf(.{ .code_block = .{ .lang = null, .text = text } });
-        self.b.setContentSpan(id, content_span);
+        if (delim.content == .dropped) return .{ .id = null, .next = next, .end_offset = 0 };
+
+        const id = switch (delim.content) {
+            .verbatim => blk: {
+                var text: []const u8 = "";
+                if (has_content) {
+                    const content = Span.init(self.lines[content_lo].start, self.lines[content_hi - 1].end);
+                    text = self.source[content.start..content.end];
+                    const leaf = try self.b.addLeaf(.{ .code_block = .{ .lang = null, .text = text } });
+                    self.b.setContentSpan(leaf, content);
+                    break :blk leaf;
+                }
+                break :blk try self.b.addLeaf(.{ .code_block = .{ .lang = null, .text = text } });
+            },
+            .compound => blk: {
+                const inner = try self.parseFlatBlocks(content_lo, content_hi);
+                defer self.allocator.free(inner.items);
+                break :blk try self.b.addContainer(kindForCompound(delim.name), inner.items);
+            },
+            .dropped => unreachable, // returned above
+        };
+
         const end_offset = if (closed)
             self.lines[close_line].end
-        else if (content_hi > content_lo)
+        else if (has_content)
             self.lines[content_hi - 1].end
         else
             self.lines[delim_line].end;
         self.b.setSpan(id, Span.init(self.lines[delim_line].start, end_offset));
         try self.b.setAttrs(id, .{ .entries = &.{
+            .{ .key = "name", .value = delim.name },
             .{ .key = "form", .value = "delimited" },
             .{ .key = "delimiter", .value = opening },
         } });
-        return .{ .id = id, .next = if (closed) close_line + 1 else content_hi, .end_offset = end_offset };
-    }
-
-    fn parseSidebar(self: *Parser, delim_line: usize, hi: usize) Allocator.Error!struct { id: Node.Id, next: usize, end_offset: usize } {
-        const opening = std.mem.trimEnd(u8, self.lineText(delim_line), " \t");
-        var close_line = delim_line + 1;
-        while (close_line < hi and !self.matchesDelim(close_line, opening)) close_line += 1;
-        const closed = close_line < hi;
-        const content_lo = delim_line + 1;
-        const content_hi = close_line;
-
-        const inner = try self.parseFlatBlocks(content_lo, content_hi);
-        defer self.allocator.free(inner.items);
-
-        const id = try self.b.addContainer(.{ .container = .{ .name = "sidebar" } }, inner.items);
-        const end_offset = if (closed)
-            self.lines[close_line].end
-        else if (inner.items.len > 0)
-            inner.last_end
-        else
-            self.lines[delim_line].end;
-        self.b.setSpan(id, Span.init(self.lines[delim_line].start, end_offset));
-        try self.b.setAttrs(id, .{ .entries = &.{
-            .{ .key = "form", .value = "delimited" },
-            .{ .key = "delimiter", .value = opening },
-        } });
-        return .{ .id = id, .next = if (closed) close_line + 1 else content_hi, .end_offset = end_offset };
+        return .{ .id = id, .next = next, .end_offset = end_offset };
     }
 
     /// Does line `i` open an item of a list marked with `marker_char`?
@@ -539,6 +635,17 @@ const Parser = struct {
         return .{ .id = id, .next = next_line, .end_offset = last_end };
     }
 };
+
+/// The twig `Kind` a compound delimited block becomes. Only `quote` has a
+/// semantic kind waiting for it (`block_quote` means exactly that); the rest
+/// are AsciiDoc-specific containers with no counterpart anywhere else in
+/// twig's vocabulary, so they take the generic escape hatch — see `asg.zig`'s
+/// doc comment for the full mapping and why. Either way the ASG's own name
+/// rides in `attrs`, so `encode` reads one place rather than switching twice.
+fn kindForCompound(name: []const u8) Node.Kind {
+    if (std.mem.eql(u8, name, "quote")) return .block_quote;
+    return .{ .container = .{ .name = name } };
+}
 
 fn bulletFromChar(ch: u8) Document.Spelling.Bullet {
     return switch (ch) {
@@ -612,7 +719,11 @@ fn computeLines(allocator: Allocator, source: []const u8) Allocator.Error![]Line
             start = i + 1;
         }
     }
-    try list.append(allocator, .{ .start = start, .end = source.len });
+    // Only a source that does NOT end in a newline has a final partial line.
+    // Appending one unconditionally would give every ordinary file a phantom
+    // empty last line, which a block running to end-of-source (an unclosed
+    // delimited block) would then swallow into its own extent.
+    if (start < source.len) try list.append(allocator, .{ .start = start, .end = source.len });
     return list.toOwnedSlice(allocator);
 }
 

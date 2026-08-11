@@ -7,8 +7,8 @@
   "format": "Identical to asciidoc-tck-corpus.json's, so conformance.zig runs both through one path and any case here can be exported as a TCK -input.adoc/-output.json pair (--export-tck) and offered upstream.",
   "license": "EPL-2.0, matching the AsciiDoc TCK's, so cases can be contributed upstream unchanged.",
   "counts": {
-   "cases": 34,
-   "block": 29,
+   "cases": 49,
+   "block": 44,
    "inline": 5
   }
  },
@@ -2129,6 +2129,1143 @@
      },
      {
       "line": 2,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/break/thematic",
+   "level": "block",
+   "adoc": "before\n\n'''\n\nafter\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "before",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 6
+       }
+      ]
+     },
+     {
+      "name": "break",
+      "type": "block",
+      "variant": "thematic",
+      "location": [
+       {
+        "line": 3,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 3
+       }
+      ]
+     },
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "after",
+        "location": [
+         {
+          "line": 5,
+          "col": 1
+         },
+         {
+          "line": 5,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 5,
+        "col": 1
+       },
+       {
+        "line": 5,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 5,
+      "col": 5
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/break/page",
+   "level": "block",
+   "adoc": "before\n\n<<<\n\nafter\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "before",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 6
+       }
+      ]
+     },
+     {
+      "name": "break",
+      "type": "block",
+      "variant": "page",
+      "location": [
+       {
+        "line": 3,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 3
+       }
+      ]
+     },
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "after",
+        "location": [
+         {
+          "line": 5,
+          "col": 1
+         },
+         {
+          "line": 5,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 5,
+        "col": 1
+       },
+       {
+        "line": 5,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 5,
+      "col": 5
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/break/thematic-interrupts-paragraph",
+   "level": "block",
+   "adoc": "before\n'''\nafter\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "before",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 6
+       }
+      ]
+     },
+     {
+      "name": "break",
+      "type": "block",
+      "variant": "thematic",
+      "location": [
+       {
+        "line": 2,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 3
+       }
+      ]
+     },
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "after",
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 3,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 5
+     }
+    ]
+   },
+   "note": "A break needs no blank line around it: it interrupts a paragraph the way any block-start line does."
+  },
+  {
+   "id": "block/example/containing-paragraph",
+   "level": "block",
+   "adoc": "====\nbody\n====\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "example",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "====",
+      "blocks": [
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "body",
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/open/containing-paragraph",
+   "level": "block",
+   "adoc": "--\nbody\n--\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "open",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "--",
+      "blocks": [
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "body",
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 2
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 2
+     }
+    ]
+   },
+   "note": "The open block is the one delimiter that is EXACTLY two characters rather than four or more (sdr-001-open-block-delimiter)."
+  },
+  {
+   "id": "block/quote/containing-paragraph",
+   "level": "block",
+   "adoc": "____\nbody\n____\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "quote",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "____",
+      "blocks": [
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "body",
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/literal/multiple-lines",
+   "level": "block",
+   "adoc": "....\none\n  two\n....\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "literal",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "....",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "one\n  two",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 4
+     }
+    ]
+   },
+   "note": "A literal block keeps its interior verbatim, indentation included, exactly as a listing block does — the two differ only in what a renderer does with the text, which the ASG records as the block's name rather than in its content."
+  },
+  {
+   "id": "block/pass/multiple-lines",
+   "level": "block",
+   "adoc": "++++\n<hr>\n++++\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "pass",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "++++",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "<hr>",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/example/nested-blocks",
+   "level": "block",
+   "adoc": "====\n* one\n\nbody\n====\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "example",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "====",
+      "blocks": [
+       {
+        "name": "list",
+        "type": "block",
+        "marker": "*",
+        "variant": "unordered",
+        "items": [
+         {
+          "name": "listItem",
+          "type": "block",
+          "marker": "*",
+          "principal": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "one",
+            "location": [
+             {
+              "line": 2,
+              "col": 3
+             },
+             {
+              "line": 2,
+              "col": 5
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 5
+         }
+        ]
+       },
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "body",
+          "location": [
+           {
+            "line": 4,
+            "col": 1
+           },
+           {
+            "line": 4,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 4,
+          "col": 1
+         },
+         {
+          "line": 4,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 5,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 5,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/sidebar/nested-delimited-block",
+   "level": "block",
+   "adoc": "****\n====\nbody\n====\n****\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "sidebar",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "****",
+      "blocks": [
+       {
+        "name": "example",
+        "type": "block",
+        "form": "delimited",
+        "delimiter": "====",
+        "blocks": [
+         {
+          "name": "paragraph",
+          "type": "block",
+          "inlines": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "body",
+            "location": [
+             {
+              "line": 3,
+              "col": 1
+             },
+             {
+              "line": 3,
+              "col": 4
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 4,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 5,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 5,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/listing/unclosed",
+   "level": "block",
+   "adoc": "----\nbody\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "----",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "body",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   },
+   "note": "An unclosed delimited block runs to the end of its container. Asciidoctor warns and does the same; the ASG has nowhere to record the warning, so the block simply ends at its last content line — the only reading that keeps every location inside the source."
+  },
+  {
+   "id": "block/listing/mismatched-delimiter-does-not-close",
+   "level": "block",
+   "adoc": "----\n---\nbody\n----\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "----",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "---\nbody",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 4
+     }
+    ]
+   },
+   "note": "A closing delimiter must match the opening one character for character, so a shorter run is content."
+  },
+  {
+   "id": "block/comment/line",
+   "level": "block",
+   "adoc": "// hidden\nbody\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "body",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 2,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 2,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   },
+   "note": "A line comment yields nothing, and the document therefore starts at the paragraph below it rather than at line 1."
+  },
+  {
+   "id": "block/comment/line-interrupts-paragraph",
+   "level": "block",
+   "adoc": "one\n// hidden\ntwo\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "one",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 3
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 3
+       }
+      ]
+     },
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "two",
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 3
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 3,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 3
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 3
+     }
+    ]
+   },
+   "note": "Asciidoctor treats a comment line inside a paragraph as a line-level interruption that does NOT split the paragraph; twig splits it, because the ASG's paragraph carries ONE text node whose location must map back to real source, and a value with the comment line spliced out could not."
+  },
+  {
+   "id": "block/comment/block",
+   "level": "block",
+   "adoc": "////\nhidden\nmore\n////\nbody\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "body",
+        "location": [
+         {
+          "line": 5,
+          "col": 1
+         },
+         {
+          "line": 5,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 5,
+        "col": 1
+       },
+       {
+        "line": 5,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 5,
+      "col": 1
+     },
+     {
+      "line": 5,
       "col": 4
      }
     ]

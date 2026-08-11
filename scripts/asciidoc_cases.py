@@ -385,6 +385,193 @@ def define(*, case, doc, header, para, leaf, parent, section, heading, ulist,
         ),
     )
 
+    # ── breaks ──────────────────────────────────────────────────────────────
+    # docs/modules/blocks/pages/breaks.adoc. Both are one line and hold nothing.
+
+    case(
+        "block/break/thematic",
+        "before\n\n'''\n\nafter\n",
+        doc(
+            para(text("before"), at=lines(1)),
+            brk("thematic", at=lines(3)),
+            para(text("after"), at=lines(5)),
+            at=lines(1, 5),
+        ),
+    )
+
+    case(
+        "block/break/page",
+        "before\n\n<<<\n\nafter\n",
+        doc(
+            para(text("before"), at=lines(1)),
+            brk("page", at=lines(3)),
+            para(text("after"), at=lines(5)),
+            at=lines(1, 5),
+        ),
+    )
+
+    case(
+        "block/break/thematic-interrupts-paragraph",
+        "before\n'''\nafter\n",
+        doc(
+            para(text("before"), at=lines(1)),
+            brk("thematic", at=lines(2)),
+            para(text("after"), at=lines(3)),
+            at=lines(1, 3),
+        ),
+        note="A break needs no blank line around it: it interrupts a paragraph "
+             "the way any block-start line does.",
+    )
+
+    # ── the rest of the delimited blocks ────────────────────────────────────
+    # docs/modules/blocks/pages/delimited.adoc. Four of the ASG's five
+    # `parentBlock` names and three of its six `leafBlock` names are just
+    # different delimiter characters over the same two content models, so these
+    # cases are about the table being right rather than about each block being
+    # interesting on its own.
+
+    case(
+        "block/example/containing-paragraph",
+        "====\nbody\n====\n",
+        doc(
+            parent("example", para(text("body"), at=lines(2)), delimiter="====", at=lines(1, 3)),
+            at=lines(1, 3),
+        ),
+    )
+
+    case(
+        "block/open/containing-paragraph",
+        "--\nbody\n--\n",
+        doc(
+            parent("open", para(text("body"), at=lines(2)), delimiter="--", at=lines(1, 3)),
+            at=lines(1, 3),
+        ),
+        note="The open block is the one delimiter that is EXACTLY two "
+             "characters rather than four or more (sdr-001-open-block-delimiter).",
+    )
+
+    case(
+        "block/quote/containing-paragraph",
+        "____\nbody\n____\n",
+        doc(
+            parent("quote", para(text("body"), at=lines(2)), delimiter="____", at=lines(1, 3)),
+            at=lines(1, 3),
+        ),
+    )
+
+    case(
+        "block/literal/multiple-lines",
+        "....\none\n  two\n....\n",
+        doc(
+            leaf("literal", text("one\n  two"), form="delimited", delimiter="....", at=lines(1, 4)),
+            at=lines(1, 4),
+        ),
+        note="A literal block keeps its interior verbatim, indentation included, "
+             "exactly as a listing block does — the two differ only in what a "
+             "renderer does with the text, which the ASG records as the block's "
+             "name rather than in its content.",
+    )
+
+    case(
+        "block/pass/multiple-lines",
+        "++++\n<hr>\n++++\n",
+        doc(
+            leaf("pass", text("<hr>"), form="delimited", delimiter="++++", at=lines(1, 3)),
+            at=lines(1, 3),
+        ),
+    )
+
+    case(
+        "block/example/nested-blocks",
+        "====\n* one\n\nbody\n====\n",
+        doc(
+            parent(
+                "example",
+                ulist(item(text("one"), marker="*", at=lines(2)), marker="*", at=lines(2)),
+                para(text("body"), at=lines(4)),
+                delimiter="====", at=lines(1, 5),
+            ),
+            at=lines(1, 5),
+        ),
+    )
+
+    case(
+        "block/sidebar/nested-delimited-block",
+        "****\n====\nbody\n====\n****\n",
+        doc(
+            parent(
+                "sidebar",
+                parent("example", para(text("body"), at=lines(3)), delimiter="====", at=lines(2, 4)),
+                delimiter="****", at=lines(1, 5),
+            ),
+            at=lines(1, 5),
+        ),
+    )
+
+    case(
+        "block/listing/unclosed",
+        "----\nbody\n",
+        doc(
+            leaf("listing", text("body"), form="delimited", delimiter="----", at=lines(1, 2)),
+            at=lines(1, 2),
+        ),
+        note="An unclosed delimited block runs to the end of its container. "
+             "Asciidoctor warns and does the same; the ASG has nowhere to record "
+             "the warning, so the block simply ends at its last content line — "
+             "the only reading that keeps every location inside the source.",
+    )
+
+    case(
+        "block/listing/mismatched-delimiter-does-not-close",
+        "----\n---\nbody\n----\n",
+        doc(
+            leaf("listing", text("---\nbody"), form="delimited", delimiter="----", at=lines(1, 4)),
+            at=lines(1, 4),
+        ),
+        note="A closing delimiter must match the opening one character for "
+             "character, so a shorter run is content.",
+    )
+
+    # ── comments ────────────────────────────────────────────────────────────
+    # docs/modules/blocks/pages/comments.adoc. Comments produce no ASG node at
+    # all, which makes them the one construct whose expectation is an ABSENCE —
+    # and the reason the parser has to be careful about where a block "starts".
+
+    case(
+        "block/comment/line",
+        "// hidden\nbody\n",
+        doc(
+            para(text("body"), at=lines(2)),
+            at=lines(2),
+        ),
+        note="A line comment yields nothing, and the document therefore starts "
+             "at the paragraph below it rather than at line 1.",
+    )
+
+    case(
+        "block/comment/line-interrupts-paragraph",
+        "one\n// hidden\ntwo\n",
+        doc(
+            para(text("one"), at=lines(1)),
+            para(text("two"), at=lines(3)),
+            at=lines(1, 3),
+        ),
+        note="Asciidoctor treats a comment line inside a paragraph as a "
+             "line-level interruption that does NOT split the paragraph; twig "
+             "splits it, because the ASG's paragraph carries ONE text node whose "
+             "location must map back to real source, and a value with the "
+             "comment line spliced out could not.",
+    )
+
+    case(
+        "block/comment/block",
+        "////\nhidden\nmore\n////\nbody\n",
+        doc(
+            para(text("body"), at=lines(5)),
+            at=lines(5),
+        ),
+    )
+
     # ── strong spans ────────────────────────────────────────────────────────
     # spec/modules/ROOT/pages/strong-span.adoc — one of the six pages of the
     # normative spec that are actually written, so these expectations are on
