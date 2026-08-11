@@ -108,6 +108,67 @@ static void test_align_codes_match_runtime(void) {
     twig_editor_destroy(editor);
 }
 
+static void test_editor_document_shares_the_read_surface(void) {
+    // twig_editor_document hands the document-side read functions the editor's
+    // live tree, so an embedder needn't learn two spellings of the same walk —
+    // and the view keeps reporting the CURRENT tree across edits.
+    static const char src[] = "# one\n\ntwo\n";
+
+    TwigEditor *editor = NULL;
+    TwigStatus st = twig_editor_create(
+        (const uint8_t *)src, sizeof(src) - 1, TWIG_FORMAT_MARKDOWN, &editor);
+    CHECK(st == TWIG_STATUS_OK);
+    if (st != TWIG_STATUS_OK || editor == NULL) return;
+
+    TwigDocument *view = NULL;
+    st = twig_editor_document(editor, &view);
+    CHECK(st == TWIG_STATUS_OK);
+    if (st != TWIG_STATUS_OK || view == NULL) { twig_editor_destroy(editor); return; }
+
+    const TwigQueryMatch *kids = NULL;
+    size_t kids_len = 0;
+    st = twig_document_children(view, TWIG_NO_NODE, &kids, &kids_len);
+    CHECK(st == TWIG_STATUS_OK);
+    CHECK(kids_len == 2);
+    if (st != TWIG_STATUS_OK || kids_len != 2) { twig_editor_destroy(editor); return; }
+    CHECK(strcmp(kids[0].kind, "heading") == 0);
+
+    const uint32_t heading = kids[0].node_id;
+    TwigSpan span = {0, 0};
+    CHECK(twig_document_node_span(view, heading, &span) == TWIG_STATUS_OK);
+    CHECK(span.start == 0 && span.end == 5);
+
+    // Whole-tree and subtree reads work off the same handle.
+    const TwigFlatNode *flat = NULL;
+    size_t flat_len = 0;
+    CHECK(twig_document_nodes(view, &flat, &flat_len) == TWIG_STATUS_OK);
+    CHECK(flat_len >= 3);
+    const TwigFlatNode *sub = NULL;
+    size_t sub_len = 0;
+    CHECK(twig_document_subtree(view, heading, &sub, &sub_len) == TWIG_STATUS_OK);
+    CHECK(sub_len >= 1 && sub[0].id == 0 && sub[0].parent == TWIG_NO_NODE);
+
+    TwigQueryMatch hit;
+    CHECK(twig_document_node_at(view, 2, &hit) == TWIG_STATUS_OK);
+    const TwigQueryMatch *chain = NULL;
+    size_t chain_len = 0;
+    CHECK(twig_document_nodes_at(view, 2, &chain, &chain_len) == TWIG_STATUS_OK);
+    CHECK(chain_len >= 2);
+    CHECK(chain[chain_len - 1].node_id == hit.node_id);
+
+    // The view follows the editor: after an edit the same handle re-reads it.
+    static const char replacement[] = "# one and a half";
+    CHECK(twig_editor_replace(editor, (const uint8_t *)"0", 1,
+                              (const uint8_t *)replacement, sizeof(replacement) - 1)
+          == TWIG_STATUS_OK);
+    CHECK(twig_document_node_span(view, heading, &span) == TWIG_STATUS_OK);
+    CHECK(span.end == sizeof(replacement) - 1);
+
+    // Destroying a borrowed view is a no-op, not a double free.
+    twig_document_destroy(view);
+    twig_editor_destroy(editor);
+}
+
 static void test_abi_version_matches_header(void) {
     // If these disagree, the header and the linked library are from different
     // builds — the exact mismatch TWIG_ABI_VERSION exists to catch.
@@ -117,6 +178,7 @@ static void test_abi_version_matches_header(void) {
 int main(void) {
     test_abi_version_matches_header();
     test_align_codes_match_runtime();
+    test_editor_document_shares_the_read_surface();
     if (failures != 0) {
         fprintf(stderr, "c header test: %d check(s) failed\n", failures);
         return 1;

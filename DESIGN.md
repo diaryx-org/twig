@@ -101,3 +101,16 @@ Intermediate/edit-history capabilities (undo, redo, coalescing, caret
 persistence) fill in around these — see the individual `twig_editor_*` doc
 comments in `c_abi.zig`. The tier numbers are only a priority label; they
 don't imply anything beyond "what got built in what order."
+
+**The reads are not editor-specific.** P1–P3 above (plus `_child_spans` and
+`_subtree`) answer questions about a *tree*, not about an editing session, so
+they live on `TwigDocument` as `twig_document_nodes` / `_children` / `_subtree`
+/ `_node_at` / `_nodes_at`. A parse-only consumer calls them on a `twig_parse`
+handle — no editor needed just to walk flat nodes — and an editor reaches them
+through `twig_editor_document`, a borrowed `TwigDocument` over its live tree.
+The `twig_editor_*` spellings remain as aliases onto exactly that code and
+those buffers. The two document functions the borrowed view cannot serve are
+`twig_document_render_html` and `twig_document_serialize`: both are chosen by
+the document's own format and read its language side tables, and an editor
+holds a bare-AST reparse with neither. That asymmetry is the reason the split
+is a *view* rather than one merged handle type.

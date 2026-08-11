@@ -6,6 +6,7 @@ mod error;
 // into this crate.
 pub(crate) use twig_sys as ffi;
 
+use std::marker::PhantomData;
 use std::ops::Range;
 use std::os::raw::{c_char, c_int};
 use std::ptr::NonNull;
@@ -351,6 +352,100 @@ impl Document {
             ffi::TwigStatus::NOT_FOUND => Ok(None),
             _ => Err(Error::from_status(status).unwrap_err()),
         }
+    }
+
+    /// Snapshot the whole tree as a flat [`FlatNode`] array (the JSON-free read
+    /// path for a renderer), indexed so `nodes[i].id == NodeId(i)`. Walk it via
+    /// the `parent`/`first_child`/`next_sibling` links; the root is the node
+    /// whose `parent` is `None`.
+    pub fn nodes(&mut self) -> Result<Vec<FlatNode>, Error> {
+        let raw = self.raw.as_ptr();
+        collect_flat_nodes(|ptr, len| unsafe { ffi::twig_document_nodes(raw, ptr, len) })
+    }
+
+    /// The direct children of `node` as [`QueryMatch`]es (id, span, kind) —
+    /// `None` enumerates the document root's children (the top-level blocks).
+    /// The cheap enumeration an incremental renderer walks to decide which
+    /// blocks to re-marshal with [`Document::subtree`]. A childless node yields
+    /// an empty vec.
+    pub fn children(&mut self, node: Option<NodeId>) -> Result<Vec<QueryMatch>, Error> {
+        let raw = self.raw.as_ptr();
+        let id = node.map_or(ffi::TWIG_NO_NODE, |n| n.0);
+        collect_matches(|ptr, len| unsafe { ffi::twig_document_children(raw, id, ptr, len) })
+    }
+
+    /// Snapshot the subtree rooted at `node` as a self-contained [`FlatNode`]
+    /// array with *local* ids: `array[0]` is the root, every link is an index
+    /// into the returned vec (or `None`), and spans stay absolute. The root's
+    /// `parent` and `next_sibling` are `None`, so a walk from index 0 stays
+    /// inside the subtree. [`Error::InvalidArgument`] if `node` is out of range.
+    pub fn subtree(&mut self, node: NodeId) -> Result<Vec<FlatNode>, Error> {
+        let raw = self.raw.as_ptr();
+        collect_flat_nodes(|ptr, len| unsafe { ffi::twig_document_subtree(raw, node.0, ptr, len) })
+    }
+
+    /// The deepest node whose span contains byte `offset` (with `offset` equal
+    /// to the source length treated as inside the root) — hit-testing and
+    /// cursor context. `Ok(None)` if no node covers the offset;
+    /// [`Error::InvalidArgument`] if `offset` exceeds the source length.
+    pub fn node_at(&mut self, offset: usize) -> Result<Option<QueryMatch>, Error> {
+        let mut m = empty_ffi_match();
+        let status = unsafe { ffi::twig_document_node_at(self.raw.as_ptr(), offset, &mut m) };
+        match status.0 {
+            ffi::TwigStatus::OK => Ok(Some(query_match_from_ffi(&m)?)),
+            ffi::TwigStatus::NOT_FOUND => Ok(None),
+            _ => Err(Error::from_status(status).unwrap_err()),
+        }
+    }
+
+    /// The chain of nodes containing byte `offset`, root-first down to the
+    /// deepest (the node [`Document::node_at`] returns) — the ancestor path for
+    /// a breadcrumb. Empty if no node covers the offset.
+    pub fn ancestors_at(&mut self, offset: usize) -> Result<Vec<QueryMatch>, Error> {
+        let raw = self.raw.as_ptr();
+        let mut ptr: *const ffi::TwigQueryMatch = std::ptr::null();
+        let mut len = 0usize;
+        let status = unsafe { ffi::twig_document_nodes_at(raw, offset, &mut ptr, &mut len) };
+        match status.0 {
+            ffi::TwigStatus::OK => {}
+            ffi::TwigStatus::NOT_FOUND => return Ok(Vec::new()),
+            _ => return Err(Error::from_status(status).unwrap_err()),
+        }
+        if len == 0 || ptr.is_null() {
+            return Ok(Vec::new());
+        }
+        let raw_matches = unsafe { std::slice::from_raw_parts(ptr, len) };
+        raw_matches.iter().map(query_match_from_ffi).collect()
+    }
+}
+
+/// A [`Document`] borrowed from an [`Editor`] (see [`Editor::document`]): the
+/// editor's live tree behind the whole document read surface, without a parse.
+///
+/// It holds the editor mutably borrowed for as long as it lives, so the tree —
+/// and every node id and span read out of it — cannot change underneath it.
+/// Dropping it frees nothing; the editor owns the tree.
+///
+/// [`Document::render_html`] and [`Document::serialize`] are the two methods it
+/// cannot serve ([`Error::UnsupportedFormat`] — they need a real parse's
+/// language tag and side tables). Parse [`Editor::source`] for those.
+#[derive(Debug)]
+pub struct DocumentView<'a> {
+    doc: Document,
+    _editor: PhantomData<&'a mut Editor>,
+}
+
+impl std::ops::Deref for DocumentView<'_> {
+    type Target = Document;
+
+    fn deref(&self) -> &Document {
+        &self.doc
+    }
+}
+
+impl std::ops::DerefMut for DocumentView<'_> {
+    fn deref_mut(&mut self) -> &mut Document {
+        &mut self.doc
     }
 }
 
@@ -717,6 +812,25 @@ impl Editor {
     pub fn caret_blob(&mut self) -> Result<Vec<u8>, Error> {
         let raw = self.raw.as_ptr();
         collect_bytes(|ptr, len| unsafe { ffi::twig_editor_caret_blob(raw, ptr, len) })
+    }
+
+    /// The editor's current tree as a borrowed [`Document`], so the whole
+    /// document read surface ([`Document::nodes`], [`Document::children`],
+    /// [`Document::subtree`], [`Document::node_at`], [`Document::query`],
+    /// [`Document::span`], …) applies to a document being edited.
+    ///
+    /// The view borrows the editor mutably, so no edit can land while it is
+    /// alive and the ids it yields cannot go stale; drop it to edit again. See
+    /// [`DocumentView`] for the two methods it cannot serve.
+    pub fn document(&mut self) -> Result<DocumentView<'_>, Error> {
+        let mut raw = std::ptr::null_mut();
+        let status = unsafe { ffi::twig_editor_document(self.raw.as_ptr(), &mut raw) };
+        Error::from_status(status)?;
+        let raw = NonNull::new(raw).ok_or(Error::Internal)?;
+        Ok(DocumentView {
+            doc: Document { raw },
+            _editor: PhantomData,
+        })
     }
 
     /// Snapshot the current tree as a flat [`FlatNode`] array (the JSON-free
@@ -1175,6 +1289,36 @@ fn collect_matches(
     }
     let matches = unsafe { std::slice::from_raw_parts(ptr, len) };
     matches.iter().map(query_match_from_ffi).collect()
+}
+
+/// `collect_matches` for the flat-node reads (`nodes` / `subtree`), which hand
+/// back a borrowed [`ffi::TwigFlatNode`] array on the same contract.
+fn collect_flat_nodes(
+    call: impl FnOnce(*mut *const ffi::TwigFlatNode, *mut usize) -> ffi::TwigStatus,
+) -> Result<Vec<FlatNode>, Error> {
+    let mut ptr = std::ptr::null();
+    let mut len = 0usize;
+    let status = call(&mut ptr, &mut len);
+    Error::from_status(status)?;
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    if ptr.is_null() {
+        return Err(Error::Internal);
+    }
+    let nodes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    nodes.iter().map(flat_node_from_ffi).collect()
+}
+
+/// The zeroed out-parameter the `node_at` hit-tests fill.
+fn empty_ffi_match() -> ffi::TwigQueryMatch {
+    ffi::TwigQueryMatch {
+        node_id: 0,
+        span: ffi::TwigSpan { start: 0, end: 0 },
+        content_span: ffi::TwigSpan { start: 0, end: 0 },
+        has_content_span: 0,
+        kind: std::ptr::null(),
+    }
 }
 
 /// Copy a borrowed C ABI [`ffi::TwigQueryMatch`] into an owned [`QueryMatch`].
@@ -1844,6 +1988,55 @@ mod tests {
             heading.content_span
         );
         assert_eq!(doc.span(NodeId(u32::MAX)), Err(Error::InvalidArgument));
+    }
+
+    #[test]
+    fn document_walks_its_tree_without_an_editor() {
+        let source = "# hi\n\ntext\n";
+        let mut doc = Document::parse_str(source, Format::Markdown).expect("parse markdown");
+
+        let nodes = doc.nodes().expect("nodes");
+        assert!(nodes.len() >= 3);
+        for (i, n) in nodes.iter().enumerate() {
+            assert_eq!(n.id, NodeId(i as u32));
+        }
+
+        let kids = doc.children(None).expect("children");
+        assert_eq!(kids.len(), 2);
+        assert_eq!(kids[0].kind, "heading");
+
+        let sub = doc.subtree(NodeId(kids[0].node_id)).expect("subtree");
+        assert_eq!(sub[0].id, NodeId(0));
+        assert_eq!(sub[0].parent, None);
+        assert_eq!(sub[0].span, kids[0].span);
+
+        let hit = doc.node_at(2).expect("node_at").expect("a node at 2");
+        let chain = doc.ancestors_at(2).expect("ancestors");
+        assert_eq!(chain.last().expect("deepest").node_id, hit.node_id);
+        assert_eq!(chain[0].kind, "doc");
+
+        assert_eq!(doc.subtree(NodeId(u32::MAX)), Err(Error::InvalidArgument));
+    }
+
+    #[test]
+    fn editor_document_view_reads_the_live_tree() {
+        let mut ed = Editor::new_str("# one\n\ntwo\n", Format::Markdown).expect("editor");
+
+        {
+            let mut view = ed.document().expect("view");
+            let kids = view.children(None).expect("children");
+            assert_eq!(kids.len(), 2);
+            assert_eq!(kids[0].kind, "heading");
+            assert_eq!(view.span(NodeId(kids[0].node_id)).expect("span"), 0..5);
+            // The two the view can't serve.
+            assert_eq!(view.render_html(), Err(Error::UnsupportedFormat));
+            assert_eq!(view.serialize(Format::Markdown), Err(Error::UnsupportedFormat));
+        }
+
+        ed.replace("0", "# one and a half").expect("replace");
+        let mut view = ed.document().expect("view");
+        let kids = view.children(None).expect("children");
+        assert_eq!(view.span(NodeId(kids[0].node_id)).expect("span"), 0..16);
     }
 
     #[test]

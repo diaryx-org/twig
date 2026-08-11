@@ -278,6 +278,34 @@ unsafe extern "C" {
         node_id: u32,
         out_span: *mut TwigSpan,
     ) -> TwigStatus;
+    pub fn twig_document_nodes(
+        doc: *mut TwigDocument,
+        out_ptr: *mut *const TwigFlatNode,
+        out_len: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_document_children(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_ptr: *mut *const TwigQueryMatch,
+        out_len: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_document_subtree(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_ptr: *mut *const TwigFlatNode,
+        out_len: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_document_node_at(
+        doc: *mut TwigDocument,
+        offset: usize,
+        out_match: *mut TwigQueryMatch,
+    ) -> TwigStatus;
+    pub fn twig_document_nodes_at(
+        doc: *mut TwigDocument,
+        offset: usize,
+        out_ptr: *mut *const TwigQueryMatch,
+        out_len: *mut usize,
+    ) -> TwigStatus;
 
     pub fn twig_editor_create(
         input: *const u8,
@@ -356,6 +384,10 @@ unsafe extern "C" {
         editor: *mut TwigEditor,
         out_ptr: *mut *const u8,
         out_len: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_editor_document(
+        editor: *mut TwigEditor,
+        out_doc: *mut *mut TwigDocument,
     ) -> TwigStatus;
     pub fn twig_editor_ast_json(
         editor: *mut TwigEditor,

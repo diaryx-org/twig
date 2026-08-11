@@ -162,6 +162,21 @@ pub const TWIG_DIRECTIVE_NONE: c_int = -1;
 
 pub const TwigDocument = opaque {};
 
+/// What a `TwigDocument` is a view OF — the one place the read surface is
+/// allowed to care whether it was reached through `twig_parse` or through
+/// `twig_editor_document`.
+const DocumentView = union(enum) {
+    /// A one-shot parse the handle OWNS, with its language's side tables
+    /// (`twig_parse`). Deinited by `twig_document_destroy`.
+    owned: twig.format.ParsedDoc,
+    /// The editor's live tree, BORROWED (`twig_editor_document`). The pointer
+    /// is to the `Splicer`'s `doc` field, whose ADDRESS is stable for the
+    /// editor handle's whole lifetime while its CONTENTS are replaced wholesale
+    /// on every reparse — which is exactly the "valid handle, but re-read it
+    /// after an edit" contract the C side documents.
+    borrowed: *const twig.Document,
+};
+
 /// A parsed document plus the caller-borrowed output buffers each accessor
 /// caches on it. Every buffer follows the same contract: it is owned by the
 /// handle, replaced on the next call to the same accessor, and freed when the
@@ -169,12 +184,60 @@ pub const TwigDocument = opaque {};
 /// same-accessor call on this handle or `twig_document_destroy`, whichever
 /// comes first. The buffers are independent: rendering HTML never invalidates
 /// a serialize/ast-json/query result and vice versa.
+///
+/// `EditorHandle` embeds one of these in `borrowed` mode, so the editor's own
+/// read functions and the `twig_document_*` ones reached through
+/// `twig_editor_document` are literally the same code over the same buffers.
 const DocumentHandle = struct {
-    parsed: twig.format.ParsedDoc,
+    view: DocumentView,
     rendered: []u8 = &.{},
     serialized: []u8 = &.{},
     ast_json: []u8 = &.{},
     query_matches: []TwigQueryMatch = &.{},
+    /// The last `twig_document_nodes` snapshot (see DESIGN.md's "Editor
+    /// surface" tiers — the JSON-free bulk read).
+    flat_nodes: []TwigFlatNode = &.{},
+    /// The `TwigKeyVal` records the last `twig_document_nodes` snapshot's
+    /// `attrs_ptr`s point into (see `fillAttrs`). Paired with `flat_nodes`:
+    /// replaced together, freed together.
+    flat_attrs: []TwigKeyVal = &.{},
+    /// The last `twig_document_subtree` snapshot. Independent of `flat_nodes`
+    /// so a per-block re-marshal doesn't invalidate a prior whole-tree read.
+    subtree_nodes: []TwigFlatNode = &.{},
+    /// The `TwigKeyVal` records the last `twig_document_subtree` snapshot's
+    /// `attrs_ptr`s point into. Paired with `subtree_nodes`.
+    subtree_attrs: []TwigKeyVal = &.{},
+    /// The last `twig_document_nodes_at` ancestor chain. Independent of
+    /// `query_matches` so a hit-test doesn't invalidate a prior query.
+    ancestor_matches: []TwigQueryMatch = &.{},
+    /// The last `twig_document_children` result (direct-children enumeration).
+    child_matches: []TwigQueryMatch = &.{},
+
+    /// The `Document` this handle reads, by value — a borrowed view either way
+    /// (`ParsedDoc.document()` is itself one), so it must never be deinited.
+    fn document(self: *const DocumentHandle) twig.Document {
+        return switch (self.view) {
+            .owned => |*parsed| parsed.document(),
+            .borrowed => |doc| doc.*,
+        };
+    }
+
+    /// Free every cached output buffer. Does NOT touch `view`: an editor's
+    /// borrowed handle recycles its buffers this way without the tree going
+    /// anywhere.
+    fn freeBuffers(self: *DocumentHandle, allocator: Allocator) void {
+        if (self.rendered.len != 0) allocator.free(self.rendered);
+        if (self.serialized.len != 0) allocator.free(self.serialized);
+        if (self.ast_json.len != 0) allocator.free(self.ast_json);
+        if (self.query_matches.len != 0) allocator.free(self.query_matches);
+        if (self.flat_nodes.len != 0) allocator.free(self.flat_nodes);
+        if (self.flat_attrs.len != 0) allocator.free(self.flat_attrs);
+        if (self.subtree_nodes.len != 0) allocator.free(self.subtree_nodes);
+        if (self.subtree_attrs.len != 0) allocator.free(self.subtree_attrs);
+        if (self.ancestor_matches.len != 0) allocator.free(self.ancestor_matches);
+        if (self.child_matches.len != 0) allocator.free(self.child_matches);
+        self.* = .{ .view = self.view };
+    }
 };
 
 fn activeAllocator() Allocator {
@@ -356,20 +419,24 @@ pub export fn twig_parse_ext(
     };
 
     const handle = allocator.create(DocumentHandle) catch return .out_of_memory;
-    handle.* = .{ .parsed = parsed };
+    handle.* = .{ .view = .{ .owned = parsed } };
     out.* = @ptrCast(handle);
     return .ok;
 }
 
+/// Destroy a document handle. A no-op for a BORROWED handle (one returned by
+/// `twig_editor_document`): that view belongs to its editor and is freed by
+/// `twig_editor_destroy`, so passing it here is tolerated rather than fatal.
 pub export fn twig_document_destroy(doc: ?*TwigDocument) void {
     const raw = doc orelse return;
     const allocator = activeAllocator();
     const handle = asHandle(raw);
-    if (handle.rendered.len != 0) allocator.free(handle.rendered);
-    if (handle.serialized.len != 0) allocator.free(handle.serialized);
-    if (handle.ast_json.len != 0) allocator.free(handle.ast_json);
-    if (handle.query_matches.len != 0) allocator.free(handle.query_matches);
-    handle.parsed.deinit();
+    switch (handle.view) {
+        .borrowed => return,
+        .owned => {},
+    }
+    handle.freeBuffers(allocator);
+    handle.view.owned.deinit();
     allocator.destroy(handle);
 }
 
@@ -384,8 +451,15 @@ pub export fn twig_document_render_html(
 
     const allocator = activeAllocator();
     const handle = asHandle(raw);
+    // Rendering needs the language tag and side tables of a real parse; a
+    // borrowed editor view has only the tree. Render the editor's source
+    // (`twig_editor_source` + `twig_parse`) instead.
+    const parsed = switch (handle.view) {
+        .owned => |*p| p,
+        .borrowed => return .unsupported_format,
+    };
 
-    const rendered = twig.format.renderHtmlAlloc(allocator, &handle.parsed) catch |err| switch (err) {
+    const rendered = twig.format.renderHtmlAlloc(allocator, parsed) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         error.UnsafeMetadata => return .unsafe_metadata,
     };
@@ -447,8 +521,15 @@ pub export fn twig_document_serialize(
 
     const allocator = activeAllocator();
     const handle = asHandle(raw);
+    // Same reason as `twig_document_render_html`: serialization is chosen
+    // against the document's OWN format, which a borrowed editor view doesn't
+    // carry (and whose current bytes `twig_editor_source` already hands back).
+    const parsed = switch (handle.view) {
+        .owned => |*p| p,
+        .borrowed => return .unsupported_format,
+    };
 
-    const serialized = (serializeDocument(allocator, &handle.parsed, target) catch |err| switch (err) {
+    const serialized = (serializeDocument(allocator, parsed, target) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         error.UnsafeMetadata => return .unsafe_metadata,
         else => return .internal_error,
@@ -480,7 +561,7 @@ pub export fn twig_document_ast_json(
     const allocator = activeAllocator();
     const handle = asHandle(raw);
 
-    const json = twig.ast_json.encodeAlloc(allocator, &handle.parsed.document()) catch |err| switch (err) {
+    const json = twig.ast_json.encodeAlloc(allocator, &handle.document()) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
     };
 
@@ -517,7 +598,7 @@ pub export fn twig_document_query(
     const allocator = activeAllocator();
     const handle = asHandle(raw);
 
-    const out = buildQueryMatches(allocator, &handle.parsed.document(), selector_src) catch |err| switch (err) {
+    const out = buildQueryMatches(allocator, &handle.document(), selector_src) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         error.InvalidSelector => return .invalid_argument,
     };
@@ -542,7 +623,7 @@ pub export fn twig_document_node_span(
     const raw = doc orelse return .invalid_argument;
     const out = out_span orelse return .invalid_argument;
     const handle = asHandle(raw);
-    const d = handle.parsed.document();
+    const d = handle.document();
     if (node_id >= d.ast.nodes.len) return .invalid_argument;
     const s = d.span(node_id);
     out.* = .{ .start = s.start, .end = s.end };
@@ -561,10 +642,268 @@ pub export fn twig_document_node_content_span(
     const raw = doc orelse return .invalid_argument;
     const out = out_span orelse return .invalid_argument;
     const handle = asHandle(raw);
-    const d = handle.parsed.document();
+    const d = handle.document();
     if (node_id >= d.ast.nodes.len) return .invalid_argument;
     const cs = d.contentSpan(node_id) orelse return .not_found;
     out.* = .{ .start = cs.start, .end = cs.end };
+    return .ok;
+}
+
+// ── Document read surface (shared with the editor) ───────────────────────────
+// These five are the tree read-back that used to exist only on `TwigEditor`.
+// They take a `TwigDocument`, so a parse-only consumer no longer needs an
+// editor just to walk flat nodes, and `twig_editor_document` lets an editor
+// reach them on its live tree. The `twig_editor_*` spellings remain, forwarding
+// here — same code, same buffers.
+
+/// Snapshot the whole tree as a flat array of `TwigFlatNode`, one per arena
+/// node, indexed so `array[i].id == i`. The JSON-free read path for a renderer:
+/// one call, one buffer, walked via the `parent`/`first_child`/`next_sibling`
+/// id links (`TWIG_NO_NODE` where absent). The root is the node whose
+/// `parent == TWIG_NO_NODE`.
+///
+/// The returned array is borrowed from `doc` and stays valid until the next
+/// `twig_document_nodes` call on this handle or its destruction. For a view
+/// borrowed from an editor, the `text`/`destination` pointers within it
+/// additionally require no *successful edit* to have happened since (a reparse
+/// frees the payloads they borrow).
+pub export fn twig_document_nodes(
+    doc: ?*TwigDocument,
+    out_ptr: ?*?[*]const TwigFlatNode,
+    out_len: ?*usize,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const view = handle.document();
+    const nodes = view.ast.nodes;
+
+    const buf = allocator.alloc(TwigFlatNode, nodes.len) catch return .out_of_memory;
+    for (nodes, 0..) |*node, i| {
+        buf[i] = flatNodeOf(
+            &view,
+            node,
+            @intCast(i),
+            TWIG_NO_NODE, // parent filled in the pass below
+            node.first_child orelse TWIG_NO_NODE,
+            node.next_sibling orelse TWIG_NO_NODE,
+        );
+    }
+    // Parent pass: a `Node` stores children, not its parent, so derive it by
+    // stamping each node's children with its own id (one linear walk).
+    for (nodes, 0..) |node, i| {
+        var child = node.first_child;
+        while (child) |cid| {
+            buf[cid].parent = @intCast(i);
+            child = nodes[cid].next_sibling;
+        }
+    }
+
+    // Attributes: marshal into a companion buffer the flat nodes point into.
+    // Built before publishing `buf` so a mid-way OOM leaves the old snapshot
+    // intact. Identity order — `buf[i]` is arena node `i` for the whole tree.
+    const attrs = fillAttrs(allocator, &view.ast, buf, null) catch {
+        allocator.free(buf);
+        return .out_of_memory;
+    };
+
+    if (handle.flat_nodes.len != 0) allocator.free(handle.flat_nodes);
+    if (handle.flat_attrs.len != 0) allocator.free(handle.flat_attrs);
+    handle.flat_nodes = buf;
+    handle.flat_attrs = attrs orelse &.{};
+
+    ptr_out.* = if (buf.len == 0) null else buf.ptr;
+    len_out.* = buf.len;
+    return .ok;
+}
+
+/// The direct children of `node_id` as `TwigQueryMatch` (id, span, kind) — the
+/// cheap top-level enumeration an incremental renderer uses to find the blocks
+/// it must consider without marshalling the whole arena. Pair it with
+/// `twig_document_subtree` to then re-marshal only the block(s) that changed.
+/// Pass `TWIG_NO_NODE` for `node_id` to enumerate the DOCUMENT ROOT's children
+/// (the top-level blocks), so a caller needn't first look the root up.
+///
+/// Same borrow contract as `twig_document_query`, on its own buffer. A
+/// childless node yields a zero-length result and `.ok`. A `node_id` that is
+/// neither in range nor the sentinel is `invalid_argument`.
+pub export fn twig_document_children(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_ptr: ?*?[*]const TwigQueryMatch,
+    out_len: ?*usize,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const view = handle.document();
+    const ast = &view.ast;
+
+    const parent: twig.AST.Node.Id = if (node_id == TWIG_NO_NODE)
+        ast.root
+    else if (node_id < ast.nodes.len)
+        node_id
+    else
+        return .invalid_argument;
+
+    var list: std.ArrayList(TwigQueryMatch) = .empty;
+    defer list.deinit(allocator);
+    var it = ast.children(parent);
+    while (it.next()) |child| {
+        list.append(allocator, flatMatch(&view, child.id)) catch return .out_of_memory;
+    }
+
+    if (handle.child_matches.len != 0) allocator.free(handle.child_matches);
+    handle.child_matches = list.toOwnedSlice(allocator) catch return .out_of_memory;
+    ptr_out.* = if (handle.child_matches.len == 0) null else handle.child_matches.ptr;
+    len_out.* = handle.child_matches.len;
+    return .ok;
+}
+
+/// Snapshot the subtree rooted at `node_id` as a self-contained flat array with
+/// LOCAL ids: `array[0]` is the root, every `id`/`parent`/`first_child`/
+/// `next_sibling` is an index into THIS array (or `TWIG_NO_NODE`), and spans
+/// stay ABSOLUTE (byte offsets into the whole document). The incremental-render
+/// companion to `twig_document_nodes`: a consumer that has localized an edit to
+/// one block re-marshals only that block's subtree instead of the whole arena.
+///
+/// Because the array stops at the subtree, the root's `parent` and
+/// `next_sibling` are `TWIG_NO_NODE` — a walker started at index 0 never
+/// escapes it. Same borrow contract as `twig_document_nodes` but on its own
+/// buffer. `node_id` out of range is `invalid_argument`.
+pub export fn twig_document_subtree(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_ptr: ?*?[*]const TwigFlatNode,
+    out_len: ?*usize,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const view = handle.document();
+    const ast = &view.ast;
+    if (node_id >= ast.nodes.len) return .invalid_argument;
+
+    // The traversal is `AST.subtreeIds`; everything below is the wire remap into
+    // a dense local id space (`local[old] = new`), which is genuinely the ABI's.
+    const ids = ast.subtreeIds(allocator, node_id) catch return .out_of_memory;
+    defer allocator.free(ids);
+
+    const local = allocator.alloc(u32, ast.nodes.len) catch return .out_of_memory;
+    defer allocator.free(local);
+    @memset(local, TWIG_NO_NODE);
+    for (ids, 0..) |old_id, i| local[old_id] = @intCast(i);
+
+    const buf = allocator.alloc(TwigFlatNode, ids.len) catch return .out_of_memory;
+    for (ids, 0..) |old_id, i| {
+        const node = &ast.nodes[old_id];
+        buf[i] = flatNodeOf(
+            &view,
+            node,
+            @intCast(i),
+            TWIG_NO_NODE, // parent filled in the pass below
+            mapLocal(local, node.first_child),
+            // The root's next_sibling leaves the subtree, so `local` maps it to
+            // NO_NODE; a descendant's sibling is always inside.
+            mapLocal(local, node.next_sibling),
+        );
+    }
+    // Parent pass in local space (a `Node` stores children, not its parent).
+    for (ids, 0..) |old_id, i| {
+        var child = ast.nodes[old_id].first_child;
+        while (child) |cid| {
+            buf[local[cid]].parent = @intCast(i);
+            child = ast.nodes[cid].next_sibling;
+        }
+    }
+
+    // Attributes, keyed by the subtree's arena-id list (`buf[i]` is `ids[i]`).
+    const attrs = fillAttrs(allocator, ast, buf, ids) catch {
+        allocator.free(buf);
+        return .out_of_memory;
+    };
+
+    if (handle.subtree_nodes.len != 0) allocator.free(handle.subtree_nodes);
+    if (handle.subtree_attrs.len != 0) allocator.free(handle.subtree_attrs);
+    handle.subtree_nodes = buf;
+    handle.subtree_attrs = attrs orelse &.{};
+    ptr_out.* = if (buf.len == 0) null else buf.ptr;
+    len_out.* = buf.len;
+    return .ok;
+}
+
+/// The deepest node whose span contains byte `offset` (half-open `[start, end)`,
+/// with `offset == source.len` treated as inside the root) — mouse hit-testing
+/// and "what's my cursor context". Descends from the root into the last child
+/// that still contains the offset. Nodes with an unset `(0,0)` span (some
+/// parsers leave inline spans unpopulated) can't be descended into and are
+/// skipped. Fills `out_match` and returns `ok`, or `not_found` if no node
+/// covers the offset (`invalid_argument` if `offset > source.len`).
+pub export fn twig_document_node_at(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_match: ?*TwigQueryMatch,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const slot = out_match orelse return .invalid_argument;
+    const view = asHandle(raw).document();
+    if (offset > view.source.len) return .invalid_argument;
+
+    const found = twig.locate.deepestContaining(&view, offset) orelse return .not_found;
+    slot.* = flatMatch(&view, found);
+    return .ok;
+}
+
+/// The chain of nodes containing byte `offset`, root-first down to the deepest
+/// (the same node `twig_document_node_at` returns) — the ancestor path for
+/// breadcrumbs or context-scoped edits. Same borrow contract as
+/// `twig_document_query`, but on an independent buffer. Returns `not_found`
+/// (and a zero-length result) if nothing covers the offset.
+pub export fn twig_document_nodes_at(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_ptr: ?*?[*]const TwigQueryMatch,
+    out_len: ?*usize,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const view = handle.document();
+    if (offset > view.source.len) return .invalid_argument;
+    // Rebuild the exact root→deepest descent path, so the chain's last element
+    // is always the node `twig_document_node_at` returns. The root is included
+    // as the outermost breadcrumb even when its own span is unset.
+    const deepest = twig.locate.deepestContaining(&view, offset) orelse {
+        if (handle.ancestor_matches.len != 0) allocator.free(handle.ancestor_matches);
+        handle.ancestor_matches = &.{};
+        ptr_out.* = null;
+        len_out.* = 0;
+        return .not_found;
+    };
+
+    var chain: std.ArrayList(TwigQueryMatch) = .empty;
+    defer chain.deinit(allocator);
+
+    var cur = view.ast.root;
+    chain.append(allocator, flatMatch(&view, cur)) catch return .out_of_memory;
+    while (cur != deepest) {
+        cur = twig.locate.childContaining(&view, cur, offset) orelse break;
+        chain.append(allocator, flatMatch(&view, cur)) catch return .out_of_memory;
+    }
+
+    if (handle.ancestor_matches.len != 0) allocator.free(handle.ancestor_matches);
+    handle.ancestor_matches = chain.toOwnedSlice(allocator) catch return .out_of_memory;
+    ptr_out.* = handle.ancestor_matches.ptr;
+    len_out.* = handle.ancestor_matches.len;
     return .ok;
 }
 
@@ -626,31 +965,23 @@ const EditorHandle = struct {
     /// `Splicer.ParseFn`'s `ctx`). Stored ON the handle so its address is stable
     /// for the handle's whole lifetime — the editor holds `&this`.
     parse_config: twig.format.ParseConfig = .{},
-    /// Caller-borrowed output buffers, same contract as `DocumentHandle`'s.
-    ast_json: []u8 = &.{},
-    query_matches: []TwigQueryMatch = &.{},
-    /// The last `twig_editor_nodes` snapshot (editor tree read-back; see
-    /// DESIGN.md's "Editor surface" tiers).
-    flat_nodes: []TwigFlatNode = &.{},
-    /// The `TwigKeyVal` records the last `twig_editor_nodes` snapshot's
-    /// `attrs_ptr`s point into (see `fillAttrs`). Paired with `flat_nodes`:
-    /// replaced together, freed together.
-    flat_attrs: []TwigKeyVal = &.{},
-    /// The last `twig_editor_nodes_at` ancestor chain. Independent of
-    /// `query_matches` so a hit-test doesn't invalidate a prior query.
-    ancestor_matches: []TwigQueryMatch = &.{},
-    /// The last `twig_editor_subtree` snapshot. Independent of `flat_nodes` so a
-    /// per-block re-marshal doesn't invalidate a prior whole-tree read.
-    subtree_nodes: []TwigFlatNode = &.{},
-    /// The `TwigKeyVal` records the last `twig_editor_subtree` snapshot's
-    /// `attrs_ptr`s point into. Paired with `subtree_nodes`.
-    subtree_attrs: []TwigKeyVal = &.{},
-    /// The last `twig_editor_child_spans` result (direct-children enumeration).
-    child_spans: []TwigQueryMatch = &.{},
+    /// A `TwigDocument` over the editor's live tree, in `borrowed` mode, and the
+    /// home of every caller-borrowed read buffer this handle hands out. The
+    /// editor's read functions forward to the `twig_document_*` ones through it,
+    /// and `twig_editor_document` hands it to the caller — so both spellings
+    /// share one implementation and one set of buffers. Its address is inside
+    /// this (heap, never moved) handle, so it stays valid until destroy.
+    view: DocumentHandle = undefined,
 };
 
 fn asEditor(ed: *TwigEditor) *EditorHandle {
     return @ptrCast(@alignCast(ed));
+}
+
+/// The editor's borrowed document view as the opaque C type — the argument
+/// every forwarding `twig_editor_*` read function passes down.
+fn editorView(handle: *EditorHandle) *TwigDocument {
+    return @ptrCast(&handle.view);
 }
 
 /// The one edit each locator-addressed `twig_editor_*` op performs, dispatched
@@ -766,6 +1097,10 @@ pub export fn twig_editor_create_ext(
             else => .parse_error,
         };
     };
+    // Only now does the splicer's `doc` exist to point at. Its ADDRESS is a
+    // field of this handle and so is fixed; its contents are replaced on every
+    // reparse, which is what makes the view always current.
+    handle.view = .{ .view = .{ .borrowed = &handle.editor.splicer.doc } };
     out.* = @ptrCast(handle);
     return .ok;
 }
@@ -774,16 +1109,38 @@ pub export fn twig_editor_destroy(ed: ?*TwigEditor) void {
     const raw = ed orelse return;
     const allocator = activeAllocator();
     const handle = asEditor(raw);
-    if (handle.ast_json.len != 0) allocator.free(handle.ast_json);
-    if (handle.query_matches.len != 0) allocator.free(handle.query_matches);
-    if (handle.flat_nodes.len != 0) allocator.free(handle.flat_nodes);
-    if (handle.flat_attrs.len != 0) allocator.free(handle.flat_attrs);
-    if (handle.ancestor_matches.len != 0) allocator.free(handle.ancestor_matches);
-    if (handle.subtree_nodes.len != 0) allocator.free(handle.subtree_nodes);
-    if (handle.subtree_attrs.len != 0) allocator.free(handle.subtree_attrs);
-    if (handle.child_spans.len != 0) allocator.free(handle.child_spans);
+    // The view is borrowed, so this frees the read buffers only; the tree
+    // belongs to the editor and goes with it.
+    handle.view.freeBuffers(allocator);
     handle.editor.deinit();
     allocator.destroy(handle);
+}
+
+/// A read-only `TwigDocument` view of the editor's CURRENT tree, so a caller
+/// holding an editor can use the `twig_document_*` read surface
+/// (`_nodes`, `_children`, `_subtree`, `_node_at`, `_nodes_at`, `_query`,
+/// `_ast_json`, `_node_span`, `_node_content_span`) instead of the parallel
+/// `twig_editor_*` spellings, which remain as aliases.
+///
+/// The handle is BORROWED from `ed`: it must NOT be passed to
+/// `twig_document_destroy` (which ignores it), it stays valid until
+/// `twig_editor_destroy`, and it always reflects the tree as of the last
+/// successful edit — the same pointer keeps working across edits, but any
+/// buffer already read out of it goes stale exactly like the editor's own
+/// (node ids and spans are only valid against the tree they came from).
+///
+/// `twig_document_render_html` and `twig_document_serialize` are the two
+/// document functions this view cannot serve — they need the language tag and
+/// side tables of a real parse, and return `unsupported_format` here. Take
+/// `twig_editor_source` through `twig_parse` for those.
+pub export fn twig_editor_document(
+    ed: ?*TwigEditor,
+    out_doc: ?*?*TwigDocument,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const out = out_doc orelse return .invalid_argument;
+    out.* = editorView(asEditor(raw));
+    return .ok;
 }
 
 /// Resolve `locator` against the editor's current tree and apply `op`. The
@@ -977,22 +1334,7 @@ pub export fn twig_editor_ast_json(
     out_len: ?*usize,
 ) TwigStatus {
     const raw = ed orelse return .invalid_argument;
-    const ptr_out = out_ptr orelse return .invalid_argument;
-    const len_out = out_len orelse return .invalid_argument;
-
-    const allocator = activeAllocator();
-    const handle = asEditor(raw);
-
-    const json = twig.ast_json.encodeAlloc(allocator, &handle.editor.splicer.doc) catch |err| switch (err) {
-        error.OutOfMemory => return .out_of_memory,
-    };
-
-    if (handle.ast_json.len != 0) allocator.free(handle.ast_json);
-    handle.ast_json = json;
-
-    ptr_out.* = if (json.len == 0) null else json.ptr;
-    len_out.* = json.len;
-    return .ok;
+    return twig_document_ast_json(editorView(asEditor(raw)), out_ptr, out_len);
 }
 
 /// Resolve a selector against the editor's current tree — the live counterpart
@@ -1008,24 +1350,7 @@ pub export fn twig_editor_query(
     out_len: ?*usize,
 ) TwigStatus {
     const raw = ed orelse return .invalid_argument;
-    const ptr_out = out_ptr orelse return .invalid_argument;
-    const len_out = out_len orelse return .invalid_argument;
-    const selector_src = sliceOf(selector_ptr, selector_len) orelse return .invalid_argument;
-
-    const allocator = activeAllocator();
-    const handle = asEditor(raw);
-
-    const out = buildQueryMatches(allocator, &handle.editor.splicer.doc, selector_src) catch |err| switch (err) {
-        error.OutOfMemory => return .out_of_memory,
-        error.InvalidSelector => return .invalid_argument,
-    };
-
-    if (handle.query_matches.len != 0) allocator.free(handle.query_matches);
-    handle.query_matches = out;
-
-    ptr_out.* = if (out.len == 0) null else out.ptr;
-    len_out.* = out.len;
-    return .ok;
+    return twig_document_query(editorView(asEditor(raw)), selector_ptr, selector_len, out_ptr, out_len);
 }
 
 // ── Offset-addressed editing & read-back ─────────────────────────────────────
@@ -1348,80 +1673,28 @@ pub export fn twig_editor_caret_blob(
     return .ok;
 }
 
-/// Snapshot the editor's current tree as a flat array of `TwigFlatNode`, one
-/// per arena node, indexed so `array[i].id == i`. The JSON-free read path for
-/// a renderer: one call, one buffer, walked via the `parent`/`first_child`/
-/// `next_sibling` id links (`TWIG_NO_NODE` where absent). The root is the node
-/// whose `parent == TWIG_NO_NODE`.
-///
-/// The returned array is borrowed from `ed` and stays valid until the next
-/// `twig_editor_nodes` call on this handle or `twig_editor_destroy`. The
-/// `text`/`destination` pointers within it additionally require no *successful
-/// edit* to have happened since (a reparse frees the payloads they borrow).
+// ── Editor tree read-back (aliases for the document read surface) ────────────
+// Each of these five is `twig_document_*` over `twig_editor_document(ed)` —
+// kept because they predate the document-side surface and are what the editor
+// docs/tests have always called. New code can use either; they share buffers,
+// so e.g. `twig_editor_nodes` and `twig_document_nodes` on this editor's view
+// invalidate each other's result.
+
+/// Snapshot the editor's current tree as a flat array of `TwigFlatNode`
+/// (`twig_document_nodes` on the editor's live view — see it for the walk and
+/// the borrow contract, which here ends at `twig_editor_destroy`).
 pub export fn twig_editor_nodes(
     ed: ?*TwigEditor,
     out_ptr: ?*?[*]const TwigFlatNode,
     out_len: ?*usize,
 ) TwigStatus {
     const raw = ed orelse return .invalid_argument;
-    const ptr_out = out_ptr orelse return .invalid_argument;
-    const len_out = out_len orelse return .invalid_argument;
-
-    const allocator = activeAllocator();
-    const handle = asEditor(raw);
-    const doc = &handle.editor.splicer.doc;
-    const nodes = doc.ast.nodes;
-
-    const buf = allocator.alloc(TwigFlatNode, nodes.len) catch return .out_of_memory;
-    for (nodes, 0..) |*node, i| {
-        buf[i] = flatNodeOf(
-            doc,
-            node,
-            @intCast(i),
-            TWIG_NO_NODE, // parent filled in the pass below
-            node.first_child orelse TWIG_NO_NODE,
-            node.next_sibling orelse TWIG_NO_NODE,
-        );
-    }
-    // Parent pass: a `Node` stores children, not its parent, so derive it by
-    // stamping each node's children with its own id (one linear walk).
-    for (nodes, 0..) |node, i| {
-        var child = node.first_child;
-        while (child) |cid| {
-            buf[cid].parent = @intCast(i);
-            child = nodes[cid].next_sibling;
-        }
-    }
-
-    // Attributes: marshal into a companion buffer the flat nodes point into.
-    // Built before publishing `buf` so a mid-way OOM leaves the old snapshot
-    // intact. Identity order — `buf[i]` is arena node `i` for the whole tree.
-    const attrs = fillAttrs(allocator, &doc.ast, buf, null) catch {
-        allocator.free(buf);
-        return .out_of_memory;
-    };
-
-    if (handle.flat_nodes.len != 0) allocator.free(handle.flat_nodes);
-    if (handle.flat_attrs.len != 0) allocator.free(handle.flat_attrs);
-    handle.flat_nodes = buf;
-    handle.flat_attrs = attrs orelse &.{};
-
-    ptr_out.* = if (buf.len == 0) null else buf.ptr;
-    len_out.* = buf.len;
-    return .ok;
+    return twig_document_nodes(editorView(asEditor(raw)), out_ptr, out_len);
 }
 
-/// The direct children of `node_id` as `TwigQueryMatch` (id, span, kind) — the
-/// cheap top-level enumeration an incremental renderer uses to find the blocks
-/// it must consider without marshalling the whole arena. Pair it with
-/// `twig_editor_subtree` to then re-marshal only the block(s) that changed. Pass
-/// `TWIG_NO_NODE` for `node_id` to enumerate the DOCUMENT ROOT's children (the
-/// top-level blocks), so a caller needn't first look the root up.
-///
-/// Same borrow contract as `twig_editor_query`, on its own buffer (replaced on
-/// the next `twig_editor_child_spans` call, freed on destroy). A childless node
-/// yields a zero-length result and `.ok`. A `node_id` that is neither in range
-/// nor the sentinel is `invalid_argument`.
+/// The direct children of `node_id` as `TwigQueryMatch` — `twig_document_children`
+/// on the editor's live view (`TWIG_NO_NODE` enumerates the document root's
+/// children). Named for the spans it returns; see the document-side function.
 pub export fn twig_editor_child_spans(
     ed: ?*TwigEditor,
     node_id: u32,
@@ -1429,47 +1702,11 @@ pub export fn twig_editor_child_spans(
     out_len: ?*usize,
 ) TwigStatus {
     const raw = ed orelse return .invalid_argument;
-    const ptr_out = out_ptr orelse return .invalid_argument;
-    const len_out = out_len orelse return .invalid_argument;
-    const allocator = activeAllocator();
-    const handle = asEditor(raw);
-    const doc = &handle.editor.splicer.doc;
-    const ast = &doc.ast;
-
-    const parent: twig.AST.Node.Id = if (node_id == TWIG_NO_NODE)
-        ast.root
-    else if (node_id < ast.nodes.len)
-        node_id
-    else
-        return .invalid_argument;
-
-    var list: std.ArrayList(TwigQueryMatch) = .empty;
-    defer list.deinit(allocator);
-    var it = ast.children(parent);
-    while (it.next()) |child| {
-        list.append(allocator, flatMatch(doc, child.id)) catch return .out_of_memory;
-    }
-
-    if (handle.child_spans.len != 0) allocator.free(handle.child_spans);
-    handle.child_spans = list.toOwnedSlice(allocator) catch return .out_of_memory;
-    ptr_out.* = if (handle.child_spans.len == 0) null else handle.child_spans.ptr;
-    len_out.* = handle.child_spans.len;
-    return .ok;
+    return twig_document_children(editorView(asEditor(raw)), node_id, out_ptr, out_len);
 }
 
-/// Snapshot the subtree rooted at `node_id` as a self-contained flat array with
-/// LOCAL ids: `array[0]` is the root, every `id`/`parent`/`first_child`/
-/// `next_sibling` is an index into THIS array (or `TWIG_NO_NODE`), and spans
-/// stay ABSOLUTE (byte offsets into the whole document). The incremental-render
-/// companion to `twig_editor_nodes`: a consumer that has localized an edit to
-/// one block re-marshals only that block's subtree instead of the whole arena.
-///
-/// Because the array stops at the subtree, the root's `parent` and
-/// `next_sibling` are `TWIG_NO_NODE` — a walker started at index 0 never
-/// escapes it. Same borrow contract as `twig_editor_nodes` but on its own buffer
-/// (replaced on the next `twig_editor_subtree` call): the `text`/`destination`
-/// pointers additionally require no successful edit since. `node_id` out of
-/// range is `invalid_argument`.
+/// Snapshot the subtree rooted at `node_id` with LOCAL ids and ABSOLUTE spans —
+/// `twig_document_subtree` on the editor's live view.
 pub export fn twig_editor_subtree(
     ed: ?*TwigEditor,
     node_id: u32,
@@ -1477,90 +1714,22 @@ pub export fn twig_editor_subtree(
     out_len: ?*usize,
 ) TwigStatus {
     const raw = ed orelse return .invalid_argument;
-    const ptr_out = out_ptr orelse return .invalid_argument;
-    const len_out = out_len orelse return .invalid_argument;
-    const allocator = activeAllocator();
-    const handle = asEditor(raw);
-    const doc = &handle.editor.splicer.doc;
-    const ast = &doc.ast;
-    if (node_id >= ast.nodes.len) return .invalid_argument;
-
-    // The traversal is `AST.subtreeIds`; everything below is the wire remap into
-    // a dense local id space (`local[old] = new`), which is genuinely the ABI's.
-    const ids = ast.subtreeIds(allocator, node_id) catch return .out_of_memory;
-    defer allocator.free(ids);
-
-    const local = allocator.alloc(u32, ast.nodes.len) catch return .out_of_memory;
-    defer allocator.free(local);
-    @memset(local, TWIG_NO_NODE);
-    for (ids, 0..) |old_id, i| local[old_id] = @intCast(i);
-
-    const buf = allocator.alloc(TwigFlatNode, ids.len) catch return .out_of_memory;
-    for (ids, 0..) |old_id, i| {
-        const node = &ast.nodes[old_id];
-        buf[i] = flatNodeOf(
-            doc,
-            node,
-            @intCast(i),
-            TWIG_NO_NODE, // parent filled in the pass below
-            mapLocal(local, node.first_child),
-            // The root's next_sibling leaves the subtree, so `local` maps it to
-            // NO_NODE; a descendant's sibling is always inside.
-            mapLocal(local, node.next_sibling),
-        );
-    }
-    // Parent pass in local space (a `Node` stores children, not its parent).
-    for (ids, 0..) |old_id, i| {
-        var child = ast.nodes[old_id].first_child;
-        while (child) |cid| {
-            buf[local[cid]].parent = @intCast(i);
-            child = ast.nodes[cid].next_sibling;
-        }
-    }
-
-    // Attributes, keyed by the subtree's arena-id list (`buf[i]` is `ids[i]`).
-    const attrs = fillAttrs(allocator, ast, buf, ids) catch {
-        allocator.free(buf);
-        return .out_of_memory;
-    };
-
-    if (handle.subtree_nodes.len != 0) allocator.free(handle.subtree_nodes);
-    if (handle.subtree_attrs.len != 0) allocator.free(handle.subtree_attrs);
-    handle.subtree_nodes = buf;
-    handle.subtree_attrs = attrs orelse &.{};
-    ptr_out.* = if (buf.len == 0) null else buf.ptr;
-    len_out.* = buf.len;
-    return .ok;
+    return twig_document_subtree(editorView(asEditor(raw)), node_id, out_ptr, out_len);
 }
 
-/// The deepest node whose span contains byte `offset` (half-open `[start, end)`,
-/// with `offset == source.len` treated as inside the root) — mouse hit-testing
-/// and "what's my cursor context". Descends from the root into the last child
-/// that still contains the offset. Nodes with an unset `(0,0)` span (some
-/// parsers leave inline spans unpopulated) can't be descended into and are
-/// skipped. Fills `out_match` and returns `ok`, or `not_found` if no node
-/// covers the offset (`invalid_argument` if `offset > source.len`).
+/// The deepest node whose span contains byte `offset` —
+/// `twig_document_node_at` on the editor's live view (hit-testing a caret).
 pub export fn twig_editor_node_at(
     ed: ?*TwigEditor,
     offset: usize,
     out_match: ?*TwigQueryMatch,
 ) TwigStatus {
     const raw = ed orelse return .invalid_argument;
-    const slot = out_match orelse return .invalid_argument;
-    const handle = asEditor(raw);
-    const doc = &handle.editor.splicer.doc;
-    if (offset > handle.editor.sourceBytes().len) return .invalid_argument;
-
-    const found = twig.locate.deepestContaining(doc, offset) orelse return .not_found;
-    slot.* = flatMatch(doc, found);
-    return .ok;
+    return twig_document_node_at(editorView(asEditor(raw)), offset, out_match);
 }
 
-/// The chain of nodes containing byte `offset`, root-first down to the deepest
-/// (the same node `twig_editor_node_at` returns) — the ancestor path for
-/// breadcrumbs or context-scoped edits. Same borrow contract as
-/// `twig_editor_query`, but on an independent buffer. Returns `not_found` (and
-/// a zero-length result) if nothing covers the offset.
+/// The root-first chain of nodes containing byte `offset` —
+/// `twig_document_nodes_at` on the editor's live view (breadcrumbs).
 pub export fn twig_editor_nodes_at(
     ed: ?*TwigEditor,
     offset: usize,
@@ -1568,38 +1737,7 @@ pub export fn twig_editor_nodes_at(
     out_len: ?*usize,
 ) TwigStatus {
     const raw = ed orelse return .invalid_argument;
-    const ptr_out = out_ptr orelse return .invalid_argument;
-    const len_out = out_len orelse return .invalid_argument;
-    const allocator = activeAllocator();
-    const handle = asEditor(raw);
-    const doc = &handle.editor.splicer.doc;
-    if (offset > handle.editor.sourceBytes().len) return .invalid_argument;
-    // Rebuild the exact root→deepest descent path, so the chain's last element
-    // is always the node `twig_editor_node_at` returns. The root is included as
-    // the outermost breadcrumb even when its own span is unset.
-    const deepest = twig.locate.deepestContaining(doc, offset) orelse {
-        if (handle.ancestor_matches.len != 0) allocator.free(handle.ancestor_matches);
-        handle.ancestor_matches = &.{};
-        ptr_out.* = null;
-        len_out.* = 0;
-        return .not_found;
-    };
-
-    var chain: std.ArrayList(TwigQueryMatch) = .empty;
-    defer chain.deinit(allocator);
-
-    var cur = doc.ast.root;
-    chain.append(allocator, flatMatch(doc, cur)) catch return .out_of_memory;
-    while (cur != deepest) {
-        cur = twig.locate.childContaining(doc, cur, offset) orelse break;
-        chain.append(allocator, flatMatch(doc, cur)) catch return .out_of_memory;
-    }
-
-    if (handle.ancestor_matches.len != 0) allocator.free(handle.ancestor_matches);
-    handle.ancestor_matches = chain.toOwnedSlice(allocator) catch return .out_of_memory;
-    ptr_out.* = handle.ancestor_matches.ptr;
-    len_out.* = handle.ancestor_matches.len;
-    return .ok;
+    return twig_document_nodes_at(editorView(asEditor(raw)), offset, out_ptr, out_len);
 }
 
 /// Build a `TwigQueryMatch` for a node id from the flat arena.
@@ -3083,6 +3221,130 @@ test "twig_document_node_span accessors mirror the query match fields" {
         TwigStatus.invalid_argument,
         twig_document_node_span(doc, 0xFFFF_0000, &span),
     );
+}
+
+test "twig_document_nodes / _children / _subtree / _node_at walk a parse-only document" {
+    const source = "# hi\n\ntext\n";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+    );
+    defer twig_document_destroy(doc);
+
+    // The whole arena, walked by id links.
+    var nodes: ?[*]const TwigFlatNode = null;
+    var nodes_len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_nodes(doc, &nodes, &nodes_len));
+    try std.testing.expect(nodes_len >= 3);
+    const flat = nodes.?[0..nodes_len];
+    for (flat, 0..) |n, i| try std.testing.expectEqual(@as(u32, @intCast(i)), n.id);
+
+    // The root's children are the two top-level blocks.
+    var kids: ?[*]const TwigQueryMatch = null;
+    var kids_len: usize = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_document_children(doc, TWIG_NO_NODE, &kids, &kids_len),
+    );
+    try std.testing.expectEqual(@as(usize, 2), kids_len);
+    try std.testing.expectEqualStrings("heading", std.mem.span(kids.?[0].kind));
+    try std.testing.expectEqualStrings("para", std.mem.span(kids.?[1].kind));
+
+    // A subtree re-marshal is self-contained: local ids, absolute spans.
+    var sub: ?[*]const TwigFlatNode = null;
+    var sub_len: usize = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_document_subtree(doc, kids.?[0].node_id, &sub, &sub_len),
+    );
+    try std.testing.expectEqual(@as(u32, 0), sub.?[0].id);
+    try std.testing.expectEqual(TWIG_NO_NODE, sub.?[0].parent);
+    try std.testing.expectEqual(TWIG_NO_NODE, sub.?[0].next_sibling);
+    try std.testing.expectEqual(kids.?[0].span.start, sub.?[0].span.start);
+
+    // Hit-testing an offset inside the heading, and its ancestor chain.
+    var hit: TwigQueryMatch = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_node_at(doc, 2, &hit));
+    var chain: ?[*]const TwigQueryMatch = null;
+    var chain_len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_nodes_at(doc, 2, &chain, &chain_len));
+    try std.testing.expect(chain_len >= 2);
+    try std.testing.expectEqualStrings("doc", std.mem.span(chain.?[0].kind));
+    try std.testing.expectEqual(hit.node_id, chain.?[chain_len - 1].node_id);
+
+    // Range checks.
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_document_children(doc, 0xFFFF_0000, &kids, &kids_len),
+    );
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_document_subtree(doc, 0xFFFF_0000, &sub, &sub_len),
+    );
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_document_node_at(doc, source.len + 1, &hit),
+    );
+}
+
+test "twig_editor_document views the live tree and tracks edits" {
+    var fx = try EditorFixture.initFmt("# one\n\ntwo\n", .markdown);
+    defer fx.deinit();
+
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_document(fx.ed, &doc));
+
+    // The document read surface agrees with the editor's own spelling of it.
+    var via_doc: ?[*]const TwigQueryMatch = null;
+    var via_doc_len: usize = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_document_children(doc, TWIG_NO_NODE, &via_doc, &via_doc_len),
+    );
+    try std.testing.expectEqual(@as(usize, 2), via_doc_len);
+    const heading_id = via_doc.?[0].node_id;
+    try std.testing.expectEqualStrings("heading", std.mem.span(via_doc.?[0].kind));
+
+    var via_ed: ?[*]const TwigQueryMatch = null;
+    var via_ed_len: usize = 0;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_child_spans(fx.ed, TWIG_NO_NODE, &via_ed, &via_ed_len),
+    );
+    try std.testing.expectEqual(via_doc_len, via_ed_len);
+    try std.testing.expectEqual(heading_id, via_ed.?[0].node_id);
+
+    var span: TwigSpan = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_node_span(doc, heading_id, &span));
+    try std.testing.expectEqual(@as(usize, 0), span.start);
+    try std.testing.expectEqual(@as(usize, 5), span.end);
+
+    // After an edit the SAME handle reports the new tree — no re-fetch needed.
+    const locator = "0";
+    const replacement = "# one and a half";
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_replace(fx.ed, locator.ptr, locator.len, replacement.ptr, replacement.len),
+    );
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_node_span(doc, heading_id, &span));
+    try std.testing.expectEqual(replacement.len, span.end);
+
+    // Render/serialize are the two the view can't serve.
+    var ptr: ?[*]const u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_document_render_html(doc, &ptr, &len),
+    );
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_document_serialize(doc, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+    );
+
+    // Destroying a borrowed view is a no-op; the editor still works after it.
+    twig_document_destroy(doc);
+    try fx.expectSource("# one and a half\n\ntwo\n");
 }
 
 test "twig_document_ast_json dumps the shared AST as JSON" {

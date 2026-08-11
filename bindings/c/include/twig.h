@@ -225,11 +225,14 @@ TwigStatus twig_parse_ext(
     TwigDocument **out_doc
 );
 
-// Destroy a document handle.
+// Destroy a document handle. A no-op for a borrowed handle (one obtained from
+// twig_editor_document), which its editor owns and frees.
 void twig_document_destroy(TwigDocument *doc);
 
 // Render a parsed document to HTML. For Djot/Markdown this is the rich
-// rendering path that resolves reference/footnote side tables.
+// rendering path that resolves reference/footnote side tables. Returns
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a view borrowed from an editor (it has the
+// tree, not the language side tables — render twig_editor_source via twig_parse).
 //
 // The returned bytes are borrowed from `doc` and remain valid until the next
 // `twig_document_render_html` call on that same handle, or until the handle is
@@ -244,7 +247,9 @@ TwigStatus twig_document_render_html(
 // when `format` matches the document's own format, cross-format conversion
 // otherwise (e.g. parse Markdown, serialize as Djot). Returns
 // TWIG_STATUS_UNSUPPORTED_FORMAT when the requested direction has no
-// serializer (today: converting into XML from another format).
+// serializer (today: converting into XML from another format), and likewise for
+// a view borrowed from an editor, whose current bytes twig_editor_source hands
+// back directly.
 //
 // The returned bytes are borrowed from `doc` and remain valid until the next
 // `twig_document_serialize` call on that same handle, or until the handle is
@@ -303,6 +308,81 @@ TwigStatus twig_document_node_content_span(
     TwigDocument *doc,
     uint32_t node_id,
     TwigSpan *out_span
+);
+
+// ── Document tree read-back ─────────────────────────────────────────────────
+// The JSON-free tree walk, for any document: a parse (twig_parse) or an
+// editor's live tree (twig_editor_document). These five predate this section as
+// twig_editor_nodes / _child_spans / _subtree / _node_at / _nodes_at, which
+// remain as aliases onto the same code and the same buffers. Purely additive —
+// no struct changed, so TWIG_ABI_VERSION stays 4.
+
+// Snapshot the whole tree as a flat array of TwigFlatNode, one per arena node,
+// indexed so array[i].id == i. Walk it via the parent / first_child /
+// next_sibling id links (TWIG_NO_NODE where absent); the root is the node whose
+// parent == TWIG_NO_NODE.
+//
+// Borrowed from `doc`, valid until the next twig_document_nodes call on that
+// handle or until it is destroyed. For an editor view, the text/destination
+// pointers within additionally require no successful edit since (a reparse
+// frees the payloads they borrow).
+TwigStatus twig_document_nodes(
+    TwigDocument *doc,
+    const TwigFlatNode **out_ptr,
+    size_t *out_len
+);
+
+// The direct children of `node_id` as TwigQueryMatch (id, span, kind) — the
+// cheap enumeration an incremental renderer uses to find the blocks it must
+// consider without marshalling the whole arena; pair with twig_document_subtree
+// to re-marshal only the block(s) that changed. Pass TWIG_NO_NODE for node_id
+// to enumerate the DOCUMENT ROOT's children (the top-level blocks). Same borrow
+// contract as twig_document_query, on its own buffer. A childless node yields a
+// zero-length result and TWIG_STATUS_OK; a node_id neither in range nor the
+// sentinel is TWIG_STATUS_INVALID_ARGUMENT.
+TwigStatus twig_document_children(
+    TwigDocument *doc,
+    uint32_t node_id,
+    const TwigQueryMatch **out_ptr,
+    size_t *out_len
+);
+
+// Snapshot the subtree rooted at `node_id` as a self-contained TwigFlatNode
+// array with LOCAL ids: array[0] is the root, every id / parent / first_child /
+// next_sibling indexes into THIS array (or TWIG_NO_NODE), and spans stay
+// ABSOLUTE. The root's parent and next_sibling are TWIG_NO_NODE, so a walk from
+// index 0 never leaves the subtree. Same borrow contract as
+// twig_document_nodes, on its own buffer; node_id out of range is
+// TWIG_STATUS_INVALID_ARGUMENT.
+TwigStatus twig_document_subtree(
+    TwigDocument *doc,
+    uint32_t node_id,
+    const TwigFlatNode **out_ptr,
+    size_t *out_len
+);
+
+// The deepest node whose span contains byte `offset` (half-open [start, end),
+// with offset == source length treated as inside the root) — mouse hit-testing
+// and cursor context. Fills out_match and returns TWIG_STATUS_OK, or
+// TWIG_STATUS_NOT_FOUND if no node covers the offset
+// (TWIG_STATUS_INVALID_ARGUMENT if offset > source length). out_match is a value
+// copy (its `kind` is static).
+TwigStatus twig_document_node_at(
+    TwigDocument *doc,
+    size_t offset,
+    TwigQueryMatch *out_match
+);
+
+// The chain of nodes containing byte `offset`, root-first down to the deepest
+// (the node twig_document_node_at returns) — the ancestor path for breadcrumbs
+// or context-scoped edits. Same borrow contract as twig_document_query, on an
+// independent buffer. Returns TWIG_STATUS_NOT_FOUND (and a zero-length result)
+// if nothing covers the offset.
+TwigStatus twig_document_nodes_at(
+    TwigDocument *doc,
+    size_t offset,
+    const TwigQueryMatch **out_ptr,
+    size_t *out_len
 );
 
 // ── Editor ──────────────────────────────────────────────────────────────────
@@ -593,13 +673,39 @@ TwigStatus twig_editor_caret_blob(
     size_t *out_len
 );
 
+// A read-only TwigDocument view of the editor's CURRENT tree, so an editor can
+// use the twig_document_* read surface (_nodes, _children, _subtree, _node_at,
+// _nodes_at, _query, _ast_json, _node_span, _node_content_span) directly.
+//
+// The handle is BORROWED from `editor`: do NOT pass it to
+// twig_document_destroy (which ignores it), it stays valid until
+// twig_editor_destroy, and it always reflects the tree as of the last
+// successful edit. The same pointer keeps working across edits — but anything
+// already read out of it goes stale exactly as the editor's own reads do, since
+// node ids and spans are only valid against the tree they came from.
+//
+// The view shares its buffers with the editor's read functions, so
+// twig_editor_nodes and twig_document_nodes on this view invalidate each other.
+// twig_document_render_html and twig_document_serialize are the two functions it
+// cannot serve (TWIG_STATUS_UNSUPPORTED_FORMAT — they need a real parse's
+// language tag and side tables); pass twig_editor_source to twig_parse instead.
+TwigStatus twig_editor_document(
+    TwigEditor *editor,
+    TwigDocument **out_doc
+);
+
+// The five reads below are twig_document_* over twig_editor_document(editor),
+// kept as the editor-side spelling; see the document-side functions for the
+// full contract. New code may use either.
+
 // Snapshot the editor's current tree as a flat array of TwigFlatNode, one per
 // arena node, indexed so array[i].id == i. The JSON-free read path for a
 // renderer: walk it via the parent / first_child / next_sibling id links
 // (TWIG_NO_NODE where absent); the root is the node whose parent == TWIG_NO_NODE.
-// Borrowed from `editor`, valid until the next twig_editor_nodes call or
-// destroy; the text/destination pointers within additionally require no
-// successful edit since (a reparse frees the payloads they borrow).
+// Borrowed from `editor`, valid until the next twig_editor_nodes /
+// twig_document_nodes call or destroy; the text/destination pointers within
+// additionally require no successful edit since (a reparse frees the payloads
+// they borrow).
 TwigStatus twig_editor_nodes(
     TwigEditor *editor,
     const TwigFlatNode **out_ptr,
@@ -614,6 +720,7 @@ TwigStatus twig_editor_nodes(
 // top-level blocks). Same borrow contract as twig_editor_query, on its own
 // buffer. A childless node yields a zero-length result and TWIG_STATUS_OK; a
 // node_id neither in range nor the sentinel is TWIG_STATUS_INVALID_ARGUMENT.
+// (twig_document_children is the same call under the document-side name.)
 TwigStatus twig_editor_child_spans(
     TwigEditor *editor,
     uint32_t node_id,
