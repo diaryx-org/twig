@@ -306,6 +306,34 @@ pub const Tag = enum {
 // including the two-at-once jumps that appear when a group's minimum indent is
 // itself indented.
 
+// ── the option-list subtree ────────────────────────────────────────────────
+//
+// An OPTION LIST documents a program's command-line options — `-b file`, `-a,
+// --aaaa, /A`, each with a description — and docutils gives it seven elements.
+// Four of them ARE twig's definition-list four, exactly:
+//
+//     option_list       -> definition_list         (15)
+//     option_list_item  -> definition_list_item    (48)
+//     option_group      -> term                    (48)
+//     description       -> definition              (48)
+//
+// so this family is ABSORBED rather than given vocabulary of its own: 159
+// instances mapped for no new `Kind`, no new fidelity row, and no new answer
+// owed by three serializers. The corpus supports the shape without exception —
+// every `option_list_item` sits in an `option_list` and holds exactly one group
+// and one description, and no group or description is empty.
+//
+// The remaining three are the OPTION PARSE — `option` (54) inside a group, and
+// `option_string` (54) plus `option_argument` (38) inside that, which is where
+// docutils splits `-b file` into a string and an argument carrying the
+// `delimiter` (`" "`, `"="`) it was written with. Those stay GENERIC inside the
+// term, and that is lossless rather than a compromise: a generic container
+// names its own element, so the split and the delimiter round-trip verbatim
+// without this codec learning to spell them.
+//
+// What the absorption costs is the one thing `encodeTag` normally gets for
+// free. See `isOptionList`.
+
 /// The elements that produce no node of their own. Their children are spliced
 /// into their parent's child list, and their attributes must therefore be either
 /// derivable (`tgroup`'s `cols`), moved onto the children (`thead`'s
@@ -391,6 +419,18 @@ fn decodeKind(
         // where it sits. Under a `table` it is twig's `caption`, which is
         // exactly what `table`'s content model expects to lead with. Everywhere
         // else it stays generic; see the decode-table comment.
+        // ── the option-list subtree ────────────────────────────────────────
+        // Absorbed into the definition-list four; see the block comment above.
+        // The three below the list are gated on their parent even though
+        // docutils puts them nowhere else, because the gate is what makes the
+        // inversion exact: `encodeTag` decides these four by CONTENT, so a
+        // `<description>` appearing outside an option list would come back a
+        // `<definition>`. Gated, it stays generic and round-trips as itself.
+        .option_list => .definition_list,
+        .option_list_item => if (parent == .option_list) .definition_list_item else null,
+        .option_group => if (parent == .option_list_item) .term else null,
+        .description => if (parent == .option_list_item) .definition else null,
+
         // ── the line-block subtree ─────────────────────────────────────────
         // Only the outermost block reaches here; `dissolves` splices the nested
         // wrappers away and `bumpLineIndent` moves what they meant onto the
@@ -480,24 +520,71 @@ fn decodeKind(
     };
 }
 
+/// What an encoding node is told about where it sits, threaded down by
+/// `writeNode`.
+///
+/// `parent` is the enclosing node's kind, mirroring `decodeKind`'s argument and
+/// inverting the same two mappings. `option_list` is the answer `isOptionList`
+/// reached at the enclosing `definition_list`, carried down rather than
+/// re-derived — see there for why the parent kind alone cannot supply it.
+const Where = struct {
+    parent: ?Node.Kind = null,
+    option_list: bool = false,
+};
+
+/// Is this `definition_list` really an rST OPTION LIST?
+///
+/// The one mapping in this table that a node plus its parent cannot invert, and
+/// structurally so rather than by accident: docutils' four option-list elements
+/// are twig's four definition-list kinds EXACTLY, so at every level the parent
+/// kind is identical either way. A `definition_list_item` sits in a
+/// `definition_list` whichever construct it came from.
+///
+/// The CONTENT does tell them apart. `<option>` appears nowhere else in
+/// docutils' vocabulary, so a term holding one is an option group and the list
+/// around it is an option list. That is a total discriminator rather than a
+/// heuristic: all 54 `option`s in the corpus sit inside one of the 48 groups,
+/// and no group is empty.
+///
+/// Asked once, at the LIST, and inherited by everything under it through
+/// `Where` — a list, its items and their terms must all agree, and deriving the
+/// answer separately at each level is how they would come to disagree.
+fn isOptionList(ast: *const AST, id: Node.Id) bool {
+    var items = ast.children(id);
+    while (items.next()) |item| {
+        if (ast.nodes[item.id].kind != .definition_list_item) continue;
+        var parts = ast.children(item.id);
+        while (parts.next()) |part| {
+            if (ast.nodes[part.id].kind != .term) continue;
+            var opts = ast.children(part.id);
+            while (opts.next()) |opt| switch (ast.nodes[opt.id].kind) {
+                .container => |c| if (std.mem.eql(u8, c.name, Tag.option.name())) return true,
+                else => {},
+            };
+        }
+    }
+    return false;
+}
+
 /// The docutils element `kind` encodes back to, or `null` when the kind has no
 /// doctree spelling at all. Every arm is spelled so that a new `Kind` variant
 /// fails this build until it declares one — the same exhaustiveness property
 /// `Kind.level`/`contentModel` have.
-///
-/// `parent` is the enclosing node's kind, mirroring `decodeKind`'s argument and
-/// inverting the same two mappings.
-fn encodeTag(kind: Node.Kind, parent: ?Node.Kind) ?Tag {
+fn encodeTag(kind: Node.Kind, where: Where) ?Tag {
+    const parent = where.parent;
     return switch (kind) {
         .doc => .document,
         .para => .paragraph,
         .block_quote => .block_quote,
         .bullet_list => .bullet_list,
         .list_item => .list_item,
-        .definition_list => .definition_list,
-        .definition_list_item => .definition_list_item,
-        .term => .term,
-        .definition => .definition,
+        // The definition-list four double as the option-list four; which
+        // construct this is was settled at the list by `isOptionList` and rides
+        // down in `Where`, so all four read the same flag and cannot disagree.
+        .definition_list => if (where.option_list) .option_list else .definition_list,
+        .definition_list_item => if (where.option_list) .option_list_item else .definition_list_item,
+        .term => if (where.option_list) .option_group else .term,
+        .definition => if (where.option_list) .description else .definition,
         // The nested wrappers `decode` dissolved have no arm because they have
         // no twig node — `writeLineBlock` synthesizes them from each line's
         // `indent`, as `writeTable` does for `tgroup`/`thead`/`tbody`.
@@ -1032,7 +1119,7 @@ pub const EncodeError = error{
 
 /// Write `ast` as a docutils pformat doctree.
 pub fn encode(allocator: Allocator, ast: *const AST, w: *Writer) EncodeError!void {
-    try writeNode(allocator, ast, ast.root, null, 0, w);
+    try writeNode(allocator, ast, ast.root, .{}, 0, w);
 }
 
 /// `encode` into an owned buffer.
@@ -1067,7 +1154,7 @@ fn writeNode(
     allocator: Allocator,
     ast: *const AST,
     id: Node.Id,
-    parent: ?Node.Kind,
+    where: Where,
     depth: usize,
     w: *Writer,
 ) EncodeError!void {
@@ -1077,7 +1164,18 @@ fn writeNode(
         return;
     }
 
-    const tag = encodeTag(node.kind, parent) orelse return error.UnrepresentableKind;
+    // Which of the two constructs the definition-list four are spelling is
+    // settled HERE, at the list, and inherited by everything below it. A list
+    // ignores what it was told (nothing above it knows) and asks the tree; its
+    // items, terms and definitions take the answer as given.
+    const option_list = switch (node.kind) {
+        .definition_list => isOptionList(ast, id),
+        .definition_list_item, .term, .definition => where.option_list,
+        else => false,
+    };
+
+    const tag = encodeTag(node.kind, .{ .parent = where.parent, .option_list = option_list }) orelse
+        return error.UnrepresentableKind;
     try writeIndent(w, depth);
     try w.writeByte('<');
     try w.writeAll(tag.name());
@@ -1135,9 +1233,19 @@ fn writeNode(
         return;
     }
 
+    // The option-list answer descends exactly two levels — list to item, item to
+    // term and description — and stops. A definition list nested inside one of
+    // those descriptions is a list of its own and asks the tree again.
+    const child_where: Where = .{
+        .parent = node.kind,
+        .option_list = switch (node.kind) {
+            .definition_list, .definition_list_item => option_list,
+            else => false,
+        },
+    };
     var it = ast.children(id);
     while (it.next()) |child| {
-        try writeNode(allocator, ast, child.id, node.kind, depth + 1, w);
+        try writeNode(allocator, ast, child.id, child_where, depth + 1, w);
     }
 }
 
@@ -1168,7 +1276,7 @@ fn writeLineBlock(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usi
             try w.writeAll("<line_block>\n");
         }
         open = indent;
-        try writeNode(allocator, ast, child.id, .line_block, depth + 1 + open, w);
+        try writeNode(allocator, ast, child.id, .{ .parent = .line_block }, depth + 1 + open, w);
     }
 }
 
@@ -1202,7 +1310,7 @@ fn writeTable(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usize, 
         } else {
             body_rows += 1;
         },
-        else => try writeNode(allocator, ast, child.id, .table, depth + 1, w),
+        else => try writeNode(allocator, ast, child.id, .{ .parent = .table }, depth + 1, w),
     };
 
     if (cols == 0 and head_rows == 0 and body_rows == 0) return;
@@ -1213,7 +1321,7 @@ fn writeTable(allocator: Allocator, ast: *const AST, id: Node.Id, depth: usize, 
     var columns = ast.children(id);
     while (columns.next()) |child| {
         if (ast.nodes[child.id].kind != .column) continue;
-        try writeNode(allocator, ast, child.id, .table, depth + 2, w);
+        try writeNode(allocator, ast, child.id, .{ .parent = .table }, depth + 2, w);
     }
 
     // docutils always writes a `<tbody>`, even where twig's flat row list has
@@ -1254,7 +1362,7 @@ fn writeRowGroup(
     try w.writeAll(if (head) "<thead>\n" else "<tbody>\n");
     var it = ast.children(table);
     while (it.next()) |child| switch (ast.nodes[child.id].kind) {
-        .row => |r| if (r.head == head) try writeNode(allocator, ast, child.id, .table, depth + 1, w),
+        .row => |r| if (r.head == head) try writeNode(allocator, ast, child.id, .{ .parent = .table }, depth + 1, w),
         else => {},
     };
 }
@@ -1662,6 +1770,112 @@ test "a line block's nesting flattens to a per-line indent and is rebuilt from i
     try testing.expectEqual(@as(u32, 9), cov.semantic[@intFromEnum(Tag.line)]);
 
     // And all six come back, in the right places, from the nine numbers.
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "an option list is a definition list, told apart on the way out by its options" {
+    // `test_option_lists.py:5`, the aliased case: one item, THREE options in its
+    // group, and an argument on each spelled with a different delimiter.
+    const src =
+        \\<document source="test data">
+        \\    <option_list>
+        \\        <option_list_item>
+        \\            <option_group>
+        \\                <option>
+        \\                    <option_string>
+        \\                        -b
+        \\                    <option_argument delimiter=" ">
+        \\                        file
+        \\                <option>
+        \\                    <option_string>
+        \\                        --bbbb
+        \\                    <option_argument delimiter="=">
+        \\                        file
+        \\            <description>
+        \\                <paragraph>
+        \\                    option -b
+        \\
+    ;
+    var cov: Coverage = .{};
+    var ast = try decode(testing.allocator, src, &cov);
+    defer ast.deinit();
+
+    // Twig's shape: an ordinary definition list, no new vocabulary anywhere.
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[list].kind == .definition_list);
+    const item = ast.nodes[list].first_child.?;
+    try testing.expect(ast.nodes[item].kind == .definition_list_item);
+    const group = ast.nodes[item].first_child.?;
+    try testing.expect(ast.nodes[group].kind == .term);
+    try testing.expect(ast.nodes[ast.nodes[group].next_sibling.?].kind == .definition);
+
+    // The option PARSE stays generic inside the term, which is what lets the
+    // `delimiter` — the one piece of it a `term` could never hold — round-trip
+    // untouched.
+    const option = ast.nodes[group].first_child.?;
+    try testing.expectEqualStrings("option", ast.nodes[option].kind.container.name);
+    const arg = ast.nodes[ast.nodes[option].first_child.?].next_sibling.?;
+    try testing.expectEqualStrings("option_argument", ast.nodes[arg].kind.container.name);
+    try testing.expectEqualStrings(" ", ast.attrsOf(arg).get("delimiter").?);
+
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.option_list)]);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.option_group)]);
+    try testing.expectEqual(@as(u32, 2), cov.generic[@intFromEnum(Tag.option)]);
+
+    // And `isOptionList` finds the options again, so all four spell themselves
+    // back rather than decaying to a definition list.
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "a real definition list still encodes as one, options or not" {
+    // The other side of the discriminator. Same four twig kinds, same nesting,
+    // no `option` in the term — so nothing here may come back as an option list.
+    const src =
+        \\<document source="test data">
+        \\    <definition_list>
+        \\        <definition_list_item>
+        \\            <term>
+        \\                -b
+        \\            <definition>
+        \\                <paragraph>
+        \\                    Looks like an option, is not one.
+        \\
+    ;
+    var ast = try decode(testing.allocator, src, null);
+    defer ast.deinit();
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "an option list nested in a description does not infect the list around it" {
+    // The answer is per-LIST, not per-subtree: a definition list inside an
+    // option list's description asks the tree again rather than inheriting, so
+    // the two constructs nest without either one renaming the other.
+    const src =
+        \\<document source="test data">
+        \\    <option_list>
+        \\        <option_list_item>
+        \\            <option_group>
+        \\                <option>
+        \\                    <option_string>
+        \\                        -a
+        \\            <description>
+        \\                <definition_list>
+        \\                    <definition_list_item>
+        \\                        <term>
+        \\                            see also
+        \\                        <definition>
+        \\                            <paragraph>
+        \\                                the manual
+        \\
+    ;
+    var ast = try decode(testing.allocator, src, null);
+    defer ast.deinit();
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings(src, out);

@@ -224,8 +224,8 @@
 //!     mode the table was built to prevent. They now spell every kind.
 //!
 //! ── What twig's AST does not yet hold ──────────────────────────────────────
-//! `conformance.zig`'s coverage ratchet measures this continuously; 4142 of 5682
-//! element instances (73%) decode to a semantic twig kind and the rest fall back
+//! `conformance.zig`'s coverage ratchet measures this continuously; 4301 of 5682
+//! element instances (76%) decode to a semantic twig kind and the rest fall back
 //! to `Kind.container`. Reading that table,
 //! the structural work rST implies, in rough order of corpus weight:
 //!
@@ -324,26 +324,33 @@
 //!     Markdown's arm uses the `\` hard break rather than this serializer's usual
 //!     two trailing spaces, and the stanza break is why: a whitespace-only line
 //!     is BLANK to CommonMark and would split the poem into two paragraphs.
-//!   - **Option lists** (`option_string` 54, `option` 54, `description` 48,
-//!     `option_group` 48, `option_list_item` 48, `option_argument` 38,
-//!     `option_list` 15) — a two-column construct documenting a program's
-//!     command-line options, and the plan is to ABSORB it into `definition_list`
-//!     rather than grow vocabulary: `option_list`/`option_list_item`/
-//!     `option_group`/`description` map onto `definition_list`/
-//!     `definition_list_item`/`term`/`definition` (159 of the 305 instances), and
-//!     the option PARSE — `option`/`option_string`/`option_argument`, which is
-//!     where docutils splits `-b file` into a string and an argument with a
-//!     `delimiter` — stays generic inside the term, round-tripping there
-//!     verbatim.
+//!   - ~~**Option lists**~~ **DONE**, and done by ABSORPTION — the largest
+//!     mapping in the corpus that cost NO vocabulary at all. A two-column
+//!     construct documenting a program's command-line options, whose four
+//!     structural elements are twig's definition-list four exactly:
+//!     `option_list`/`option_list_item`/`option_group`/`description` →
+//!     `definition_list`/`definition_list_item`/`term`/`definition`, 159 of the
+//!     305 instances, no new `Kind`, no new `fidelity` row, no new answer owed
+//!     by three serializers.
 //!
-//!     The open question is not the mapping but `encode`'s DISCRIMINATOR: today
-//!     these round-trip for free because a generic container names its own tag,
-//!     and the moment `option_list` decodes to `definition_list` the encoder has
-//!     to know which one to write back. The `caption`/`title` trick (read the
-//!     parent) does not apply, since the parent is a `definition_list` either
-//!     way. Reading the CONTENT does: `<option>` appears nowhere else in
-//!     docutils' vocabulary, so "a definition list whose terms hold `option`
-//!     children" is a total discriminator rather than a heuristic.
+//!     The option PARSE — `option` (54), `option_string` (54),
+//!     `option_argument` (38), where docutils splits `-b file` into a string and
+//!     an argument carrying the `delimiter` (`" "` vs `"="`) it was written with
+//!     — stays GENERIC inside the term. That is lossless rather than a
+//!     concession: a generic container names its own element, so the alias split
+//!     (`-a, --aaaa, /A` is three `<option>`s in one group) and the delimiter
+//!     round-trip verbatim without the codec learning to spell either.
+//!
+//!     What absorption cost is the one thing `encodeTag` normally gets free.
+//!     Every other mapping inverts from the node and its parent; these four
+//!     cannot, structurally — a `definition_list_item` sits in a
+//!     `definition_list` whichever construct it came from, so the parent kind is
+//!     identical at all four levels. The CONTENT decides instead: `<option>`
+//!     appears nowhere else in docutils' vocabulary, so a term holding one is an
+//!     option group. Total rather than heuristic (all 54 options sit in one of
+//!     the 48 groups; no group is empty), and asked ONCE at the list, then
+//!     inherited downward — a list and its items must agree, and re-deriving the
+//!     answer per level is how they would come to disagree.
 //!   - **`inline` (43)**, docutils' generic classed span, and `problematic`
 //!     (48). Both map onto `Kind.container` reasonably; they are listed so the
 //!     count is not mistaken for a gap.
