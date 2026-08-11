@@ -1,0 +1,447 @@
+{
+ "provenance": {
+  "source": "gitlab.eclipse.org/eclipse/asciidoc-lang/asciidoc-tck",
+  "branch": "main",
+  "commit": "cdfada9c2768b164eadf4bc12e9f9c68e6caf68a",
+  "tck_version": "1.0.0-alpha.0",
+  "license": "EPL-2.0 (per package.json; the TCK repo carries no separate LICENSE file — an Eclipse Foundation project, license text at https://www.eclipse.org/legal/epl-2.0/)",
+  "extracted_by": "hand-vendored from a maintainer-downloaded tests/ tree snapshot (see scripts/ for rST's analogous extract-rst-corpus.py; there is nothing to extract here since the TCK already ships input/output pairs directly)",
+  "format": "Each case's \"asg\" is the TCK's Abstract Semantic Graph for \"adoc\", encoded in JSON per the TCK's own schema (docs/asciidoc-tck-process.adoc): a \"document\" root (kind=\"block\") for block-level cases, or a bare array of inline nodes for inline-level cases. Every node carries a \"location\" as [{line,col},{line,col}], both endpoints 1-based and INCLUSIVE.",
+  "counts": { "cases": 13, "block": 11, "inline": 2 }
+ },
+ "cases": [
+  {
+   "id": "block/document/body-only",
+   "level": "block",
+   "adoc": "body only\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "body only",
+        "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 9 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 9 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 9 }]
+   }
+  },
+  {
+   "id": "block/document/header-body",
+   "level": "block",
+   "adoc": "= Document Title\n\nbody\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "attributes": {},
+    "header": {
+     "title": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Document Title",
+       "location": [{ "line": 1, "col": 3 }, { "line": 1, "col": 16 }]
+      }
+     ],
+     "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 16 }]
+    },
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "body",
+        "location": [{ "line": 3, "col": 1 }, { "line": 3, "col": 4 }]
+       }
+      ],
+      "location": [{ "line": 3, "col": 1 }, { "line": 3, "col": 4 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 3, "col": 4 }]
+   }
+  },
+  {
+   "id": "block/header/attribute-entries-below-title",
+   "level": "block",
+   "adoc": "= Document Title\n:icons: font\n:toc:\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "attributes": { "icons": "font", "toc": "" },
+    "header": {
+     "title": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Document Title",
+       "location": [{ "line": 1, "col": 3 }, { "line": 1, "col": 16 }]
+      }
+     ],
+     "location": [{ "line": 1, "col": 1 }, { "line": 3, "col": 5 }]
+    },
+    "location": [{ "line": 1, "col": 1 }, { "line": 3, "col": 5 }]
+   }
+  },
+  {
+   "id": "block/list/unordered/single-item",
+   "level": "block",
+   "adoc": "* water\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "variant": "unordered",
+      "marker": "*",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "water",
+          "location": [{ "line": 1, "col": 3 }, { "line": 1, "col": 7 }]
+         }
+        ],
+        "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 7 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 7 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 7 }]
+   }
+  },
+  {
+   "id": "block/listing/multiple-lines",
+   "level": "block",
+   "adoc": "----\ndef main\n  puts 'hello'\nend\n----\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "----",
+      "inlines": [
+       {
+        "type": "string",
+        "name": "text",
+        "value": "def main\n  puts 'hello'\nend",
+        "location": [{ "line": 2, "col": 1 }, { "line": 4, "col": 3 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 5, "col": 4 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 5, "col": 4 }]
+   }
+  },
+  {
+   "id": "block/paragraph/multiple-lines",
+   "level": "block",
+   "adoc": "This paragraph has multiple lines that wrap after reaching the 72\ncharacter limit set by the text editor.\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "This paragraph has multiple lines that wrap after reaching the 72\ncharacter limit set by the text editor.",
+        "location": [{ "line": 1, "col": 1 }, { "line": 2, "col": 39 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 2, "col": 39 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 2, "col": 39 }]
+   }
+  },
+  {
+   "id": "block/paragraph/paragraph-empty-lines-paragraph",
+   "level": "block",
+   "adoc": "This document has multiple paragraphs.\n\n\nParagraphs are separated by one or more empty lines.\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "This document has multiple paragraphs.",
+        "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 38 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 38 }]
+     },
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Paragraphs are separated by one or more empty lines.",
+        "location": [{ "line": 4, "col": 1 }, { "line": 4, "col": 52 }]
+       }
+      ],
+      "location": [{ "line": 4, "col": 1 }, { "line": 4, "col": 52 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 4, "col": 52 }]
+   }
+  },
+  {
+   "id": "block/paragraph/sibling-paragraphs",
+   "level": "block",
+   "adoc": "This document has multiple paragraphs.\n\nParagraphs are separated by one or more empty lines.\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "This document has multiple paragraphs.",
+        "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 38 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 38 }]
+     },
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Paragraphs are separated by one or more empty lines.",
+        "location": [{ "line": 3, "col": 1 }, { "line": 3, "col": 52 }]
+       }
+      ],
+      "location": [{ "line": 3, "col": 1 }, { "line": 3, "col": 52 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 3, "col": 52 }]
+   }
+  },
+  {
+   "id": "block/paragraph/single-line",
+   "level": "block",
+   "adoc": "A paragraph that consists of a single line.\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "A paragraph that consists of a single line.",
+        "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 43 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 43 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 43 }]
+   }
+  },
+  {
+   "id": "block/section/title-body",
+   "level": "block",
+   "adoc": "== Section Title\n\nparagraph\n",
+   "config": { "name": "body offset from title by empty line" },
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "section",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Section Title",
+        "location": [{ "line": 1, "col": 4 }, { "line": 1, "col": 16 }]
+       }
+      ],
+      "level": 1,
+      "location": [{ "line": 1, "col": 1 }, { "line": 3, "col": 9 }],
+      "blocks": [
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "paragraph",
+          "location": [{ "line": 3, "col": 1 }, { "line": 3, "col": 9 }]
+         }
+        ],
+        "location": [{ "line": 3, "col": 1 }, { "line": 3, "col": 9 }]
+       }
+      ]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 3, "col": 9 }]
+   }
+  },
+  {
+   "id": "block/sidebar/containing-unordered-list",
+   "level": "block",
+   "adoc": "****\n* phone\n* wallet\n* keys\n****\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "sidebar",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "****",
+      "blocks": [
+       {
+        "name": "list",
+        "type": "block",
+        "variant": "unordered",
+        "marker": "*",
+        "items": [
+         {
+          "name": "listItem",
+          "type": "block",
+          "marker": "*",
+          "principal": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "phone",
+            "location": [{ "line": 2, "col": 3 }, { "line": 2, "col": 7 }]
+           }
+          ],
+          "location": [{ "line": 2, "col": 1 }, { "line": 2, "col": 7 }]
+         },
+         {
+          "name": "listItem",
+          "type": "block",
+          "marker": "*",
+          "principal": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "wallet",
+            "location": [{ "line": 3, "col": 3 }, { "line": 3, "col": 8 }]
+           }
+          ],
+          "location": [{ "line": 3, "col": 1 }, { "line": 3, "col": 8 }]
+         },
+         {
+          "name": "listItem",
+          "type": "block",
+          "marker": "*",
+          "principal": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "keys",
+            "location": [{ "line": 4, "col": 3 }, { "line": 4, "col": 6 }]
+           }
+          ],
+          "location": [{ "line": 4, "col": 1 }, { "line": 4, "col": 6 }]
+         }
+        ],
+        "location": [{ "line": 2, "col": 1 }, { "line": 4, "col": 6 }]
+       }
+      ],
+      "location": [{ "line": 1, "col": 1 }, { "line": 5, "col": 4 }]
+     }
+    ],
+    "location": [{ "line": 1, "col": 1 }, { "line": 5, "col": 4 }]
+   }
+  },
+  {
+   "id": "inline/no-markup/single-word",
+   "level": "inline",
+   "adoc": "hello\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "hello",
+     "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 5 }]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/strong/constrained-single-char",
+   "level": "inline",
+   "adoc": "*s*\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "strong",
+     "form": "constrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "s",
+       "location": [{ "line": 1, "col": 2 }, { "line": 1, "col": 2 }]
+      }
+     ],
+     "location": [{ "line": 1, "col": 1 }, { "line": 1, "col": 3 }]
+    }
+   ]
+  }
+ ]
+}
