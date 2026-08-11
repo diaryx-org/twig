@@ -192,20 +192,24 @@
 //! document. These need a defined refusal (recognize, then report unsupported),
 //! distinct from the unknown-directive path.
 //!
-//! ── Conversion lossiness is a DIFFERENT system ─────────────────────────────
+//! ── Conversion lossiness is a DIFFERENT system, and it now EXISTS ──────────
 //! "Djot's multi-line heading has no Markdown spelling" is not a parse
-//! diagnostic and does not belong in this layer — fig keeps it in a separate
-//! `diagnostics.zig` (`analyze(ast, target_format, options)` returning
-//! `comment_dropped`/`value_dropped`/`type_degraded` with a `format_limitation`
-//! vs `explicit_option` cause), and twig should too. The separation is
+//! diagnostic and does not belong in this layer. It lives in `src/diagnostics.zig`
+//! (`analyze(arena, ast, root, target)` returning a `Warning` per lossy node),
+//! built after this scope statement first called for it. The separation is
 //! structural: a parse diagnostic anchors to a byte span in the SOURCE, while a
 //! conversion warning has no source offset to point at (the output does not
 //! exist yet) and anchors to a node PATH; and a parse diagnostic is a fact about
-//! one document while a conversion warning is a fact about a (document, target,
-//! options) triple, so it cannot be stored alongside a `Document` at all.
-//! Twig already has evidence it wants one: `format.zig`'s cross-format
-//! round-trip tests exist precisely because a construct the target serializer
-//! cannot spell is silently written as something that reparses differently.
+//! one document while a conversion warning is a fact about a (document, target)
+//! pair, so it cannot be stored alongside a `Document` at all.
+//!
+//! It matters to rST specifically because it is what UNBLOCKS the vocabulary
+//! work below. Adding a kind only rST has (a citation, a substitution) hands the
+//! djot/Markdown/HTML serializers a node their format cannot spell; before
+//! `diagnostics.zig` there was nowhere to say so, and the loss would have been
+//! silent. Now `fidelity` is exhaustive over `Kind`, so a new kind fails that
+//! build until it declares an answer for every target — one place, rather than
+//! an `else =>` arm in three serializers.
 //!
 //! ── What twig's AST does not yet hold ──────────────────────────────────────
 //! `conformance.zig`'s coverage ratchet measures this continuously; 3378 of 5682
@@ -244,9 +248,8 @@
 //!
 //!     Each commits twig's published vocabulary (`ast/json.zig`, `c_abi.zig`)
 //!     to a construct only rST has, and hands the djot/Markdown/HTML
-//!     serializers a node their format cannot spell — the conversion-lossiness
-//!     system below, which does not exist yet. That is the gate, not the
-//!     mapping work.
+//!     serializers a node their format cannot spell. That WAS the gate; the
+//!     conversion-lossiness section below now names the system that opens it.
 //!   - **Field lists** (`field` 54, `field_name` 54, `field_body` 54,
 //!     `field_list` 21). Structural, NOT attribute data — docutils parses a
 //!     body-position `:Author: Me` into a real subtree whose body holds

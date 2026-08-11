@@ -58,6 +58,14 @@ pub const Rst = @import("languages/rst/rst.zig");
 /// fig. See `parse_diagnostic.zig`.
 pub const parse_diagnostic = @import("parse_diagnostic.zig");
 
+/// Conversion diagnostics: what serializing an AST to a given format would
+/// SILENTLY lose. A separate system from `parse_diagnostic` on purpose — a parse
+/// diagnostic anchors to a byte span in one document's source, while these
+/// anchor to a node path and are a fact about a (document, target) pair. See
+/// `diagnostics.zig`, whose capability table is verified by round-tripping every
+/// kind through every serializer rather than asserted.
+pub const diagnostics = @import("diagnostics.zig");
+
 /// The span-splice engine: lossless, in-place edits to a parsed document via
 /// index paths into the shared `AST`. Language-agnostic by construction —
 /// construct it with a `parse_fn` for the source's format and it never learns
