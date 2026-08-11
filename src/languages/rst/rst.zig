@@ -136,6 +136,62 @@
 //! one, pointing at the corresponding system message. The tree changes shape on
 //! an inline error whatever twig does with diagnostics.
 //!
+//! ── Which directives get a schema ──────────────────────────────────────────
+//! docutils registers ~30 core directives, and each needs a SCHEMA (argument
+//! arity, whether content is allowed, and a converter per option) before twig
+//! can parse it — `.. image:: pic.png` with `:width: 50%` cannot be read without
+//! knowing `image`'s. Twig has no directive registry at all today: Markdown's
+//! `:::note` accepts any name and validates nothing.
+//!
+//! The line: **a directive gets a schema when it produces CONTENT — a node twig
+//! models (including `Kind.container`, which is exactly how Markdown's
+//! `:::note` is already represented) — especially where it is rST's primary or
+//! only spelling for that content, or where it fills in for a feature the
+//! language otherwise lacks, the way Markdown falls back to raw HTML.**
+//!
+//! IN (165 of the corpus's 252 directive cases): `image` (33) and `figure` (12),
+//! rST's ONLY way to place an image — there is no inline `![]()`; the table
+//! directives `csv-table`/`table`/`list-table` (41); the admonition family (17)
+//! and the other classed containers `topic` (12), `container`, `rubric`,
+//! `sidebar`, `compound`; `code` (15) and `parsed-literal` (4); `math` (5);
+//! `line-block` (4); and `raw` (7) — which IS the "Markdown uses HTML" case,
+//! and which twig already models as `Kind.raw_block`/`raw_inline`.
+//!
+//! Also IN, on the primary-spelling half of the rule rather than the node half:
+//! `replace` (8) and `unicode` (3). Neither produces a node of its own, but
+//! substitutions are core rST SYNTAX — 33 `substitution_definition` and 18
+//! `substitution_reference` nodes — and these are what substitution bodies are
+//! actually made of (`image` 16, `replace` 11, `unicode` 11, `raw` 1 across the
+//! corpus). Excluding them would leave a core construct with over half its
+//! bodies unparseable.
+//!
+//! OUT (87 cases), because they configure the parser, feed a transform, or
+//! describe the document rather than contribute to it:
+//!
+//!   - **Parser configuration** — `role` (17), `default-role` (3), `class` (2).
+//!     See the warning below; these are NOT safe to ignore.
+//!   - **Transform inputs** — `contents` (13), `target-notes` (4), `sectnum`
+//!     (2). They emit `pending` placeholders for a pass that does not run here.
+//!   - **Document description** — `meta` (12), `title` (1). Worth recording that
+//!     `meta` is a NEAR-MISS, not a match: it produces attribute-only
+//!     `<meta content="…" name="…">` (HTML document metadata), whereas twig's
+//!     `Kind.metadata` is a data island holding raw text in a config language.
+//!     Same word, different construct.
+//!   - **Document furniture** — `header` (3), `footer` (2), which build a
+//!     `decoration` alongside the body rather than in it.
+//!   - **Generated values** — `date` (2). A transform wearing a directive's
+//!     clothes: its output comes from the clock, not the source.
+//!   - Already excluded on other grounds: `include` (2, file I/O) and the
+//!     `restructuredtext-test-directive` (12, a docutils test fixture).
+//!
+//! ⚠ **Out of scope here does NOT mean "skip".** The parser-configuration
+//! directives change how SUBSEQUENT parsing works: after
+//! `.. default-role:: subscript`, every later `` `x` `` is a subscript rather
+//! than a `title_reference`. A parser that silently ignores that line does not
+//! merely omit a feature — it produces a wrong tree for the rest of the
+//! document. These need a defined refusal (recognize, then report unsupported),
+//! distinct from the unknown-directive path.
+//!
 //! ── Conversion lossiness is a DIFFERENT system ─────────────────────────────
 //! "Djot's multi-line heading has no Markdown spelling" is not a parse
 //! diagnostic and does not belong in this layer — fig keeps it in a separate
