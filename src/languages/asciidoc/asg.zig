@@ -167,7 +167,17 @@ fn decodeDocument(b: *AST.Builder, source: []const u8, value: std.json.Value, co
         defer entries.deinit(b.allocator);
         var it = obj(attrs_val).iterator();
         while (it.next()) |e| {
-            try entries.append(b.allocator, .{ .key = e.key_ptr.*, .value = str(e.value_ptr.*) });
+            // A null value is an UNSET attribute (`:!name:`), which is not the
+            // same document as `:name:` with an empty value — `Attrs` already
+            // draws exactly that distinction, so it carries straight over.
+            try entries.append(b.allocator, .{
+                .key = e.key_ptr.*,
+                .value = switch (e.value_ptr.*) {
+                    .null => null,
+                    .string => |s| s,
+                    else => return error.UnsupportedAsgNode,
+                },
+            });
         }
         try b.setAttrs(marker, .{ .entries = entries.items });
         bump(coverage, "generic");
@@ -222,7 +232,11 @@ fn decodeBlock(b: *AST.Builder, source: []const u8, value: std.json.Value, cover
     }
 
     if (std.mem.eql(u8, name, "listing")) {
-        const inlines = arr(o.get("inlines").?);
+        // An empty delimited block has NO `inlines` key (the schema's own
+        // `defaults` block spells the absent value as `[]`, and the TCK's
+        // output files always take the absent spelling). Its content span
+        // stays unset, which is what `encode` reads back to decide the same.
+        const inlines = if (o.get("inlines")) |v| arr(v) else &[_]std.json.Value{};
         var text = std.ArrayList(u8).empty;
         defer text.deinit(b.allocator);
         var inner: ?Span = null;
@@ -379,6 +393,12 @@ fn writePoint(w: *std.json.Stringify, source: []const u8, offset: usize) Writer.
 /// `Span` back to the ASG's inclusive `(line, col)` pair.
 fn writeLoc(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.Error!void {
     const span = doc.span(id);
+    // An EMPTY span has no location to write: the ASG's endpoints are both
+    // inclusive, so a zero-width extent cannot be spelled at all. This is the
+    // degenerate case only — an empty document, or a document of nothing but
+    // blank lines — and `location` is optional throughout the schema, so
+    // omitting it is legal rather than a dodge.
+    if (span.end <= span.start) return;
     try w.objectField("location");
     try w.beginArray();
     try writePoint(w, doc.source, span.start);
@@ -432,7 +452,7 @@ fn writeDocument(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writ
         try w.beginObject();
         for (doc.ast.attrsOf(aid).entries) |kv| {
             try w.objectField(kv.key);
-            try w.write(kv.value orelse "");
+            try w.write(kv.value); // null — an unset attribute — writes as JSON null
         }
         try w.endObject();
     }
@@ -508,23 +528,25 @@ fn writeBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.
             try w.write(attrGet(attrs, "form").?);
             try w.objectField("delimiter");
             try w.write(attrGet(attrs, "delimiter").?);
-            try w.objectField("inlines");
-            try w.beginArray();
-            try w.beginObject();
-            try w.objectField("type");
-            try w.write("string");
-            try w.objectField("name");
-            try w.write("text");
-            try w.objectField("value");
-            try w.write(cb.text);
-            const cs = doc.contentSpan(id).?;
-            try w.objectField("location");
-            try w.beginArray();
-            try writePoint(w, doc.source, cs.start);
-            try writePoint(w, doc.source, cs.end - 1);
-            try w.endArray();
-            try w.endObject();
-            try w.endArray();
+            if (cb.text.len > 0) {
+                try w.objectField("inlines");
+                try w.beginArray();
+                try w.beginObject();
+                try w.objectField("type");
+                try w.write("string");
+                try w.objectField("name");
+                try w.write("text");
+                try w.objectField("value");
+                try w.write(cb.text);
+                const cs = doc.contentSpan(id).?;
+                try w.objectField("location");
+                try w.beginArray();
+                try writePoint(w, doc.source, cs.start);
+                try writePoint(w, doc.source, cs.end - 1);
+                try w.endArray();
+                try w.endObject();
+                try w.endArray();
+            }
             try writeLoc(w, doc, id);
             try w.endObject();
         },
@@ -564,11 +586,13 @@ fn writeBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.
             try w.write(attrGet(attrs, "form").?);
             try w.objectField("delimiter");
             try w.write(attrGet(attrs, "delimiter").?);
-            try w.objectField("blocks");
-            try w.beginArray();
             var it = doc.children(id);
-            while (it.next()) |c| try writeBlock(w, doc, c.id);
-            try w.endArray();
+            if (doc.ast.nodes[id].first_child != null) {
+                try w.objectField("blocks");
+                try w.beginArray();
+                while (it.next()) |c| try writeBlock(w, doc, c.id);
+                try w.endArray();
+            }
             try writeLoc(w, doc, id);
             try w.endObject();
         },

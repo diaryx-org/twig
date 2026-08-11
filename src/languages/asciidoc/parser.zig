@@ -73,7 +73,7 @@ const LineInfo = struct { start: usize, end: usize };
 /// only matched at line 0) or a section title (`level >= 1`, matched
 /// anywhere at column 0).
 const HeadingMatch = struct {
-    level: u32,
+    level: i32,
     text: []const u8,
     text_span: Span,
     /// Start of the marker itself (`=`'s own column), which is also the
@@ -82,8 +82,18 @@ const HeadingMatch = struct {
     next_line: usize,
 };
 
-const FlatResult = struct { items: []Node.Id, stopped_at: usize, last_end: usize = 0 };
-const SectionsResult = struct { items: []Node.Id, stopped_at: usize, last_end: usize = 0 };
+/// A run of parsed blocks, plus the source extent they cover. `first_start`
+/// and `last_end` are what a caller needs to span ITSELF: a section runs from
+/// its own title to its last descendant's end, and a document with no header
+/// starts at its first block rather than at line 1 — leading blank lines
+/// belong to no node.
+const FlatResult = struct { items: []Node.Id, stopped_at: usize, first_start: usize = 0, last_end: usize = 0 };
+const SectionsResult = struct { items: []Node.Id, stopped_at: usize, first_start: usize = 0, last_end: usize = 0 };
+
+/// The document root's `current_level` in `parseSectionsLoop`. Not `0`:
+/// AsciiDoc has real level-0 sections (a part title, `= Title` anywhere below
+/// the header), and a loop that closed on `level <= 0` would never open one.
+const ROOT_LEVEL: i32 = -1;
 
 const Parser = struct {
     allocator: Allocator,
@@ -123,9 +133,12 @@ const Parser = struct {
     // ── title / heading recognition ─────────────────────────────────────
 
     /// Any `=`-run + space + text line at column 0 — level `n - 1` for `n`
-    /// leading `=` characters. Callers filter by level: `matchDocTitle` wants
-    /// exactly 0 (and only at line 0), `matchSectionHeading` wants >= 1.
-    fn matchHeadingLineRaw(self: *const Parser, i: usize) ?HeadingMatch {
+    /// leading `=` characters. Every level this matches is a real section
+    /// level, INCLUDING 0: a `= Title` line below the document header is a
+    /// part title, not a second document title. Only `parseDocument`'s own
+    /// header scan treats a level-0 line specially, and only at the document's
+    /// first non-blank line.
+    fn matchHeadingLine(self: *const Parser, i: usize) ?HeadingMatch {
         if (i >= self.lines.len) return null;
         if (self.leadingSpaces(i) != 0) return null;
         const t = self.lineText(i);
@@ -144,29 +157,32 @@ const Parser = struct {
         };
     }
 
-    fn matchDocTitle(self: *const Parser) ?HeadingMatch {
-        const hm = self.matchHeadingLineRaw(0) orelse return null;
-        if (hm.level != 0) return null;
-        return hm;
-    }
-
-    fn matchSectionHeading(self: *const Parser, i: usize) ?HeadingMatch {
-        const hm = self.matchHeadingLineRaw(i) orelse return null;
-        if (hm.level == 0) return null;
-        return hm;
-    }
-
-    /// `:name: value` — the document-header attribute entry syntax. `value`
-    /// is trimmed of surrounding whitespace; a bare `:name:` (nothing after
-    /// the second colon) yields an empty, non-null value, matching the TCK's
-    /// own `{"toc": ""}`.
-    fn matchAttrEntry(self: *const Parser, i: usize) ?struct { key: []const u8, value: []const u8 } {
+    /// One `:name: value` attribute entry. `value` is trimmed of surrounding
+    /// whitespace but not internally; a bare `:name:` yields an empty but
+    /// NON-null value, matching the TCK's own `{"toc": ""}`, while the two
+    /// negated spellings (`:!name:` and `:name!:`) yield `null` — the ASG's
+    /// document `attributes` map admits null for exactly this.
+    fn matchAttrEntry(self: *const Parser, i: usize) ?AST.KeyVal {
         const t = self.lineText(i);
         if (t.len < 2 or t[0] != ':') return null;
         var j: usize = 1;
         while (j < t.len and t[j] != ':') : (j += 1) {}
         if (j >= t.len or j == 1) return null;
-        return .{ .key = t[1..j], .value = std.mem.trim(u8, t[j + 1 ..], " \t") };
+
+        var key = t[1..j];
+        var unset = false;
+        if (key[0] == '!') {
+            key = key[1..];
+            unset = true;
+        } else if (key[key.len - 1] == '!') {
+            key = key[0 .. key.len - 1];
+            unset = true;
+        }
+        if (key.len == 0) return null;
+        return .{
+            .key = key,
+            .value = if (unset) null else std.mem.trim(u8, t[j + 1 ..], " \t"),
+        };
     }
 
     // ── delimited-block / list-item recognition ─────────────────────────
@@ -202,26 +218,40 @@ const Parser = struct {
     }
 
     fn isBlockStart(self: *const Parser, i: usize) bool {
-        return self.matchSectionHeading(i) != null or self.isListingDelim(i) or self.isSidebarDelim(i) or self.isListItem(i);
+        return self.matchHeadingLine(i) != null or self.isListingDelim(i) or self.isSidebarDelim(i) or self.isListItem(i);
     }
 
     // ── the top-level document scan ─────────────────────────────────────
 
+    fn firstNonBlankLine(self: *const Parser, from: usize) usize {
+        var i = from;
+        while (i < self.lines.len and self.isBlankLine(i)) i += 1;
+        return i;
+    }
+
     fn parseDocument(self: *Parser) Allocator.Error!Node.Id {
         var header_id: ?Node.Id = null;
         var attrs_id: ?Node.Id = null;
-        var start_offset: usize = if (self.lines.len > 0) self.lines[0].start else 0;
-        var header_end_offset: usize = start_offset;
-        var body_start_line: usize = 0;
+        var header_end_offset: usize = 0;
+        var start_offset: usize = 0;
 
-        if (self.matchDocTitle()) |dt| {
+        // The header, if any, is at the first NON-BLANK line — leading blank
+        // lines belong to no node, and neither the document nor its header
+        // starts at line 1 just because the file does.
+        var body_start_line = self.firstNonBlankLine(0);
+        const doc_title: ?HeadingMatch = if (self.matchHeadingLine(body_start_line)) |hm|
+            (if (hm.level == 0) hm else null)
+        else
+            null;
+
+        if (doc_title) |dt| {
             var header_end_line = dt.next_line;
             var attr_entries: std.ArrayList(AST.KeyVal) = .empty;
             defer attr_entries.deinit(self.allocator);
-            header_end_offset = self.lines[0].end;
+            header_end_offset = self.lines[body_start_line].end;
             while (header_end_line < self.lines.len and !self.isBlankLine(header_end_line)) {
-                const ae = self.matchAttrEntry(header_end_line) orelse break;
-                try attr_entries.append(self.allocator, .{ .key = ae.key, .value = ae.value });
+                const entry = self.matchAttrEntry(header_end_line) orelse break;
+                try attr_entries.append(self.allocator, entry);
                 header_end_offset = self.lines[header_end_line].end;
                 header_end_line += 1;
             }
@@ -244,7 +274,7 @@ const Parser = struct {
             body_start_line = header_end_line;
         }
 
-        const body = try self.parseSectionsLoop(body_start_line, self.lines.len, 0);
+        const body = try self.parseSectionsLoop(body_start_line, self.lines.len, ROOT_LEVEL);
         defer self.allocator.free(body.items);
 
         var children: std.ArrayList(Node.Id) = .empty;
@@ -253,6 +283,7 @@ const Parser = struct {
         if (header_id) |hid| try children.append(self.allocator, hid);
         try children.appendSlice(self.allocator, body.items);
 
+        if (header_id == null and body.items.len > 0) start_offset = body.first_start;
         const end_offset = if (body.items.len > 0) body.last_end else header_end_offset;
         const root = try self.b.addContainer(.doc, children.items);
         self.b.setSpan(root, Span.init(start_offset, end_offset));
@@ -266,33 +297,43 @@ const Parser = struct {
     /// heading at or above `current_level` closes this level back to its
     /// caller — the base case being `current_level == 0` at the document
     /// root, which no real section level is `<=` to.
-    fn parseSectionsLoop(self: *Parser, lo: usize, hi: usize, current_level: u32) Allocator.Error!SectionsResult {
+    fn parseSectionsLoop(self: *Parser, lo: usize, hi: usize, current_level: i32) Allocator.Error!SectionsResult {
         var children: std.ArrayList(Node.Id) = .empty;
         errdefer children.deinit(self.allocator);
         var i = lo;
+        var first_start: usize = 0;
         var last_end: usize = 0;
         while (true) {
             const flat = try self.parseFlatBlocks(i, hi);
+            if (flat.items.len > 0) {
+                if (children.items.len == 0) first_start = flat.first_start;
+                last_end = flat.last_end;
+            }
             try children.appendSlice(self.allocator, flat.items);
-            if (flat.items.len > 0) last_end = flat.last_end;
             self.allocator.free(flat.items);
             i = flat.stopped_at;
             if (i >= hi) break;
 
-            const hm = self.matchSectionHeading(i).?; // `parseFlatBlocks` only stops early for this
+            const hm = self.matchHeadingLine(i).?; // `parseFlatBlocks` only stops early for this
             if (hm.level <= current_level) break;
             const r = try self.parseSection(hm, hi);
+            if (children.items.len == 0) first_start = hm.span_start;
             try children.append(self.allocator, r.id);
             last_end = r.end_offset;
             i = r.next;
         }
-        return .{ .items = try children.toOwnedSlice(self.allocator), .stopped_at = i, .last_end = last_end };
+        return .{
+            .items = try children.toOwnedSlice(self.allocator),
+            .stopped_at = i,
+            .first_start = first_start,
+            .last_end = last_end,
+        };
     }
 
     fn parseSection(self: *Parser, hm: HeadingMatch, hi: usize) Allocator.Error!struct { id: Node.Id, next: usize, end_offset: usize } {
         const title_str = try self.b.addLeaf(.{ .str = hm.text });
         self.b.setSpan(title_str, hm.text_span);
-        const heading_id = try self.b.addContainer(.{ .heading = .{ .level = hm.level } }, &.{title_str});
+        const heading_id = try self.b.addContainer(.{ .heading = .{ .level = @intCast(hm.level) } }, &.{title_str});
         self.b.setSpan(heading_id, hm.text_span);
 
         const inner = try self.parseSectionsLoop(hm.next_line, hi, hm.level);
@@ -318,13 +359,15 @@ const Parser = struct {
         var children: std.ArrayList(Node.Id) = .empty;
         errdefer children.deinit(self.allocator);
         var i = lo;
+        var first_start: usize = 0;
         var last_end: usize = 0;
         while (i < hi) {
             if (self.isBlankLine(i)) {
                 i += 1;
                 continue;
             }
-            if (self.matchSectionHeading(i) != null) break;
+            if (self.matchHeadingLine(i) != null) break;
+            if (children.items.len == 0) first_start = self.lines[i].start;
 
             if (self.isListingDelim(i)) {
                 const r = try self.parseListing(i, hi);
@@ -354,7 +397,12 @@ const Parser = struct {
             last_end = p.end_offset;
             i = end;
         }
-        return .{ .items = try children.toOwnedSlice(self.allocator), .stopped_at = i, .last_end = last_end };
+        return .{
+            .items = try children.toOwnedSlice(self.allocator),
+            .stopped_at = i,
+            .first_start = first_start,
+            .last_end = last_end,
+        };
     }
 
     fn paragraphEnd(self: *const Parser, lo: usize, hi: usize) usize {
@@ -437,19 +485,38 @@ const Parser = struct {
         return .{ .id = id, .next = if (closed) close_line + 1 else content_hi, .end_offset = end_offset };
     }
 
+    /// Does line `i` open an item of a list marked with `marker_char`?
+    fn isItemOfList(self: *const Parser, i: usize, marker_char: u8) bool {
+        if (!self.isListItem(i)) return false;
+        return self.lineText(i)[0] == marker_char;
+    }
+
+    /// One list, from its first item's marker line. Two rules beyond "one line
+    /// per item" (docs/modules/lists/pages/build-a-list.adoc):
+    ///
+    ///   * An item's PRINCIPAL TEXT continues onto any following line that is
+    ///     neither blank nor the start of another block, indentation and
+    ///     newlines kept verbatim — the same treatment a hard-wrapped
+    ///     paragraph's interior gets, and for the same reason (the ASG's text
+    ///     nodes carry locations, so their values have to be real source).
+    ///   * A run of blank lines does NOT close the list as long as another
+    ///     item of the SAME marker follows. Blank lines only make the list
+    ///     loose, which the ASG has nowhere to record; a different marker
+    ///     character starts a sibling list instead of continuing this one.
     fn parseList(self: *Parser, lo: usize, hi: usize) Allocator.Error!struct { id: Node.Id, next: usize, end_offset: usize } {
         const marker_char = self.lineText(lo)[0];
         var items: std.ArrayList(Node.Id) = .empty;
-        errdefer items.deinit(self.allocator);
+        defer items.deinit(self.allocator);
         var i = lo;
         var last_end: usize = self.lines[lo].end;
-        while (i < hi) {
-            if (self.isBlankLine(i)) break;
-            const t = self.lineText(i);
-            if (self.leadingSpaces(i) != 0 or t.len < 2 or t[0] != marker_char or t[1] != ' ') break;
+        var next_line = lo;
+        while (i < hi and self.isItemOfList(i, marker_char)) {
+            var end_line = i + 1;
+            while (end_line < hi and !self.isBlankLine(end_line) and !self.isBlockStart(end_line)) end_line += 1;
 
-            const text = std.mem.trimEnd(u8, t[2..], " \t");
             const text_start = self.lines[i].start + 2;
+            const text_end = self.lines[end_line - 1].end;
+            const text = std.mem.trimEnd(u8, self.source[text_start..text_end], " \t");
             const inline_ids = try parseInlines(&self.b, text, text_start);
             defer self.allocator.free(inline_ids);
             const item_id = try self.b.addContainer(.list_item, inline_ids);
@@ -458,14 +525,18 @@ const Parser = struct {
             self.b.setSpelling(item_id, .{ .bullet = bulletFromChar(marker_char) });
             try items.append(self.allocator, item_id);
             last_end = item_end;
-            i += 1;
+            next_line = end_line;
+
+            // Look past any blank lines for another item of this same list;
+            // stop (leaving `next_line` before the blanks) if there isn't one.
+            i = self.firstNonBlankLine(end_line);
+            if (i >= hi or !self.isItemOfList(i, marker_char)) break;
         }
 
         const id = try self.b.addContainer(.{ .bullet_list = .{ .tight = true } }, items.items);
-        items.deinit(self.allocator);
         self.b.setSpan(id, Span.init(self.lines[lo].start, last_end));
         self.b.setSpelling(id, .{ .bullet = bulletFromChar(marker_char) });
-        return .{ .id = id, .next = i, .end_offset = last_end };
+        return .{ .id = id, .next = next_line, .end_offset = last_end };
     }
 };
 
@@ -622,6 +693,19 @@ test "a sidebar is a generic container holding its blocks" {
     try testing.expectEqualStrings("sidebar", ast.nodes[sidebar].kind.container.name);
     const list = ast.nodes[sidebar].first_child.?;
     try testing.expect(ast.nodes[list].kind == .bullet_list);
+}
+
+test "degenerate inputs parse and encode without crashing" {
+    // The corpus can't hold these: an empty document has no location the ASG
+    // can spell (both endpoints are inclusive), so there is no expectation to
+    // author — only the requirement that nothing crashes on the way through.
+    const asg = @import("asg.zig");
+    for ([_][]const u8{ "", "\n", "   \n", "\n\n\n", "= \n", "----\n", "****\n", "*\n" }) |source| {
+        var doc = try parse(testing.allocator, source);
+        defer doc.deinit();
+        const json = try asg.encodeAlloc(testing.allocator, &doc, .document);
+        testing.allocator.free(json);
+    }
 }
 
 test "a constrained strong span" {

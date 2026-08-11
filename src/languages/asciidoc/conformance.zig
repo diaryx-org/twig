@@ -25,18 +25,41 @@
 //! cases — small enough that, unlike rST's 494-case split, there is no
 //! subset excluded from this comparison; the TCK has no error-asserting cases
 //! at all yet.
+//!
+//! ── The second corpus, and why twig had to author one ───────────────────────
+//! Thirteen cases cannot drive a parser to completion, and there is no bigger
+//! one to vendor: the TCK's head commit is the one vendored here, the
+//! normative spec is six pages long, and no implementation emits an ASG to
+//! generate expectations from (Asciidoctor has no inline AST at all — it
+//! substitutes markup straight into output strings). So
+//! `testdata/asciidoc-twig-corpus.json` holds twig's OWN cases, authored in
+//! `scripts/build-asciidoc-corpus.py` and validated at generation time against
+//! the official ASG JSON Schema (`testdata/asg-schema.json`) so their shapes
+//! are still the Working Group's rather than twig's invention.
+//!
+//! The two corpora run through the same `run`/`runParse` code path and are
+//! deliberately NOT merged: the vendored one is a third party's expectation of
+//! what AsciiDoc means, the authored one is twig's, and collapsing them would
+//! lose exactly the distinction that makes the first one worth having. They
+//! get separate ratchets for the same reason.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const asg = @import("asg.zig");
 const asciidoc_parser = @import("parser.zig");
 
-const corpus_json = @embedFile("testdata/asciidoc-tck-corpus.json");
+/// The vendored AsciiDoc TCK — a third party's expectations, the normative
+/// ratchet. See `testdata/asciidoc-tck-corpus.json`'s own `provenance`.
+pub const tck_corpus_json = @embedFile("testdata/asciidoc-tck-corpus.json");
+
+/// Twig's own authored cases — a weaker authority, a much wider net. See this
+/// file's doc comment, and the corpus's `provenance`, for the distinction.
+pub const twig_corpus_json = @embedFile("testdata/asciidoc-twig-corpus.json");
 
 /// Ratchet floor (see this file's module doc comment): `Coverage.semantic`
-/// summed across all 13 cases — 50, against 3 generic (the `sidebar` case's
-/// container, plus the document-attributes marker in both `header-body` and
-/// `attribute-entries-below-title`) and 18 text nodes. Raise it whenever
+/// summed across all 13 TCK cases — 50, against 3 generic (the `sidebar`
+/// case's container, plus the document-attributes marker in both `header-body`
+/// and `attribute-entries-below-title`) and 18 text nodes. Raise it whenever
 /// `asg.zig`'s decode table grows a new mapped shape; never lower it.
 pub const SEMANTIC_BASELINE: u32 = 50;
 
@@ -58,6 +81,11 @@ pub const Case = struct {
     config: ?std.json.Value = null,
     /// The expected ASG, exactly as the TCK's `-output.json` has it.
     asg: std.json.Value,
+    /// Why this expectation is what it is — present only on twig's own
+    /// authored cases, where the reasoning isn't somebody else's to point at.
+    /// Printed alongside a failure, since a case that fails is exactly when
+    /// the reader needs to know whether the expectation or the parser is wrong.
+    note: ?[]const u8 = null,
 };
 
 const Corpus = struct { cases: []const Case };
@@ -77,13 +105,26 @@ pub const Failure = struct {
     adoc: []const u8,
     expected: []const u8,
     actual: []const u8,
+    /// The case's `note`, duplicated (`null` when it had none).
+    note: ?[]const u8,
 
     pub fn deinit(self: Failure, allocator: Allocator) void {
         allocator.free(self.id);
         allocator.free(self.adoc);
         allocator.free(self.expected);
         allocator.free(self.actual);
+        if (self.note) |n| allocator.free(n);
     }
+};
+
+/// Which side of the harness a run exercises — `asg.zig`'s own round-trip, or
+/// `parser.zig` against the same expectations. See this file's doc comment.
+pub const Mode = enum {
+    /// `decode(case.asg)` -> `encode` -> compare. Tests the codec alone; runs
+    /// even where no parser support exists.
+    codec,
+    /// `parse(case.adoc)` -> `encode` -> compare. Tests the parser.
+    parse,
 };
 
 pub const RunResult = struct {
@@ -91,7 +132,19 @@ pub const RunResult = struct {
     coverage: asg.Coverage = .{},
 };
 
-pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !RunResult {
+/// Run one corpus (`tck_corpus_json` or `twig_corpus_json`) end to end in one
+/// `Mode`, collecting the pass/fail tally, `Coverage` and — up to
+/// `max_failures` — detailed failure records. The two modes differ only in
+/// where the `Document` under comparison comes from; everything downstream of
+/// that (encode, reparse, `jsonValueEql`) is identical, which is the point:
+/// a codec pass and a parser pass are then failures of the same shape.
+pub fn runCorpus(
+    allocator: Allocator,
+    corpus_json: []const u8,
+    mode: Mode,
+    max_failures: usize,
+    failures: *std.ArrayList(Failure),
+) !RunResult {
     var parsed = try std.json.parseFromSlice(Corpus, allocator, corpus_json, .{
         .ignore_unknown_fields = true,
     });
@@ -103,16 +156,19 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
         result.summary.total += 1;
         const root: asg.Root = if (std.mem.eql(u8, case.level, "block")) .document else .inlines;
 
-        var doc = asg.decode(allocator, case.adoc, root, case.asg, &result.coverage) catch |err| {
+        var doc = switch (mode) {
+            .codec => asg.decode(allocator, case.adoc, root, case.asg, &result.coverage),
+            .parse => switch (root) {
+                .document => asciidoc_parser.parse(allocator, case.adoc),
+                .inlines => asciidoc_parser.parseInlineList(allocator, case.adoc),
+            },
+        } catch |err| {
             result.summary.failed += 1;
-            if (failures.items.len < max_failures) {
-                try failures.append(allocator, .{
-                    .id = try allocator.dupe(u8, case.id),
-                    .adoc = try allocator.dupe(u8, case.adoc),
-                    .expected = try expectedText(allocator, case.asg),
-                    .actual = try std.fmt.allocPrint(allocator, "<decode error: {s}>", .{@errorName(err)}),
-                });
-            }
+            try recordFailure(allocator, max_failures, failures, case, try std.fmt.allocPrint(
+                allocator,
+                "<{s} error: {s}>",
+                .{ @tagName(mode), @errorName(err) },
+            ));
             continue;
         };
         defer doc.deinit();
@@ -126,78 +182,60 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
             result.summary.passed += 1;
         } else {
             result.summary.failed += 1;
-            if (failures.items.len < max_failures) {
-                try failures.append(allocator, .{
-                    .id = try allocator.dupe(u8, case.id),
-                    .adoc = try allocator.dupe(u8, case.adoc),
-                    .expected = try expectedText(allocator, case.asg),
-                    .actual = try allocator.dupe(u8, actual_json),
-                });
-            }
+            try recordFailure(allocator, max_failures, failures, case, try allocator.dupe(u8, actual_json));
         }
     }
     return result;
 }
 
-/// Ratchet floor for `runParse`: of the 13 corpus cases, how many does
-/// `parser.parse`/`parseInlineList` -> `asg.encode` reproduce structurally
-/// against `case.asg`. Raise it whenever the parser's coverage grows; never
-/// lower it.
+/// Append a failure record, taking ownership of `actual` either way — the
+/// caller has already allocated it by the time the cap is known, so dropping
+/// it here rather than at the call site keeps every path leak-free.
+fn recordFailure(
+    allocator: Allocator,
+    max_failures: usize,
+    failures: *std.ArrayList(Failure),
+    case: Case,
+    actual: []u8,
+) !void {
+    if (failures.items.len >= max_failures) {
+        allocator.free(actual);
+        return;
+    }
+    errdefer allocator.free(actual);
+    try failures.append(allocator, .{
+        .id = try allocator.dupe(u8, case.id),
+        .adoc = try allocator.dupe(u8, case.adoc),
+        .expected = try expectedText(allocator, case.asg),
+        .actual = actual,
+        .note = if (case.note) |n| try allocator.dupe(u8, n) else null,
+    });
+}
+
+/// The vendored TCK through the codec — `run`'s original signature, kept
+/// because `SEMANTIC_BASELINE` is stated in terms of exactly this run.
+pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !RunResult {
+    return runCorpus(allocator, tck_corpus_json, .codec, max_failures, failures);
+}
+
+/// Ratchet floor for the vendored TCK under `.parse`: of its 13 cases, how
+/// many does `parser.parse`/`parseInlineList` -> `asg.encode` reproduce
+/// structurally. Raise it whenever the parser's coverage grows; never lower it.
 pub const PARSE_BASELINE: u32 = 13;
 
-/// Parse every case's `.adoc` and encode it straight back through `asg.zig`,
-/// collecting the pass/fail tally and (up to `max_failures`) detailed failure
-/// records — `runParse`'s counterpart to `run`, comparing the PARSER's output
-/// instead of the codec's own round-trip.
+/// Ratchet floor for twig's own corpus under `.parse`. Separate from
+/// `PARSE_BASELINE` because the two corpora carry different authority (see
+/// this file's doc comment) and should be readable apart at a glance.
+pub const TWIG_PARSE_BASELINE: u32 = 34;
+
+/// Ratchet floor for twig's own corpus under `.codec` — every authored case
+/// must also survive `asg.zig`'s own decode/encode round-trip, which is what
+/// keeps the codec's vocabulary growing in step with the parser's.
+pub const TWIG_CODEC_BASELINE: u32 = 34;
+
+/// The vendored TCK through the parser — `runParse`'s original signature.
 pub fn runParse(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !RunResult {
-    var parsed = try std.json.parseFromSlice(Corpus, allocator, corpus_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    var result: RunResult = .{};
-
-    for (parsed.value.cases) |case| {
-        result.summary.total += 1;
-        const root: asg.Root = if (std.mem.eql(u8, case.level, "block")) .document else .inlines;
-
-        var doc = switch (root) {
-            .document => asciidoc_parser.parse(allocator, case.adoc),
-            .inlines => asciidoc_parser.parseInlineList(allocator, case.adoc),
-        } catch |err| {
-            result.summary.failed += 1;
-            if (failures.items.len < max_failures) {
-                try failures.append(allocator, .{
-                    .id = try allocator.dupe(u8, case.id),
-                    .adoc = try allocator.dupe(u8, case.adoc),
-                    .expected = try expectedText(allocator, case.asg),
-                    .actual = try std.fmt.allocPrint(allocator, "<parse error: {s}>", .{@errorName(err)}),
-                });
-            }
-            continue;
-        };
-        defer doc.deinit();
-
-        const actual_json = try asg.encodeAlloc(allocator, &doc, root);
-        defer allocator.free(actual_json);
-        var actual_parsed = try std.json.parseFromSlice(std.json.Value, allocator, actual_json, .{});
-        defer actual_parsed.deinit();
-
-        if (asg.jsonValueEql(actual_parsed.value, case.asg)) {
-            result.summary.passed += 1;
-        } else {
-            result.summary.failed += 1;
-            if (failures.items.len < max_failures) {
-                try failures.append(allocator, .{
-                    .id = try allocator.dupe(u8, case.id),
-                    .adoc = try allocator.dupe(u8, case.adoc),
-                    .expected = try expectedText(allocator, case.asg),
-                    .actual = try allocator.dupe(u8, actual_json),
-                });
-            }
-        }
-    }
-    return result;
+    return runCorpus(allocator, tck_corpus_json, .parse, max_failures, failures);
 }
 
 fn expectedText(allocator: Allocator, value: std.json.Value) ![]u8 {
@@ -210,6 +248,17 @@ fn expectedText(allocator: Allocator, value: std.json.Value) ![]u8 {
     return out.toOwnedSlice();
 }
 
+/// Print a run's failures. Silent callers stay silent on a passing run, for
+/// the same reason `rst/conformance.zig` is: the build runner's `std.Progress`
+/// IPC shares the child's stderr.
+fn printFailures(failures: []const Failure) void {
+    for (failures) |f| {
+        std.debug.print("\n-- {s} --\nadoc:\n{s}\n", .{ f.id, f.adoc });
+        if (f.note) |n| std.debug.print("note: {s}\n", .{n});
+        std.debug.print("expected:\n{s}\nactual:\n{s}\n", .{ f.expected, f.actual });
+    }
+}
+
 test "AsciiDoc TCK corpus round-trips through the ASG codec" {
     const allocator = std.testing.allocator;
     var failures = std.ArrayList(Failure).empty;
@@ -219,8 +268,6 @@ test "AsciiDoc TCK corpus round-trips through the ASG codec" {
     }
     const result = try run(allocator, 10, &failures);
 
-    // Silent on a passing run, for the same reason `rst/conformance.zig` is:
-    // the build runner's `std.Progress` IPC shares the child's stderr.
     if (result.summary.failed > 0 or result.coverage.semantic != SEMANTIC_BASELINE) {
         std.debug.print(
             "\nAsciiDoc TCK round-trip: {d}/{d} cases ({d} failed)\n" ++
@@ -230,12 +277,7 @@ test "AsciiDoc TCK corpus round-trips through the ASG codec" {
                 result.coverage.semantic, result.coverage.generic, result.coverage.text_nodes,
             },
         );
-        for (failures.items) |f| {
-            std.debug.print(
-                "\n-- {s} --\nadoc:\n{s}\nexpected:\n{s}\nactual:\n{s}\n",
-                .{ f.id, f.adoc, f.expected, f.actual },
-            );
-        }
+        printFailures(failures.items);
     }
 
     try std.testing.expectEqual(@as(usize, 0), result.summary.failed);
@@ -257,17 +299,52 @@ test "AsciiDoc parser reproduces expected ASGs for the TCK corpus" {
 
     if (result.summary.passed != PARSE_BASELINE) {
         std.debug.print(
-            "\nAsciiDoc parse: {d}/{d} cases match ({d} failed)\n",
+            "\nAsciiDoc parse (TCK): {d}/{d} cases match ({d} failed)\n",
             .{ result.summary.passed, result.summary.total, result.summary.failed },
         );
-        for (failures.items) |f| {
-            std.debug.print(
-                "\n-- {s} --\nadoc:\n{s}\nexpected:\n{s}\nactual:\n{s}\n",
-                .{ f.id, f.adoc, f.expected, f.actual },
-            );
-        }
+        printFailures(failures.items);
     }
 
     // `>=`, not `==`: the ratchet climbs as the parser's coverage grows.
     try std.testing.expect(result.summary.passed >= PARSE_BASELINE);
+}
+
+test "AsciiDoc parser reproduces expected ASGs for twig's own corpus" {
+    const allocator = std.testing.allocator;
+    var failures = std.ArrayList(Failure).empty;
+    defer {
+        for (failures.items) |f| f.deinit(allocator);
+        failures.deinit(allocator);
+    }
+    const result = try runCorpus(allocator, twig_corpus_json, .parse, 10, &failures);
+
+    if (result.summary.passed != TWIG_PARSE_BASELINE) {
+        std.debug.print(
+            "\nAsciiDoc parse (twig): {d}/{d} cases match ({d} failed)\n",
+            .{ result.summary.passed, result.summary.total, result.summary.failed },
+        );
+        printFailures(failures.items);
+    }
+
+    try std.testing.expect(result.summary.passed >= TWIG_PARSE_BASELINE);
+}
+
+test "twig's own AsciiDoc corpus round-trips through the ASG codec" {
+    const allocator = std.testing.allocator;
+    var failures = std.ArrayList(Failure).empty;
+    defer {
+        for (failures.items) |f| f.deinit(allocator);
+        failures.deinit(allocator);
+    }
+    const result = try runCorpus(allocator, twig_corpus_json, .codec, 10, &failures);
+
+    if (result.summary.passed != TWIG_CODEC_BASELINE) {
+        std.debug.print(
+            "\nAsciiDoc codec (twig): {d}/{d} cases match ({d} failed)\n",
+            .{ result.summary.passed, result.summary.total, result.summary.failed },
+        );
+        printFailures(failures.items);
+    }
+
+    try std.testing.expect(result.summary.passed >= TWIG_CODEC_BASELINE);
 }
