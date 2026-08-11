@@ -30,23 +30,39 @@
 //! `encode` converts back (`lineColOfOffset`) — real use of the position half
 //! of twig's architecture, not a hack bolted on for this one format.
 //!
-//! ── What doesn't have a semantic `Kind` yet ─────────────────────────────────
-//! Two constructs in the 13-case corpus fall to the generic escape hatch,
-//! exactly as `doctree.zig`'s unmapped docutils elements do:
-//!   - `sidebar` -> `Kind.container{.name="sidebar"}`, its `form`/`delimiter`
-//!     riding in `attrs` (the precedent `doctree.zig`'s `column` comment
-//!     documents: un-normalized source values belong in `attrs`, not `Kind`).
+//! ── The `name` attribute, and why every block carries one ──────────────────
+//! The ASG's block vocabulary is finer than twig's shared `Kind` on purpose:
+//! four of its leaf blocks (`listing`, `literal`, `pass`, `stem`) are all
+//! "a block whose payload is opaque text", which is exactly one `Kind`
+//! (`code_block`) — the same collapse `rst/doctree.zig` made when it mapped
+//! docutils' `literal_block` there too. Rather than switch on `Kind` in one
+//! direction and on a name in the other, every block this codec produces
+//! carries its ASG `name` in `attrs` beside `form`/`delimiter`, and `encode`
+//! reads it back from that one place. A `Kind` still decides the SHAPE (leaf
+//! versus parent versus break); the name only decides which of the shape's
+//! several ASG spellings it was.
+//!
+//! ── What doesn't have a semantic `Kind` ────────────────────────────────────
+//! These fall to the generic escape hatch, exactly as `doctree.zig`'s unmapped
+//! docutils elements do, and count `.generic` in `Coverage`:
+//!   - `example`, `sidebar`, `open` and `admonition` ->
+//!     `Kind.container{.name=...}`. Twig has no counterpart for any of them
+//!     (`quote`, alone among the parent blocks, does: `Kind.block_quote`).
+//!   - `break` with `variant: page` -> `Kind.container{.name="page-break"}`.
+//!     Its sibling `variant: thematic` is `Kind.thematic_break`, but a page
+//!     break is not a thematic one wearing a different hat: a thematic break
+//!     is a rule in the document's own body, while `<<<` is an instruction to
+//!     the PAGINATOR that renders as nothing at all in a flowed format.
 //!   - the document's `attributes` dict (`:name: value` entries) -> a
 //!     synthetic `Kind.container{.name="document-attributes"}` marker, first
 //!     child of `doc` when the key was present in the source (even empty —
 //!     `{}`), so its mere presence (not its `Attrs` table, which collapses
 //!     empty-vs-absent to the same `null`, see `Builder.setAttrs`) is the
 //!     round-trip signal for whether to emit the JSON key at all.
-//! Both count `.generic` in `Coverage`, same convention as `doctree.zig`.
 //!
 //! A document's title (`header.title`) DOES get a semantic `Kind.heading`
 //! (`level = 0`, distinguishing it from a real section's `level >= 1`) since
-//! that's exactly what it is; only the two constructs above lack one.
+//! that's exactly what it is.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -167,7 +183,17 @@ fn decodeDocument(b: *AST.Builder, source: []const u8, value: std.json.Value, co
         defer entries.deinit(b.allocator);
         var it = obj(attrs_val).iterator();
         while (it.next()) |e| {
-            try entries.append(b.allocator, .{ .key = e.key_ptr.*, .value = str(e.value_ptr.*) });
+            // A null value is an UNSET attribute (`:!name:`), which is not the
+            // same document as `:name:` with an empty value — `Attrs` already
+            // draws exactly that distinction, so it carries straight over.
+            try entries.append(b.allocator, .{
+                .key = e.key_ptr.*,
+                .value = switch (e.value_ptr.*) {
+                    .null => null,
+                    .string => |s| s,
+                    else => return error.UnsupportedAsgNode,
+                },
+            });
         }
         try b.setAttrs(marker, .{ .entries = entries.items });
         bump(coverage, "generic");
@@ -221,8 +247,12 @@ fn decodeBlock(b: *AST.Builder, source: []const u8, value: std.json.Value, cover
         return id;
     }
 
-    if (std.mem.eql(u8, name, "listing")) {
-        const inlines = arr(o.get("inlines").?);
+    if (isVerbatimLeaf(name)) {
+        // An empty delimited block has NO `inlines` key (the schema's own
+        // `defaults` block spells the absent value as `[]`, and the TCK's
+        // output files always take the absent spelling). Its content span
+        // stays unset, which is what `encode` reads back to decide the same.
+        const inlines = if (o.get("inlines")) |v| arr(v) else &[_]std.json.Value{};
         var text = std.ArrayList(u8).empty;
         defer text.deinit(b.allocator);
         var inner: ?Span = null;
@@ -236,10 +266,48 @@ fn decodeBlock(b: *AST.Builder, source: []const u8, value: std.json.Value, cover
         b.setSpan(id, spanFromLoc(source, o.get("location").?));
         if (inner) |sp| b.setContentSpan(id, sp);
         try b.setAttrs(id, .{ .entries = &.{
+            .{ .key = "name", .value = name },
             .{ .key = "form", .value = str(o.get("form").?) },
             .{ .key = "delimiter", .value = str(o.get("delimiter").?) },
         } });
+        // All four count `semantic`: `Coverage`'s split is "decoded to a kind
+        // with real meaning" versus "fell to `Kind.container`", and
+        // `code_block` is the former for every one of them.
         bump(coverage, "semantic");
+        return id;
+    }
+
+    if (std.mem.eql(u8, name, "break")) {
+        const variant = str(o.get("variant").?);
+        const id = if (std.mem.eql(u8, variant, "thematic"))
+            try b.addNode(.thematic_break)
+        else if (std.mem.eql(u8, variant, "page"))
+            try b.addNode(.{ .container = .{ .name = "page-break" } })
+        else
+            return error.UnsupportedAsgNode;
+        b.setSpan(id, spanFromLoc(source, o.get("location").?));
+        if (std.mem.eql(u8, variant, "thematic")) bump(coverage, "semantic") else bump(coverage, "generic");
+        return id;
+    }
+
+    if (isCompoundBlock(name)) {
+        var children = std.ArrayList(Node.Id).empty;
+        defer children.deinit(b.allocator);
+        if (o.get("blocks")) |blocks_val| {
+            for (arr(blocks_val)) |block_val| {
+                try children.append(b.allocator, try decodeBlock(b, source, block_val, coverage));
+            }
+        }
+        const semantic = std.mem.eql(u8, name, "quote");
+        const kind: Node.Kind = if (semantic) .block_quote else .{ .container = .{ .name = name } };
+        const id = try b.addContainer(kind, children.items);
+        b.setSpan(id, spanFromLoc(source, o.get("location").?));
+        try b.setAttrs(id, .{ .entries = &.{
+            .{ .key = "name", .value = name },
+            .{ .key = "form", .value = str(o.get("form").?) },
+            .{ .key = "delimiter", .value = str(o.get("delimiter").?) },
+        } });
+        if (semantic) bump(coverage, "semantic") else bump(coverage, "generic");
         return id;
     }
 
@@ -264,25 +332,28 @@ fn decodeBlock(b: *AST.Builder, source: []const u8, value: std.json.Value, cover
         return id;
     }
 
-    if (std.mem.eql(u8, name, "sidebar")) {
-        var children = std.ArrayList(Node.Id).empty;
-        defer children.deinit(b.allocator);
-        if (o.get("blocks")) |blocks_val| {
-            for (arr(blocks_val)) |block_val| {
-                try children.append(b.allocator, try decodeBlock(b, source, block_val, coverage));
-            }
-        }
-        const id = try b.addContainer(.{ .container = .{ .name = "sidebar" } }, children.items);
-        b.setSpan(id, spanFromLoc(source, o.get("location").?));
-        try b.setAttrs(id, .{ .entries = &.{
-            .{ .key = "form", .value = str(o.get("form").?) },
-            .{ .key = "delimiter", .value = str(o.get("delimiter").?) },
-        } });
-        bump(coverage, "generic");
-        return id;
-    }
-
     return error.UnsupportedAsgNode;
+}
+
+/// The ASG's four opaque-payload leaf blocks. All four become `code_block`:
+/// twig's model of "a block whose payload is opaque text" fits every one of
+/// them, and they differ only in what a renderer is meant to do with that text
+/// — the same call `rst/doctree.zig` made when it mapped docutils'
+/// `literal_block` onto `code_block` too. Which of the four it was rides in
+/// `attrs` beside `form`/`delimiter`, so nothing is lost on the way back out.
+fn isVerbatimLeaf(name: []const u8) bool {
+    inline for (.{ "listing", "literal", "pass", "stem" }) |n| {
+        if (std.mem.eql(u8, name, n)) return true;
+    }
+    return false;
+}
+
+/// The ASG's `parentBlock` names — blocks whose payload is other blocks.
+fn isCompoundBlock(name: []const u8) bool {
+    inline for (.{ "example", "sidebar", "open", "quote", "admonition" }) |n| {
+        if (std.mem.eql(u8, name, n)) return true;
+    }
+    return false;
 }
 
 fn decodeListItem(b: *AST.Builder, source: []const u8, value: std.json.Value, coverage: ?*Coverage) DecodeError!Node.Id {
@@ -379,6 +450,12 @@ fn writePoint(w: *std.json.Stringify, source: []const u8, offset: usize) Writer.
 /// `Span` back to the ASG's inclusive `(line, col)` pair.
 fn writeLoc(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.Error!void {
     const span = doc.span(id);
+    // An EMPTY span has no location to write: the ASG's endpoints are both
+    // inclusive, so a zero-width extent cannot be spelled at all. This is the
+    // degenerate case only — an empty document, or a document of nothing but
+    // blank lines — and `location` is optional throughout the schema, so
+    // omitting it is legal rather than a dodge.
+    if (span.end <= span.start) return;
     try w.objectField("location");
     try w.beginArray();
     try writePoint(w, doc.source, span.start);
@@ -432,7 +509,7 @@ fn writeDocument(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writ
         try w.beginObject();
         for (doc.ast.attrsOf(aid).entries) |kv| {
             try w.objectField(kv.key);
-            try w.write(kv.value orelse "");
+            try w.write(kv.value); // null — an unset attribute — writes as JSON null
         }
         try w.endObject();
     }
@@ -499,32 +576,34 @@ fn writeBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.
         },
         .code_block => |cb| {
             try w.beginObject();
+            const attrs = doc.ast.attrsOf(id);
             try w.objectField("name");
-            try w.write("listing");
+            try w.write(attrGet(attrs, "name").?);
             try w.objectField("type");
             try w.write("block");
-            const attrs = doc.ast.attrsOf(id);
             try w.objectField("form");
             try w.write(attrGet(attrs, "form").?);
             try w.objectField("delimiter");
             try w.write(attrGet(attrs, "delimiter").?);
-            try w.objectField("inlines");
-            try w.beginArray();
-            try w.beginObject();
-            try w.objectField("type");
-            try w.write("string");
-            try w.objectField("name");
-            try w.write("text");
-            try w.objectField("value");
-            try w.write(cb.text);
-            const cs = doc.contentSpan(id).?;
-            try w.objectField("location");
-            try w.beginArray();
-            try writePoint(w, doc.source, cs.start);
-            try writePoint(w, doc.source, cs.end - 1);
-            try w.endArray();
-            try w.endObject();
-            try w.endArray();
+            if (cb.text.len > 0) {
+                try w.objectField("inlines");
+                try w.beginArray();
+                try w.beginObject();
+                try w.objectField("type");
+                try w.write("string");
+                try w.objectField("name");
+                try w.write("text");
+                try w.objectField("value");
+                try w.write(cb.text);
+                const cs = doc.contentSpan(id).?;
+                try w.objectField("location");
+                try w.beginArray();
+                try writePoint(w, doc.source, cs.start);
+                try writePoint(w, doc.source, cs.end - 1);
+                try w.endArray();
+                try w.endObject();
+                try w.endArray();
+            }
             try writeLoc(w, doc, id);
             try w.endObject();
         },
@@ -553,27 +632,65 @@ fn writeBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.
             }
             try w.endObject();
         },
-        .container => |cnt| {
+        .thematic_break => {
             try w.beginObject();
             try w.objectField("name");
-            try w.write(cnt.name);
+            try w.write("break");
             try w.objectField("type");
             try w.write("block");
-            const attrs = doc.ast.attrsOf(id);
-            try w.objectField("form");
-            try w.write(attrGet(attrs, "form").?);
-            try w.objectField("delimiter");
-            try w.write(attrGet(attrs, "delimiter").?);
-            try w.objectField("blocks");
-            try w.beginArray();
-            var it = doc.children(id);
-            while (it.next()) |c| try writeBlock(w, doc, c.id);
-            try w.endArray();
+            try w.objectField("variant");
+            try w.write("thematic");
             try writeLoc(w, doc, id);
             try w.endObject();
         },
+        // A page break has no `Kind` of its own — twig's `thematic_break` is a
+        // horizontal rule in the document's own body, while `<<<` is an
+        // instruction to the PAGINATOR and renders as nothing at all in a
+        // flowed format. See this file's doc comment.
+        .container => |cnt| if (std.mem.eql(u8, cnt.name, "page-break")) {
+            try w.beginObject();
+            try w.objectField("name");
+            try w.write("break");
+            try w.objectField("type");
+            try w.write("block");
+            try w.objectField("variant");
+            try w.write("page");
+            try writeLoc(w, doc, id);
+            try w.endObject();
+        } else try writeParentBlock(w, doc, id),
+        .block_quote => try writeParentBlock(w, doc, id),
         else => unreachable,
     }
+}
+
+/// One `parentBlock` — an example, sidebar, open block, quote or admonition.
+/// Which it is comes from `attrs`, not from the `Kind`, since two of them
+/// share `Kind.container` and one has a semantic kind of its own; see
+/// `parser.zig`'s `kindForCompound`.
+fn writeParentBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.Error!void {
+    const attrs = doc.ast.attrsOf(id);
+    try w.beginObject();
+    try w.objectField("name");
+    try w.write(attrGet(attrs, "name").?);
+    try w.objectField("type");
+    try w.write("block");
+    if (attrGet(attrs, "variant")) |v| {
+        try w.objectField("variant");
+        try w.write(v);
+    }
+    try w.objectField("form");
+    try w.write(attrGet(attrs, "form").?);
+    try w.objectField("delimiter");
+    try w.write(attrGet(attrs, "delimiter").?);
+    if (doc.ast.nodes[id].first_child != null) {
+        try w.objectField("blocks");
+        try w.beginArray();
+        var it = doc.children(id);
+        while (it.next()) |c| try writeBlock(w, doc, c.id);
+        try w.endArray();
+    }
+    try writeLoc(w, doc, id);
+    try w.endObject();
 }
 
 fn writeListItem(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.Error!void {

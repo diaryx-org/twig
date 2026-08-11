@@ -1,9 +1,14 @@
-//! AsciiDoc: NOT a parser yet — the conformance harness (`Asciidoc.conformance`,
-//! the vendored AsciiDoc TCK corpus) and the ASG codec it compares through
-//! (`Asciidoc.asg`). Mirrors where `languages/rst/` started: a testing
-//! harness first, so the vocabulary-mapping work (`asg.zig`'s `Coverage`) has
-//! a ratchet to climb before there's a parser to climb it with. There is
-//! deliberately no `format.zig` registry entry until `parse` exists.
+//! AsciiDoc: the conformance harness (`Asciidoc.conformance`, the vendored
+//! AsciiDoc TCK corpus), the ASG codec it compares through (`Asciidoc.asg`),
+//! and now a first-slice parser (`Asciidoc.parser`) — source bytes to twig's
+//! shared `AST`, judged by `conformance.zig`'s `parse` comparison against the
+//! same corpus the codec's `decode`/`encode` round-trip already climbed.
+//! Mirrors where `languages/rst/` went: the testing harness landed first, so
+//! the vocabulary-mapping work (`asg.zig`'s `Coverage`) had a ratchet to
+//! climb before there was a parser to climb it with. There is still
+//! deliberately no `format.zig` registry entry — `parser.zig`'s own doc
+//! comment has the exact boundary of what this slice covers, and it is far
+//! short of a registry-worthy claim of "supports AsciiDoc".
 //!
 //! ── The corpus IS the boundary, and today it is a small one ────────────────
 //! `testdata/asciidoc-tck-corpus.json` — 13 cases hand-vendored from the
@@ -35,8 +40,15 @@ const std = @import("std");
 /// why comparison is structural rather than byte-for-byte.
 pub const asg = @import("asg.zig");
 
-/// The vendored TCK corpus runner and its ratchet. See its module doc comment
-/// for what it asserts before a parser exists.
+/// Source bytes -> twig's shared `AST`. See its module doc comment for what
+/// this first slice covers (the document header, paragraphs, section
+/// nesting, unordered lists, listing blocks, sidebars, constrained `*strong*`
+/// spans) and for what's still unimplemented.
+pub const parser = @import("parser.zig");
+
+/// The vendored TCK corpus runner and its ratchets. See its module doc
+/// comment for the codec round-trip and the parser comparison it now also
+/// runs.
 pub const conformance = @import("conformance.zig");
 
 test {
