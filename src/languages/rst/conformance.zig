@@ -294,7 +294,14 @@ pub const MESSAGE_BASELINE: u32 = 158;
 /// `<literal>` or `<reference>` inside a term or classifier, and the fourth
 /// needs a backslash ESCAPE removed from its term text (twig already declines
 /// to split the classifier there, which is the structural half).
-pub const PARSE_BASELINE: u32 = 94;
+///
+/// 100 after field lists (`test_field_lists.py`, 6/11), all in that one group.
+/// The five holdouts: three want the inline pass (markup in a field name, and
+/// escaped backticks), one wants literal blocks, and one — "Nested field lists
+/// on one line" — wants the parser to be able to address a line from a column
+/// other than zero. See `parser.parseMarkedBody` for that last limit; it is
+/// the only structural one left in the group.
+pub const PARSE_BASELINE: u32 = 100;
 
 /// Decode every expected doctree and encode it straight back, collecting the
 /// round-trip tally, the vocabulary coverage, and (up to `max_failures`)

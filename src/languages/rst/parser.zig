@@ -9,13 +9,14 @@
 //! by corpus weight" call in the session this landed in): paragraphs, section
 //! titles/nesting, transitions, block quotes, and comments — plus, added
 //! since, bullet lists (`test_bullet_lists.py`, 7/7), enumerated lists
-//! (`test_enumerated_lists.py`, 15/15) and definition lists
-//! (`test_definition_lists.py`, 7/11). No inline markup parsing yet —
+//! (`test_enumerated_lists.py`, 15/15), definition lists
+//! (`test_definition_lists.py`, 7/11) and field lists
+//! (`test_field_lists.py`, 6/11). No inline markup parsing yet —
 //! a paragraph's whole text becomes ONE `.str` child, so any case whose
 //! expected doctree contains `emphasis`/`strong`/`reference`/etc. inside a
 //! paragraph will not compare equal yet, and no backslash ESCAPE is removed
 //! anywhere (docutils strips those during inline parsing). Everything else
-//! (field/option lists, literal blocks, directives, the hyperlink/footnote/
+//! (option lists, literal blocks, directives, the hyperlink/footnote/
 //! citation/substitution clusters, tables) is unimplemented and deliberately
 //! out of this file for now.
 //!
@@ -182,6 +183,7 @@ const BlockStart = union(enum) {
     comment,
     bullet: BulletMatch,
     enumerator: EnumMatch,
+    field_marker,
     definition_term,
     paragraph,
 };
@@ -534,6 +536,11 @@ const Parser = struct {
                     try children.append(self.allocator, el.id);
                     i = el.next;
                 },
+                .field_marker => {
+                    const fl = try self.parseFieldList(i, hi, indent);
+                    try children.append(self.allocator, fl.id);
+                    i = fl.next;
+                },
                 .definition_term => {
                     const dl = try self.parseDefinitionList(i, hi, indent);
                     try children.append(self.allocator, dl.id);
@@ -582,6 +589,7 @@ const Parser = struct {
         // `-+*` or a Unicode bullet, while an enumerator starts with an
         // alphanumeric, `#` or `(`. Order between the two is therefore free.
         if (self.matchEnumeratorStart(i, hi, indent)) |em| return .{ .enumerator = em };
+        if (matchFieldMarker(content) != null) return .field_marker;
         // A term is a line whose evidence is entirely BELOW it: docutils
         // reaches its `Text` state first and only then sees the indent. So a
         // line that looks like nothing else, followed immediately (no blank
@@ -734,20 +742,7 @@ const Parser = struct {
     /// One `<list_item>`, shared by bullet and enumerated lists — the two
     /// differ only in how their marker is recognized, never in what follows
     /// it, which is docutils' own arrangement (a single `list_item` method
-    /// serves both states). `content` is the marker line already stripped of
-    /// `indent` and trailing whitespace; `rel_start` is where the item's own
-    /// text begins within it.
-    ///
-    /// The two branches below are docutils' `get_known_indented` and
-    /// `get_first_known_indented`, and the difference between them is the
-    /// whole reason this is one function rather than an inlined loop. With
-    /// text after the marker the item's column is KNOWN (it is where that text
-    /// starts), so the body is everything indented at least that far. With
-    /// nothing after the marker the column is UNKNOWN, and docutils takes it
-    /// from the minimum indent of whatever follows instead — which is why
-    /// `1.` over a 1-space-indented `foo` is a list item holding `foo` rather
-    /// than a list item holding nothing (corpus: the enumerated-list
-    /// "0/1/2/3-space indent" case walks all four widths).
+    /// serves both states).
     fn parseListItem(
         self: *Parser,
         item_line: usize,
@@ -757,54 +752,90 @@ const Parser = struct {
         rel_start: usize,
         has_content: bool,
     ) Allocator.Error!struct { id: Node.Id, next: usize } {
-        var item_children: std.ArrayList(Node.Id) = .empty;
-        errdefer item_children.deinit(self.allocator);
+        const body = try self.parseMarkedBody(item_line, hi, indent, content, rel_start, has_content, .marker_width);
+        defer self.allocator.free(body.items);
+        const item_id = try self.b.addContainer(.list_item, body.items);
+        self.b.setSpan(item_id, Span.init(self.lines[item_line].start, self.lines[body.stopped_at - 1].end));
+        return .{ .id = item_id, .next = body.stopped_at };
+    }
 
+    /// Where a marked construct's body sits — docutils' choice between
+    /// `get_known_indented` and `get_first_known_indented`. It is genuinely
+    /// per-construct rather than a threshold, and the corpus is emphatic
+    /// about it: `:Authors: Me,` continued at column 2 is ONE paragraph,
+    /// while `- Me,` continued at column 2 is not.
+    ///
+    /// `marker_width` — a list item with text after its marker knows its
+    /// column (that text's own), and a continuation line has to reach it.
+    ///
+    /// `own_minimum` — a field's body never knows its column: docutils takes
+    /// the first line from the marker's remainder and the REST from their own
+    /// minimum indent, however shallow. A marker with NOTHING after it falls
+    /// here too whatever the construct, which is why `1.` over a
+    /// one-space-indented `foo` is an item holding `foo` rather than an empty
+    /// one (corpus: the enumerated-list "0/1/2/3-space indent" case walks all
+    /// four widths).
+    const ColumnRule = enum { marker_width, own_minimum };
+
+    /// The blocks introduced by a MARKER line — one whose own remainder is the
+    /// body's first line but which is not indented to the body's column in the
+    /// source, the marker sitting where that indent would be.
+    ///
+    /// That remainder therefore can't go through `parseBody`/`findParagraphEnd`
+    /// and is merged into a first paragraph by hand. The cost is that the
+    /// remainder can only ever BE a paragraph: `:field1: :field2: body`, whose
+    /// remainder is a nested field list, is out of reach until the parser can
+    /// address a line from a column other than zero. That is the corpus's
+    /// "Nested field lists on one line" case, and the one field-list failure
+    /// that is not about inline markup.
+    fn parseMarkedBody(
+        self: *Parser,
+        marker_line: usize,
+        hi: usize,
+        indent: usize,
+        content: []const u8,
+        rel_start: usize,
+        has_content: bool,
+        column: ColumnRule,
+    ) Allocator.Error!BodyResult {
+        var children: std.ArrayList(Node.Id) = .empty;
+        errdefer children.deinit(self.allocator);
+
+        const known_column = has_content and column == .marker_width;
         const content_col = indent + rel_start;
-        var body_col = content_col;
-        var body_start = item_line + 1;
-        const ext = self.findElevatedExtent(item_line + 1, hi, if (has_content) content_col - 1 else indent);
+        const ext = self.findElevatedExtent(marker_line + 1, hi, if (known_column) content_col - 1 else indent);
+        const body_col = if (known_column) content_col else ext.min_indent;
+
+        var body_start = marker_line + 1;
         if (has_content) {
-            // The marker line's own remainder is the first paragraph's first
-            // line; merge in any immediately-following (no blank line between)
-            // continuation at `content_col`, the same rule `findParagraphEnd`
-            // uses for an ordinary paragraph — it just can't be called
-            // directly here since line `item_line` isn't indented to
-            // `content_col` in the SOURCE (the marker sits where the indent
-            // would be).
-            var para_end = item_line + 1;
-            while (para_end < ext.end and !self.isBlankLine(para_end) and self.leadingSpaces(para_end) == content_col) para_end += 1;
+            // Merge in any immediately-following (no blank line between)
+            // continuation at `body_col`, the same rule `findParagraphEnd`
+            // uses for an ordinary paragraph.
+            var para_end = marker_line + 1;
+            while (para_end < ext.end and !self.isBlankLine(para_end) and self.leadingSpaces(para_end) == body_col) para_end += 1;
 
             var buf: std.ArrayList(u8) = .empty;
             errdefer buf.deinit(self.allocator);
             try buf.appendSlice(self.allocator, content[rel_start..]);
-            var ln = item_line + 1;
+            var ln = marker_line + 1;
             while (ln < para_end) : (ln += 1) {
                 try buf.append(self.allocator, '\n');
-                try buf.appendSlice(self.allocator, self.trimmedContent(ln, content_col));
+                try buf.appendSlice(self.allocator, self.trimmedContent(ln, body_col));
             }
             const text = try buf.toOwnedSlice(self.allocator);
             const str_id = try self.b.addLeaf(.{ .str = text });
             self.allocator.free(text);
-            self.b.setSpan(str_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
+            self.b.setSpan(str_id, Span.init(self.lines[marker_line].start, self.lines[para_end - 1].end));
             const para_id = try self.b.addContainer(.para, &.{str_id});
-            self.b.setSpan(para_id, Span.init(self.lines[item_line].start, self.lines[para_end - 1].end));
-            try item_children.append(self.allocator, para_id);
+            self.b.setSpan(para_id, Span.init(self.lines[marker_line].start, self.lines[para_end - 1].end));
+            try children.append(self.allocator, para_id);
             body_start = para_end;
-        } else {
-            body_col = ext.min_indent;
         }
 
         const rest = try self.parseBody(body_start, ext.end, body_col);
         defer self.allocator.free(rest.items);
-        try item_children.appendSlice(self.allocator, rest.items);
-
-        const item_items = try item_children.toOwnedSlice(self.allocator);
-        const item_id = try self.b.addContainer(.list_item, item_items);
-        self.allocator.free(item_items);
-        const item_end = rest.stopped_at;
-        self.b.setSpan(item_id, Span.init(self.lines[item_line].start, self.lines[item_end - 1].end));
-        return .{ .id = item_id, .next = item_end };
+        try children.appendSlice(self.allocator, rest.items);
+        return .{ .items = try children.toOwnedSlice(self.allocator), .stopped_at = rest.stopped_at };
     }
 
     // ── enumerated lists ────────────────────────────────────────────────
@@ -923,6 +954,60 @@ const Parser = struct {
             n = 4;
         }
         try self.b.setAttrs(list_id, .{ .entries = entries[0..n] });
+        return .{ .id = list_id, .next = i };
+    }
+
+    // ── field lists ─────────────────────────────────────────────────────
+
+    /// A maximal run of `:name: body` fields at `indent`.
+    ///
+    /// All four docutils elements stay GENERIC containers, and deliberately.
+    /// The option-list absorption worked because a term holding an `<option>`
+    /// is a total discriminator; a `<field_name>` holds ordinary text, so
+    /// absorbing these four into the definition-list four would leave
+    /// `encodeTag` no way to tell the three constructs apart on the way out.
+    /// A generic container names its own element and round-trips exactly, so
+    /// the corpus is served with no vocabulary committed to a construct only
+    /// rST has and no serializer handed a node it cannot spell.
+    fn parseFieldList(self: *Parser, lo: usize, hi: usize, indent: usize) Allocator.Error!struct { id: Node.Id, next: usize } {
+        var fields: std.ArrayList(Node.Id) = .empty;
+        errdefer fields.deinit(self.allocator);
+        var i = lo;
+        var list_end = self.lines[lo].end;
+        while (i < hi) {
+            if (self.isBlankLine(i)) {
+                i += 1;
+                continue;
+            }
+            if (self.leadingSpaces(i) != indent) break;
+            const content = self.trimmedContent(i, indent);
+            const fm = matchFieldMarker(content) orelse break;
+
+            const marker_span = Span.init(self.lines[i].start, self.lines[i].end);
+            const name_str = try self.b.addLeaf(.{ .str = fm.name });
+            self.b.setSpan(name_str, marker_span);
+            const name_id = try self.b.addContainer(.{ .container = .{ .name = "field_name" } }, &.{name_str});
+            self.b.setSpan(name_id, marker_span);
+
+            const body = try self.parseMarkedBody(i, hi, indent, content, fm.rel_start, fm.has_content, .own_minimum);
+            defer self.allocator.free(body.items);
+            // docutils appends the `field_body` unconditionally, so a field
+            // with nothing after its marker still has an (empty) one.
+            const body_id = try self.b.addContainer(.{ .container = .{ .name = "field_body" } }, body.items);
+            self.b.setSpan(body_id, Span.init(self.lines[i].start, self.lines[body.stopped_at - 1].end));
+
+            const field_id = try self.b.addContainer(.{ .container = .{ .name = "field" } }, &.{ name_id, body_id });
+            self.b.setSpan(field_id, Span.init(self.lines[i].start, self.lines[body.stopped_at - 1].end));
+            try fields.append(self.allocator, field_id);
+
+            list_end = self.lines[body.stopped_at - 1].end;
+            i = body.stopped_at;
+        }
+
+        const field_ids = try fields.toOwnedSlice(self.allocator);
+        const list_id = try self.b.addContainer(.{ .container = .{ .name = "field_list" } }, field_ids);
+        self.allocator.free(field_ids);
+        self.b.setSpan(list_id, Span.init(self.lines[lo].start, list_end));
         return .{ .id = list_id, .next = i };
     }
 
@@ -1132,6 +1217,65 @@ fn matchBulletMarker(content: []const u8) ?BulletMatch {
     while (k < content.len and content[k] == ' ') k += 1;
     if (k == content.len) return .{ .marker = content[0..mlen], .rel_start = mlen + 1, .has_content = false };
     return .{ .marker = content[0..mlen], .rel_start = k, .has_content = true };
+}
+
+const FieldMatch = struct {
+    /// The name between the colons, verbatim — escapes NOT removed, since
+    /// docutils removes those in `inline_text` and this parser has no inline
+    /// pass yet.
+    name: []const u8,
+    /// Byte offset within the indent-stripped line where the body's first
+    /// line starts, mirroring `BulletMatch.rel_start`.
+    rel_start: usize,
+    has_content: bool,
+};
+
+/// docutils' `field_marker` pattern:
+///
+///     :(?![: ])([^:\\]|\\.|:(?!([ `]|$)))*(?<! ):( +|$)
+///
+/// which is a left-to-right scan once its backtracking is unwound. The name
+/// may not contain a colon followed by a space, a backtick, or the end of the
+/// line, so no colon after the first such one could ever close the name: the
+/// closer is simply the FIRST colon followed by a space or the line's end, and
+/// a colon followed by a backtick before that point kills the match outright.
+/// That last clause is what keeps `:code:`not a field name`: text` a plain
+/// paragraph, which the corpus tests directly.
+fn matchFieldMarker(content: []const u8) ?FieldMatch {
+    // `:(?![: ])`: `::` opens a literal block and `: ` is just text.
+    if (content.len < 2 or content[0] != ':') return null;
+    if (content[1] == ':' or content[1] == ' ') return null;
+
+    var k: usize = 1;
+    while (k < content.len) {
+        if (content[k] == '\\') {
+            // `\\.` — a backslash takes the next character with it, whatever
+            // it is, so an escaped colon can neither close nor break a name.
+            k += 2;
+            continue;
+        }
+        if (content[k] != ':') {
+            k += 1;
+            continue;
+        }
+        const after: ?u8 = if (k + 1 < content.len) content[k + 1] else null;
+        if (after != null and after.? != ' ' and after.? != '`') {
+            k += 1;
+            continue;
+        }
+        // `(?<! )` — a name may not end in a space, and a colon that neither
+        // closes nor belongs to the name ends the whole match.
+        if (after != null and after.? == '`') return null;
+        if (content[k - 1] == ' ') return null;
+        const name = content[1..k];
+        if (name.len == 0) return null;
+        var rest = k + 1;
+        while (rest < content.len and content[rest] == ' ') rest += 1;
+        // `content` is trailing-trimmed, so "spaces then nothing" is the same
+        // as "nothing", and both mean the body starts on the next line.
+        return .{ .name = name, .rel_start = rest, .has_content = rest < content.len };
+    }
+    return null;
 }
 
 // ── enumerators ──────────────────────────────────────────────────────────
@@ -1679,6 +1823,60 @@ test "an escaped colon does not split a term" {
     const term = item.first_child.?;
     try testing.expect(ast.nodes[ast.nodes[term].next_sibling.?].kind == .definition);
     try testing.expectEqualStrings("Term \\: not a classifier", ast.nodes[ast.nodes[term].first_child.?].kind.str);
+}
+
+test "a field list keeps all four docutils elements as generic containers" {
+    var result = try parse(testing.allocator, ":Author: Me\n:Version: 1\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const list = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("field_list", ast.nodes[list].kind.container.name);
+    const field = ast.nodes[list].first_child.?;
+    try testing.expectEqualStrings("field", ast.nodes[field].kind.container.name);
+    const name = ast.nodes[field].first_child.?;
+    try testing.expectEqualStrings("field_name", ast.nodes[name].kind.container.name);
+    try testing.expectEqualStrings("Author", ast.nodes[ast.nodes[name].first_child.?].kind.str);
+    const body = ast.nodes[name].next_sibling.?;
+    try testing.expectEqualStrings("field_body", ast.nodes[body].kind.container.name);
+    try testing.expect(ast.nodes[ast.nodes[body].first_child.?].kind == .para);
+    try testing.expect(ast.nodes[ast.nodes[field].next_sibling.?].next_sibling == null);
+}
+
+test "a field body takes its column from the continuation lines, not the marker" {
+    // The `own_minimum` rule: a two-space continuation joins `:Authors: Me,`
+    // even though the marker reserves ten columns. A list item would not.
+    var result = try parse(testing.allocator, ":Authors: Me,\n  Myself\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const body = ast.nodes[ast.nodes[ast.nodes[ast.nodes[ast.root].first_child.?].first_child.?].first_child.?].next_sibling.?;
+    const para = ast.nodes[body].first_child.?;
+    try testing.expectEqualStrings("Me,\nMyself", ast.nodes[ast.nodes[para].first_child.?].kind.str);
+    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[para].next_sibling);
+}
+
+test "a field body may start on the line below its marker" {
+    var result = try parse(testing.allocator, ":Author:\n  Me\n", .{});
+    defer result.deinit(testing.allocator);
+    const ast = result.document.ast;
+    const field = ast.nodes[ast.nodes[ast.root].first_child.?].first_child.?;
+    const body = ast.nodes[ast.nodes[field].first_child.?].next_sibling.?;
+    const para = ast.nodes[body].first_child.?;
+    try testing.expectEqualStrings("Me", ast.nodes[ast.nodes[para].first_child.?].kind.str);
+}
+
+test "field names admit embedded colons but not a colon before a backtick" {
+    try testing.expectEqualStrings("field:name:with:colons", matchFieldMarker(":field:name:with:colons: body").?.name);
+    try testing.expectEqualStrings("field::name", matchFieldMarker(":field::name: double colons").?.name);
+    try testing.expectEqualStrings("Parameter i j k", matchFieldMarker(":Parameter i j k: multiple").?.name);
+    // No body at all, and the marker still matches (`( +|$)`).
+    try testing.expect(!matchFieldMarker(":Author:").?.has_content);
+    // `:code:` followed by a backtick is interpreted text, not a field name.
+    try testing.expectEqual(@as(?FieldMatch, null), matchFieldMarker(":code:`not a field name`: text"));
+    // `::` cannot open one, and a name may not end in a space.
+    try testing.expectEqual(@as(?FieldMatch, null), matchFieldMarker("::code:`x`: text"));
+    try testing.expectEqual(@as(?FieldMatch, null), matchFieldMarker(":name : body"));
+    // An escaped colon is carried along by the `\\.` alternative.
+    try testing.expectEqualStrings("field\\:name", matchFieldMarker(":field\\:name: body").?.name);
 }
 
 test "a bullet beats a term at the same column" {
