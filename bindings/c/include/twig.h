@@ -1138,6 +1138,15 @@ typedef enum TwigNodeKind {
     TWIG_KIND_DOCTYPE = 53,
     TWIG_KIND_PROCESSING_INSTRUCTION = 54,
     TWIG_KIND_CDATA = 55,
+    // Appended rather than slotted in beside FOOTNOTE/FOOTNOTE_REFERENCE, where
+    // they belong by meaning: renumbering an existing code is an ABI break (see
+    // "ABI stability" above), so declaration order and numeric order diverge
+    // from here on. CITATION is a footnote in reStructuredText's second name
+    // registry; SUBSTITUTION is a named definition whose body is INLINE.
+    TWIG_KIND_CITATION = 56,
+    TWIG_KIND_SUBSTITUTION = 57,
+    TWIG_KIND_CITATION_REFERENCE = 58,
+    TWIG_KIND_SUBSTITUTION_REFERENCE = 59,
 } TwigNodeKind;
 
 typedef enum TwigBulletStyle {
@@ -1306,6 +1315,25 @@ TwigStatus twig_builder_add_processing_instruction(
 );
 
 TwigStatus twig_builder_add_footnote(
+    TwigBuilder *builder,
+    const uint8_t *label,
+    size_t label_len,
+    uint32_t *out_id
+);
+
+// Add a citation definition (reStructuredText's `.. [CIT2002] ...`). Same
+// payload as a footnote, and a separate call rather than a namespace argument
+// because the two registries are two kinds all the way out to this surface.
+TwigStatus twig_builder_add_citation(
+    TwigBuilder *builder,
+    const uint8_t *label,
+    size_t label_len,
+    uint32_t *out_id
+);
+
+// Add a substitution definition (reStructuredText's `.. |name| image:: p.png`).
+// Its children are INLINE nodes, unlike a footnote's or citation's.
+TwigStatus twig_builder_add_substitution(
     TwigBuilder *builder,
     const uint8_t *label,
     size_t label_len,

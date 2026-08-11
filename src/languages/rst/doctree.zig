@@ -222,32 +222,20 @@ pub const Tag = enum {
 //     does not write one, so decoding would have to synthesize it from section
 //     nesting depth and encoding would have to recompute it. `title` also
 //     appears under `topic`/`sidebar`/`table`, where no such depth exists.
-//   - The REST of the hyperlink cluster. `reference`, the external `target`,
-//     and `footnote` are mapped below because twig already has their kinds; the
-//     four that remain each want a NEW entry in twig's shared vocabulary, and
-//     the corpus cannot decide any of them:
-//
-//       `citation` (14) + `citation_reference` (7) — structurally identical to
-//       footnotes, differing only in which name registry they resolve in. So
-//       either `Kind.Footnote` grows a namespace or `citation` becomes its own
-//       kind; and those two choices differ in whether the serializers are FORCED
-//       to notice (a payload field compiles everywhere unchanged, a new kind
-//       fails every exhaustive switch until it is answered).
-//
-//       `substitution_definition` (33) + `substitution_reference` (18) — a
-//       definition whose body is INLINE, unlike every definition twig has.
+//   - What is LEFT of the hyperlink cluster, which is now the two `target`
+//     shapes and nothing else. `reference`, the external `target` and
+//     `footnote` were mapped first because twig already had their kinds;
+//     `citation`/`citation_reference` and `substitution_definition`/
+//     `substitution_reference` are mapped below onto vocabulary added FOR them,
+//     which was gated until `src/diagnostics.zig` existed to say what a
+//     conversion would lose (see `Kind.citation`'s doc for why each became its
+//     own kind rather than a namespace field). The two that remain are both
+//     `target`, and neither is waiting on vocabulary:
 //
 //       The indirect `target` (14) — an alias naming another definition rather
 //       than a URI, which `Kind.Reference` has no field for.
 //
 //       The internal `target` (30) — an anchor; see `decodeTarget`.
-//
-//     What they share is that mapping any of them commits twig's PUBLISHED
-//     vocabulary (`ast/json.zig`'s `kind`, `c_abi.zig`'s `TwigNodeKind`) to a
-//     construct only rST has, and hands three serializers a node their format
-//     cannot spell — which is the conversion-lossiness layer `rst.zig` names as
-//     a separate system that does not exist yet. Deliberately not smuggled in
-//     under a coverage ratchet.
 
 /// The twig `Kind` `tag` decodes to, or `null` for the generic `container`
 /// fallback. `children` are the already-built child ids, needed by the three
@@ -308,6 +296,35 @@ fn decodeKind(
         // `decodeTarget` reads a definition's name.
         .footnote => .{ .footnote = .{ .label = definitionName(attrs) } },
 
+        // A citation definition — a footnote in rST's second name registry, and
+        // read exactly the same way: the name is `names`, and the `<label>`
+        // child stays a generic node. The corpus makes the reason plain here in
+        // a way it could not for footnotes: for `.. [TARGET] …` docutils writes
+        // `names="target"` with `<label>TARGET`, so the two are the NORMALIZED
+        // and the WRITTEN form of the name, not the same string twice.
+        .citation => .{ .citation = .{ .label = definitionName(attrs) } },
+
+        // A substitution definition. Same `names` rule again; the body is the
+        // element's inline children, which `Kind.substitution` holds directly.
+        .substitution_definition => .{ .substitution = .{ .label = definitionName(attrs) } },
+
+        // The two USES. Payload is the label as WRITTEN, which is the children's
+        // text, not the `refname` attribute — docutils normalizes `refname`
+        // (`[CIT1]_` gives `refname="cit1"` over a `CIT1` body) and the written
+        // form is the one that cannot be recovered from the other. `refname`
+        // itself rides in `attrs` and round-trips there verbatim, so nothing has
+        // to re-derive it and no normalization step enters this codec — the same
+        // division `.reference => .link` makes for `name`/`anonymous`.
+        //
+        // Both absorb a lone `str` child, so they are conditional for the reason
+        // the three text-carrying mappings below are. The condition bites in one
+        // real place: an auto-numbered footnote reference has NO children (a
+        // transform supplies the number), and a substitution reference may carry
+        // a multi-line name — neither is a lone `str`, and both stay generic
+        // rather than being decoded to an empty or re-joined payload.
+        .citation_reference => if (soleStr(b, children)) |t| .{ .text_leaf = .{ .kind = .citation_reference, .text = t } } else null,
+        .substitution_reference => if (soleStr(b, children)) |t| .{ .text_leaf = .{ .kind = .substitution_reference, .text = t } } else null,
+
         // The three text-carrying mappings. Each holds its payload as opaque
         // text on the node, so it can only absorb a lone `Text` child — a
         // `literal_block` with inline children (docutils' parsed-literal) or an
@@ -347,6 +364,8 @@ fn encodeTag(kind: Node.Kind) ?Tag {
         .link => .reference,
         .reference => .target,
         .footnote => .footnote,
+        .citation => .citation,
+        .substitution => .substitution_definition,
         .inline_mark => |m| switch (m) {
             .emph => .emphasis,
             .strong => .strong,
@@ -354,6 +373,8 @@ fn encodeTag(kind: Node.Kind) ?Tag {
         },
         .text_leaf => |l| switch (l.kind) {
             .verbatim => .literal,
+            .citation_reference => .citation_reference,
+            .substitution_reference => .substitution_reference,
             else => null,
         },
         .markup_leaf => |l| switch (l.kind) {
@@ -1001,6 +1022,117 @@ test "a literal block with a lone text child decodes to a code block" {
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings(src, out);
+}
+
+test "a citation's name is `names`, and its `<label>` is the written form" {
+    // The corpus case that separates the two: `.. [TARGET] …` normalizes to
+    // `target` for resolution while the rendered marker keeps its case. A
+    // decode that read the `<label>` child would get `TARGET` and resolve
+    // against nothing.
+    const src =
+        \\<document source="test data">
+        \\    <citation ids="target" names="target">
+        \\        <label>
+        \\            TARGET
+        \\        <paragraph>
+        \\            Body.
+        \\
+    ;
+    var cov: Coverage = .{};
+    var ast = try decode(testing.allocator, src, &cov);
+    defer ast.deinit();
+
+    const cit = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("target", ast.nodes[cit].kind.citation.label);
+    // `<label>` stays an ordinary generic child — it is the marker, not the
+    // name, exactly as for a footnote.
+    const label = ast.nodes[cit].first_child.?;
+    try testing.expectEqualStrings("label", ast.nodes[label].kind.container.name);
+
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "a citation reference keeps the written label and leaves refname in attrs" {
+    // `[CIT1]_` gives `refname="cit1"` over a `CIT1` body: the normalized name
+    // and the written one. The payload takes the written form (the one that
+    // cannot be recovered from the other) and `refname` round-trips as an
+    // attribute, so no normalization step enters this codec.
+    const src =
+        \\<document source="test data">
+        \\    <paragraph>
+        \\        <citation_reference ids="citation-reference-1" refname="cit1">
+        \\            CIT1
+        \\
+    ;
+    var cov: Coverage = .{};
+    var ast = try decode(testing.allocator, src, &cov);
+    defer ast.deinit();
+
+    const para = ast.nodes[ast.root].first_child.?;
+    const ref = ast.nodes[para].first_child.?;
+    try testing.expectEqual(AST.TextLeafKind.citation_reference, ast.nodes[ref].kind.text_leaf.kind);
+    try testing.expectEqualStrings("CIT1", ast.nodes[ref].kind.text_leaf.text);
+    try testing.expectEqualStrings("cit1", ast.attrsOf(ref).get("refname").?);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.citation_reference)]);
+
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "a substitution definition holds its body inline" {
+    // The shape twig had no kind for: a named definition whose children are
+    // inlines. The corpus's most common body is an `image`, which is still a
+    // generic container here — the point is that it sits DIRECTLY under the
+    // definition, with no paragraph in between.
+    const src =
+        \\<document source="test data">
+        \\    <substitution_definition names="RST">
+        \\        reStructuredText
+        \\
+    ;
+    var cov: Coverage = .{};
+    var ast = try decode(testing.allocator, src, &cov);
+    defer ast.deinit();
+
+    const sub = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("RST", ast.nodes[sub].kind.substitution.label);
+    try testing.expectEqual(AST.Node.Kind.ContentModel.inlines, ast.nodes[sub].kind.contentModel());
+    const body = ast.nodes[sub].first_child.?;
+    try testing.expectEqualStrings("reStructuredText", ast.nodes[body].kind.str);
+
+    const out = try encodeAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "a decoded tree owns its payload strings and outlives the source" {
+    // `decode`'s contract is that the returned `AST` borrows nothing from the
+    // input — `Builder` copies every payload string. That is easy to break
+    // WITHOUT failing anything: a kind missing from `Builder.dupeKind` still
+    // compiles and still passes any test whose source outlives the tree, which
+    // is nearly all of them. `citation`/`substitution` were broken exactly that
+    // way when they were added. This frees the source first.
+    const src =
+        \\<document source="test data">
+        \\    <citation ids="cit" names="cit">
+        \\        <paragraph>
+        \\            Body.
+        \\    <substitution_definition names="RST">
+        \\        reStructuredText
+        \\
+    ;
+    const owned = try testing.allocator.dupe(u8, src);
+    var ast = try decode(testing.allocator, owned, null);
+    defer ast.deinit();
+    testing.allocator.free(owned);
+
+    const cit = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("cit", ast.nodes[cit].kind.citation.label);
+    const sub = ast.nodes[cit].next_sibling.?;
+    try testing.expectEqualStrings("RST", ast.nodes[sub].kind.substitution.label);
 }
 
 test "an unmapped element decodes to a generic container named after its tag" {

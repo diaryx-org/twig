@@ -16,6 +16,21 @@
 //! it anchors to a node PATH — and it is a fact about a (document, target)
 //! PAIR, which is why it cannot be stored alongside a `Document` at all.
 //!
+//! ── The table is the gate on the vocabulary ────────────────────────────────
+//! `fidelity` switches exhaustively over `Kind` AND over the three family enums
+//! (`InlineMark`, `TextLeafKind`, `MarkupLeafKind`), which is what makes adding
+//! a node kind cost one honest answer per target, declared here, instead of
+//! whatever an `else =>` arm in three serializers happens to do. That is the
+//! property `languages/rst/rst.zig` leans on to add kinds only rST has.
+//!
+//! It is easy to have this property and not notice it is gone. Both halves were
+//! broken when the first such kinds (`citation`, `substitution`) arrived: the
+//! per-target functions ended in `else => .faithful`, so a new `Kind` inherited
+//! `.faithful` in silence; and this module was missing from `root.zig`'s
+//! `test {}` block, so Zig — which analyzes lazily — never compiled these
+//! switches at all and never ran the probe below. Keep both: the exhaustive
+//! spelling, and the import that forces it to be analyzed.
+//!
 //! ── The table is measured, not asserted ────────────────────────────────────
 //! `fidelity` is the single source of truth for what each target can hold, and
 //! its entries are not a reading of the serializers — they are what the
@@ -193,23 +208,67 @@ fn djotFidelity(kind: Node.Kind) Fidelity {
         // they fall to an inline `else` that renders children, and these have
         // none. An HTML comment converted to djot leaves NOTHING behind.
         .markup_leaf, .processing_instruction => .dropped,
+        // A substitution definition renders nothing at the point of definition
+        // in any format (its body belongs at the use sites), and djot has no
+        // `|name|` splice to carry it there — so the body goes nowhere. The one
+        // kind twig has that is `dropped` by every target.
+        .substitution => .dropped,
         // Djot writes a metadata block as a `{lang}`-tagged div, and its own
         // parser reads that back as a div, not as metadata.
         .metadata => .degraded,
         // Djot has no definition-list syntax; the serializer emits the term and
         // definition as ordinary blocks.
         .definition_list => .degraded,
+        // Djot has ONE footnote registry, so a citation is written as a footnote
+        // definition and comes back a `footnote`. The content and the
+        // definition/use link both survive; the second registry does not, which
+        // is what makes it `degraded` rather than faithful — two labels that
+        // were distinct across registries can now collide.
+        .citation => .degraded,
         // Djot's inline generic container is a bracketed span carrying its
         // identity in `attrs`, so a NAMED one (an rST role, a Markdown inline
         // directive) comes back with the name gone.
         .container => |c| if (c.form == .inline_text) .degraded else .faithful,
         // Math is emitted as `$`…`` — a verbatim wearing a sigil — and djot's
-        // parser returns the verbatim without it.
+        // parser returns the verbatim without it. A citation reference follows
+        // its definition into the footnote registry; a substitution reference is
+        // written in its rST spelling and reads as plain text.
         .text_leaf => |l| switch (l.kind) {
-            .inline_math, .display_math => .degraded,
+            .inline_math, .display_math, .citation_reference, .substitution_reference => .degraded,
             .symb, .verbatim, .url, .email, .footnote_reference => .faithful,
         },
-        else => .faithful,
+        .doc,
+        .para,
+        .heading,
+        .thematic_break,
+        .section,
+        .code_block,
+        .raw_block,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .row,
+        .cell,
+        .caption,
+        .footnote,
+        .reference,
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .raw_inline,
+        .smart_punctuation,
+        .link,
+        .image,
+        .inline_mark,
+        => .faithful,
     };
 }
 
@@ -246,11 +305,43 @@ fn markdownFidelity(kind: Node.Kind) Fidelity {
             .strong, .emph, .delete => .faithful,
             .mark, .superscript, .subscript, .insert, .double_quoted, .single_quoted => .degraded,
         },
+        // Both new definitions behave exactly as they do for djot, and for the
+        // same reasons — Markdown's footnote extension is djot's registry over
+        // again, and it has no substitution mechanism either.
+        .citation => .degraded,
+        .substitution => .dropped,
         .text_leaf => |l| switch (l.kind) {
             .verbatim, .url, .email, .footnote_reference => .faithful,
-            .symb, .inline_math, .display_math => .degraded,
+            .symb, .inline_math, .display_math, .citation_reference, .substitution_reference => .degraded,
         },
-        else => .faithful,
+        .doc,
+        .para,
+        .heading,
+        .thematic_break,
+        .code_block,
+        .metadata,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .row,
+        .cell,
+        .caption,
+        .footnote,
+        .reference,
+        .str,
+        .soft_break,
+        .hard_break,
+        .link,
+        .image,
+        => .faithful,
     };
 }
 
@@ -283,6 +374,17 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
         // the reference is inlined into an `<a href>`/endnote and the definition
         // node itself has no output of its own.
         .footnote, .reference => .degraded,
+        // A citation is the one definition this printer writes IN PLACE, as
+        // docutils' HTML5 writer does, so it does leave output — a
+        // `<div class="citation">` that twig's HTML parser reads back as a
+        // generic `container`.
+        .citation => .degraded,
+        // Nothing is written, here or anywhere: the printer does not resolve a
+        // substitution (no side table exists to resolve it against until the rST
+        // parser lands), and a definition has no output of its own. The body is
+        // lost outright, which is the strongest reason this whole module was
+        // built before the vocabulary that needs it.
+        .substitution => .dropped,
         // Rendered as Unicode glyphs, which come back as ordinary text.
         .smart_punctuation, .non_breaking_space => .degraded,
         .inline_mark => |m| switch (m) {
@@ -294,10 +396,33 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
             .verbatim => .faithful,
             // An autolink renders as `<a href>` and returns as a `link`; math
             // renders as a classed span; a footnote reference becomes a
-            // numbered `<sup>` whose label is gone.
-            .url, .email, .inline_math, .display_math, .symb, .footnote_reference => .degraded,
+            // numbered `<sup>` whose label is gone; a citation reference is an
+            // `<a href="#label">` that likewise returns as a `link`; an
+            // unresolved substitution reference is written as its own `|name|`
+            // spelling and returns as text.
+            .url, .email, .inline_math, .display_math, .symb, .footnote_reference, .citation_reference, .substitution_reference => .degraded,
         },
-        else => .faithful,
+        .doc,
+        .para,
+        .heading,
+        .thematic_break,
+        .section,
+        .code_block,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .table,
+        .list_item,
+        .row,
+        .cell,
+        .caption,
+        .str,
+        .soft_break,
+        .hard_break,
+        .link,
+        .image,
+        .container,
+        => .faithful,
     };
 }
 
@@ -340,6 +465,57 @@ test "an HTML comment converted to djot is reported as dropped, and really is" {
     const src = try format.entryFor(.djot).serializeFromAst.?(allocator, &ast);
     defer allocator.free(src);
     try testing.expect(std.mem.indexOf(u8, src, "secret") == null);
+}
+
+test "a substitution's body is dropped by every target, and is reported as such" {
+    const allocator = testing.allocator;
+    var b = AST.Builder.init(allocator);
+    defer b.deinit();
+    const def = try b.addContainer(.{ .substitution = .{ .label = "RST" } }, &.{try b.addLeaf(.{ .str = "reStructuredText" })});
+    const ref = try b.addLeaf(.{ .text_leaf = .{ .kind = .substitution_reference, .text = "RST" } });
+    const body = try b.addContainer(.para, &.{ref});
+    const root = try b.addContainer(.doc, &.{ body, def });
+    var ast = try b.finish(root);
+    defer ast.deinit();
+
+    for ([_]Format{ .djot, .markdown, .html }) |target| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const warnings = try analyze(arena.allocator(), &ast, ast.root, target);
+        // The definition is `dropped` and its use `degraded` — two warnings,
+        // never zero, for every target twig can write.
+        try testing.expectEqual(@as(usize, 2), warnings.len);
+        try testing.expectEqual(Fidelity.degraded, warnings[0].fidelity);
+        try testing.expectEqualStrings("substitution_reference", warnings[0].kind);
+        try testing.expectEqual(Fidelity.dropped, warnings[1].fidelity);
+        try testing.expectEqualStrings("substitution", warnings[1].kind);
+
+        // And `dropped` is the literal truth: the body reaches no output.
+        const src = try format.entryFor(target).serializeFromAst.?(allocator, &ast);
+        defer allocator.free(src);
+        try testing.expect(std.mem.indexOf(u8, src, "reStructuredText") == null);
+    }
+}
+
+test "a citation survives a conversion as a footnote, definition and use together" {
+    const allocator = testing.allocator;
+    var b = AST.Builder.init(allocator);
+    defer b.deinit();
+    const p = try b.addContainer(.para, &.{try b.addLeaf(.{ .str = "Deep Thought." })});
+    const def = try b.addContainer(.{ .citation = .{ .label = "CIT2002" } }, &.{p});
+    const ref = try b.addLeaf(.{ .text_leaf = .{ .kind = .citation_reference, .text = "CIT2002" } });
+    const body = try b.addContainer(.para, &.{ try b.addLeaf(.{ .str = "see " }), ref });
+    const root = try b.addContainer(.doc, &.{ body, def });
+    var ast = try b.finish(root);
+    defer ast.deinit();
+
+    // Flattened into djot's one footnote registry: `degraded`, not `dropped` —
+    // both halves reach the output and still name each other, which is what
+    // separates this from the substitution case above.
+    const src = try format.entryFor(.djot).serializeFromAst.?(allocator, &ast);
+    defer allocator.free(src);
+    try testing.expect(std.mem.indexOf(u8, src, "[^CIT2002]") != null);
+    try testing.expect(std.mem.indexOf(u8, src, "[^CIT2002]: Deep Thought.") != null);
 }
 
 test "a warning renders with its path and target" {
@@ -520,6 +696,25 @@ const probes = [_]Probe{
             return b.addContainer(.doc, &.{ p, def });
         }
     }.f },
+    .{ .label = "citation", .want = .{ .tag = .citation }, .kind = .{ .citation = .{ .label = "" } }, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            const p = try b.addContainer(.para, &.{try str(b, "Deep Thought.")});
+            const def = try b.addContainer(.{ .citation = .{ .label = "CIT2002" } }, &.{p});
+            const ref = try b.addLeaf(.{ .text_leaf = .{ .kind = .citation_reference, .text = "CIT2002" } });
+            const body = try b.addContainer(.para, &.{ try str(b, "see "), ref });
+            return b.addContainer(.doc, &.{ body, def });
+        }
+    }.f },
+    // The one kind every target drops. The body is an inline run, not blocks —
+    // that is the shape twig did not have before it (see `Kind.substitution`).
+    .{ .label = "substitution", .want = .{ .tag = .substitution }, .kind = .{ .substitution = .{ .label = "" } }, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            const def = try b.addContainer(.{ .substitution = .{ .label = "RST" } }, &.{try str(b, "reStructuredText")});
+            const ref = try b.addLeaf(.{ .text_leaf = .{ .kind = .substitution_reference, .text = "RST" } });
+            const body = try b.addContainer(.para, &.{ ref, try str(b, " rules") });
+            return b.addContainer(.doc, &.{ body, def });
+        }
+    }.f },
     .{ .label = "container(block)", .want = .{ .tag = .container }, .kind = .{ .container = .{ .name = "note", .form = .block_fenced } }, .build = struct {
         fn f(b: *AST.Builder) anyerror!Node.Id {
             const p = try b.addContainer(.para, &.{try str(b, "x")});
@@ -615,6 +810,8 @@ test "every inline mark and text leaf is probed against the table" {
         .{ "url", "https://e.com" },
         .{ "email", "a@e.com" },
         .{ "footnote_reference", "1" },
+        .{ "citation_reference", "CIT1" },
+        .{ "substitution_reference", "RST" },
     });
     inline for (comptime std.enums.values(AST.TextLeafKind)) |k| {
         var b = AST.Builder.init(allocator);

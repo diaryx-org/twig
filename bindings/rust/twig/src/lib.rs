@@ -1513,6 +1513,11 @@ pub enum TextKind {
     Url,
     Email,
     FootnoteReference,
+    /// reStructuredText's `[CIT2002]_` — a use of a citation definition. The
+    /// payload is the label as WRITTEN, not the normalized name it resolves by.
+    CitationReference,
+    /// reStructuredText's `|name|` — a use of a substitution definition.
+    SubstitutionReference,
     Comment,
     Doctype,
     Cdata,
@@ -1529,6 +1534,8 @@ impl TextKind {
             TextKind::Url => 34,
             TextKind::Email => 35,
             TextKind::FootnoteReference => 36,
+            TextKind::CitationReference => 58,
+            TextKind::SubstitutionReference => 59,
             TextKind::Comment => 52,
             TextKind::Doctype => 53,
             TextKind::Cdata => 55,
@@ -1802,6 +1809,21 @@ impl Builder {
     /// Add a footnote definition with the given label.
     pub fn add_footnote(&mut self, label: &str) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe { ffi::twig_builder_add_footnote(b, label.as_ptr(), label.len(), out) })
+    }
+
+    /// Add a citation definition — reStructuredText's `.. [CIT2002] ...`. Holds
+    /// blocks, like a footnote; the two differ in which name registry resolves
+    /// them, which is why this is its own call and not a flag on
+    /// [`Builder::add_footnote`].
+    pub fn add_citation(&mut self, label: &str) -> Result<NodeId, Error> {
+        self.emit(|b, out| unsafe { ffi::twig_builder_add_citation(b, label.as_ptr(), label.len(), out) })
+    }
+
+    /// Add a substitution definition — reStructuredText's
+    /// `.. |name| image:: p.png`. Unlike a footnote or citation, its children
+    /// are INLINE nodes.
+    pub fn add_substitution(&mut self, label: &str) -> Result<NodeId, Error> {
+        self.emit(|b, out| unsafe { ffi::twig_builder_add_substitution(b, label.as_ptr(), label.len(), out) })
     }
 
     /// Add a link/image reference definition (`label` → `destination`).

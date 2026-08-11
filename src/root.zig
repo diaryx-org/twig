@@ -153,4 +153,10 @@ test {
     _ = @import("ast/compact.zig");
     _ = Rst;
     _ = parse_diagnostic;
+    // Not optional, and its absence was invisible: Zig analyzes lazily, so an
+    // unreferenced module's exhaustive switches are never compiled. Without
+    // this line `diagnostics.fidelity` was neither a gate on a new `Kind` nor a
+    // test that ran, which is precisely the property `languages/rst/rst.zig`
+    // says opened the rST vocabulary work.
+    _ = diagnostics;
 }

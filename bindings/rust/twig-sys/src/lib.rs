@@ -637,6 +637,18 @@ unsafe extern "C" {
         label_len: usize,
         out_id: *mut u32,
     ) -> TwigStatus;
+    pub fn twig_builder_add_citation(
+        builder: *mut TwigBuilder,
+        label: *const u8,
+        label_len: usize,
+        out_id: *mut u32,
+    ) -> TwigStatus;
+    pub fn twig_builder_add_substitution(
+        builder: *mut TwigBuilder,
+        label: *const u8,
+        label_len: usize,
+        out_id: *mut u32,
+    ) -> TwigStatus;
     pub fn twig_builder_add_reference(
         builder: *mut TwigBuilder,
         label: *const u8,

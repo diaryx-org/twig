@@ -331,12 +331,12 @@ fn dupeKind(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Kind {
         .raw_block => |v| .{ .raw_block = .{ .format = try self.dupe(v.format), .text = try self.dupe(v.text) } },
         .metadata => |v| .{ .metadata = .{ .lang = try self.dupe(v.lang), .text = try self.dupe(v.text) } },
         .footnote => |v| .{ .footnote = .{ .label = try self.dupe(v.label) } },
+        .citation => |v| .{ .citation = .{ .label = try self.dupe(v.label) } },
+        .substitution => |v| .{ .substitution = .{ .label = try self.dupe(v.label) } },
         .reference => |v| .{ .reference = .{ .label = try self.dupe(v.label), .destination = try self.dupe(v.destination) } },
         .str => |v| .{ .str = try self.dupe(v) },
         .text_leaf => |v| .{ .text_leaf = .{ .kind = v.kind, .text = try self.dupe(v.text) } },
         .raw_inline => |v| .{ .raw_inline = .{ .format = try self.dupe(v.format), .text = try self.dupe(v.text) } },
-        // `smart_punctuation`'s payload is now a bare `SmartPunctuationKind`
-        // (no string to copy), so it falls through to `else => kind` below.
         .link => |v| .{ .link = .{
             .destination = if (v.destination) |d| try self.dupe(d) else null,
             .reference = if (v.reference) |r| try self.dupe(r) else null,
@@ -355,7 +355,43 @@ fn dupeKind(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Kind {
             .target = try self.dupe(v.target),
             .data = try self.dupe(v.data),
         } },
-        else => kind,
+
+        // Every remaining kind carries no string at all, so it is copied as-is
+        // — `smart_punctuation`'s payload is a bare `SmartPunctuationKind`, a
+        // `cell`'s is four numbers and flags, and the rest are payload-free.
+        //
+        // Spelled out rather than left to `else => kind`, which is what this
+        // was and which is a silent correctness bug waiting for the next
+        // string-carrying kind: a payload that is not copied here leaves the
+        // finished `AST` borrowing the caller's buffer, breaking the ownership
+        // promise in this file's doc comment WITHOUT failing a build or, in
+        // most tests, a run — the source usually outlives the tree. It caught
+        // `citation`/`substitution` above exactly that way.
+        .doc,
+        .para,
+        .heading,
+        .thematic_break,
+        .section,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .row,
+        .cell,
+        .caption,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .smart_punctuation,
+        .inline_mark,
+        => kind,
     };
 }
 

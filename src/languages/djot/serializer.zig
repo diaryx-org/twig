@@ -246,27 +246,52 @@ const Renderer = struct {
                     const id = self.doc.footnotes.get(f.label) orelse continue;
                     if (id != n.id) continue;
                     if (wrote_any) try self.writer.writeByte('\n');
-                    try self.writer.print("[^{s}]: ", .{f.label});
-                    const first = n.first_child;
-                    if (first) |_| {
-                        var out: Writer.Allocating = .init(self.allocator);
-                        defer out.deinit();
-                        var inner = Renderer{
-                            .allocator = self.allocator,
-                            .doc = self.doc,
-                            .ast = self.ast,
-                            .writer = &out.writer,
-                        };
-                        try inner.renderBlocks(n.id, .{}, false);
-                        const body = std.mem.trimEnd(u8, out.written(), "\n");
-                        try self.writer.writeAll(body);
-                    }
-                    try self.writer.writeByte('\n');
+                    try self.writeFootnoteDefinition(n.id, f.label);
                     wrote_any = true;
                 },
+                // A citation is a footnote in a registry djot does not have, so
+                // it is written as a djot footnote definition — the same
+                // degradation the `.citation_reference` inline arm performs, so
+                // the two still point at each other in the output. No
+                // `doc.footnotes` guard: that map exists to pick ONE definition
+                // when several share a label, and it is built from `.footnote`
+                // nodes only. A citation that collides with a real footnote's
+                // label is a collision the flattening created, and it is exactly
+                // what `fidelity` reports as `degraded`.
+                .citation => |c| {
+                    if (wrote_any) try self.writer.writeByte('\n');
+                    try self.writeFootnoteDefinition(n.id, c.label);
+                    wrote_any = true;
+                },
+                // Every other kind, `.substitution` among them — and for it the
+                // silence is the `dropped` entry in `diagnostics.zig`'s table,
+                // not an oversight. Djot has no definition whose body is inline
+                // and no `|name|` splice to point at one, and emitting the body
+                // here would put content into the document at the point of
+                // DEFINITION, where rST renders none.
                 else => {},
             }
         }
+    }
+
+    /// `[^label]: body` — djot's footnote definition, shared by the footnote and
+    /// citation arms above.
+    fn writeFootnoteDefinition(self: *Renderer, id: Node.Id, label: []const u8) Writer.Error!void {
+        try self.writer.print("[^{s}]: ", .{label});
+        if (self.ast.nodes[id].first_child != null) {
+            var out: Writer.Allocating = .init(self.allocator);
+            defer out.deinit();
+            var inner = Renderer{
+                .allocator = self.allocator,
+                .doc = self.doc,
+                .ast = self.ast,
+                .writer = &out.writer,
+            };
+            try inner.renderBlocks(id, .{}, false);
+            const body = std.mem.trimEnd(u8, out.written(), "\n");
+            try self.writer.writeAll(body);
+        }
+        try self.writer.writeByte('\n');
     }
 
     fn renderBlock(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
@@ -462,8 +487,13 @@ const Renderer = struct {
                     try self.writer.writeByte('\n');
                 }
             },
+            // The four named definitions produce no output HERE: they are
+            // written once, together, by `renderDetachedDefinitions` (which is
+            // also the only place that reaches the ones attached to no parent).
             .reference => {},
             .footnote => {},
+            .citation => {},
+            .substitution => {},
             .list_item, .task_list_item, .definition_list_item, .term, .definition, .row, .cell, .caption => try self.renderBlocks(id, ctx, false),
             else => {
                 try self.writePrefix(ctx);
@@ -534,6 +564,25 @@ const Renderer = struct {
                 .footnote_reference => {
                     const lab = leaf.text;
                     try self.writer.print("[^{s}]", .{lab});
+                },
+                // rST's second footnote registry, written into djot's only one.
+                // It reparses as a `footnote_reference`, so the citation-ness is
+                // gone while the text and the link survive — `degraded`, and the
+                // matching `.citation` definition arm degrades the same way, so
+                // the pair still resolves against each other on the way out.
+                .citation_reference => {
+                    const lab = leaf.text;
+                    try self.writer.print("[^{s}]", .{lab});
+                },
+                // Djot has no substitution mechanism at all, so the name is
+                // written back in its rST spelling and reads as ordinary text.
+                // The alternative — splicing the definition's body in here —
+                // would be a resolution pass, and twig's serializers do not
+                // resolve: a djot `link` with a `reference` is likewise written
+                // as `[text][label]` rather than as its destination.
+                .substitution_reference => {
+                    const name = leaf.text;
+                    try self.writer.print("|{s}|", .{name});
                 },
             },
             // Djot spells raw inline content `` `<br>`{=html} ``. Writing the

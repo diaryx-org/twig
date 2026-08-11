@@ -45,6 +45,14 @@ pub const table: syntax.Syntax = .{
         .url = .{ .open = "<", .close = ">", .authorable = false },
         .email = .{ .open = "<", .close = ">", .authorable = false },
         .footnote_reference = .{ .open = "[^", .close = "]", .authorable = false },
+        // Djot has one footnote registry and no substitutions, so it has no
+        // spelling for either of these — `null`, not a borrowed `[^…]`. The
+        // serializer still WRITES a citation as a djot footnote (better than
+        // dropping it), but that is a degradation it performs, not a spelling
+        // djot has: `delimsFor` answers "which bytes mean this kind here", and
+        // for these two the honest answer is none.
+        .citation_reference = null,
+        .substitution_reference = null,
     }),
     .container_spelling = .init(.{
         .block_quote = .{ .marker = "> ", .cont = "> ", .blank = ">" },

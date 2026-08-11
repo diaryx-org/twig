@@ -865,6 +865,32 @@ pub const Renderer = struct {
                     try self.writer.print("{d}", .{idx});
                     try self.writer.writeAll("</sup></a>");
                 },
+                // A citation reference links to the in-place `.citation` block
+                // by its label — no index, because the label IS the marker.
+                // Comes back from twig's HTML parser as a `link`: `degraded`.
+                .citation_reference => {
+                    const label = leaf.text;
+                    const href = try std.fmt.allocPrint(self.allocator, "#{s}", .{label});
+                    defer self.allocator.free(href);
+                    try self.renderTag("a", id, &.{
+                        .{ .key = "href", .value = href },
+                        .{ .key = "role", .value = "doc-biblioref" },
+                    });
+                    try self.writer.writeByte('[');
+                    try self.writeEscaped(label);
+                    try self.writer.writeAll("]</a>");
+                },
+                // Unresolved, so the name is written back in its rST spelling
+                // and reads as ordinary text. Resolving it — splicing the
+                // `.substitution` definition's children in here — is what the
+                // rST parser milestone will add, together with the side table
+                // to look the definition up in; this printer resolves nothing
+                // it has not been handed a table for (see `RenderContext`).
+                .substitution_reference => {
+                    try self.writer.writeByte('|');
+                    try self.writeEscaped(leaf.text);
+                    try self.writer.writeByte('|');
+                },
             },
             .table => if (self.options.table_sections)
                 try self.renderSectionedTable(id)
@@ -1025,9 +1051,32 @@ pub const Renderer = struct {
                 try self.writer.writeByte('>');
             },
 
+            // A citation is rendered IN PLACE, unlike a footnote. That is not an
+            // inconsistency: docutils leaves citations where they were written
+            // and collects only footnotes into an endnotes section, and the two
+            // registries differ in exactly that way. Shape follows docutils'
+            // HTML5 writer, trimmed to its load-bearing parts — the bracketed
+            // label is the marker (a citation is never auto-numbered, so there
+            // is no index to assign and no `footnoteIndexFor` involved).
+            .citation => |c| {
+                try self.writer.writeAll("<div class=\"citation\" role=\"doc-biblioentry\" id=\"");
+                try self.writeEscaped(c.label);
+                try self.writer.writeAll("\">\n<span class=\"label\">[");
+                try self.writeEscaped(c.label);
+                try self.writer.writeAll("]</span>\n");
+                try self.renderChildren(id);
+                try self.writer.writeAll("</div>\n");
+            },
+
             // `footnote`/`reference` definitions: rendered via the side
             // tables (`renderNotes`/`renderLinkOrImage`), never in place —
-            // same as `djot/html.zig`.
+            // same as `djot/html.zig`. `substitution` joins them in producing
+            // nothing here, but for a different reason and with a worse
+            // consequence: a substitution's body belongs at its USE sites, and
+            // this printer does not resolve one (see the `.substitution_reference`
+            // arm), so the body goes nowhere at all. `diagnostics.zig` records
+            // that as `dropped` for every target — the honest answer until the
+            // rST parser lands and a resolution table exists to fill.
             else => {},
         }
     }
@@ -1384,4 +1433,50 @@ test "a merged cell writes colspan/rowspan, and a one-square cell writes neither
             "</tr>\n</table>\n",
         html,
     );
+}
+
+test "a citation renders in place with its label as the marker, and its use links to it" {
+    var b = Builder.init(testing.allocator);
+    defer b.deinit();
+    const ref = try b.addLeaf(.{ .text_leaf = .{ .kind = .citation_reference, .text = "CIT2002" } });
+    const body = try b.addContainer(.para, &.{ try b.addLeaf(.{ .str = "see " }), ref });
+    const note = try b.addContainer(.para, &.{try b.addLeaf(.{ .str = "Deep Thought." })});
+    const cit = try b.addContainer(.{ .citation = .{ .label = "CIT2002" } }, &.{note});
+    const doc = try b.addContainer(.doc, &.{ body, cit });
+
+    var ast = try b.finish(doc);
+    defer ast.deinit();
+
+    const html = try serializeAlloc(testing.allocator, &ast, null);
+    defer testing.allocator.free(html);
+    // In place, unlike a footnote — docutils leaves citations where they were
+    // written and collects only footnotes into an endnotes section. No index is
+    // assigned either: a citation's label IS its marker.
+    try testing.expectEqualStrings(
+        "<p>see <a href=\"#CIT2002\" role=\"doc-biblioref\">[CIT2002]</a></p>\n" ++
+            "<div class=\"citation\" role=\"doc-biblioentry\" id=\"CIT2002\">\n" ++
+            "<span class=\"label\">[CIT2002]</span>\n" ++
+            "<p>Deep Thought.</p>\n</div>\n",
+        html,
+    );
+}
+
+test "an unresolved substitution keeps its rST spelling and its definition vanishes" {
+    var b = Builder.init(testing.allocator);
+    defer b.deinit();
+    const ref = try b.addLeaf(.{ .text_leaf = .{ .kind = .substitution_reference, .text = "RST" } });
+    const body = try b.addContainer(.para, &.{ ref, try b.addLeaf(.{ .str = " rules" }) });
+    const def = try b.addContainer(.{ .substitution = .{ .label = "RST" } }, &.{try b.addLeaf(.{ .str = "reStructuredText" })});
+    const doc = try b.addContainer(.doc, &.{ body, def });
+
+    var ast = try b.finish(doc);
+    defer ast.deinit();
+
+    const html = try serializeAlloc(testing.allocator, &ast, null);
+    defer testing.allocator.free(html);
+    // The definition's body reaches no output at all — this printer resolves
+    // nothing it has no side table for. `diagnostics.zig` reports it as the
+    // only `dropped` kind in the vocabulary; resolution arrives with the rST
+    // parser.
+    try testing.expectEqualStrings("<p>|RST| rules</p>\n", html);
 }

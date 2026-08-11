@@ -2353,6 +2353,15 @@ pub const TwigNodeKind = enum(c_int) {
     doctype = 53,
     processing_instruction = 54,
     cdata = 55,
+    // Appended, not slotted in beside `footnote`/`footnote_reference` where
+    // they belong by meaning: renumbering an existing value is the one thing
+    // that breaks this ABI (see `twig_abi_version`). Declaration order in
+    // `ast.zig` and numeric order here diverge from here on, which is the
+    // price of never moving a code.
+    citation = 56,
+    substitution = 57,
+    citation_reference = 58,
+    substitution_reference = 59,
 };
 
 pub const TwigBulletStyle = enum(c_int) { dash = 0, plus = 1, star = 2 };
@@ -2481,7 +2490,8 @@ pub export fn twig_builder_add(b: ?*TwigBuilder, kind: c_int, out_id: ?*u32) Twi
 
 /// Add a single-string-payload inline/leaf node. `kind` must be one of the
 /// string kinds (`str`, `symb`, `verbatim`, `inline_math`, `display_math`,
-/// `url`, `email`, `footnote_reference`, `comment`, `doctype`, `cdata`); any
+/// `url`, `email`, `footnote_reference`, `citation_reference`,
+/// `substitution_reference`, `comment`, `doctype`, `cdata`); any
 /// other code returns `invalid_argument`. The text is copied.
 pub export fn twig_builder_add_text(
     b: ?*TwigBuilder,
@@ -2501,6 +2511,9 @@ pub export fn twig_builder_add_text(
         @intFromEnum(TwigNodeKind.url) => .{ .text_leaf = .{ .kind = .url, .text = text } },
         @intFromEnum(TwigNodeKind.email) => .{ .text_leaf = .{ .kind = .email, .text = text } },
         @intFromEnum(TwigNodeKind.footnote_reference) => .{ .text_leaf = .{ .kind = .footnote_reference, .text = text } },
+        // The label/name as WRITTEN — see `AST.TextLeafKind.citation_reference`.
+        @intFromEnum(TwigNodeKind.citation_reference) => .{ .text_leaf = .{ .kind = .citation_reference, .text = text } },
+        @intFromEnum(TwigNodeKind.substitution_reference) => .{ .text_leaf = .{ .kind = .substitution_reference, .text = text } },
         @intFromEnum(TwigNodeKind.comment) => .{ .markup_leaf = .{ .kind = .comment, .text = text } },
         @intFromEnum(TwigNodeKind.doctype) => .{ .markup_leaf = .{ .kind = .doctype, .text = text } },
         @intFromEnum(TwigNodeKind.cdata) => .{ .markup_leaf = .{ .kind = .cdata, .text = text } },
@@ -2702,6 +2715,35 @@ pub export fn twig_builder_add_footnote(
     const handle = asBuilder(b orelse return .invalid_argument);
     const label = sliceOf(label_ptr, label_len) orelse return .invalid_argument;
     return emitNode(out_id, handle.builder.addNode(.{ .footnote = .{ .label = label } }));
+}
+
+/// A citation definition — rST's `.. [CIT2002] …`. Same one-string payload as
+/// `twig_builder_add_footnote`, and a separate entry point rather than a
+/// namespace argument to it for the reason `AST.Kind.citation` gives: the two
+/// registries are two kinds, all the way out to this surface.
+pub export fn twig_builder_add_citation(
+    b: ?*TwigBuilder,
+    label_ptr: ?[*]const u8,
+    label_len: usize,
+    out_id: ?*u32,
+) TwigStatus {
+    const handle = asBuilder(b orelse return .invalid_argument);
+    const label = sliceOf(label_ptr, label_len) orelse return .invalid_argument;
+    return emitNode(out_id, handle.builder.addNode(.{ .citation = .{ .label = label } }));
+}
+
+/// A substitution definition — rST's `.. |name| image:: pic.png`. Its children
+/// are INLINE nodes, unlike a footnote's or citation's; see
+/// `AST.Kind.substitution`.
+pub export fn twig_builder_add_substitution(
+    b: ?*TwigBuilder,
+    label_ptr: ?[*]const u8,
+    label_len: usize,
+    out_id: ?*u32,
+) TwigStatus {
+    const handle = asBuilder(b orelse return .invalid_argument);
+    const label = sliceOf(label_ptr, label_len) orelse return .invalid_argument;
+    return emitNode(out_id, handle.builder.addNode(.{ .substitution = .{ .label = label } }));
 }
 
 pub export fn twig_builder_add_reference(

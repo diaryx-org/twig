@@ -203,17 +203,29 @@
 //! one document while a conversion warning is a fact about a (document, target)
 //! pair, so it cannot be stored alongside a `Document` at all.
 //!
-//! It matters to rST specifically because it is what UNBLOCKS the vocabulary
+//! It matters to rST specifically because it is what UNBLOCKED the vocabulary
 //! work below. Adding a kind only rST has (a citation, a substitution) hands the
 //! djot/Markdown/HTML serializers a node their format cannot spell; before
 //! `diagnostics.zig` there was nowhere to say so, and the loss would have been
-//! silent. Now `fidelity` is exhaustive over `Kind`, so a new kind fails that
-//! build until it declares an answer for every target — one place, rather than
-//! an `else =>` arm in three serializers.
+//! silent. `fidelity` is now exhaustive over `Kind` as well as over the three
+//! family enums, so a new kind fails that build until it declares an answer for
+//! every target — one place, rather than an `else =>` arm in three serializers.
+//!
+//! Two things about that gate were NOT true when it was first written, and both
+//! were found by walking the first kinds through it:
+//!
+//!   - `diagnostics.zig` was absent from `root.zig`'s `test {}` block. Zig
+//!     analyzes lazily, so an unreferenced module's exhaustive switches are
+//!     never compiled: the gate neither gated nor ran its own probe tests. A
+//!     capability table that nothing imports is not a capability table.
+//!   - The per-target functions ended in `else => .faithful`, so only the
+//!     `InlineMark`/`TextLeafKind` sub-switches were exhaustive; a new `Kind`
+//!     would have inherited `.faithful` silently, which is the exact failure
+//!     mode the table was built to prevent. They now spell every kind.
 //!
 //! ── What twig's AST does not yet hold ──────────────────────────────────────
-//! `conformance.zig`'s coverage ratchet measures this continuously; 3378 of 5682
-//! element instances (59%) decode to a semantic twig kind and the rest fall back
+//! `conformance.zig`'s coverage ratchet measures this continuously; 3450 of 5682
+//! element instances (61%) decode to a semantic twig kind and the rest fall back
 //! to `Kind.container`. Reading that table,
 //! the structural work rST implies, in rough order of corpus weight:
 //!
@@ -235,21 +247,34 @@
 //!     needed no new vocabulary at all, only the observation that a definition's
 //!     name is docutils' `names` attribute rather than its `<label>` child.
 //!
-//!     What remains is the part that DOES need vocabulary, and it is a single
-//!     decision repeated: rST has four resolvable namespaces (hyperlink,
-//!     footnote, citation, substitution) where twig has two. `citation` (14) and
-//!     `citation_reference` (7) are footnotes in a second registry;
-//!     `substitution_definition` (33) and `substitution_reference` (18) are a
-//!     definition whose body is inline, which twig has no shape for; the
-//!     indirect `target` (14) is an alias `Kind.Reference` cannot hold; the
-//!     internal `target` (30) is an anchor, which twig models as an ATTRIBUTE
-//!     and docutils resolves the same way, in a transform. `label` (23) stays
-//!     generic on purpose — it is the rendered marker, not the name.
+//!     The part that DID need vocabulary was one decision repeated: rST has
+//!     four resolvable namespaces (hyperlink, footnote, citation, substitution)
+//!     where twig had two. Two of the four are now closed, with `Kind.citation`
+//!     + `TextLeafKind.citation_reference` (14 + 7) and `Kind.substitution` +
+//!     `TextLeafKind.substitution_reference` (33 + 18) — 72 instances, every one
+//!     of them, taking coverage to 3450/5682.
 //!
-//!     Each commits twig's published vocabulary (`ast/json.zig`, `c_abi.zig`)
-//!     to a construct only rST has, and hands the djot/Markdown/HTML
-//!     serializers a node their format cannot spell. That WAS the gate; the
-//!     conversion-lossiness section below now names the system that opens it.
+//!     Both split into a NEW KIND rather than a namespace field on `Footnote`,
+//!     and the use side is what decided it: a footnote reference is a
+//!     `TextLeafKind`, whose members are uniformly `{kind, text}`, so the use
+//!     had to split by tag whatever the definition did — and telling the use
+//!     apart by its tag while telling the definition apart by a payload field is
+//!     incoherent. `Kind.citation`'s doc carries the argument.
+//!
+//!     What is left of the cluster is the two remaining `target` shapes, and
+//!     neither is waiting on vocabulary: the indirect `target` (14) is an alias
+//!     `Kind.Reference` cannot hold; the internal `target` (30) is an anchor,
+//!     which twig models as an ATTRIBUTE and docutils resolves the same way, in
+//!     a transform. `label` (23) stays generic on purpose — it is the rendered
+//!     marker, not the name, and the citation mapping is where the corpus proves
+//!     it: `.. [TARGET]` writes `names="target"` over a `<label>TARGET`.
+//!
+//!     ⚠ A substitution is `dropped` by every serializer — the only kind in the
+//!     vocabulary that is. Its body belongs at its USE sites and no printer
+//!     resolves one, so converting rST away loses the content outright. That is
+//!     reported rather than silent, which is the whole point of having built
+//!     `diagnostics.zig` first; resolving it (a side table, as djot's footnotes
+//!     have) belongs with the parser.
 //!   - **Field lists** (`field` 54, `field_name` 54, `field_body` 54,
 //!     `field_list` 21). Structural, NOT attribute data — docutils parses a
 //!     body-position `:Author: Me` into a real subtree whose body holds

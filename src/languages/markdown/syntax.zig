@@ -44,6 +44,10 @@ pub const table: syntax.Syntax = .{
         .url = .{ .open = "<", .close = ">", .authorable = false },
         .email = .{ .open = "<", .close = ">", .authorable = false },
         .footnote_reference = .{ .open = "[^", .close = "]", .authorable = false },
+        // No citation registry and no substitutions in Markdown either; see the
+        // matching entries in `djot/syntax.zig`.
+        .citation_reference = null,
+        .substitution_reference = null,
     }),
     .container_spelling = .init(.{
         .block_quote = .{ .marker = "> ", .cont = "> ", .blank = ">" },

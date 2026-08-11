@@ -164,6 +164,50 @@ pub const Node = struct {
         caption,
         footnote: Footnote,
         reference: Reference,
+        /// A CITATION definition — `.. [CIT2002] Deep Thought.` — a footnote in
+        /// a second, separate name registry. Structurally it IS a footnote (a
+        /// named definition holding blocks, used from an inline reference), and
+        /// the tempting cheaper move was `Footnote.namespace` rather than a
+        /// kind of its own.
+        ///
+        /// The USE side is what decides it. A footnote reference is a
+        /// `TextLeafKind.footnote_reference`, and that family's members are
+        /// uniformly `{kind, text}` — giving it a namespace field would add a
+        /// second field to all seven for the sake of one (the same reason
+        /// `raw_inline` is not in the family). So the use must split by
+        /// `TextLeafKind` regardless, and a design where the USE is told apart
+        /// by its tag while the DEFINITION is told apart by a payload field is
+        /// incoherent. Both split.
+        ///
+        /// `label` is the name resolution uses, exactly as `footnote.label` is;
+        /// rST spells it the `names` attribute. Docutils NORMALIZES that
+        /// (`.. [TARGET]` resolves as `target`) and keeps the written form in a
+        /// `<label>` child, which stays a generic node — see `doctree.zig`'s
+        /// `definitionName`.
+        citation: Citation,
+        /// A SUBSTITUTION definition — rST's `.. |name| image:: pic.png`, whose
+        /// body is spliced in wherever `|name|` appears.
+        ///
+        /// The shape twig did not previously have: a NAMED DEFINITION WHOSE
+        /// BODY IS INLINE. `footnote` and `citation` are named definitions
+        /// holding blocks; `reference` is a named definition holding nothing at
+        /// all. This one holds inlines — corpus bodies are an `image` (13),
+        /// plain text (12), or a short inline run (`emph`, `strong`,
+        /// `superscript`, a `link`, a `raw_inline`). So it is `.block` at the
+        /// top level (it is a document-level definition, like the other two)
+        /// with `.inlines` inside, which is `para`'s combination and needs
+        /// nothing new from the model.
+        ///
+        /// Only reStructuredText has this, and that is not disqualifying —
+        /// `task_list` is GFM's alone and `processing_instruction` is XML's.
+        /// What a format-specific kind costs is one honest answer per target in
+        /// `diagnostics.zig`'s `fidelity`, which is exactly the gate it now has
+        /// to pass.
+        ///
+        /// Named `substitution` and not `substitution_definition` to match
+        /// `footnote`, where the bare noun is the definition and the `_reference`
+        /// suffix is the use.
+        substitution: Substitution,
 
         // ── Inlines ───────────────────────────────────────────────────────
         str: []const u8,
@@ -283,6 +327,13 @@ pub const Node = struct {
         };
         pub const Footnote = struct { label: []const u8 };
         pub const Reference = struct { label: []const u8, destination: []const u8 };
+        /// Same shape as `Footnote` on purpose, and a distinct type rather than
+        /// a reuse: the two are the same STRUCTURE in different name registries,
+        /// and naming that separately is what stops a later field added for one
+        /// (an `auto` flag for `[#]_`, which citations cannot have) from
+        /// silently arriving on the other.
+        pub const Citation = struct { label: []const u8 };
+        pub const Substitution = struct { label: []const u8 };
         pub const TextLeaf = struct { kind: TextLeafKind, text: []const u8 };
         pub const RawInline = struct { format: []const u8, text: []const u8 };
         /// The ONE payload shape behind BOTH `link` and `image` — the shapes
@@ -407,6 +458,8 @@ pub const Node = struct {
                 .table,
                 .footnote,
                 .reference,
+                .citation,
+                .substitution,
                 => .block,
 
                 .str,
@@ -494,6 +547,7 @@ pub const Node = struct {
                 .row,
                 .cell,
                 .footnote,
+                .citation,
                 => .blocks,
 
                 .para,
@@ -503,6 +557,10 @@ pub const Node = struct {
                 .link,
                 .image,
                 .inline_mark,
+                // The named definition with an INLINE body — see
+                // `Kind.substitution`. Block-level, like the other definitions,
+                // but its children are inlines, like a paragraph's.
+                .substitution,
                 => .inlines,
 
                 // A fenced container holds blocks; the inline and
@@ -581,6 +639,8 @@ pub const Node = struct {
                     v.colspan == other.cell.colspan and
                     v.rowspan == other.cell.rowspan,
                 .footnote => |v| eqlStr(v.label, other.footnote.label),
+                .citation => |v| eqlStr(v.label, other.citation.label),
+                .substitution => |v| eqlStr(v.label, other.substitution.label),
                 .reference => |v| eqlStr(v.label, other.reference.label) and
                     eqlStr(v.destination, other.reference.destination),
                 .str => |v| eqlStr(v, other.str),
@@ -726,6 +786,14 @@ pub const TextLeafKind = enum {
     email,
     /// `[^label]` used inline; payload is the label (no `^`/brackets).
     footnote_reference,
+    /// rST's `[CIT2002]_` — a use of a `Kind.citation`, resolved in the
+    /// citation registry rather than the footnote one. Payload is the label as
+    /// WRITTEN (`CIT1`), not the normalized name docutils resolves by (`cit1`);
+    /// the normalized form is derivable and the written one is not.
+    citation_reference,
+    /// rST's `|name|` — a use of a `Kind.substitution`. Payload is the name as
+    /// written, same rule as `citation_reference`.
+    substitution_reference,
 };
 
 /// Which generic-markup leaf a `Kind.markup_leaf` is.

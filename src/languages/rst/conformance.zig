@@ -38,15 +38,20 @@ const system_message = @import("system_message.zig");
 const corpus_json = @embedFile("testdata/docutils-rst-corpus.json");
 
 /// Ratchet floor: docutils element instances across the whole corpus that
-/// decode to a twig SEMANTIC kind rather than a generic `container` — 3378 of
-/// 5682 (59%), against 2989 text nodes, up from 3185 at the initial harness.
+/// decode to a twig SEMANTIC kind rather than a generic `container` — 3450 of
+/// 5682 (61%), against 2989 text nodes, up from 3185 at the initial harness and
+/// 3378 after the free half of the hyperlink cluster. The last +72 is the
+/// citation and substitution vocabulary, and it is the whole population of all
+/// four elements (`citation` 14, `substitution_definition` 33,
+/// `citation_reference` 7, `substitution_reference` 18) — no instance failed the
+/// sole-`str` condition the two reference mappings carry.
 /// See this file's module doc comment. Raise it whenever `doctree.zig`'s decode
 /// table grows a row; never lower it.
 ///
 /// The test prints the full per-element coverage table whenever the live count
 /// DIFFERS from this floor in either direction, so mapping a new element both
 /// shows you what moved and tells you the number to put here.
-pub const SEMANTIC_BASELINE: u32 = 3378;
+pub const SEMANTIC_BASELINE: u32 = 3450;
 
 /// Tag-shaped text lines whose name is not a docutils element, corpus-wide.
 /// This is EXACTLY one — an option list documenting `--source-url=<URL>`, whose

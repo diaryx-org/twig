@@ -189,6 +189,18 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.objectField("label");
             try w.write(f.label);
         },
+        // The other two named definitions carry the same one field, under the
+        // same name — a consumer that reads a footnote's label reads these
+        // without a second code path, and the registry it resolves in is the
+        // node's `kind`.
+        .citation => |c| {
+            try w.objectField("label");
+            try w.write(c.label);
+        },
+        .substitution => |s| {
+            try w.objectField("label");
+            try w.write(s.label);
+        },
         .reference => |r| {
             try w.objectField("label");
             try w.write(r.label);

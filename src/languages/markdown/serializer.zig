@@ -200,13 +200,26 @@ const Renderer = struct {
         }
     }
 
+    /// Footnote definitions, and citations flattened into them — Markdown has
+    /// the one registry, so an rST citation is written as a footnote here for
+    /// the same reason and with the same consequence as in `djot/serializer.zig`
+    /// (`degraded`, matching the `.citation_reference` inline arm so the pair
+    /// still resolves). A `.substitution` writes nothing at all; see
+    /// `diagnostics.zig`'s `dropped` entry for it.
     fn renderFootnoteDefs(self: *Renderer) Writer.Error!void {
         var saw_any = false;
         for (self.ast.nodes) |n| {
-            if (n.kind != .footnote) continue;
-            const lab = n.kind.footnote.label;
-            const id = self.doc.footnotes.get(lab) orelse continue;
-            if (id != n.id) continue;
+            const lab = switch (n.kind) {
+                .footnote => |f| lab: {
+                    // Picks ONE definition when several share a label; built
+                    // from `.footnote` nodes, so citations are not in it.
+                    const id = self.doc.footnotes.get(f.label) orelse continue;
+                    if (id != n.id) continue;
+                    break :lab f.label;
+                },
+                .citation => |c| c.label,
+                else => continue,
+            };
             if (!saw_any) saw_any = true else try self.writer.writeByte('\n');
             try self.writer.print("[^{s}]: ", .{lab});
             const first = n.first_child;
@@ -429,8 +442,12 @@ const Renderer = struct {
                     },
                 }
             },
+            // The named definitions are written once, together, by
+            // `renderReferenceDefs`/`renderFootnoteDefs`.
             .reference => {},
             .footnote => {},
+            .citation => {},
+            .substitution => {},
             // One arm, still exhaustive over `MarkupLeafKind`: a fourth
             // markup leaf fails THIS build (where spelling lives) and no
             // other.
@@ -533,9 +550,17 @@ const Renderer = struct {
                     const e = leaf.text;
                     try self.writer.print("<{s}>", .{e});
                 },
-                .footnote_reference => {
+                // A citation reference goes into Markdown's one footnote
+                // registry, and a substitution reference keeps its rST spelling
+                // and reads as text — the same two degradations, for the same
+                // two reasons, as `djot/serializer.zig`.
+                .footnote_reference, .citation_reference => {
                     const lab = leaf.text;
                     try self.writer.print("[^{s}]", .{lab});
+                },
+                .substitution_reference => {
+                    const name = leaf.text;
+                    try self.writer.print("|{s}|", .{name});
                 },
             },
             .raw_inline => |r| try self.writer.writeAll(r.text),
