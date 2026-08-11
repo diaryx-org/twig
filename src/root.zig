@@ -44,6 +44,13 @@ pub const Html = @import("languages/html/html.zig");
 /// `languages/markdown/markdown.zig`'s module doc comment for scope details.
 pub const Markdown = @import("languages/markdown/markdown.zig");
 
+/// reStructuredText: NOT a parser yet — the conformance harness
+/// (`Rst.conformance`, the vendored docutils corpus) and the docutils doctree
+/// codec it compares through (`Rst.doctree`), plus the written scope line for
+/// how much of rST twig supports. See `languages/rst/rst.zig`. There is
+/// deliberately no `format.zig` registry entry until `parse` exists.
+pub const Rst = @import("languages/rst/rst.zig");
+
 /// The span-splice engine: lossless, in-place edits to a parsed document via
 /// index paths into the shared `AST`. Language-agnostic by construction —
 /// construct it with a `parse_fn` for the source's format and it never learns
@@ -129,4 +136,5 @@ test {
     _ = Filter;
     _ = ast_json;
     _ = @import("ast/compact.zig");
+    _ = Rst;
 }
