@@ -5,10 +5,18 @@
 //! same corpus the codec's `decode`/`encode` round-trip already climbed.
 //! Mirrors where `languages/rst/` went: the testing harness landed first, so
 //! the vocabulary-mapping work (`asg.zig`'s `Coverage`) had a ratchet to
-//! climb before there was a parser to climb it with. There is still
-//! deliberately no `format.zig` registry entry — `parser.zig`'s own doc
-//! comment has the exact boundary of what this slice covers, and it is far
-//! short of a registry-worthy claim of "supports AsciiDoc".
+//! climb before there was a parser to climb it with.
+//!
+//! ── There IS a `format.zig` registry entry now, on a stated property ───────
+//! It is not a claim to implement AsciiDoc — `parser.zig`'s doc comment lists
+//! far more that is missing than present. It is a claim that the parser fails
+//! HONESTLY: every construct it doesn't implement survives as literal source
+//! text, so an unhandled `image:logo.png[Logo]` renders as those characters
+//! rather than as a mangled tree. The entry waited on that property rather
+//! than on coverage, and the unconstrained spans (`**bold**`, which used to
+//! come out as `<strong>*bold</strong>*`) were fixed to establish it. The row
+//! itself spells out the rest: no serializer, so no `-o canonical`, and no
+//! `syntax`, so no authoring gestures.
 //!
 //! ── The corpus IS the boundary, and today it is a small one ────────────────
 //! `testdata/asciidoc-tck-corpus.json` — 13 cases hand-vendored from the

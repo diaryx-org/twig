@@ -205,7 +205,9 @@ fn decodeDocument(b: *AST.Builder, source: []const u8, value: std.json.Value, co
         const ho = obj(header_val);
         const title_ids = try decodeInlineList(b, source, arr(ho.get("title").?), coverage);
         defer b.allocator.free(title_ids);
-        const heading = try b.addContainer(.{ .heading = .{ .level = 0 } }, title_ids);
+        // `1`, not the ASG's `0` — twig's shared `heading.level` is 1-based
+        // across every language. `writeSection` shifts back on the way out.
+        const heading = try b.addContainer(.{ .heading = .{ .level = 1 } }, title_ids);
         b.setSpan(heading, spanFromLoc(source, ho.get("location").?));
         bump(coverage, "semantic");
         try children.append(b.allocator, heading);
@@ -266,11 +268,8 @@ fn decodeBlock(b: *AST.Builder, source: []const u8, value: std.json.Value, cover
         const id = try b.addLeaf(.{ .code_block = .{ .lang = null, .text = text.items } });
         b.setSpan(id, spanFromLoc(source, o.get("location").?));
         if (inner) |sp| b.setContentSpan(id, sp);
-        try b.setAttrs(id, .{ .entries = &.{
-            .{ .key = "name", .value = name },
-            .{ .key = "form", .value = str(o.get("form").?) },
-            .{ .key = "delimiter", .value = str(o.get("delimiter").?) },
-        } });
+        // No `name`/`form`/`delimiter` attrs: `encode` derives all three from
+        // the block's own source. See `blockDelimiter`.
         // All four count `semantic`: `Coverage`'s split is "decoded to a kind
         // with real meaning" versus "fell to `Kind.container`", and
         // `code_block` is the former for every one of them.
@@ -303,11 +302,8 @@ fn decodeBlock(b: *AST.Builder, source: []const u8, value: std.json.Value, cover
         const kind: Node.Kind = if (semantic) .block_quote else .{ .container = .{ .name = name } };
         const id = try b.addContainer(kind, children.items);
         b.setSpan(id, spanFromLoc(source, o.get("location").?));
-        try b.setAttrs(id, .{ .entries = &.{
-            .{ .key = "name", .value = name },
-            .{ .key = "form", .value = str(o.get("form").?) },
-            .{ .key = "delimiter", .value = str(o.get("delimiter").?) },
-        } });
+        // No `name`/`form`/`delimiter` attrs — `name` is already in the `Kind`
+        // (`parentBlockName`), the other two derive from source.
         if (semantic) bump(coverage, "semantic") else bump(coverage, "generic");
         return id;
     }
@@ -316,7 +312,7 @@ fn decodeBlock(b: *AST.Builder, source: []const u8, value: std.json.Value, cover
         const level: u32 = @intCast(o.get("level").?.integer);
         const title_ids = try decodeInlineList(b, source, arr(o.get("title").?), coverage);
         defer b.allocator.free(title_ids);
-        const heading = try b.addContainer(.{ .heading = .{ .level = level } }, title_ids);
+        const heading = try b.addContainer(.{ .heading = .{ .level = level + 1 } }, title_ids);
         bump(coverage, "semantic");
 
         var children = std.ArrayList(Node.Id).empty;
@@ -413,6 +409,8 @@ fn decodeInline(b: *AST.Builder, source: []const u8, value: std.json.Value, cove
             const id = try b.addLeaf(.{ .text_leaf = .{ .kind = .verbatim, .text = str(inner.get("value").?) } });
             b.setSpan(id, spanFromLoc(source, o.get("location").?));
             b.setContentSpan(id, spanFromLoc(source, inner.get("location").?));
+            // No `form` attr: `encode` derives it from the span's own source.
+            // See `spanForm`.
             bump(coverage, "semantic");
             return id;
         }
@@ -422,12 +420,72 @@ fn decodeInline(b: *AST.Builder, source: []const u8, value: std.json.Value, cove
         defer b.allocator.free(inlines);
         const id = try b.addContainer(.{ .inline_mark = mark }, inlines);
         b.setSpan(id, spanFromLoc(source, o.get("location").?));
-        if (o.get("form")) |f| try b.setAttrs(id, .{ .entries = &.{.{ .key = "form", .value = str(f) }} });
+        // No `form` attr — `encode` derives it from source. See `spanForm`.
         bump(coverage, "semantic");
         return id;
     }
 
     return error.UnsupportedAsgNode;
+}
+
+/// A delimited block's opening delimiter — its first source line, which IS the
+/// delimiter. Derived rather than stored, for the reason `spanForm` gives.
+///
+/// It could not be a per-name constant even if we wanted one: the corpus
+/// carries a `listing` opened with `----` and another opened with `-----`, and
+/// the ASG records what the source actually wrote.
+fn blockDelimiter(doc: *const Document, id: Node.Id) []const u8 {
+    const s = doc.text(id);
+    return s[0 .. std.mem.indexOfScalar(u8, s, '\n') orelse s.len];
+}
+
+/// The ASG `name` of a `code_block` — `listing`, `literal` or `pass`. All three
+/// share one `Kind`, so the delimiter is the only thing that tells them apart.
+/// The parent blocks need no equivalent: their name is already in
+/// `Kind.container`, or they are the one with a semantic kind of its own
+/// (`quote`). See `parentBlockName`.
+fn codeBlockName(delimiter: []const u8) []const u8 {
+    return switch (delimiter[0]) {
+        '-' => "listing",
+        '.' => "literal",
+        '+' => "pass",
+        else => unreachable, // `parser.zig`'s delimiter table admits no other
+    };
+}
+
+/// The ASG `name` of a parent block, from its `Kind` alone.
+fn parentBlockName(doc: *const Document, id: Node.Id) []const u8 {
+    return switch (doc.ast.nodes[id].kind) {
+        .block_quote => "quote",
+        .container => |c| c.name,
+        else => unreachable, // `writeBlock` routes only these two here
+    };
+}
+
+/// A span's ASG `form`, read back off the source rather than stored anywhere.
+///
+/// An unconstrained span is spelled with a DOUBLED delimiter (`**bold**` beside
+/// `*bold*`), so a span's own first two source bytes settle the question, and
+/// both the decoder and the parser can stay silent about it. That silence is
+/// the point: `AST.Attrs` is the channel a document's REAL attributes travel
+/// in, and `languages/html/serializer.zig` renders every entry it finds there
+/// straight into the output — so parking codec bookkeeping in `attrs` puts
+/// `<strong form="unconstrained">` in rendered HTML. Deriving costs one
+/// comparison and cannot drift from what the source actually says.
+fn spanForm(doc: *const Document, id: Node.Id) []const u8 {
+    const s = doc.text(id);
+    // The unconstrained spelling is exactly `DD` + at least one byte + `DD`, so
+    // this tests precisely that rather than sniffing the opening pair alone.
+    // BOTH ends have to be checked: a CONSTRAINED span whose interior merely
+    // begins with the delimiter opens with two delimiter bytes and closes with
+    // one (`**bold*` — the doubled-opener-with-no-doubled-close case, where the
+    // interior is `*bold`), and the minimum length rules out the `***` that
+    // `****` parses to.
+    const unconstrained = s.len >= 5 and
+        s[0] == s[1] and
+        s[s.len - 1] == s[s.len - 2] and
+        s[0] == s[s.len - 1];
+    return if (unconstrained) "unconstrained" else "constrained";
 }
 
 /// The ASG `span` variants that become an `AST.InlineMark` — everything
@@ -540,7 +598,11 @@ fn writeDocument(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writ
                     attrs_id = c.id;
                     continue;
                 },
-                .heading => |h| if (h.level == 0) {
+                // The document title, in the shared tree's 1-based numbering
+                // (the ASG calls this level 0). A section's own title is never
+                // seen here — it hangs off the `section` container, not the
+                // document root — so this only ever matches the header.
+                .heading => |h| if (h.level == 1) {
                     header_id = c.id;
                     continue;
                 },
@@ -622,15 +684,15 @@ fn writeBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.
         },
         .code_block => |cb| {
             try w.beginObject();
-            const attrs = doc.ast.attrsOf(id);
+            const delimiter = blockDelimiter(doc, id);
             try w.objectField("name");
-            try w.write(attrGet(attrs, "name").?);
+            try w.write(codeBlockName(delimiter));
             try w.objectField("type");
             try w.write("block");
             try w.objectField("form");
-            try w.write(attrGet(attrs, "form").?);
+            try w.write("delimited");
             try w.objectField("delimiter");
-            try w.write(attrGet(attrs, "delimiter").?);
+            try w.write(delimiter);
             if (cb.text.len > 0) {
                 try w.objectField("inlines");
                 try w.beginArray();
@@ -667,7 +729,9 @@ fn writeBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.
             while (hit.next()) |c| try writeInline(w, doc, c.id);
             try w.endArray();
             try w.objectField("level");
-            try w.write(doc.ast.nodes[heading_id].kind.heading.level);
+            // Back to the ASG's 0-based numbering — the shared tree stores
+            // 1-based levels. See `decodeBlock`'s section arm.
+            try w.write(doc.ast.nodes[heading_id].kind.heading.level - 1);
             try writeLoc(w, doc, id);
             var probe = it;
             if (probe.next() != null) {
@@ -710,24 +774,29 @@ fn writeBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.
 }
 
 /// One `parentBlock` — an example, sidebar, open block, quote or admonition.
-/// Which it is comes from `attrs`, not from the `Kind`, since two of them
+/// Which it is comes from the `Kind` (`parentBlockName`), since two of them
 /// share `Kind.container` and one has a semantic kind of its own; see
 /// `parser.zig`'s `kindForCompound`.
+///
+/// `variant` is the one field here still read from `attrs`, and only
+/// admonitions have one. Nothing sets it today — no corpus case is an
+/// admonition and the parser doesn't produce them — so it never renders. When
+/// admonitions do land, they need a channel that ISN'T `attrs`, for the reason
+/// `spanForm` spells out.
 fn writeParentBlock(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer.Error!void {
-    const attrs = doc.ast.attrsOf(id);
     try w.beginObject();
     try w.objectField("name");
-    try w.write(attrGet(attrs, "name").?);
+    try w.write(parentBlockName(doc, id));
     try w.objectField("type");
     try w.write("block");
-    if (attrGet(attrs, "variant")) |v| {
+    if (attrGet(doc.ast.attrsOf(id), "variant")) |v| {
         try w.objectField("variant");
         try w.write(v);
     }
     try w.objectField("form");
-    try w.write(attrGet(attrs, "form").?);
+    try w.write("delimited");
     try w.objectField("delimiter");
-    try w.write(attrGet(attrs, "delimiter").?);
+    try w.write(blockDelimiter(doc, id));
     if (doc.ast.nodes[id].first_child != null) {
         try w.objectField("blocks");
         try w.beginArray();
@@ -777,9 +846,8 @@ fn writeInline(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer
             try w.write("inline");
             try w.objectField("variant");
             try w.write(variantFromMark(m));
-            const attrs = doc.ast.attrsOf(id);
             try w.objectField("form");
-            try w.write(attrGet(attrs, "form") orelse "constrained");
+            try w.write(spanForm(doc, id));
             try w.objectField("inlines");
             try w.beginArray();
             var it = doc.children(id);
@@ -803,7 +871,7 @@ fn writeInline(w: *std.json.Stringify, doc: *const Document, id: Node.Id) Writer
             try w.objectField("variant");
             try w.write("code");
             try w.objectField("form");
-            try w.write("constrained");
+            try w.write(spanForm(doc, id));
             try w.objectField("inlines");
             try w.beginArray();
             try w.beginObject();

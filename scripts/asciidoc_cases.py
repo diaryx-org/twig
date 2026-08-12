@@ -756,3 +756,104 @@ def define(*, case, doc, header, para, leaf, parent, section, heading, ulist,
              "same byte-scan loop in parser.zig; this checks it doesn't "
              "confuse one delimiter for another mid-line.",
     )
+
+    # ── unconstrained spans ─────────────────────────────────────────────────
+    # docs/modules/text/pages/{bold,italic,monospace,highlight}.adoc. A doubled
+    # delimiter drops the word-boundary rule entirely, which is the whole
+    # reason the form exists: it is how AsciiDoc spells intraword formatting.
+    #
+    # These four were, before the scan tried unconstrained first, the one place
+    # the parser CORRUPTED rather than passed through: `**bold**` came out as
+    # `<strong>*bold</strong>*` — the constrained scan opened on the first byte
+    # of the pair and closed on the near half of the closing pair. `__` was
+    # worse (a doubly-nested emphasis), because `isWordByte` counts `_` and
+    # pushed the close one byte further right.
+
+    case(
+        "inline/span/strong/unconstrained",
+        "a **bold** word\n",
+        [
+            text("a "),
+            span("strong", text("bold"), form="unconstrained", at="**bold**"),
+            text(" word"),
+        ],
+        level="inline",
+    )
+
+    case(
+        "inline/span/emphasis/unconstrained",
+        "a __ital__ word\n",
+        [
+            text("a "),
+            span("emphasis", text("ital"), form="unconstrained", at="__ital__"),
+            text(" word"),
+        ],
+        level="inline",
+    )
+
+    case(
+        "inline/span/code/unconstrained",
+        "a ``mono`` word\n",
+        [
+            text("a "),
+            span("code", text("mono"), form="unconstrained", at="``mono``"),
+            text(" word"),
+        ],
+        level="inline",
+    )
+
+    case(
+        "inline/span/mark/unconstrained",
+        "a ##hi## word\n",
+        [
+            text("a "),
+            span("mark", text("hi"), form="unconstrained", at="##hi##"),
+            text(" word"),
+        ],
+        level="inline",
+    )
+
+    case(
+        "inline/span/strong/unconstrained-intraword",
+        "sub**string**here\n",
+        [
+            text("sub"),
+            span("strong", text("string"), form="unconstrained", at="**string**"),
+            text("here"),
+        ],
+        level="inline",
+        note="The reason the unconstrained form exists: no word-boundary rule "
+             "applies, so a span can open and close mid-word. The constrained "
+             "form refuses exactly this (see "
+             "inline/span/strong/not-constrained-by-word-character).",
+    )
+
+    case(
+        "inline/span/strong/unconstrained-nests-constrained",
+        "**bold _and_ more**\n",
+        [
+            span(
+                "strong",
+                text("bold "),
+                span("emphasis", text("and"), at="_and_"),
+                text(" more"),
+                form="unconstrained",
+                at="**bold _and_ more**",
+            ),
+        ],
+        level="inline",
+    )
+
+    case(
+        "inline/span/strong/doubled-opener-without-doubled-close",
+        "a **bold* word\n",
+        [
+            text("a "),
+            span("strong", text("*bold"), at="**bold*"),
+            text(" word"),
+        ],
+        level="inline",
+        note="A doubled opener with no doubled close falls THROUGH to the "
+             "constrained scan rather than going literal — asciidoctor's own "
+             "ordering, where the constrained pattern's interior is `*bold`.",
+    )

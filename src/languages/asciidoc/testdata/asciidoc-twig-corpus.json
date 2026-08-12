@@ -7,9 +7,9 @@
   "format": "Identical to asciidoc-tck-corpus.json's, so conformance.zig runs both through one path and any case here can be exported as a TCK -input.adoc/-output.json pair (--export-tck) and offered upstream.",
   "license": "EPL-2.0, matching the AsciiDoc TCK's, so cases can be contributed upstream unchanged.",
   "counts": {
-   "cases": 59,
+   "cases": 66,
    "block": 47,
-   "inline": 12
+   "inline": 19
   }
  },
  "cases": [
@@ -4253,6 +4253,523 @@
     }
    ],
    "note": "The four single-character constrained spans dispatch off the same byte-scan loop in parser.zig; this checks it doesn't confuse one delimiter for another mid-line."
+  },
+  {
+   "id": "inline/span/strong/unconstrained",
+   "level": "inline",
+   "adoc": "a **bold** word\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 2
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "strong",
+     "form": "unconstrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "bold",
+       "location": [
+        {
+         "line": 1,
+         "col": 5
+        },
+        {
+         "line": 1,
+         "col": 8
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 3
+      },
+      {
+       "line": 1,
+       "col": 10
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " word",
+     "location": [
+      {
+       "line": 1,
+       "col": 11
+      },
+      {
+       "line": 1,
+       "col": 15
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/emphasis/unconstrained",
+   "level": "inline",
+   "adoc": "a __ital__ word\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 2
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "emphasis",
+     "form": "unconstrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "ital",
+       "location": [
+        {
+         "line": 1,
+         "col": 5
+        },
+        {
+         "line": 1,
+         "col": 8
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 3
+      },
+      {
+       "line": 1,
+       "col": 10
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " word",
+     "location": [
+      {
+       "line": 1,
+       "col": 11
+      },
+      {
+       "line": 1,
+       "col": 15
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/code/unconstrained",
+   "level": "inline",
+   "adoc": "a ``mono`` word\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 2
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "code",
+     "form": "unconstrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "mono",
+       "location": [
+        {
+         "line": 1,
+         "col": 5
+        },
+        {
+         "line": 1,
+         "col": 8
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 3
+      },
+      {
+       "line": 1,
+       "col": 10
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " word",
+     "location": [
+      {
+       "line": 1,
+       "col": 11
+      },
+      {
+       "line": 1,
+       "col": 15
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/mark/unconstrained",
+   "level": "inline",
+   "adoc": "a ##hi## word\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 2
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "mark",
+     "form": "unconstrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "hi",
+       "location": [
+        {
+         "line": 1,
+         "col": 5
+        },
+        {
+         "line": 1,
+         "col": 6
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 3
+      },
+      {
+       "line": 1,
+       "col": 8
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " word",
+     "location": [
+      {
+       "line": 1,
+       "col": 9
+      },
+      {
+       "line": 1,
+       "col": 13
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/strong/unconstrained-intraword",
+   "level": "inline",
+   "adoc": "sub**string**here\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "sub",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 3
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "strong",
+     "form": "unconstrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "string",
+       "location": [
+        {
+         "line": 1,
+         "col": 6
+        },
+        {
+         "line": 1,
+         "col": 11
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 4
+      },
+      {
+       "line": 1,
+       "col": 13
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": "here",
+     "location": [
+      {
+       "line": 1,
+       "col": 14
+      },
+      {
+       "line": 1,
+       "col": 17
+      }
+     ]
+    }
+   ],
+   "note": "The reason the unconstrained form exists: no word-boundary rule applies, so a span can open and close mid-word. The constrained form refuses exactly this (see inline/span/strong/not-constrained-by-word-character)."
+  },
+  {
+   "id": "inline/span/strong/unconstrained-nests-constrained",
+   "level": "inline",
+   "adoc": "**bold _and_ more**\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "strong",
+     "form": "unconstrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "bold ",
+       "location": [
+        {
+         "line": 1,
+         "col": 3
+        },
+        {
+         "line": 1,
+         "col": 7
+        }
+       ]
+      },
+      {
+       "name": "span",
+       "type": "inline",
+       "variant": "emphasis",
+       "form": "constrained",
+       "inlines": [
+        {
+         "name": "text",
+         "type": "string",
+         "value": "and",
+         "location": [
+          {
+           "line": 1,
+           "col": 9
+          },
+          {
+           "line": 1,
+           "col": 11
+          }
+         ]
+        }
+       ],
+       "location": [
+        {
+         "line": 1,
+         "col": 8
+        },
+        {
+         "line": 1,
+         "col": 12
+        }
+       ]
+      },
+      {
+       "name": "text",
+       "type": "string",
+       "value": " more",
+       "location": [
+        {
+         "line": 1,
+         "col": 13
+        },
+        {
+         "line": 1,
+         "col": 17
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 19
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/strong/doubled-opener-without-doubled-close",
+   "level": "inline",
+   "adoc": "a **bold* word\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 2
+      }
+     ]
+    },
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "strong",
+     "form": "constrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "*bold",
+       "location": [
+        {
+         "line": 1,
+         "col": 4
+        },
+        {
+         "line": 1,
+         "col": 8
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 3
+      },
+      {
+       "line": 1,
+       "col": 9
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " word",
+     "location": [
+      {
+       "line": 1,
+       "col": 10
+      },
+      {
+       "line": 1,
+       "col": 14
+      }
+     ]
+    }
+   ],
+   "note": "A doubled opener with no doubled close falls THROUGH to the constrained scan rather than going literal — asciidoctor's own ordering, where the constrained pattern's interior is `*bold`."
   }
  ]
 }

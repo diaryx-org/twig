@@ -37,6 +37,7 @@ pub const TwigFormat = enum(c_int) {
     markdown = 2,
     xml = 3,
     html = 4,
+    asciidoc = 5,
 };
 
 /// A byte range `[start, end)` into the source, C-ABI shape of `Span`. Used by
@@ -269,6 +270,7 @@ fn intToFormat(format: c_int) ?twig.Format {
         @intFromEnum(TwigFormat.markdown) => .markdown,
         @intFromEnum(TwigFormat.xml) => .xml,
         @intFromEnum(TwigFormat.html) => .html,
+        @intFromEnum(TwigFormat.asciidoc) => .asciidoc,
         else => return null,
     };
     return switch (wire) {
@@ -3007,6 +3009,11 @@ fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: tw
         // XML alone needs the positions: an absent interior span is its
         // self-closing signal (see `languages/xml/serializer.zig`).
         .xml => twig.Xml.serializeAlloc(allocator, doc),
+        // AsciiDoc has no serializer of any kind yet, so a built tree has
+        // nowhere to go. Spelled out rather than folded into an `else =>`: this
+        // dispatch's whole problem, per the doc comment above, is that its
+        // `else` arm hid a disagreement with the registry.
+        .asciidoc => error.UnsupportedFormat,
     };
 }
 

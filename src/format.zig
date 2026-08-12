@@ -33,6 +33,7 @@ const Djot = @import("languages/djot/djot.zig");
 const Markdown = @import("languages/markdown/markdown.zig");
 const Xml = @import("languages/xml/xml.zig");
 const Html = @import("languages/html/html.zig");
+const Asciidoc = @import("languages/asciidoc/asciidoc.zig");
 const Splicer = @import("ast/splicer.zig").Splicer;
 const syntax_mod = @import("syntax.zig");
 const Syntax = syntax_mod.Syntax;
@@ -49,6 +50,7 @@ pub const Format = enum {
     markdown,
     xml,
     html,
+    asciidoc,
 };
 
 /// Per-invocation parse configuration, threaded from a consumer's feature flags
@@ -76,6 +78,7 @@ pub const ParsedDoc = union(Format) {
     markdown: Markdown.Document,
     xml: Document,
     html: Document,
+    asciidoc: Document,
 
     /// The shared `AST` underneath, regardless of variant — MEANING only.
     pub fn ast(self: *const ParsedDoc) *const AST {
@@ -84,6 +87,7 @@ pub const ParsedDoc = union(Format) {
             .markdown => |*d| &d.ast,
             .xml => |*d| &d.ast,
             .html => |*d| &d.ast,
+            .asciidoc => |*d| &d.ast,
         };
     }
 
@@ -94,7 +98,7 @@ pub const ParsedDoc = union(Format) {
         return switch (self.*) {
             .djot => |*d| d.document(),
             .markdown => |*d| d.document(),
-            .xml, .html => |*d| d.*,
+            .xml, .html, .asciidoc => |*d| d.*,
         };
     }
 
@@ -104,6 +108,7 @@ pub const ParsedDoc = union(Format) {
             .markdown => |*d| d.deinit(),
             .xml => |*d| d.deinit(),
             .html => |*d| d.deinit(),
+            .asciidoc => |*d| d.deinit(),
         }
     }
 };
@@ -125,6 +130,11 @@ fn parseXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) any
 fn parseHtml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
     _ = ctx;
     return .{ .html = try Html.parse(allocator, source) };
+}
+
+fn parseAsciidoc(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
+    _ = ctx;
+    return .{ .asciidoc = try Asciidoc.parser.parse(allocator, source) };
 }
 
 // ── splicer reparse adapters ───────────────────────────────────────────────
@@ -160,6 +170,11 @@ fn parseToAstXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8
 fn parseToAstHtml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
     _ = ctx;
     return Html.parse(allocator, source);
+}
+
+fn parseToAstAsciidoc(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
+    _ = ctx;
+    return Asciidoc.parser.parse(allocator, source);
 }
 
 /// Djot needs its own HTML rendering path (`Djot.html.render`) rather than the
@@ -322,6 +337,35 @@ pub const registry = [_]Entry{
         // No `syntax`: HTML is parse-and-render only. Authoring gestures spell
         // djot/Markdown's lightweight markup, which HTML doesn't have.
     },
+    .{
+        .id = .asciidoc,
+        .extensions = &.{ "adoc", "asciidoc" },
+        .aliases = &.{"adoc"},
+        .parse = parseAsciidoc,
+        .parseToAst = parseToAstAsciidoc,
+        .renderHtml = renderHtmlGeneric,
+        // ── The raggedest row in the table, and deliberately so ─────────────
+        // AsciiDoc's parser covers a real slice of the language and NOT the
+        // whole of it (`languages/asciidoc/parser.zig`'s doc comment draws the
+        // exact line: four spans in both forms, the delimited blocks, sections,
+        // unordered lists, the header — but no links, images, xrefs, attribute
+        // references, ordered lists or block metadata).
+        //
+        // A row this partial earns its place because of HOW the parser fails:
+        // every construct it doesn't implement survives as LITERAL SOURCE TEXT,
+        // so an unhandled `image:logo.png[Logo]` renders as those very
+        // characters — visibly unhandled, and diagnosable by whoever sees it —
+        // rather than as a mangled tree. That is the property that makes
+        // `renderHtml` honest here, and it is a property the parser had to earn:
+        // the unconstrained spans (`**bold**`) used to corrupt instead, which is
+        // why they were fixed before this entry was written rather than after.
+        //
+        // No `serializeCanonical`/`serializeFromAst`: there is no AsciiDoc
+        // serializer at all yet, so `convert -o canonical` and `-o asciidoc`
+        // both report unsupported rather than inventing output. No `syntax`
+        // either — every authoring gesture over an AsciiDoc document is refused
+        // by the same `Syntax.none` XML and HTML carry.
+    },
 };
 
 /// Look up `fmt`'s entry. Every `Format` variant has exactly one `registry`
@@ -437,10 +481,32 @@ test "every syntax table in the registry is coherent" {
 test "exactly djot and markdown are authorable" {
     try std.testing.expect(syntaxFor(.djot).authorable());
     try std.testing.expect(syntaxFor(.markdown).authorable());
-    // XML and HTML parse and render but cannot be authored into: they carry the
-    // table that spells nothing, so every gesture over them is refused.
+    // XML, HTML and AsciiDoc parse and render but cannot be authored into: they
+    // carry the table that spells nothing, so every gesture over them is
+    // refused.
     try std.testing.expect(!syntaxFor(.xml).authorable());
     try std.testing.expect(!syntaxFor(.html).authorable());
+    try std.testing.expect(!syntaxFor(.asciidoc).authorable());
+}
+
+test "AsciiDoc parses and renders but does not serialize" {
+    const entry = entryFor(.asciidoc);
+    try std.testing.expect(entry.serializeCanonical == null);
+    try std.testing.expect(entry.serializeFromAst == null);
+    try std.testing.expectEqual(Format.asciidoc, parseFormatName("adoc").?);
+    try std.testing.expectEqual(Format.asciidoc, detectFromExtension("guide.ADOC").?);
+}
+
+test "an unimplemented AsciiDoc construct renders as literal source, not as a mangled tree" {
+    // The property the registry entry rests on — see the `.asciidoc` row. A
+    // block macro is one of the many things `asciidoc/parser.zig` does not
+    // implement; what matters is that its source SURVIVES to the output instead
+    // of being half-consumed into some other node.
+    var doc = try parseAsciidoc(&ParseConfig{}, std.testing.allocator, "image:logo.png[Logo]\n");
+    defer doc.deinit();
+    const html = try renderHtmlAlloc(std.testing.allocator, &doc);
+    defer std.testing.allocator.free(html);
+    try std.testing.expectEqualStrings("<p>image:logo.png[Logo]</p>\n", html);
 }
 
 // ── cross-format round-trips ───────────────────────────────────────────────

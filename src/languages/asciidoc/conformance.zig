@@ -226,12 +226,12 @@ pub const PARSE_BASELINE: u32 = 13;
 /// Ratchet floor for twig's own corpus under `.parse`. Separate from
 /// `PARSE_BASELINE` because the two corpora carry different authority (see
 /// this file's doc comment) and should be readable apart at a glance.
-pub const TWIG_PARSE_BASELINE: u32 = 59;
+pub const TWIG_PARSE_BASELINE: u32 = 66;
 
 /// Ratchet floor for twig's own corpus under `.codec` — every authored case
 /// must also survive `asg.zig`'s own decode/encode round-trip, which is what
 /// keeps the codec's vocabulary growing in step with the parser's.
-pub const TWIG_CODEC_BASELINE: u32 = 59;
+pub const TWIG_CODEC_BASELINE: u32 = 66;
 
 /// The vendored TCK through the parser — `runParse`'s original signature.
 pub fn runParse(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !RunResult {

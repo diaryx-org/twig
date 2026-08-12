@@ -191,7 +191,7 @@ fn childPath(arena: Allocator, parent: []const u8, i: usize) Allocator.Error![]c
 pub fn fidelity(target: Format, kind: Node.Kind) Fidelity {
     return switch (target) {
         // No `serializeFromAst`; `analyze` refuses before reaching the table.
-        .xml => .dropped,
+        .xml, .asciidoc => .dropped,
         .djot => djotFidelity(kind),
         .markdown => markdownFidelity(kind),
         .html => htmlFidelity(kind),

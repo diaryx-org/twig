@@ -39,6 +39,12 @@ extern "C" {
 #define TWIG_FORMAT_MARKDOWN 2
 #define TWIG_FORMAT_XML 3
 #define TWIG_FORMAT_HTML 4
+// Parses and renders, but does not serialize: twig_serialize_document with
+// TWIG_FORMAT_ASCIIDOC reports TWIG_STATUS_UNSUPPORTED_FORMAT, and no editing
+// gesture applies to an AsciiDoc document. The parser also covers a SLICE of
+// the language rather than all of it; what it doesn't implement survives as
+// literal source text. See src/format.zig's `.asciidoc` registry row.
+#define TWIG_FORMAT_ASCIIDOC 5
 
 // Markdown extension flags for the `md_flags` bitmask of twig_parse_ext and
 // twig_editor_create_ext (ignored for non-Markdown formats). Each is an opt-in,

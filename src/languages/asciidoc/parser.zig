@@ -15,20 +15,27 @@
 //! principal text, blank lines between items), every delimited block the ASG
 //! has a name for (`listing`, `literal`, `pass`, `example`, `quote`,
 //! `sidebar`, `open`) plus comment blocks, line comments, thematic and page
-//! breaks, and four constrained spans: `*strong*`, `_emphasis_`, `` `code` ``
-//! (monospace) and `#mark#` (highlight).
+//! breaks, and four spans in BOTH forms — `*strong*`, `_emphasis_`,
+//! `` `code` `` (monospace) and `#mark#` (highlight), constrained, plus the
+//! doubled unconstrained spellings (`**`, `__`, `` `` ` `` ``, `##`) that make
+//! intraword formatting work.
 //!
 //! Not yet: ordered and callout lists, description lists, nested lists, list
 //! continuation, block metadata (`[attrlist]`, `.Title`, ids, roles, options)
 //! and everything it unlocks (admonitions, discrete headings, `[verse]`,
 //! `[source]`), block macros (`image::`, `audio::`, `video::`, `toc::`), and
-//! every inline besides the four constrained spans and plain text —
-//! unconstrained forms (`**`, `__`, `` `` ` `` ``, `##`), superscript,
+//! every inline besides those four spans and plain text — superscript,
 //! subscript, attribute references, anchors, cross references, links, images,
 //! footnotes, inline passthrough and line breaks all remain unimplemented, and
 //! several of them (superscript, subscript, footnotes, inline images) have no
 //! shape in the ASG schema yet either. Tables are not on the list at all: the
 //! ASG does not model them as of draft-01.
+//!
+//! What's missing degrades to LITERAL SOURCE TEXT, which is the property that
+//! makes a `format.zig` registry entry honest: an unimplemented `image:a.png[]`
+//! renders as the characters `image:a.png[]`, visibly unhandled, rather than as
+//! a mangled tree. The unconstrained spans were the one construct that broke
+//! that rule — see `parseInlines` for what they used to do.
 //!
 //! ── Why this shape ───────────────────────────────────────────────────────
 //! Bottom-up onto `AST.Builder`, the same posture `languages/rst/parser.zig`
@@ -341,7 +348,13 @@ const Parser = struct {
 
             const title_str = try self.b.addLeaf(.{ .str = dt.text });
             self.b.setSpan(title_str, dt.text_span);
-            const heading_id = try self.b.addContainer(.{ .heading = .{ .level = 0 } }, &.{title_str});
+            // `level = 1`, not the ASG's own `0`: twig's shared `heading.level`
+            // is 1-based across every language (djot/Markdown's `#` is 1), and
+            // `languages/html/serializer.zig` prints it straight into `h{d}` —
+            // storing the ASG's number here emitted `<h0>`, which is not an
+            // HTML element, and put every AsciiDoc heading one off from the
+            // same heading written in Markdown. `asg.zig` shifts back on encode.
+            const heading_id = try self.b.addContainer(.{ .heading = .{ .level = 1 } }, &.{title_str});
             self.b.setSpan(heading_id, Span.init(dt.span_start, header_end_offset));
             header_id = heading_id;
             start_offset = dt.span_start;
@@ -416,7 +429,11 @@ const Parser = struct {
     fn parseSection(self: *Parser, hm: HeadingMatch, hi: usize) Allocator.Error!struct { id: Node.Id, next: usize, end_offset: usize } {
         const title_str = try self.b.addLeaf(.{ .str = hm.text });
         self.b.setSpan(title_str, hm.text_span);
-        const heading_id = try self.b.addContainer(.{ .heading = .{ .level = @intCast(hm.level) } }, &.{title_str});
+        // `+ 1` for the same reason the document title above is 1 — the ASG's
+        // levels are 0-based and twig's shared tree is not. `hm.level` itself
+        // stays ASG-shaped, since that is what the nesting comparisons and
+        // `ROOT_LEVEL` are written against.
+        const heading_id = try self.b.addContainer(.{ .heading = .{ .level = @intCast(hm.level + 1) } }, &.{title_str});
         self.b.setSpan(heading_id, hm.text_span);
 
         const inner = try self.parseSectionsLoop(hm.next_line, hi, hm.level);
@@ -579,11 +596,13 @@ const Parser = struct {
         else
             self.lines[delim_line].end;
         self.b.setSpan(id, Span.init(self.lines[delim_line].start, end_offset));
-        try self.b.setAttrs(id, .{ .entries = &.{
-            .{ .key = "name", .value = delim.name },
-            .{ .key = "form", .value = "delimited" },
-            .{ .key = "delimiter", .value = opening },
-        } });
+        // The block's ASG `name`/`form`/`delimiter` are NOT recorded here.
+        // `asg.zig` derives all three (`blockDelimiter`, `codeBlockName`,
+        // `parentBlockName`) from the node's kind and its own source, because
+        // `AST.Attrs` is the channel a document's REAL attributes travel in and
+        // `languages/html/serializer.zig` renders whatever it finds there —
+        // storing them put `<pre name="listing" form="delimited"
+        // delimiter="----">` into rendered HTML.
         return .{ .id = id, .next = next, .end_offset = end_offset };
     }
 
@@ -695,6 +714,13 @@ fn markForChar(c: u8) ?AST.InlineMark {
     return null;
 }
 
+/// Every byte that can open a span in either form. `parseInlines` dispatches on
+/// this once and lets `emitSpan` sort out which node the delimiter builds, so
+/// the constrained and unconstrained scans never duplicate that decision.
+fn isSpanDelimiter(c: u8) bool {
+    return markForChar(c) != null or c == MONOSPACE_CHAR;
+}
+
 /// May `text[i]`, a candidate delimiter byte, OPEN a constrained span? Not
 /// preceded by a word character, not followed by whitespace or end of text —
 /// AsciiDoc's constrained-span word-boundary rule, checked independently of
@@ -709,8 +735,14 @@ fn opensConstrained(text: []const u8, i: usize) bool {
 /// The index of the delimiter byte `delim` that CLOSES a span opened at
 /// `open_idx`, if any: not preceded by whitespace, not followed by a word
 /// character — the closing half of the same rule.
+///
+/// Starts at `open_idx + 2`, so the interior is at least one byte. Asciidoctor
+/// spells this interior `(\S|\S.*?\S)`, which likewise cannot match empty, and
+/// the guard is what keeps `****` from encoding as two EMPTY strong spans —
+/// four source bytes rendering as `<strong></strong><strong></strong>`, which
+/// deletes them from the output rather than passing them through.
 fn findConstrainedClose(text: []const u8, delim: u8, open_idx: usize) ?usize {
-    var j = open_idx + 1;
+    var j = open_idx + 2;
     while (j < text.len) : (j += 1) {
         if (text[j] != delim) continue;
         const before_space = text[j - 1] == ' ' or text[j - 1] == '\t' or text[j - 1] == '\n';
@@ -720,40 +752,97 @@ fn findConstrainedClose(text: []const u8, delim: u8, open_idx: usize) ?usize {
     return null;
 }
 
-/// Scan `text` (a slice of `source` starting at byte offset `base`) for
-/// constrained spans, returning the resulting run of `str`, `inline_mark` and
-/// monospace `text_leaf` nodes. See `MARK_SPANS`'s doc comment for which
-/// delimiters are recognized.
+/// The index of the FIRST byte of the doubled delimiter that closes an
+/// UNCONSTRAINED span opened at `open_idx`, if any.
+///
+/// Unconstrained spans carry no word-boundary rule at all — that is their whole
+/// point, since `sub**string**here` is how AsciiDoc spells intraword formatting
+/// — so this is a plain scan for the next `delim delim` pair, non-greedy the way
+/// asciidoctor's own `\*\*(.+?)\*\*` is. The search starts at `open_idx + 3`
+/// because that pattern is `.+?` and not `.*?`: the interior must be at least
+/// one byte, so `****` is literal text rather than an empty span.
+fn findUnconstrainedClose(text: []const u8, delim: u8, open_idx: usize) ?usize {
+    var j = open_idx + 3;
+    while (j + 1 < text.len) : (j += 1) {
+        if (text[j] == delim and text[j + 1] == delim) return j;
+    }
+    return null;
+}
+
+/// Build the one node a span delimiter produces, over the already-located
+/// `interior`. The constrained and unconstrained scans differ ONLY in how they
+/// find their delimiters — never in what they build — so both land here.
+///
+/// Nothing records WHICH form was used, deliberately: the ASG needs that fact
+/// on the way out, but a span's own source spells it (an unconstrained span
+/// opens with a doubled delimiter), so `asg.zig`'s `spanForm` reads it back off
+/// the span rather than storing it. `AST.Attrs` is the channel a document's
+/// REAL attributes travel in, and anything parked there renders straight into
+/// `languages/html/serializer.zig`'s output as a bogus HTML attribute.
+fn emitSpan(
+    b: *Builder,
+    delim: u8,
+    interior: []const u8,
+    interior_base: usize,
+    outer: Span,
+) Allocator.Error!Node.Id {
+    const id = if (markForChar(delim)) |mark| blk: {
+        const inner = try parseInlines(b, interior, interior_base);
+        defer b.allocator.free(inner);
+        break :blk try b.addContainer(.{ .inline_mark = mark }, inner);
+    } else blk: {
+        // Monospace keeps its interior verbatim instead of recursing — see
+        // `MARK_SPANS`'s doc comment for why it is a leaf and not a mark.
+        const leaf = try b.addLeaf(.{ .text_leaf = .{ .kind = .verbatim, .text = interior } });
+        b.setContentSpan(leaf, Span.init(interior_base, interior_base + interior.len));
+        break :blk leaf;
+    };
+    b.setSpan(id, outer);
+    return id;
+}
+
+/// Scan `text` (a slice of `source` starting at byte offset `base`) for spans,
+/// returning the resulting run of `str`, `inline_mark` and monospace
+/// `text_leaf` nodes. See `MARK_SPANS`'s doc comment for which delimiters are
+/// recognized.
+///
+/// ── Unconstrained is tried FIRST, and that ordering is load-bearing ─────────
+/// Asciidoctor applies its unconstrained substitution patterns ahead of the
+/// constrained ones, and the constrained scan is actively wrong on a doubled
+/// delimiter rather than merely blind to it: it opens on the first byte of the
+/// pair and closes on the NEAR half of the closing pair, leaving the far half
+/// stranded as text (`**bold**` came out as `<strong>*bold</strong>*`, and
+/// `__ital__` as a doubly-nested `<em>` because `isWordByte` counts `_` and
+/// pushed the close one byte further right).
+///
+/// A doubled opener with no doubled close falls THROUGH to the constrained
+/// scan rather than going literal, which is also what asciidoctor does:
+/// `**bold*` is a constrained span whose interior happens to start with `*`.
 fn parseInlines(b: *Builder, text: []const u8, base: usize) Allocator.Error![]Node.Id {
     var ids: std.ArrayList(Node.Id) = .empty;
     errdefer ids.deinit(b.allocator);
     var plain_start: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        if (markForChar(text[i])) |mark| open: {
-            if (!opensConstrained(text, i)) break :open;
-            const close_idx = findConstrainedClose(text, text[i], i) orelse break :open;
+        if (isSpanDelimiter(text[i])) delim: {
+            const doubled = i + 1 < text.len and text[i + 1] == text[i];
+            if (doubled) {
+                if (findUnconstrainedClose(text, text[i], i)) |close| {
+                    if (i > plain_start) try ids.append(b.allocator, try emitText(b, text[plain_start..i], base + plain_start));
+                    const span_id = try emitSpan(b, text[i], text[i + 2 .. close], base + i + 2, Span.init(base + i, base + close + 2));
+                    try ids.append(b.allocator, span_id);
+                    i = close + 2;
+                    plain_start = i;
+                    continue;
+                }
+            }
+            if (!opensConstrained(text, i)) break :delim;
+            const close = findConstrainedClose(text, text[i], i) orelse break :delim;
 
             if (i > plain_start) try ids.append(b.allocator, try emitText(b, text[plain_start..i], base + plain_start));
-            const inner = try parseInlines(b, text[i + 1 .. close_idx], base + i + 1);
-            defer b.allocator.free(inner);
-            const span_id = try b.addContainer(.{ .inline_mark = mark }, inner);
-            b.setSpan(span_id, Span.init(base + i, base + close_idx + 1));
+            const span_id = try emitSpan(b, text[i], text[i + 1 .. close], base + i + 1, Span.init(base + i, base + close + 1));
             try ids.append(b.allocator, span_id);
-            i = close_idx + 1;
-            plain_start = i;
-            continue;
-        } else if (text[i] == MONOSPACE_CHAR) mono: {
-            if (!opensConstrained(text, i)) break :mono;
-            const close_idx = findConstrainedClose(text, MONOSPACE_CHAR, i) orelse break :mono;
-
-            if (i > plain_start) try ids.append(b.allocator, try emitText(b, text[plain_start..i], base + plain_start));
-            const interior = text[i + 1 .. close_idx];
-            const leaf_id = try b.addLeaf(.{ .text_leaf = .{ .kind = .verbatim, .text = interior } });
-            b.setSpan(leaf_id, Span.init(base + i, base + close_idx + 1));
-            b.setContentSpan(leaf_id, Span.init(base + i + 1, base + close_idx));
-            try ids.append(b.allocator, leaf_id);
-            i = close_idx + 1;
+            i = close + 1;
             plain_start = i;
             continue;
         }
@@ -794,7 +883,7 @@ test "a single paragraph" {
     try testing.expectEqualStrings("A paragraph that consists of a single line.", ast.nodes[str].kind.str);
 }
 
-test "a document title becomes a level-0 heading, attribute entries attach to the document" {
+test "a document title becomes the top-level heading, attribute entries attach to the document" {
     var doc = try parse(testing.allocator, "= Document Title\n:icons: font\n:toc:\n");
     defer doc.deinit();
     const ast = doc.ast;
@@ -803,7 +892,10 @@ test "a document title becomes a level-0 heading, attribute entries attach to th
     try testing.expectEqualStrings("font", ast.attrsOf(attrs_marker).get("icons").?);
     try testing.expectEqualStrings("", ast.attrsOf(attrs_marker).get("toc").?);
     const heading = ast.nodes[attrs_marker].next_sibling.?;
-    try testing.expectEqual(@as(u32, 0), ast.nodes[heading].kind.heading.level);
+    // 1, not the ASG's 0: twig's shared `heading.level` is 1-based in every
+    // language, so `= Title` and Markdown's `# Title` agree. See the parser's
+    // own `addContainer` call for why that matters to rendered HTML.
+    try testing.expectEqual(@as(u32, 1), ast.nodes[heading].kind.heading.level);
 }
 
 test "a section nests a paragraph inside it" {
@@ -813,7 +905,9 @@ test "a section nests a paragraph inside it" {
     const section = ast.nodes[ast.root].first_child.?;
     try testing.expect(ast.nodes[section].kind == .section);
     const heading = ast.nodes[section].first_child.?;
-    try testing.expectEqual(@as(u32, 1), ast.nodes[heading].kind.heading.level);
+    // `==` is the ASG's level 1 and the shared tree's 2 — an `<h2>`, exactly
+    // where the same section sits in Markdown's `##`.
+    try testing.expectEqual(@as(u32, 2), ast.nodes[heading].kind.heading.level);
     const body = ast.nodes[heading].next_sibling.?;
     try testing.expect(ast.nodes[body].kind == .para);
 }
@@ -911,4 +1005,87 @@ test "a constrained monospace span is a verbatim text leaf, not a nested mark" {
     const leaf = ast.nodes[ast.root].first_child.?;
     try testing.expectEqual(AST.TextLeafKind.verbatim, ast.nodes[leaf].kind.text_leaf.kind);
     try testing.expectEqualStrings("s", ast.nodes[leaf].kind.text_leaf.text);
+}
+
+test "an unconstrained span consumes BOTH delimiter bytes at each end" {
+    // The regression this whole path exists for: the constrained scan used to
+    // open on the first `*` of the pair and close on the near half of the
+    // closing pair, yielding a `*bold` interior plus a stray trailing `*`.
+    var doc = try parseInlineList(testing.allocator, "**bold**\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const span = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[span].kind.inline_mark == .strong);
+    try testing.expect(ast.nodes[span].next_sibling == null);
+    const str = ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("bold", ast.nodes[str].kind.str);
+}
+
+test "an unconstrained emphasis span does not nest inside itself" {
+    // `isWordByte` counts `_`, which pushed the constrained close one byte
+    // right and re-entered the scan on a `_ital_` interior — a doubled `<em>`.
+    var doc = try parseInlineList(testing.allocator, "__ital__\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const span = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[span].kind.inline_mark == .emph);
+    const inner = ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("ital", ast.nodes[inner].kind.str);
+}
+
+test "an unconstrained span opens and closes mid-word" {
+    // The point of the form: no word-boundary rule, so `sub**string**here`
+    // formats where the constrained spelling refuses to.
+    var doc = try parseInlineList(testing.allocator, "sub**string**here\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const first = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("sub", ast.nodes[first].kind.str);
+    const span = ast.nodes[first].next_sibling.?;
+    try testing.expect(ast.nodes[span].kind.inline_mark == .strong);
+    const tail = ast.nodes[span].next_sibling.?;
+    try testing.expectEqualStrings("here", ast.nodes[tail].kind.str);
+}
+
+test "an unconstrained monospace span stays a verbatim leaf" {
+    var doc = try parseInlineList(testing.allocator, "``mono``\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const leaf = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqual(AST.TextLeafKind.verbatim, ast.nodes[leaf].kind.text_leaf.kind);
+    try testing.expectEqualStrings("mono", ast.nodes[leaf].kind.text_leaf.text);
+}
+
+test "a doubled opener with no doubled close falls through to the constrained scan" {
+    // Asciidoctor's own ordering: the unconstrained pattern fails, and the
+    // constrained one then matches with `*bold` as its interior.
+    var doc = try parseInlineList(testing.allocator, "**bold*\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const span = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[span].kind.inline_mark == .strong);
+    const str = ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("*bold", ast.nodes[str].kind.str);
+}
+
+test "a constrained span's interior is never empty" {
+    // Without the guard, `****` encoded as two EMPTY strong spans — four source
+    // bytes vanishing from the output rather than passing through.
+    var doc = try parseInlineList(testing.allocator, "****\n");
+    defer doc.deinit();
+    const ast = doc.ast;
+    const span = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[span].kind.inline_mark == .strong);
+    const str = ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("*", ast.nodes[str].kind.str);
+}
+
+test "delimited blocks carry no ASG bookkeeping in attrs" {
+    // `attrs` renders — see `emitSpan`. Anything the ASG needs but the document
+    // doesn't have must be derived in `asg.zig`, not parked here.
+    var doc = try parse(testing.allocator, "----\ncode\n----\n");
+    defer doc.deinit();
+    for (0..doc.ast.nodes.len) |id| {
+        try testing.expectEqual(@as(usize, 0), doc.ast.attrsOf(@intCast(id)).entries.len);
+    }
 }
