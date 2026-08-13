@@ -7,6 +7,35 @@ created: 2026-08-03
 
 # A twig-native document markup language
 
+## Update (2026-08-11): Parts 3–5 are stale
+
+The 2026-08-03 deferral below was waiting on rST to pressure-test two gaps.
+Both are answered: **directive arity** landed as `Container.argument`
+(`ast/ast.zig:299`), and the attribute **span** landed as
+`Document.attrs_spans` (`document.zig:142`). Work on the surface syntax
+resumes.
+
+Three things have moved since, and the parts below that describe them should be
+read against this note rather than trusted:
+
+- **Parts 3 and 4 are superseded** by
+  [twig-attributes.md](/proposals/twig-attributes.md). Twig does not depend on
+  `fig`, so the `+++toml` / `{toml: ...}` tagged forms are gone in favour of one
+  grammar specified there. That document also drops the `.class` sigil and
+  reserves `@` for meta-attributes.
+- **Part 5's table is stale.** `div`, `span`, `directive`, and `element`
+  unified into a single `container: Container` kind carrying `name`, `form`,
+  and `argument` (`ast/ast.zig:285`). The `:::`-family mapping survives; the
+  four-kind vocabulary it maps onto does not.
+- **The format version is not twig's to enforce** (open question 2, answered
+  sideways). A `prov`/`diaryx` collection declares a spec version at its root
+  index and individual files may override; twig takes an opaque spec identifier
+  as a parse input and stores it on `Document`. The header is therefore
+  **optional at the twig layer** — requiring it is a profile decision made
+  above twig. See Part 0 of the attributes proposal.
+
+Open question 1 (the name) is still open.
+
 ## Deferred (2026-08-03): sequencing
 
 Held pending reStructuredText support. The reasoning is asymmetric risk: a
