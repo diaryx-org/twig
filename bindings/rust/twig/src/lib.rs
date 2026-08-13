@@ -33,6 +33,71 @@ impl From<Format> for ffi::TwigFormat {
     }
 }
 
+/// Every format Twig can **write** — the output axis, as opposed to [`Format`],
+/// which is what Twig can **parse**.
+///
+/// Every [`Format`] is also a `Target` (use `Target::from(format)`), so the two
+/// lists coincide today and the distinction costs nothing to ignore. It exists
+/// because only one of them can grow freely: a [`Format`] must have a parser
+/// behind it, while a target only needs somewhere for bytes to go. That makes an
+/// *export-only* target — one Twig can write and no parser reads back, PDF being
+/// the motivating case — expressible here and nowhere else. See the two format
+/// axes in the Zig library's `DESIGN.md`.
+///
+/// `#[non_exhaustive]` for exactly that reason: a future export-only variant is
+/// then an additive change rather than a breaking one for callers that match on
+/// this enum.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Target {
+    Djot,
+    Markdown,
+    Xml,
+    Html,
+}
+
+impl Target {
+    /// The [`Format`] whose parser reads this target's own output back, or
+    /// `None` for an export-only target.
+    ///
+    /// Always `Some` today. It is the question to ask before assuming a target
+    /// can be round-tripped: `None` means bytes go out and nothing comes back,
+    /// so there is no "parse it again and compare" available for that target.
+    pub fn as_format(self) -> Option<Format> {
+        match self {
+            Target::Djot => Some(Format::Djot),
+            Target::Markdown => Some(Format::Markdown),
+            Target::Xml => Some(Format::Xml),
+            Target::Html => Some(Format::Html),
+        }
+    }
+}
+
+/// Total: every input format is also an output target, even the ones with no
+/// serializer yet (converting *into* XML reports [`Error::UnsupportedFormat`]
+/// rather than being unnameable).
+impl From<Format> for Target {
+    fn from(value: Format) -> Self {
+        match value {
+            Format::Djot => Target::Djot,
+            Format::Markdown => Target::Markdown,
+            Format::Xml => Target::Xml,
+            Format::Html => Target::Html,
+        }
+    }
+}
+
+impl From<Target> for ffi::TwigFormat {
+    fn from(value: Target) -> Self {
+        match value {
+            Target::Djot => ffi::TwigFormat::Djot,
+            Target::Markdown => ffi::TwigFormat::Markdown,
+            Target::Xml => ffi::TwigFormat::Xml,
+            Target::Html => ffi::TwigFormat::Html,
+        }
+    }
+}
+
 /// One node returned by [`Document::query`]: its AST id, byte spans, and kind.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryMatch {
@@ -297,17 +362,32 @@ impl Document {
         collect_bytes(|ptr, len| unsafe { ffi::twig_document_render_html(raw, ptr, len) })
     }
 
-    /// Serialize the document to `format`'s own source syntax: a round-trip
-    /// when `format` matches the document's own format, cross-format
-    /// conversion otherwise (e.g. parse Markdown, serialize as Djot). Returns
+    /// Serialize the document to `target`'s own syntax: a round-trip when
+    /// `target` names the document's own format, cross-format conversion
+    /// otherwise (e.g. parse Markdown, serialize as Djot). Returns
     /// [`Error::UnsupportedFormat`] when the requested direction has no
     /// serializer (today: converting into XML from another format).
-    pub fn serialize(&mut self, format: Format) -> Result<Vec<u8>, Error> {
+    ///
+    /// Prefer this over [`Document::serialize`]: serializing is a question about
+    /// where the bytes are going, so it takes a [`Target`]. The older spelling
+    /// takes a [`Format`] and still works — every `Format` is a `Target` — but
+    /// it cannot name an export-only target, and this one can.
+    pub fn serialize_to(&mut self, target: Target) -> Result<Vec<u8>, Error> {
         let raw = self.raw.as_ptr();
-        let ffi_format: ffi::TwigFormat = format.into();
+        let ffi_target: ffi::TwigFormat = target.into();
         collect_bytes(|ptr, len| unsafe {
-            ffi::twig_document_serialize(raw, ffi_format as i32, ptr, len)
+            ffi::twig_document_serialize(raw, ffi_target as i32, ptr, len)
         })
+    }
+
+    /// Serialize the document to `format`'s own source syntax.
+    ///
+    /// The original spelling of [`Document::serialize_to`], kept for
+    /// compatibility and defined in terms of it. It types the output axis as
+    /// [`Format`], which is the input vocabulary; reach for `serialize_to` in
+    /// new code.
+    pub fn serialize(&mut self, format: Format) -> Result<Vec<u8>, Error> {
+        self.serialize_to(format.into())
     }
 
     /// Encode the document's AST as pretty-printed JSON (the same encoding as
@@ -1923,13 +2003,26 @@ impl Builder {
         collect_bytes(|ptr, len| unsafe { ffi::twig_builder_render_html(raw, root.0, ptr, len) })
     }
 
-    /// Serialize the subtree rooted at `root` to `format`'s source syntax.
-    /// Returns [`Error::UnsupportedFormat`] when the target can't represent the
-    /// built tree (e.g. semantic kinds into XML).
-    pub fn serialize(&mut self, root: NodeId, format: Format) -> Result<Vec<u8>, Error> {
+    /// Serialize the subtree rooted at `root` to `target`'s syntax. Returns
+    /// [`Error::UnsupportedFormat`] when the target can't represent the built
+    /// tree (e.g. semantic kinds into XML).
+    ///
+    /// Prefer this over [`Builder::serialize`], for the reason
+    /// [`Document::serialize_to`] gives.
+    pub fn serialize_to(&mut self, root: NodeId, target: Target) -> Result<Vec<u8>, Error> {
         let raw = self.raw.as_ptr();
-        let ffi_format: ffi::TwigFormat = format.into();
-        collect_bytes(|ptr, len| unsafe { ffi::twig_builder_serialize(raw, root.0, ffi_format as i32, ptr, len) })
+        let ffi_target: ffi::TwigFormat = target.into();
+        collect_bytes(|ptr, len| unsafe {
+            ffi::twig_builder_serialize(raw, root.0, ffi_target as i32, ptr, len)
+        })
+    }
+
+    /// Serialize the subtree rooted at `root` to `format`'s source syntax.
+    ///
+    /// The original spelling of [`Builder::serialize_to`], kept for
+    /// compatibility and defined in terms of it.
+    pub fn serialize(&mut self, root: NodeId, format: Format) -> Result<Vec<u8>, Error> {
+        self.serialize_to(root, format.into())
     }
 
     /// Encode the subtree rooted at `root` as pretty-printed JSON.
@@ -2009,6 +2102,39 @@ mod tests {
             Document::parse_str("This is *markdown*.\n", Format::Markdown).expect("parse markdown");
         let djot = doc.serialize(Format::Djot).expect("serialize djot");
         assert!(String::from_utf8_lossy(&djot).contains("_markdown_"));
+    }
+
+    #[test]
+    fn serialize_to_takes_the_output_axis() {
+        let mut doc =
+            Document::parse_str("This is *markdown*.\n", Format::Markdown).expect("parse markdown");
+
+        let djot = doc.serialize_to(Target::Djot).expect("serialize djot");
+        assert!(String::from_utf8_lossy(&djot).contains("_markdown_"));
+
+        // The capability answer is the target's, not the input's: converting
+        // INTO XML has no serializer regardless of what parsed the document.
+        assert_eq!(doc.serialize_to(Target::Xml), Err(Error::UnsupportedFormat));
+    }
+
+    #[test]
+    fn serialize_and_serialize_to_agree() {
+        // `serialize` is defined in terms of `serialize_to`, so the older
+        // spelling stays exact rather than merely similar.
+        let mut a = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
+        let mut b = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
+        for format in [Format::Markdown, Format::Djot, Format::Html] {
+            assert_eq!(a.serialize(format), b.serialize_to(Target::from(format)));
+        }
+    }
+
+    #[test]
+    fn every_format_is_a_target_that_names_it_back() {
+        // The subset invariant the Zig `targets` table enforces, restated at
+        // this layer: `Target::from` is total, and `as_format` round-trips it.
+        for format in [Format::Djot, Format::Markdown, Format::Xml, Format::Html] {
+            assert_eq!(Target::from(format).as_format(), Some(format));
+        }
     }
 
     #[test]
