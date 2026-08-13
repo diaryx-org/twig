@@ -32,6 +32,16 @@ pub const TwigStatus = enum(c_int) {
     internal_error = 255,
 };
 
+/// The wire code space for BOTH format axes — what a document can be parsed as
+/// (`twig.Format`) and what it can be serialized to (`twig.format.Target`).
+///
+/// One integer space rather than two, deliberately. The two Zig enums are
+/// separate types because a target need not be parseable, but a C caller passes
+/// a bare `int` to both `twig_parse` and `twig_document_serialize`; two spaces
+/// sharing the low numbers would mean `4` denoting different things depending on
+/// which function received it, and no compiler anywhere to catch a swap. With
+/// one space, an export-only target simply appends a code that `intToFormat`
+/// rejects and `intToTarget` accepts — each decoder saying exactly what it takes.
 pub const TwigFormat = enum(c_int) {
     djot = 1,
     markdown = 2,
@@ -258,23 +268,47 @@ fn sliceOf(ptr: ?[*]const u8, len: usize) ?[]const u8 {
     return null;
 }
 
-/// Map a raw `int` format code to a `twig.Format`, or `null` if it names no
-/// known format (the caller turns that into `unsupported_format`).
-///
-/// `TwigFormat`'s integers are the WIRE CONTRACT and so are frozen here;
-/// `twig.Format` is Zig's own enum and carries no values at all. This function
-/// is the only place the two meet — which is the whole shape of this file's job.
-fn intToFormat(format: c_int) ?twig.Format {
-    const wire: TwigFormat = switch (format) {
+/// Decode a raw `int` to a `TwigFormat`, or `null` for a code this build does
+/// not know. The one place the frozen wire integers are read; both `intToFormat`
+/// and `intToTarget` go through it so a new code is added once.
+fn intToWire(format: c_int) ?TwigFormat {
+    return switch (format) {
         @intFromEnum(TwigFormat.djot) => .djot,
         @intFromEnum(TwigFormat.markdown) => .markdown,
         @intFromEnum(TwigFormat.xml) => .xml,
         @intFromEnum(TwigFormat.html) => .html,
         @intFromEnum(TwigFormat.asciidoc) => .asciidoc,
-        else => return null,
+        else => null,
     };
+}
+
+/// Map a raw `int` format code to a `twig.Format` — the INPUT axis, for
+/// `twig_parse` and `twig_editor_create`. `null` if the code names no format
+/// this library can parse, which every caller turns into `unsupported_format`.
+///
+/// `TwigFormat`'s integers are the WIRE CONTRACT and so are frozen in the enum
+/// above; `twig.Format` is Zig's own enum and carries no values at all. This
+/// function and `intToTarget` are the only places the two meet — which is the
+/// whole shape of this file's job.
+///
+/// An export-only wire code will land in the `else` here and be REJECTED: asking
+/// to parse PDF is not a thing this library will ever be able to do, and the
+/// exhaustive switch is what forces whoever appends that code to say so rather
+/// than inherit an accidental yes.
+fn intToFormat(format: c_int) ?twig.Format {
+    const wire = intToWire(format) orelse return null;
     return switch (wire) {
         inline else => |k| @field(twig.Format, @tagName(k)),
+    };
+}
+
+/// Map a raw `int` format code to a `twig.format.Target` — the OUTPUT axis, for
+/// `twig_document_serialize` and `twig_builder_serialize`. Accepts every code
+/// `intToFormat` does, plus (in future) the export-only ones it rejects.
+fn intToTarget(format: c_int) ?twig.format.Target {
+    const wire = intToWire(format) orelse return null;
+    return switch (wire) {
+        inline else => |k| @field(twig.format.Target, @tagName(k)),
     };
 }
 
@@ -489,9 +523,13 @@ pub export fn twig_document_render_html(
 fn serializeDocument(
     allocator: Allocator,
     parsed: *const twig.format.ParsedDoc,
-    target: twig.Format,
+    target: twig.format.Target,
 ) anyerror!?[]u8 {
-    const result = if (std.meta.activeTag(parsed.*) == target)
+    // "Same format" is asked through `Target.asFormat` rather than `==` now that
+    // the two axes are different types: an export-only target has no format to
+    // match and takes the cross-format path, which is the only one it has.
+    const same_format = if (target.asFormat()) |f| std.meta.activeTag(parsed.*) == f else false;
+    const result = if (same_format)
         twig.format.serializeCanonicalAlloc(allocator, parsed)
     else
         twig.format.serializeFromAstAlloc(allocator, parsed.ast(), target);
@@ -519,7 +557,7 @@ pub export fn twig_document_serialize(
     const raw = doc orelse return .invalid_argument;
     const ptr_out = out_ptr orelse return .invalid_argument;
     const len_out = out_len orelse return .invalid_argument;
-    const target = intToFormat(format) orelse return .unsupported_format;
+    const target = intToTarget(format) orelse return .unsupported_format;
 
     const allocator = activeAllocator();
     const handle = asHandle(raw);
@@ -2982,7 +3020,7 @@ pub export fn twig_builder_set_attrs(
 /// side tables.
 ///
 /// NOT routed through `twig.format.serializeFromAstAlloc`, and the reason is a
-/// live bug rather than a design choice. The registry says XML has NO
+/// live bug rather than a design choice. The `targets` table says XML has NO
 /// `serializeFromAst`, because `xml/serializer.zig` handles only the
 /// generic-markup kinds its own parser produces and `else => unreachable`s on
 /// everything else. This function calls `Xml.serializeAlloc` directly anyway, so
@@ -2997,7 +3035,7 @@ pub export fn twig_builder_set_attrs(
 /// a purely generic-markup built tree (`element`/`comment`/...) into XML, which
 /// works today and which nothing tests. That's a behaviour call, not a mechanical
 /// one, so it is left exactly as it was — see the note in the refactor summary.
-fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: twig.Format) anyerror![]u8 {
+fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: twig.format.Target) anyerror![]u8 {
     const ast = &doc.ast;
     return switch (target) {
         // The `Spelled` variants carry the builder's spelling table (a
@@ -3061,7 +3099,7 @@ pub export fn twig_builder_serialize(
     const handle = asBuilder(b orelse return .invalid_argument);
     const ptr_out = out_ptr orelse return .invalid_argument;
     const len_out = out_len orelse return .invalid_argument;
-    const target = intToFormat(format) orelse return .unsupported_format;
+    const target = intToTarget(format) orelse return .unsupported_format;
     if (root >= handle.builder.nodes.items.len) return .invalid_argument;
 
     const allocator = activeAllocator();

@@ -90,6 +90,51 @@ all anchored by the `markdown.zig` doc comment above.
 
 ---
 
+## The two format axes: `Format` and `Target`
+
+Twig has two format vocabularies, not one, and `src/format.zig` holds a table
+for each:
+
+| Axis | Type | Table | Question it answers |
+|------|------|-------|---------------------|
+| Input | `Format` | `registry` | What can Twig **parse**? |
+| Output | `Target` | `targets` | What can Twig **write**? |
+
+Every `Format` is also a `Target`, so today the two lists have the same five
+names. They are separate types because only one of them can grow freely. A
+`Format` variant is `ParsedDoc`'s tag: it must have a parser, a bare-AST reparse
+adapter for the `Splicer`, and a document type to hold. A `Target` needs none of
+that — it needs somewhere for bytes to go.
+
+That difference is what makes an **export-only target** expressible: a format
+Twig can write and no parser can read back. PDF is the motivating case. Such a
+target appends to `Target` and gets a `targets` row with `reads_back_as = null`;
+it gets no `Format` variant, no `registry` row, no `ParsedDoc` variant and no
+`Syntax`, none of which it could honestly fill in. Before the split there was
+nowhere to put one that did not also claim Twig could parse it.
+
+Two consequences worth knowing before adding a target:
+
+- **`serializeFromAst` belongs to the output row.** It is keyed by where the
+  bytes are going, not by what parsed them. `serializeCanonical` stayed on the
+  input row, because it takes a `ParsedDoc` variant and so can only serialize a
+  document that very entry parsed.
+- **`Fidelity` is defined by a round-trip**, so it cannot describe an
+  export-only target. `diagnostics.zig`'s probe derives the targets it measures
+  from the `targets` table (`serializeFromAst != null` and `reads_back_as !=
+  null`), so such a target drops out by construction rather than by a stale
+  hardcoded list — and `fidelity`'s exhaustive switch will still demand an
+  answer for it. The honest answer there is a second axis, not a guess on this
+  one: PDF loses no content and all structure, which is the inverse of what
+  every current entry measures.
+
+The split was latent before it was made. `diagnostics.fidelity(target, kind)`
+had always indexed its capability table on an output axis while spelling the
+parameter `Format`, and `cli/format.zig` had already named its `-i` re-export
+`InputFormat` to distinguish it from what `-o` accepts.
+
+---
+
 ## Editor surface: priority tiers (P0, P1, …)
 
 The C-ABI `twig_editor_*` functions expose an **embeddable rich-text editor**

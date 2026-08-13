@@ -143,15 +143,15 @@ pub fn runIdentify(stdout: *Writer, opts: args_mod.IdentifyOptions) !void {
 ///                    of the shared `AST`.
 ///   - `.canonical` — by default, the INPUT format's own round-trip
 ///                    serializer (`format.FormatEntry.serializeCanonical`);
-///                    when `opts.output_format` names a different format
+///                    when `opts.output_target` names a different target
 ///                    (`-o djot`/`-o markdown`/`-o xml` rather than the bare
 ///                    word `canonical`), cross-format conversion through
-///                    that format's `serializeFromAst` instead — either way,
-///                    a clear "not supported yet" error when the target
-///                    format has no serializer.
+///                    that TARGET row's `serializeFromAst` instead — either
+///                    way, a clear "not supported yet" error when the target
+///                    has no serializer.
 pub fn runConvert(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, opts: args_mod.ConvertOptions) ActionError!void {
     const source = try readSource(allocator, io, opts.file, stderr);
-    try convertSource(allocator, source, opts.file, opts.input, opts.parse_config, opts.output, opts.output_format, stdout, stderr);
+    try convertSource(allocator, source, opts.file, opts.input, opts.parse_config, opts.output, opts.output_target, stdout, stderr);
     stdout.flush() catch |err| {
         stderr.print("error: failed to write output: {t}\n", .{err}) catch {};
         stderr.flush() catch {};
@@ -171,7 +171,7 @@ fn convertSource(
     input: format.InputFormat,
     parse_config: format.ParseConfig,
     output: format.OutputMode,
-    output_format: ?format.InputFormat,
+    output_target: ?format.Target,
     stdout: *Writer,
     stderr: *Writer,
 ) ActionError!void {
@@ -201,11 +201,17 @@ fn convertSource(
         .canonical => {
             // Plain `-o canonical` (or `-o <input's own format>`): round-trip
             // through the INPUT format's own `Document`-aware serializer.
-            // `-o <a different format>`: cross-format conversion through
-            // that format's `serializeFromAst`, fed the bare shared `AST`
-            // (see `format.FormatEntry.serializeFromAst`'s doc comment).
-            const target = output_format orelse input;
-            const out = if (target == input) blk: {
+            // `-o <a different target>`: cross-format conversion through that
+            // TARGET row's `serializeFromAst`, fed the bare shared `AST` (see
+            // `format.TargetEntry.serializeFromAst`'s doc comment).
+            //
+            // `asFormat()` is the test rather than `==` because the two sides
+            // are now different types: an export-only target can never equal
+            // the input, and answers `null` here instead of comparing false by
+            // accident.
+            const target = output_target orelse format.targetFor(input);
+            const same_format = if (target.asFormat()) |f| f == input else false;
+            const out = if (same_format) blk: {
                 const serializeFn = entry.serializeCanonical orelse {
                     stderr.print(
                         "error: canonical output is not supported for {s} yet: no serializer\n",
@@ -220,7 +226,7 @@ fn convertSource(
                     return error.ActionFailed;
                 };
             } else blk: {
-                const target_entry = format.entryFor(target);
+                const target_entry = format.targetEntryFor(target);
                 const serializeFn = target_entry.serializeFromAst orelse {
                     stderr.print(
                         "error: conversion to {s} is not supported yet: no serializer\n",

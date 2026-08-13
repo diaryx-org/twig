@@ -18,10 +18,35 @@
 //!
 //! ── Optional fields are the raggedness ─────────────────────────────────────
 //! Twig's languages are not interchangeable. Every one parses and renders, but
-//! XML has no `serializeFromAst`, HTML has no serializer at all, and only djot
-//! and Markdown have a `syntax` — a `null` says so once, here, and every
-//! caller turns it into the same "unsupported" error instead of rediscovering
-//! the fact in an `else =>` arm. See `syntax.zig` for that argument in full.
+//! AsciiDoc has no serializer at all, nothing can be written INTO XML from
+//! another format, and only djot and Markdown have a `syntax` — a `null` says so
+//! once, in whichever of the two tables owns the question, and every caller
+//! turns it into the same "unsupported" error instead of rediscovering the fact
+//! in an `else =>` arm. See `syntax.zig` for that argument in full.
+//!
+//! ── Two axes: what Twig READS and what Twig WRITES ─────────────────────────
+//! There are two tables here, not one. `registry` is keyed by `Format` — the
+//! languages Twig can PARSE — and `targets` is keyed by `Target` — the formats
+//! Twig can WRITE. Every `Format` is also a `Target`, so the two lists coincide
+//! today, and they are still separate types.
+//!
+//! The reason is that the enums answer different questions and only one of them
+//! can grow freely. `Format` is `ParsedDoc`'s tag: a variant there must have a
+//! parser, a reparse adapter for the `Splicer`, and a document type to hold. A
+//! `Target` needs none of that — it needs somewhere for bytes to go. An
+//! EXPORT-ONLY target (one Twig can write and no parser can read back; PDF is
+//! the motivating case) is expressible as a `Target` and is NOT expressible as a
+//! `Format`, and before the split there was nowhere to put it that did not also
+//! claim Twig could parse it.
+//!
+//! The split was already latent rather than hypothetical: `diagnostics.zig`'s
+//! `fidelity(target, kind)` has always indexed its capability table on an output
+//! axis while spelling the parameter `Format`, and `cli/format.zig` had already
+//! named its `-i` re-export `InputFormat` to distinguish it from what `-o`
+//! accepts. `serializeFromAst` moved with it, from `Entry` to `TargetEntry`: it
+//! is keyed by where the bytes are going, not by what parsed them.
+//! `serializeCanonical` stayed on `Entry`, because it takes a `ParsedDoc`
+//! variant and so is inherently a fact about the input row.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -41,10 +66,14 @@ const Syntax = syntax_mod.Syntax;
 const djot_serializer = Djot.serializer;
 const markdown_serializer = Markdown.serializer;
 
-/// Every language Twig can parse — the `-i`/`--input` vocabulary, the enum
+/// Every language Twig can PARSE — the `-i`/`--input` vocabulary, the enum
 /// `ParsedDoc` is tagged by, and what the C ABI's `TwigFormat` wire codes decode
-/// to. Deliberately has NO explicit values: the integers are the C ABI's
-/// contract, so they live there (`c_abi.zig`'s `intToFormat`), not here.
+/// to on the parse path. Deliberately has NO explicit values: the integers are
+/// the C ABI's contract, so they live there (`c_abi.zig`'s `intToFormat`), not
+/// here.
+///
+/// This is the INPUT axis only. What Twig can write is `Target` — see the
+/// two-axes note at the top of this file.
 pub const Format = enum {
     djot,
     markdown,
@@ -52,6 +81,49 @@ pub const Format = enum {
     html,
     asciidoc,
 };
+
+/// Every format Twig can WRITE — what `-o`/`--output` names beyond its three
+/// `OutputMode` words, the axis `diagnostics.fidelity` is indexed by, and the
+/// key of the `targets` table.
+///
+/// Spelled out rather than derived from `Format`, even though the two lists
+/// coincide today. A generated enum would make the interesting case — a variant
+/// that is a target and NOT a format — invisible at the point a reader looks for
+/// it, and would put the subset relation in a comptime expression instead of in
+/// a test that says what it is checking. The relation is enforced by `test
+/// "every Format is also a Target"`: the same hand-maintained-table-plus-test
+/// trust boundary `registry` itself relies on.
+///
+/// An export-only target appends HERE and nowhere else. It gets a `targets` row
+/// with `reads_back_as = null` and no `Format` variant, no `registry` row, no
+/// `ParsedDoc` variant, and no `Syntax` — none of which it could honestly fill
+/// in. That is the whole reason this enum exists apart from `Format`.
+pub const Target = enum {
+    djot,
+    markdown,
+    xml,
+    html,
+    asciidoc,
+
+    /// The `Format` whose parser reads this target's own output back, or `null`
+    /// for an export-only target. `null` is what makes a round-trip
+    /// unstateable, which is why `diagnostics.zig`'s probe skips such a target
+    /// rather than guessing at an answer for it.
+    pub fn asFormat(self: Target) ?Format {
+        return targetEntryFor(self).reads_back_as;
+    }
+};
+
+/// The output target that writes `fmt`'s own syntax. TOTAL — every input format
+/// is also a target, including the ones with no serializer yet, because
+/// `-o asciidoc` has to reach "not supported yet" rather than "unknown target".
+/// Totality is a compile error rather than a test: `@field` fails to resolve if
+/// a `Format` name is missing from `Target`.
+pub fn targetFor(fmt: Format) Target {
+    return switch (fmt) {
+        inline else => |f| @field(Target, @tagName(f)),
+    };
+}
 
 /// Per-invocation parse configuration, threaded from a consumer's feature flags
 /// into the `parse`/`parseToAst` adapters. Passed as an opaque `*const anyopaque`
@@ -268,14 +340,12 @@ pub const Entry = struct {
     /// `convert -o canonical`'s implementation. `null` means the language has no
     /// serializer yet; callers turn that into a clear "not supported yet" error
     /// rather than a crash.
+    ///
+    /// The one serializer that stays on the INPUT row, because it takes a
+    /// `ParsedDoc` variant — it can only ever serialize a document this very
+    /// entry parsed, side tables and all. The bare-AST serializer that any
+    /// document can be fed to lives on `TargetEntry.serializeFromAst`.
     serializeCanonical: ?*const fn (Allocator, *const ParsedDoc) anyerror![]u8 = null,
-    /// Serialize a BARE shared `AST` (regardless of which format parsed it) as
-    /// this format's own source syntax — `convert -o <format>`'s cross-format
-    /// implementation (e.g. `-i markdown -o djot`), and the C ABI's builder
-    /// output path. Unlike `serializeCanonical`, this never needs a matching
-    /// `ParsedDoc` variant: it's handed whatever `ParsedDoc.ast()` returns and
-    /// builds any side tables it needs from that bare tree.
-    serializeFromAst: ?*const fn (Allocator, *const AST) anyerror![]u8 = null,
     /// This format's surface spelling — the table the authoring gestures in
     /// `ast/editor.zig` consult. Defaults to `Syntax.none`, the table that
     /// spells nothing: a language that can be parsed and rendered but not
@@ -294,7 +364,6 @@ pub const registry = [_]Entry{
         .parseToAst = parseToAstDjot,
         .renderHtml = renderHtmlDjot,
         .serializeCanonical = serializeCanonicalDjot,
-        .serializeFromAst = serializeFromAstDjot,
         .syntax = &@import("languages/djot/syntax.zig").table,
     },
     .{
@@ -305,7 +374,6 @@ pub const registry = [_]Entry{
         .parseToAst = parseToAstMarkdown,
         .renderHtml = renderHtmlMarkdown,
         .serializeCanonical = serializeCanonicalMarkdown,
-        .serializeFromAst = serializeFromAstMarkdown,
         .syntax = &@import("languages/markdown/syntax.zig").table,
     },
     .{
@@ -315,16 +383,11 @@ pub const registry = [_]Entry{
         .parseToAst = parseToAstXml,
         .renderHtml = renderHtmlGeneric,
         .serializeCanonical = serializeCanonicalXml,
-        // No `serializeFromAst`: XML's serializer only understands the
-        // generic-markup kinds (`element`/`comment`/`doctype`/...) its own
-        // parser produces (see `xml/serializer.zig`'s `else => unreachable`);
-        // it has no mapping for djot/Markdown's semantic kinds
-        // (`heading`/`emph`/`link`/...), so cross-format conversion INTO xml
-        // from another format isn't meaningful yet — same-format `-o
-        // canonical`/`-o xml` (via `serializeCanonical` above) still works.
+        // Why converting INTO xml from another format isn't meaningful yet is
+        // now a fact about the xml TARGET row (`targets`, below), not this one.
         //
-        // No `syntax` either: XML has no lightweight inline markup to toggle
-        // and no line-prefix containers, so it is parse-and-render only.
+        // No `syntax`: XML has no lightweight inline markup to toggle and no
+        // line-prefix containers, so it is parse-and-render only.
     },
     .{
         .id = .html,
@@ -333,7 +396,6 @@ pub const registry = [_]Entry{
         .parseToAst = parseToAstHtml,
         .renderHtml = renderHtmlGeneric,
         .serializeCanonical = serializeCanonicalHtml,
-        .serializeFromAst = serializeFromAstHtml,
         // No `syntax`: HTML is parse-and-render only. Authoring gestures spell
         // djot/Markdown's lightweight markup, which HTML doesn't have.
     },
@@ -360,11 +422,57 @@ pub const registry = [_]Entry{
         // the unconstrained spans (`**bold**`) used to corrupt instead, which is
         // why they were fixed before this entry was written rather than after.
         //
-        // No `serializeCanonical`/`serializeFromAst`: there is no AsciiDoc
-        // serializer at all yet, so `convert -o canonical` and `-o asciidoc`
-        // both report unsupported rather than inventing output. No `syntax`
-        // either — every authoring gesture over an AsciiDoc document is refused
-        // by the same `Syntax.none` XML and HTML carry.
+        // No `serializeCanonical`: there is no AsciiDoc serializer at all yet,
+        // so `convert -o canonical` reports unsupported rather than inventing
+        // output — and so does `-o asciidoc`, via the equally empty target row
+        // below. No `syntax` either: every authoring gesture over an AsciiDoc
+        // document is refused by the same `Syntax.none` XML and HTML carry.
+    },
+};
+
+/// One entry per `Target` — the WRITE half of the registry. Split from `Entry`
+/// (the READ half) for the reason the two-axes note at the top of this file
+/// gives: what a target needs is somewhere for bytes to go, which is strictly
+/// less than what a language needs to be parsed.
+pub const TargetEntry = struct {
+    id: Target,
+    /// The `Format` whose parser reads this target's own output back — set for
+    /// every target that is also an input language, `null` for an export-only
+    /// one. This single field is what distinguishes the two kinds of target, and
+    /// it is what `diagnostics.zig`'s round-trip probe reparses with.
+    reads_back_as: ?Format,
+    /// Serialize a BARE shared `AST` (regardless of which format parsed it) as
+    /// this target's own syntax — `convert -o <target>`'s cross-format
+    /// implementation (e.g. `-i markdown -o djot`), and the C ABI's builder
+    /// output path. Unlike `Entry.serializeCanonical` it never needs a matching
+    /// `ParsedDoc` variant: it is handed whatever `ParsedDoc.ast()` returns and
+    /// builds any side tables it needs from that bare tree.
+    ///
+    /// `null` means Twig cannot write this target yet, and every caller turns it
+    /// into the same `error.UnsupportedFormat`. For an export-only target this
+    /// is the ONLY function in either table that would be non-null.
+    serializeFromAst: ?*const fn (Allocator, *const AST) anyerror![]u8 = null,
+};
+
+pub const targets = [_]TargetEntry{
+    .{ .id = .djot, .reads_back_as = .djot, .serializeFromAst = serializeFromAstDjot },
+    .{ .id = .markdown, .reads_back_as = .markdown, .serializeFromAst = serializeFromAstMarkdown },
+    .{
+        .id = .xml,
+        .reads_back_as = .xml,
+        // No `serializeFromAst`: XML's serializer only understands the
+        // generic-markup kinds (`element`/`comment`/`doctype`/...) its own
+        // parser produces (see `xml/serializer.zig`'s `else => unreachable`); it
+        // has no mapping for djot/Markdown's semantic kinds
+        // (`heading`/`emph`/`link`/...), so cross-format conversion INTO xml
+        // from another format isn't meaningful yet. Same-format `-o canonical` /
+        // `-o xml` still works, through the input row's `serializeCanonical`.
+    },
+    .{ .id = .html, .reads_back_as = .html, .serializeFromAst = serializeFromAstHtml },
+    .{
+        .id = .asciidoc,
+        .reads_back_as = .asciidoc,
+        // No serializer of any kind yet — see the `.asciidoc` input row.
     },
 };
 
@@ -375,6 +483,16 @@ pub const registry = [_]Entry{
 pub fn entryFor(fmt: Format) *const Entry {
     for (&registry) |*e| {
         if (e.id == fmt) return e;
+    }
+    unreachable;
+}
+
+/// Look up `t`'s write-half entry. Every `Target` variant has exactly one
+/// `targets` entry (enforced by the test below, same as `entryFor`), so this
+/// never legitimately misses.
+pub fn targetEntryFor(t: Target) *const TargetEntry {
+    for (&targets) |*e| {
+        if (e.id == t) return e;
     }
     unreachable;
 }
@@ -426,11 +544,11 @@ pub fn serializeCanonicalAlloc(allocator: Allocator, doc: *const ParsedDoc) anye
     return f(allocator, doc);
 }
 
-/// Serialize a bare `AST` as `target`'s source syntax, regardless of which
-/// language parsed it (`convert -o <format>`, and the C ABI's builder output).
+/// Serialize a bare `AST` as `target`'s syntax, regardless of which language
+/// parsed it (`convert -o <target>`, and the C ABI's builder output).
 /// `error.UnsupportedFormat` when `target` has no AST serializer.
-pub fn serializeFromAstAlloc(allocator: Allocator, ast: *const AST, target: Format) anyerror![]u8 {
-    const f = entryFor(target).serializeFromAst orelse return error.UnsupportedFormat;
+pub fn serializeFromAstAlloc(allocator: Allocator, ast: *const AST, target: Target) anyerror![]u8 {
+    const f = targetEntryFor(target).serializeFromAst orelse return error.UnsupportedFormat;
     return f(allocator, ast);
 }
 
@@ -445,6 +563,17 @@ pub fn parseFormatName(name: []const u8) ?Format {
             if (std.mem.eql(u8, alias, name)) return e.id;
         }
     }
+    return null;
+}
+
+/// Map an output name to a `Target`: the enum's own tag names first, then every
+/// input format's aliases via `parseFormatName`, so `-o dj` / `-o md` keep
+/// meaning what they always did. An export-only target has no input row to
+/// inherit aliases from and so is spelled by its full name only — which is why
+/// the aliases are not duplicated into a second list here.
+pub fn parseTargetName(name: []const u8) ?Target {
+    if (std.meta.stringToEnum(Target, name)) |t| return t;
+    if (parseFormatName(name)) |f| return targetFor(f);
     return null;
 }
 
@@ -474,6 +603,43 @@ test "every Format has exactly one registry entry" {
     }
 }
 
+test "every Target has exactly one targets entry" {
+    inline for (std.meta.fields(Target)) |f| {
+        const t: Target = @enumFromInt(f.value);
+        var seen: usize = 0;
+        for (&targets) |*e| {
+            if (e.id == t) seen += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), seen);
+    }
+}
+
+test "every Format is also a Target, and the two agree in both directions" {
+    // The subset invariant the `Target` doc comment promises, checked rather
+    // than generated. `targetFor` is total by construction (a missing name is a
+    // compile error); what needs asserting is that the target it lands on says
+    // the SAME format reads it back, so nothing can be wired to a row that
+    // spells a different language.
+    inline for (std.meta.fields(Format)) |f| {
+        const fmt: Format = @enumFromInt(f.value);
+        const t = targetFor(fmt);
+        try std.testing.expectEqualStrings(@tagName(fmt), @tagName(t));
+        try std.testing.expectEqual(fmt, t.asFormat().?);
+    }
+}
+
+test "the write half is keyed on the target, not on what parsed it" {
+    // `-i markdown -o djot` reaches djot's serializer without markdown's row
+    // being consulted for it at all — the property that lets an export-only
+    // target exist with no input row of its own. The `null` here is the same
+    // "not supported yet" every caller reports, sourced from the TARGET table.
+    try std.testing.expect(targetEntryFor(.djot).serializeFromAst != null);
+    try std.testing.expect(targetEntryFor(.xml).serializeFromAst == null);
+    try std.testing.expectEqual(Target.djot, parseTargetName("dj").?);
+    try std.testing.expectEqual(Target.markdown, parseTargetName("markdown").?);
+    try std.testing.expect(parseTargetName("nope") == null);
+}
+
 test "every syntax table in the registry is coherent" {
     for (&registry) |*e| e.syntax.assertCoherent();
 }
@@ -492,7 +658,7 @@ test "exactly djot and markdown are authorable" {
 test "AsciiDoc parses and renders but does not serialize" {
     const entry = entryFor(.asciidoc);
     try std.testing.expect(entry.serializeCanonical == null);
-    try std.testing.expect(entry.serializeFromAst == null);
+    try std.testing.expect(targetEntryFor(.asciidoc).serializeFromAst == null);
     try std.testing.expectEqual(Format.asciidoc, parseFormatName("adoc").?);
     try std.testing.expectEqual(Format.asciidoc, detectFromExtension("guide.ADOC").?);
 }

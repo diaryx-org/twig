@@ -108,6 +108,12 @@ pub const format = @import("format.zig");
 /// Every language Twig can parse — re-exported from `format.zig` for reach.
 pub const Format = format.Format;
 
+/// Every format Twig can write — the output axis, re-exported alongside
+/// `Format` for the same reason. A superset of `Format`: an export-only target
+/// (one Twig can write and no parser reads back) is a `Target` and not a
+/// `Format`. See `format.zig`'s two-axes note.
+pub const Target = format.Target;
+
 /// Hit-testing: byte offset -> node (`deepestContaining`, `ancestorChain`), plus
 /// the line scanning the block gestures are built on. The addressing scheme a
 /// caret speaks. See `ast/locate.zig`.

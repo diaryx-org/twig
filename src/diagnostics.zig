@@ -67,10 +67,18 @@ const Writer = std.Io.Writer;
 const AST = @import("ast/ast.zig");
 const Node = AST.Node;
 const format = @import("format.zig");
-const Format = format.Format;
+const Target = format.Target;
 
 /// How much of a node survives a round-trip through a target format: serialize
 /// it, hand the result back to that format's own parser, and see what returns.
+///
+/// The definition is a ROUND-TRIP, which is why this module is indexed by
+/// `format.Target` and still needs each target to be readable back. An
+/// export-only target (`Target.asFormat() == null`) has no parser to hand the
+/// output to, so its fidelity is not measurable this way and the probe below
+/// skips it by construction rather than by a hardcoded list. Whoever adds the
+/// first such target will find an exhaustive switch in `fidelity` demanding an
+/// answer: the honest one is a second axis, not a guess on this one.
 pub const Fidelity = enum {
     /// The target spells the kind, and reparses that spelling back to it.
     faithful,
@@ -98,7 +106,7 @@ pub const Warning = struct {
 
     /// The default human-readable message, no trailing newline. Bindings may
     /// render their own from the structured fields instead.
-    pub fn render(self: Warning, writer: *Writer, target: Format) Writer.Error!void {
+    pub fn render(self: Warning, writer: *Writer, target: Target) Writer.Error!void {
         switch (self.fidelity) {
             .faithful => unreachable, // never recorded
             .degraded => {
@@ -138,8 +146,8 @@ pub const AnalyzeError = error{
 /// A lossy node still has its children walked: a `dropped` container takes its
 /// subtree with it, but reporting only the outermost loss would hide that six
 /// distinct constructs went missing rather than one.
-pub fn analyze(arena: Allocator, ast: *const AST, root_id: Node.Id, target: Format) AnalyzeError![]Warning {
-    if (format.entryFor(target).serializeFromAst == null) return error.UnsupportedFormat;
+pub fn analyze(arena: Allocator, ast: *const AST, root_id: Node.Id, target: Target) AnalyzeError![]Warning {
+    if (format.targetEntryFor(target).serializeFromAst == null) return error.UnsupportedFormat;
     var c: Collector = .{ .ast = ast, .arena = arena, .target = target };
     try c.walk(root_id, "");
     return c.warnings.toOwnedSlice(arena);
@@ -148,7 +156,7 @@ pub fn analyze(arena: Allocator, ast: *const AST, root_id: Node.Id, target: Form
 const Collector = struct {
     ast: *const AST,
     arena: Allocator,
-    target: Format,
+    target: Target,
     warnings: std.ArrayList(Warning) = .empty,
 
     fn walk(self: *Collector, id: Node.Id, path: []const u8) AnalyzeError!void {
@@ -188,7 +196,7 @@ fn childPath(arena: Allocator, parent: []const u8, i: usize) Allocator.Error![]c
 // parent that does. A lossy parent is reported once, at the parent.
 
 /// How `kind` survives a conversion to `target`. See the note above the table.
-pub fn fidelity(target: Format, kind: Node.Kind) Fidelity {
+pub fn fidelity(target: Target, kind: Node.Kind) Fidelity {
     return switch (target) {
         // No `serializeFromAst`; `analyze` refuses before reaching the table.
         .xml, .asciidoc => .dropped,
@@ -466,6 +474,25 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
 const testing = std.testing;
 const select = @import("ast/select.zig");
 
+/// The targets a round-trip claim can be made about at all: those Twig can
+/// WRITE (`serializeFromAst`) and can also READ BACK (`reads_back_as`). Derived
+/// from the `targets` table rather than listed, so a new row is either measured
+/// automatically or excluded for a reason the table itself states — an
+/// export-only target drops out here by construction, and no probe is ever
+/// silently skipped by a hardcoded list going stale.
+const round_trippable: []const Target = blk: {
+    var out: []const Target = &.{};
+    for (format.targets) |e| {
+        if (e.serializeFromAst != null and e.reads_back_as != null) out = out ++ [_]Target{e.id};
+    }
+    break :blk out;
+};
+
+test "the probe covers every target that can be measured, and today that is three" {
+    try testing.expectEqual(@as(usize, 3), round_trippable.len);
+    try testing.expectEqualSlices(Target, &.{ .djot, .markdown, .html }, round_trippable);
+}
+
 test "analyze refuses a target with no serializer rather than reporting every node" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
@@ -497,7 +524,7 @@ test "an HTML comment converted to djot is reported as dropped, and really is" {
     try testing.expectEqualStrings("1", warnings[0].path);
 
     // And the warning is true: the comment leaves no trace in the djot output.
-    const src = try format.entryFor(.djot).serializeFromAst.?(allocator, &ast);
+    const src = try format.targetEntryFor(.djot).serializeFromAst.?(allocator, &ast);
     defer allocator.free(src);
     try testing.expect(std.mem.indexOf(u8, src, "secret") == null);
 }
@@ -513,7 +540,7 @@ test "a substitution's body is dropped by every target, and is reported as such"
     var ast = try b.finish(root);
     defer ast.deinit();
 
-    for ([_]Format{ .djot, .markdown, .html }) |target| {
+    for (round_trippable) |target| {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const warnings = try analyze(arena.allocator(), &ast, ast.root, target);
@@ -526,7 +553,7 @@ test "a substitution's body is dropped by every target, and is reported as such"
         try testing.expectEqualStrings("substitution", warnings[1].kind);
 
         // And `dropped` is the literal truth: the body reaches no output.
-        const src = try format.entryFor(target).serializeFromAst.?(allocator, &ast);
+        const src = try format.targetEntryFor(target).serializeFromAst.?(allocator, &ast);
         defer allocator.free(src);
         try testing.expect(std.mem.indexOf(u8, src, "reStructuredText") == null);
     }
@@ -547,7 +574,7 @@ test "a citation survives a conversion as a footnote, definition and use togethe
     // Flattened into djot's one footnote registry: `degraded`, not `dropped` —
     // both halves reach the output and still name each other, which is what
     // separates this from the substitution case above.
-    const src = try format.entryFor(.djot).serializeFromAst.?(allocator, &ast);
+    const src = try format.targetEntryFor(.djot).serializeFromAst.?(allocator, &ast);
     defer allocator.free(src);
     try testing.expect(std.mem.indexOf(u8, src, "[^CIT2002]") != null);
     try testing.expect(std.mem.indexOf(u8, src, "[^CIT2002]: Deep Thought.") != null);
@@ -605,12 +632,14 @@ const Probe = struct {
     build: *const fn (*AST.Builder) anyerror!Node.Id,
 };
 
-fn survives(allocator: Allocator, ast: *const AST, target: Format, want: AST.KindRef) !bool {
-    const entry = format.entryFor(target);
-    const src = try entry.serializeFromAst.?(allocator, ast);
+/// Only ever called with a `round_trippable` target, so both unwraps below hold:
+/// the write half comes from the TARGET row and the read half from the INPUT row
+/// the target names, which is the whole shape of the two-table split.
+fn survives(allocator: Allocator, ast: *const AST, target: Target, want: AST.KindRef) !bool {
+    const src = try format.targetEntryFor(target).serializeFromAst.?(allocator, ast);
     defer allocator.free(src);
     const cfg = format.ParseConfig{};
-    var back = try entry.parseToAst(&cfg, allocator, src);
+    var back = try format.entryFor(target.asFormat().?).parseToAst(&cfg, allocator, src);
     defer back.deinit();
     for (back.ast.nodes) |n| {
         if (want.matches(n.kind)) return true;
@@ -627,7 +656,7 @@ test "the fidelity table matches what the serializers actually do" {
         var ast = try b.finish(root);
         defer ast.deinit();
 
-        for ([_]Format{ .djot, .markdown, .html }) |target| {
+        for (round_trippable) |target| {
             const claimed = fidelity(target, p.kind);
             const observed = try survives(allocator, &ast, target, p.want);
             if ((claimed == .faithful) != observed) {
@@ -850,7 +879,7 @@ test "every inline mark and text leaf is probed against the table" {
         const root = try inlineDoc(&b, .{ .inline_mark = m }, &.{try str(&b, "x")});
         var ast = try b.finish(root);
         defer ast.deinit();
-        for ([_]Format{ .djot, .markdown, .html }) |target| {
+        for (round_trippable) |target| {
             const claimed = fidelity(target, .{ .inline_mark = m });
             const observed = try survives(allocator, &ast, target, .{ .mark = m });
             if ((claimed == .faithful) != observed) {
@@ -878,7 +907,7 @@ test "every inline mark and text leaf is probed against the table" {
         const root = try b.addContainer(.doc, &.{try b.addContainer(.para, &.{n})});
         var ast = try b.finish(root);
         defer ast.deinit();
-        for ([_]Format{ .djot, .markdown, .html }) |target| {
+        for (round_trippable) |target| {
             const claimed = fidelity(target, .{ .text_leaf = .{ .kind = k, .text = "" } });
             const observed = try survives(allocator, &ast, target, .{ .text_leaf = k });
             if ((claimed == .faithful) != observed) {

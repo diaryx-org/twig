@@ -14,8 +14,8 @@
 //!
 //! So: a `null` field means "this format has no spelling for that", and every
 //! caller turns that into one uniform "unsupported" error. Exactly how
-//! `format.zig`'s `serializeFromAst: ?*const fn(...)` already says "this
-//! language has no serializer yet".
+//! `format.zig`'s `TargetEntry.serializeFromAst: ?*const fn(...)` already says
+//! "Twig cannot write that target yet".
 //!
 //! ── Why data, not behaviour ────────────────────────────────────────────────
 //! Everything here is a byte string or a flag except `spellsAutolink`, which

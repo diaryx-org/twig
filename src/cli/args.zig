@@ -55,11 +55,11 @@ pub const ConvertOptions = struct {
     /// Defaults to `.html` — `convert file.dj` alone renders HTML; `convert`
     /// is Twig's workhorse verb (see DESIGN.md's design principles).
     output: OutputMode = .html,
-    /// Set only when `-o` named a specific TARGET format directly (e.g.
-    /// `-o djot`) rather than the literal `canonical`/`html`/`ast` mode
-    /// names — see `format.OutputTarget`'s doc comment. `null` for the
-    /// ordinary `-o canonical` ("round-trip back to `input`") case.
-    output_format: ?InputFormat = null,
+    /// Set only when `-o` named a specific `Target` directly (e.g. `-o djot`)
+    /// rather than the literal `canonical`/`html`/`ast` mode names — see
+    /// `format.OutputSelection`'s doc comment. `null` for the ordinary
+    /// `-o canonical` ("round-trip back to `input`") case.
+    output_target: ?format.Target = null,
     /// Markdown extension flags (`--directives`, `--math`, `--commonmark`,
     /// `--gfm`); ignored for non-Markdown inputs. See `applyExtFlag`.
     parse_config: format.ParseConfig = .{},
@@ -285,7 +285,7 @@ pub fn parseConfig(args: anytype, stderr: *Writer) ArgError!CliConfig {
 fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!CliConfig {
     var input_override: ?InputFormat = null;
     var output: OutputMode = .html;
-    var output_format: ?InputFormat = null;
+    var output_target: ?format.Target = null;
     var file: ?[]const u8 = null;
     var parse_config = format.ParseConfig{};
 
@@ -302,13 +302,14 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
             };
         } else if (std.mem.eql(u8, arg, "--output") or std.mem.eql(u8, arg, "-o")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .convert, "convert: -o/--output needs a format value", ArgError.MissingFormatValue);
-            const target = format.parseOutputTarget(name) orelse {
-                try stderr.print("error: unsupported output format '{s}' (expected html, ast, canonical, or a target language like djot/markdown/xml)\n", .{name});
+            const selection = format.parseOutputSelection(name) orelse {
+                try stderr.print("error: unsupported output value '{s}'\n", .{name});
+                try format.printSupportedOutputTargets(stderr);
                 try stderr.flush();
                 return ArgError.UnsupportedFormat;
             };
-            output = target.mode;
-            output_format = target.format;
+            output = selection.mode;
+            output_target = selection.target;
         } else if (file == null) {
             file = arg;
         } else {
@@ -322,7 +323,7 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
     return .{
         .action = .convert,
         .binary_name = binary_name,
-        .options = .{ .convert = .{ .file = path, .input = resolved, .output = output, .output_format = output_format, .parse_config = parse_config } },
+        .options = .{ .convert = .{ .file = path, .input = resolved, .output = output, .output_target = output_target, .parse_config = parse_config } },
     };
 }
 

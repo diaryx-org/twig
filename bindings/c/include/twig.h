@@ -15,8 +15,8 @@ extern "C" {
 //     TwigInlineKind, TwigBlockKind, TwigBlockContainerKind, and the builder
 //     enums) only ever gain new
 //     values appended at the end. An existing value is NEVER renumbered or
-//     reused — so a new document format is TWIG_FORMAT_* = <next int>, leaving
-//     every prior code untouched.
+//     reused — so a new document format, or a new export-only output target, is
+//     TWIG_FORMAT_* = <next int>, leaving every prior code untouched.
 //   - New functions (e.g. a future twig_editor_undo) are added; existing
 //     signatures never change in place.
 //   - The struct layouts below are frozen. Any change to a struct's fields —
@@ -35,6 +35,15 @@ extern "C" {
 //    neither of which `kind` ("directive") carries. Appended, same as 2.
 #define TWIG_ABI_VERSION 4
 
+// The TWIG_FORMAT_* codes span BOTH format axes, in one integer space:
+//   - what a document can be PARSED as   (twig_parse, twig_editor_create)
+//   - what a document can be WRITTEN as  (twig_document_serialize,
+//                                         twig_builder_serialize)
+// Every code below is valid for both. A future EXPORT-ONLY target — one twig
+// can write and no parser can read back — appends a code that the write
+// functions accept and the parse functions reject with
+// TWIG_STATUS_UNSUPPORTED_FORMAT. Check the per-code notes; do not assume a code
+// accepted by twig_document_serialize is also accepted by twig_parse.
 #define TWIG_FORMAT_DJOT 1
 #define TWIG_FORMAT_MARKDOWN 2
 #define TWIG_FORMAT_XML 3

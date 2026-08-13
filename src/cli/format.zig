@@ -21,13 +21,26 @@ const twig = @import("twig");
 /// Every language Twig can PARSE — the `-i`/`--input` vocabulary. Named
 /// `InputFormat` here (against `twig.Format`) because in CLI terms it is
 /// specifically what `-i` accepts, as opposed to `-o`'s `OutputMode`.
+///
+/// That naming turned out to be the first half of a distinction the library
+/// itself now draws: `twig.format.Target` is the OUTPUT axis, re-exported below,
+/// and `-o` accepts one of those rather than an `InputFormat`.
 pub const InputFormat = twig.format.Format;
+/// Every format Twig can WRITE — the other half of what `-o`/`--output` accepts,
+/// alongside the three `OutputMode` words. A superset of `InputFormat` in
+/// principle; the same list in practice, until the first export-only target.
+pub const Target = twig.format.Target;
 pub const FormatEntry = twig.format.Entry;
+pub const TargetEntry = twig.format.TargetEntry;
 pub const ParsedDoc = twig.format.ParsedDoc;
 pub const ParseConfig = twig.format.ParseConfig;
 pub const registry = twig.format.registry;
+pub const targets = twig.format.targets;
 pub const entryFor = twig.format.entryFor;
+pub const targetEntryFor = twig.format.targetEntryFor;
+pub const targetFor = twig.format.targetFor;
 pub const parseFormatName = twig.format.parseFormatName;
+pub const parseTargetName = twig.format.parseTargetName;
 pub const detectFromExtension = twig.format.detectFromExtension;
 
 // ── the CLI's own vocabulary ───────────────────────────────────────────────
@@ -42,25 +55,29 @@ pub fn parseOutputMode(name: []const u8) ?OutputMode {
 }
 
 /// What `-o`/`--output` resolved to: `mode` is always one of the three
-/// `OutputMode`s, plus (only ever set alongside `.canonical`) an explicit TARGET
-/// language when `-o` named one directly (e.g. `-o djot`) rather than the
+/// `OutputMode`s, plus (only ever set alongside `.canonical`) an explicit
+/// `Target` when `-o` named one directly (e.g. `-o djot`) rather than the
 /// literal word `canonical` — which means "serialize back to whatever `-i` was",
-/// same format in, same format out. `-o <format-name>` is `.canonical` plus "but
-/// serialize as `<format-name>` even if that's not the input format", the
+/// same format in, same format out. `-o <target-name>` is `.canonical` plus "but
+/// serialize as `<target-name>` even if that's not the input format", the
 /// cross-format `convert` path (`actions.zig`'s `convertSource`).
-pub const OutputTarget = struct {
+///
+/// Named for the SELECTION rather than for the target because `target` is now a
+/// library type of its own (`twig.format.Target`) and this struct is the pair of
+/// answers `-o` produces, only one of which is a target.
+pub const OutputSelection = struct {
     mode: OutputMode,
-    format: ?InputFormat = null,
+    target: ?Target = null,
 };
 
 /// Parse an `-o`/`--output` value against both vocabularies it accepts:
 /// `OutputMode`'s own names (`html`, `ast`, `canonical`) first, then every
-/// registry entry's format name/aliases (`djot`/`dj`, `markdown`/`md`, `xml`) as
-/// a request to convert TO that format. Returns `null` when `name` matches
+/// target's name/inherited aliases (`djot`/`dj`, `markdown`/`md`, `xml`) as a
+/// request to convert TO that target. Returns `null` when `name` matches
 /// neither, so the caller can print a diagnostic listing both.
-pub fn parseOutputTarget(name: []const u8) ?OutputTarget {
+pub fn parseOutputSelection(name: []const u8) ?OutputSelection {
     if (parseOutputMode(name)) |mode| return .{ .mode = mode };
-    if (parseFormatName(name)) |fmt| return .{ .mode = .canonical, .format = fmt };
+    if (parseTargetName(name)) |t| return .{ .mode = .canonical, .target = t };
     return null;
 }
 
@@ -72,6 +89,30 @@ pub fn printSupportedInputFormats(w: *Writer) Writer.Error!void {
     for (&registry) |*e| {
         try w.print("  - {s}", .{@tagName(e.id)});
         for (e.aliases) |alias| try w.print(" ({s})", .{alias});
+        try w.writeByte('\n');
+    }
+}
+
+/// Write the `-o`/`--output` vocabulary to `w`: the three modes, then every
+/// target. A target that is also an input format shows the aliases it inherits;
+/// an export-only one has none to show, which is exactly the shape
+/// `parseTargetName` documents.
+///
+/// A target whose name is already an `OutputMode` word is skipped rather than
+/// listed twice. `html` is the case: `parseOutputSelection` tries the modes
+/// first, so `-o html` always means the RENDER mode (which resolves djot's and
+/// Markdown's side tables) and can never reach the html target's bare-AST
+/// serializer. Listing it under both would advertise a spelling that does not
+/// exist.
+pub fn printSupportedOutputTargets(w: *Writer) Writer.Error!void {
+    try w.writeAll("supported output values:\n");
+    for (std.meta.fieldNames(OutputMode)) |mode| try w.print("  - {s}\n", .{mode});
+    for (&targets) |*t| {
+        if (parseOutputMode(@tagName(t.id)) != null) continue;
+        try w.print("  - {s}", .{@tagName(t.id)});
+        if (t.reads_back_as) |f| {
+            for (entryFor(f).aliases) |alias| try w.print(" ({s})", .{alias});
+        }
         try w.writeByte('\n');
     }
 }
