@@ -193,7 +193,7 @@ fn convertSource(
         .ast => blk: {
             const d = doc.document();
             break :blk ast_json.encode(&d, stdout);
-        }  catch |err| {
+        } catch |err| {
             stderr.print("error: failed to write the AST dump for '{s}': {t}\n", .{ display_name, err }) catch {};
             stderr.flush() catch {};
             return error.ActionFailed;

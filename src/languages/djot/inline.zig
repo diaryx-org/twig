@@ -967,4 +967,3 @@ test "explicit link" {
     try testing.expect(saw_linktext);
     try testing.expect(saw_dest);
 }
-

@@ -859,15 +859,15 @@ test "insert_link: an empty range round-trips any destination, both formats" {
     // picks, the destination the parser reads back is the one handed in. Every
     // ASCII metacharacter either format has an opinion about is in here.
     const dests = [_][]const u8{
-        "https://x.dev",  "mailto:a@b.dev",   "a@b.dev", "foo",
-        "./rel/path.md",  "x dev",            "a)b(c",   "a[b",
-        "a`b",            "a<b",              "a>b",     "#anchor",
-        "../up.md",       "path/to/f (1).md", "a\\b",    "a{b}c",
-        "a*b*c",          "a_b_c",            "a]b",     "a&amp;b",
-        "a b)c",          "a~b",              "a^b",     "a\"b",
-        "a'b",            "a--b",             "a...b",   "a:b",
-        "a$b",            "a!b",              "a|b",     "a%20b",
-        "a b<c>d",        "a=b+c",            "https://x.dev?a=1&b=2#f",
+        "https://x.dev", "mailto:a@b.dev",   "a@b.dev",                 "foo",
+        "./rel/path.md", "x dev",            "a)b(c",                   "a[b",
+        "a`b",           "a<b",              "a>b",                     "#anchor",
+        "../up.md",      "path/to/f (1).md", "a\\b",                    "a{b}c",
+        "a*b*c",         "a_b_c",            "a]b",                     "a&amp;b",
+        "a b)c",         "a~b",              "a^b",                     "a\"b",
+        "a'b",           "a--b",             "a...b",                   "a:b",
+        "a$b",           "a!b",              "a|b",                     "a%20b",
+        "a b<c>d",       "a=b+c",            "https://x.dev?a=1&b=2#f",
     };
     for ([_]format.Format{ .djot, .markdown }) |fmt| {
         for (dests) |d| {
@@ -1048,4 +1048,3 @@ test "insert_literal: an offset past the source is InvalidRange" {
     try testing.expectError(error.InvalidRange, insertLiteral(&fx, 99, "x"));
     try fx.expectSource("ab\n");
 }
-

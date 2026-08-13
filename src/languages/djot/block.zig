@@ -386,9 +386,9 @@ pub const Parser = struct {
     // ── spec dispatch ────────────────────────────────────────────────────
 
     const spec_order = [_]BlockKind{
-        .block_quote,       .heading, .caption, .footnote, .reference_definition,
-        .thematic_break,    .list,    .list_item, .table,  .attributes,
-        .fenced_div,        .code_block,
+        .block_quote,    .heading,    .caption,   .footnote, .reference_definition,
+        .thematic_break, .list,       .list_item, .table,    .attributes,
+        .fenced_div,     .code_block,
     };
 
     fn specCtype(kind: BlockKind) ContentType {
@@ -1455,4 +1455,3 @@ test "getListStyles classifies markers" {
     const none = Parser.getListStyles("::");
     try testing.expectEqual(@as(u8, 0), none.len);
 }
-

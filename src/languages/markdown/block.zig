@@ -4185,4 +4185,3 @@ test "span: a block quote's span covers all its lines" {
     const sp = r.span(bq);
     try testing.expectEqualStrings("> line one\n> line two", src[sp.start..sp.end]);
 }
-

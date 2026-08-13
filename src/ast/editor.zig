@@ -546,8 +546,7 @@ pub const Editor = struct {
             text = switch (node.kind) {
                 // An autolink's visible text IS its destination; the caller
                 // supplies that, so the node contributes nothing.
-                .text_leaf => |l| if (l.kind == .url or l.kind == .email) "" else
-                    if (self.splicer.doc.contentSpan(id)) |cs| src[cs.start..cs.end] else "",
+                .text_leaf => |l| if (l.kind == .url or l.kind == .email) "" else if (self.splicer.doc.contentSpan(id)) |cs| src[cs.start..cs.end] else "",
                 else => if (self.splicer.doc.contentSpan(id)) |cs| src[cs.start..cs.end] else "",
             };
             target = rp;

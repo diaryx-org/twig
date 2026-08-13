@@ -457,10 +457,12 @@ test "a diagnostic's excerpt is the offending source, which is what docutils quo
 }
 
 test "Report filters by severity" {
-    const r: Report = .{ .diagnostics = &.{
-        Diagnostic.init(.unexpected_indentation, Span.init(0, 1), .none), // err
-        Diagnostic.init(.duplicate_implicit_target_name, Span.init(2, 3), .{ .name = "x" }), // info
-    } };
+    const r: Report = .{
+        .diagnostics = &.{
+            Diagnostic.init(.unexpected_indentation, Span.init(0, 1), .none), // err
+            Diagnostic.init(.duplicate_implicit_target_name, Span.init(2, 3), .{ .name = "x" }), // info
+        },
+    };
     try testing.expectEqual(@as(usize, 1), r.count(.err));
     try testing.expectEqual(@as(usize, 1), r.count(.info));
     try testing.expect(r.hasAtLeast(.err));
