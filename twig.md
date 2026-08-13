@@ -2,7 +2,7 @@
 title: Twig
 author: adammharris
 created: 2026-07-08T22:39:41-07:00
-updated: 2026-07-08T22:40:04-07:00
+updated: 2026-08-13T15:50:04-07:00
 contents: ['[DESIGN](/DESIGN.md)', '[AST-KINDS](/AST-KINDS.md)', '[COOKBOOK](/COOKBOOK.md)']
 ---
 
@@ -25,11 +25,9 @@ but Twig has different design goals:
   so that precise operations can be performed on it,
   similarly to how `fig` allows editing of config files.
 
-- Twig doesn't plan to support citations or bibliographies,
-  at least not directly.
-
-- Twig intends to primarily support "round-trippable" formats,
-  which excludes not-editable documents such as PDF.
+- Twig intends to primarily support "round-trippable" formats.
+  This means no first-class support for for "presentation" formats,
+  such as PDF. And no special handling for bibliographies/citations.
 
 # Status
 
