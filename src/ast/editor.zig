@@ -398,6 +398,17 @@ pub const Editor = struct {
     ///     of a rule at column zero, so unlike `toggleCodeBlock` — where the same
     ///     prefix gap would eat the item's marker — it is allowed rather than
     ///     refused.
+    ///   * "The caret's block" is `locate.lineOwningBlock`, NOT
+    ///     `locate.innermostBlock`. The latter only knows `para`/`heading`, so a
+    ///     caret in a CODE BLOCK or a TABLE looked to it like no block at all,
+    ///     and the fallback below put the rule at the caret's own line end —
+    ///     inside the fence (where `---` is text, so the document gained no rule
+    ///     and the code body was corrupted), or between a table's header and its
+    ///     delimiter row (which stops it being a table). Losing a node is the
+    ///     same failure `toggleCodeBlock` refuses a list for; here it needn't be
+    ///     refused, because the rule that governs every other case already says
+    ///     where it goes — AFTER the caret's block, the fence and the table
+    ///     included.
     ///
     /// `error.UnsupportedFormat` when the format has no thematic break. There is
     /// no `error.NoBlock`: an empty document is a legitimate place for a rule, and
@@ -408,7 +419,7 @@ pub const Editor = struct {
         if (offset > src.len) return error.InvalidRange;
         const allocator = self.splicer.allocator;
 
-        const block = locate.innermostBlock(&self.splicer.doc, offset);
+        const block = if (locate.lineOwningBlock(&self.splicer.doc, offset)) |lb| lb.block else null;
         const anchor = if (block) |b| self.splicer.doc.span(b).end -| 1 else offset;
         const pos = locate.lineEndAt(src, anchor);
         const prefix = if (block) |b| containerPrefix(src, self.splicer.doc.span(b).start) else "";
@@ -432,6 +443,243 @@ pub const Editor = struct {
         }
 
         return self.commitSplice(pos, pos, out.items);
+    }
+
+    // ── Splitting a block ────────────────────────────────────────────────────
+
+    /// Split the block at `offset` in two AT THE CARET, both halves the SAME
+    /// KIND — Enter in the middle of a paragraph, and the gesture
+    /// `insertThematicBreak` deliberately isn't.
+    ///
+    /// This is a pure INSERTION at `offset`: the bytes on either side never
+    /// move, and all that is minted is the separator between them. What that
+    /// separator is, is the only thing that varies:
+    ///
+    ///   * A PARAGRAPH gets a blank line — `ab` -> `a`/`b`. Inside a quote the
+    ///     blank carries the quote's marker and the second half its full prefix
+    ///     (`> ab` -> `> a`/`>`/`> b`), so the split happens INSIDE the quote
+    ///     rather than ending it.
+    ///   * A paragraph in a LIST ITEM gets the item's MARKER instead of a blank,
+    ///     so the second half is a sibling item and not a paragraph that ends
+    ///     the list: `- this is |a list item` -> `- this is `/`- a list item`.
+    ///     The marker is repeated VERBATIM, ordered numbers included, so a split
+    ///     `1.` item yields two `1.` items — both formats renumber on render,
+    ///     and `renumberOrderedLists` is the gesture for fixing the source when
+    ///     the caller wants it fixed. A TASK item's new half is an UNCHECKED
+    ///     box regardless of the original's state: splitting one done thing in
+    ///     two does not make the remainder done.
+    ///   * A HEADING repeats its own marker at its own level, because both
+    ///     halves being the same kind is what "split" means here; `setBlock` is
+    ///     how the caller demotes the second half if that is what they wanted.
+    ///   * A CODE BLOCK becomes two code blocks — the first closed with a fence,
+    ///     the second reopened with the opening fence line REPRODUCED VERBATIM,
+    ///     so its width and its info string both survive. Splitting code is a
+    ///     real request (one listing becoming two), and a consumer that doesn't
+    ///     want the gesture live there can ask the tree what kind of block the
+    ///     caret is in before offering it.
+    ///
+    /// AT A BLOCK BOUNDARY this still splits, which is what makes it Enter: at
+    /// the end of a list item it opens an EMPTY sibling item (`- a|` -> `- a`/
+    /// `- `), which is exactly the empty block the caller wants to type into.
+    /// The paragraph case is the one place the "empty block" is unrepresentable
+    /// — no format spells an empty paragraph — so `a|` gains a trailing blank
+    /// line and reparses as ONE paragraph. The caret is where the next one will
+    /// begin; the node appears when there is text to hold.
+    ///
+    /// `error.NotEditable` for the blocks where a caret-split has no honest
+    /// meaning:
+    ///   * A TABLE, whose structure is rows and cells rather than lines — a
+    ///     newline mid-cell doesn't divide a table, it destroys one. Splitting a
+    ///     table INTO TWO TABLES is a real gesture, but it is a table gesture
+    ///     (it has to decide what the second table's header is), not this one.
+    ///   * A SETEXT heading, whose `---` underline belongs to a block that would
+    ///     no longer be under it. `setBlock` normalises one to ATX, which makes
+    ///     this work; doing that silently here would rewrite the half the caller
+    ///     didn't touch.
+    ///   * An INDENTED code block, where a blank line is interior rather than a
+    ///     separator, so the "split" would parse back as one block.
+    ///
+    /// `error.NoBlock` when nothing covers `offset` — an empty document has no
+    /// block to divide.
+    pub fn splitBlock(self: *Editor, offset: usize) Error!void {
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const doc = &self.splicer.doc;
+        // A block's span is half-open, so a caret at its very END is in no block
+        // at all — and "Enter at the end of the item" is the single most common
+        // way this gesture is asked for. Retry one byte back, which lands in the
+        // block just closed. (At a blank line between blocks that resolves to
+        // the earlier block, which is as good an answer as the ambiguity has.)
+        const found = locate.lineOwningBlock(doc, offset) orelse
+            locate.lineOwningBlock(doc, offset -| 1) orelse
+            return error.NoBlock;
+
+        const block_start = doc.span(found.block).start;
+        const prefix = containerPrefix(src, block_start);
+        // As in `insertThematicBreak`: a quote's blank line carries its marker
+        // but not the space after it.
+        const blank = std.mem.trimEnd(u8, prefix, " ");
+
+        // When the caret already sits at a line start, the line end before it is
+        // the separator's first newline — emitting another would leave a blank
+        // line trailing inside the FIRST half (and, in a code block, inside its
+        // body). The bytes on either side still never move; this only decides
+        // whether the separator needs to open a line or is already on one.
+        const at_line_start = offset == 0 or src[offset - 1] == '\n';
+
+        const allocator = self.splicer.allocator;
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        switch (std.meta.activeTag(doc.ast.nodes[found.block].kind)) {
+            // The two line-owning text blocks: a blank line divides them, unless
+            // a list item's marker has to be repeated instead.
+            .para, .heading => {
+                var marker: std.ArrayList(u8) = .empty;
+                defer marker.deinit(allocator);
+                const in_item = try self.splitMarker(found, block_start, &marker);
+
+                if (!at_line_start) try out.append(allocator, '\n');
+                // A list item's halves stay in ONE list, so no blank line
+                // between them — a blank there loosens the list, changing every
+                // sibling's rendering. Everywhere else the blank IS the divider.
+                if (!in_item) {
+                    try out.appendSlice(allocator, blank);
+                    try out.append(allocator, '\n');
+                }
+                try out.appendSlice(allocator, prefix);
+                try out.appendSlice(allocator, marker.items);
+            },
+
+            .code_block => {
+                const fence = self.syntax.code_fence orelse return error.UnsupportedFormat;
+                const open = src[locate.lineStartAt(src, block_start)..locate.lineEndAt(src, block_start)];
+                // No fence on the opening line means an INDENTED code block,
+                // where a blank line is interior and would not divide anything.
+                const at = fenceAt(open, fence.char, fence.min) orelse return error.NotEditable;
+
+                if (!at_line_start) try out.append(allocator, '\n');
+                try out.appendSlice(allocator, prefix);
+                try out.appendNTimes(allocator, fence.char, at.width);
+                try out.append(allocator, '\n');
+                try out.appendSlice(allocator, blank);
+                try out.append(allocator, '\n');
+                // Verbatim from the fence character on, so width and info
+                // string both survive; the prefix is re-minted, not copied.
+                try out.appendSlice(allocator, prefix);
+                try out.appendSlice(allocator, locate.lineBody(open)[at.start..]);
+                try out.append(allocator, '\n');
+            },
+
+            // Structure whose parts are not lines, or containers a split would
+            // have to descend into rather than divide. Spelled out rather than
+            // left to an `else`, so a new `Kind` is a compile error here and
+            // gets an answer on purpose — this switch is the checklist.
+            .table,
+            .doc,
+            .section,
+            .block_quote,
+            .bullet_list,
+            .ordered_list,
+            .task_list,
+            .definition_list,
+            .line_block,
+            .list_item,
+            .task_list_item,
+            .definition_list_item,
+            .term,
+            .definition,
+            .line,
+            .row,
+            .cell,
+            .column,
+            .caption,
+            .footnote,
+            .reference,
+            .citation,
+            .substitution,
+            .container,
+            // Blocks with no interior to divide: a rule is one line, and
+            // metadata and raw blocks are inert islands whose bytes are not
+            // ours to punctuate.
+            .thematic_break,
+            .metadata,
+            .raw_block,
+            // Inlines. `lineOwningBlock` cannot return one — it stops at a
+            // block parent's child — but naming them is what keeps this switch
+            // exhaustive, and a refusal is the right answer if that ever changes.
+            .str,
+            .soft_break,
+            .hard_break,
+            .non_breaking_space,
+            .text_leaf,
+            .raw_inline,
+            .smart_punctuation,
+            .link,
+            .image,
+            .inline_mark,
+            .markup_leaf,
+            .processing_instruction,
+            => return error.NotEditable,
+        }
+
+        return self.commitSplice(offset, offset, out.items);
+    }
+
+    /// Append to `out` what the second half of a split must carry to come back
+    /// as the SAME KIND as the first — a list item's marker, a heading's marker,
+    /// both when a heading sits in an item, or nothing for a plain paragraph.
+    /// Returns whether the block is in a LIST ITEM, which is what decides
+    /// whether a blank line may separate the halves.
+    ///
+    /// The list case reads the marker off the ITEM'S OWN first line rather than
+    /// rebuilding it from `Syntax`, so `*` stays `*`, `1)` stays `1)`, and the
+    /// document keeps the spelling its author chose.
+    fn splitMarker(
+        self: *Editor,
+        found: locate.LineBlock,
+        block_start: usize,
+        out: *std.ArrayList(u8),
+    ) Error!bool {
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+        const doc = &self.splicer.doc;
+        const parent_tag = std.meta.activeTag(doc.ast.nodes[found.parent].kind);
+        const in_item = parent_tag == .list_item or parent_tag == .task_list_item;
+
+        if (in_item) {
+            const item_start = doc.span(found.parent).start;
+            const line = src[locate.lineStartAt(src, item_start)..locate.lineEndAt(src, item_start)];
+            var from: usize = 0;
+            while (skipQuoteMarker(line, from)) |j| from = j;
+            const m = listMarkerAt(line, from) orelse return error.NotEditable;
+            try out.appendSlice(allocator, line[m.start..m.end]);
+
+            // A task item's new half is an UNCHECKED box: the marker as written,
+            // then this format's empty box rather than the original's state.
+            if (parent_tag == .task_list_item) {
+                const box = self.syntax.task_marker orelse return error.NotEditable;
+                try out.appendSlice(allocator, box.unchecked);
+                try out.appendSlice(allocator, box.space);
+            }
+        }
+
+        if (std.meta.activeTag(doc.ast.nodes[found.block].kind) != .heading) return in_item;
+
+        // A heading repeats its own marker. A SETEXT one has none on its first
+        // line — its `---` sits UNDER the block, and would end up under the
+        // second half alone — so it is refused rather than silently normalised.
+        const marker = self.syntax.heading_marker orelse return error.UnsupportedFormat;
+        const line = src[locate.lineStartAt(src, block_start)..locate.lineEndAt(src, block_start)];
+        var i: usize = 0;
+        while (skipQuoteMarker(line, i)) |j| i = j;
+        if (listMarkerAt(line, i)) |m| i = m.end;
+        while (i < line.len and line[i] == ' ') i += 1;
+        if (i >= line.len or line[i] != marker) return error.NotEditable;
+
+        try out.appendNTimes(allocator, marker, doc.ast.nodes[found.block].kind.heading.level);
+        try out.append(allocator, ' ');
+        return in_item;
     }
 
     // ── Code blocks ──────────────────────────────────────────────────────────

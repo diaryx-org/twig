@@ -2580,6 +2580,31 @@ pub export fn twig_editor_insert_thematic_break(
     return .ok;
 }
 
+// ── Splitting a block ──────────────────────────────────────────────────────────
+// The engine is `twig.Editor.splitBlock`: a pure insertion at the caret, where
+// the only thing minted is the separator that makes both halves the same kind —
+// a blank line, a repeated list marker, a repeated heading marker, or a fence
+// pair. This is the gesture `twig_editor_insert_thematic_break` deliberately is
+// not; a host wanting "rule at the caret" calls this and then that.
+
+/// Split the block at `offset` in two at the caret, both halves the same kind.
+/// See `twig.h` for the semantics and `twig.Editor.splitBlock` for the
+/// implementation — in particular why a table and a setext heading are
+/// `not_editable`, and why a list item's marker is repeated verbatim.
+pub export fn twig_editor_split_block(
+    ed: ?*TwigEditor,
+    offset: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.splitBlock(offset) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
 // ── Code blocks ────────────────────────────────────────────────────────────────
 // The engine is `twig.Editor`'s `toggleCodeBlock` / `setCodeLanguage`: the
 // format's `Syntax.code_fence`, the fence width measured against the body, and

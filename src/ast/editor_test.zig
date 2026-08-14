@@ -1119,6 +1119,50 @@ test "thematic_break: inside a list it splits the list rather than corrupting it
     try testing.expectEqual(@as(usize, 2), items);
 }
 
+test "thematic_break: inside a code fence it lands after the fence, not in the body" {
+    // `innermostBlock` knew only `para`/`heading`, so a caret in a code block
+    // read as "no block here" and the rule went at the caret's LINE end — inside
+    // the fence, where `---` is just text. The document gained no rule at all and
+    // the code body silently grew a line. `lineOwningBlock` sees the code block.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("```\nabc\ndef\n```\n", fmt);
+        defer fx.deinit();
+        try fx.ed.insertThematicBreak(5); // caret inside `abc`
+        const rule = if (fmt == .markdown) "---" else "* * *";
+        var buf: [64]u8 = undefined;
+        try fx.expectSource(try std.fmt.bufPrint(&buf, "```\nabc\ndef\n```\n\n{s}\n", .{rule}));
+        // The rule is a real node, and the code block still holds both its lines.
+        try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+        const code = fx.find(.{ .tag = .code_block }) orelse return error.NoCodeBlock;
+        try testing.expectEqualStrings("abc\ndef\n", fx.ed.astView().nodes[code].kind.code_block.text);
+    }
+}
+
+test "thematic_break: inside a table it lands after the table, which survives" {
+    // The worst of the fallback's cases: a rule written between the header row
+    // and the delimiter row stops the table being a table. A node is lost, which
+    // is the outcome `toggleCodeBlock` refuses a list item for.
+    var fx = try Fixture.init("| a | b |\n|---|---|\n| c | d |\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(3); // caret in the header's first cell
+    try fx.expectSource("| a | b |\n|---|---|\n| c | d |\n\n---\n");
+    try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+}
+
+test "thematic_break: a fence inside a quote keeps both the quote and the fence" {
+    // Both corrections at once: the anchor escapes the fence, and the prefix is
+    // still the quote's, so the rule stays in the quote instead of ending it.
+    var fx = try Fixture.init("> ```\n> abc\n> ```\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(8); // caret inside `abc`
+    try fx.expectSource("> ```\n> abc\n> ```\n>\n> ---\n");
+    const id = fx.find(.{ .tag = .thematic_break }) orelse return error.NoRule;
+    const quote = fx.find(.{ .tag = .block_quote }) orelse return error.NoQuote;
+    try testing.expect(id > quote);
+    try testing.expect(fx.find(.{ .tag = .code_block }) != null);
+}
+
 test "thematic_break: an existing blank line below is not doubled" {
     var fx = try Fixture.init("a\n\nb\n", .markdown);
     defer fx.deinit();
@@ -1142,6 +1186,215 @@ test "thematic_break: a parse-only format spells none" {
         defer fx.deinit();
         try testing.expectError(error.UnsupportedFormat, fx.ed.insertThematicBreak(3));
     }
+}
+
+// ── split block ──────────────────────────────────────────────────────────────
+
+test "split_block: a list item splits at the caret into two items" {
+    // The gesture's defining case: `- this is |a list item` becomes two items,
+    // the marker repeated and NO blank line between them (a blank would loosen
+    // the list and change how every sibling renders).
+    var fx = try Fixture.init("- this is a list item\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(10); // caret before `a list item`
+    try fx.expectSource("- this is \n- a list item\n");
+
+    var items: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .list_item) items += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), items);
+}
+
+test "split_block: at the end of a list item it opens an empty sibling" {
+    // Enter at the end of an item — the empty block IS the point, and a list is
+    // one of the few places a format can spell one.
+    var fx = try Fixture.init("- this is a list item\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(21); // caret at the item's end
+    try fx.expectSource("- this is a list item\n- \n");
+
+    var items: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .list_item) items += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), items);
+}
+
+test "split_block: a list marker is repeated as written, not rebuilt" {
+    // `*` stays `*` and `1)` stays `1)` — the author's spelling survives. An
+    // ordered split repeats the NUMBER too; both formats renumber on render, and
+    // `renumberOrderedLists` is the gesture for fixing the source.
+    var star = try Fixture.init("* ab\n", .markdown);
+    defer star.deinit();
+    try star.ed.splitBlock(3);
+    try star.expectSource("* a\n* b\n");
+
+    var ord = try Fixture.init("1) ab\n", .markdown);
+    defer ord.deinit();
+    try ord.ed.splitBlock(4);
+    try ord.expectSource("1) a\n1) b\n");
+}
+
+test "split_block: a task item's new half is unchecked" {
+    // Splitting one done thing in two does not make the remainder done.
+    var fx = try Fixture.init("- [x] ab\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(7);
+    try fx.expectSource("- [x] a\n- [ ] b\n");
+}
+
+test "split_block: a paragraph splits on a blank line" {
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("ab\n", fmt);
+        defer fx.deinit();
+        try fx.ed.splitBlock(1);
+        try fx.expectSource("a\n\nb\n");
+
+        var paras: usize = 0;
+        for (fx.ed.astView().nodes) |n| {
+            if (std.meta.activeTag(n.kind) == .para) paras += 1;
+        }
+        try testing.expectEqual(@as(usize, 2), paras);
+    }
+}
+
+test "split_block: a caret at a line start doesn't add a redundant blank" {
+    // Splitting a soft-wrapped paragraph at the wrap point: the line end already
+    // there is the separator's first newline, so only the blank is minted.
+    var fx = try Fixture.init("a\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(2);
+    try fx.expectSource("a\n\nb\n");
+    var paras: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .para) paras += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), paras);
+}
+
+test "split_block: inside a quote the split stays inside the quote" {
+    // The blank line carries the quote's marker (`>`, not `> `) and the second
+    // half its full prefix, so the quote holds both halves instead of ending.
+    var fx = try Fixture.init("> ab\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(3);
+    try fx.expectSource("> a\n>\n> b\n");
+
+    var quotes: usize = 0;
+    var paras: usize = 0;
+    for (fx.ed.astView().nodes) |n| switch (std.meta.activeTag(n.kind)) {
+        .block_quote => quotes += 1,
+        .para => paras += 1,
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 1), quotes);
+    try testing.expectEqual(@as(usize, 2), paras);
+}
+
+test "split_block: a heading repeats its own marker at its own level" {
+    var fx = try Fixture.init("### ab\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(5);
+    try fx.expectSource("### a\n\n### b\n");
+
+    var headings: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .heading) {
+            headings += 1;
+            try testing.expectEqual(@as(u32, 3), n.kind.heading.level);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), headings);
+}
+
+test "split_block: a code block becomes two, the info string surviving" {
+    // The opening fence line is reproduced verbatim from the fence character on,
+    // so both the width and the language ride along.
+    var fx = try Fixture.init("```rust\nabc\ndef\n```\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(10); // caret inside `abc`
+    try fx.expectSource("```rust\nab\n```\n\n```rust\nc\ndef\n```\n");
+
+    var blocks: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .code_block) {
+            blocks += 1;
+            try testing.expectEqualStrings("rust", n.kind.code_block.lang orelse return error.NoLang);
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), blocks);
+}
+
+test "split_block: a measured fence keeps its width across the split" {
+    // The body holds a ``` run, so the block was fenced with four; splitting must
+    // not reopen with three, which would close at the first inner run.
+    var fx = try Fixture.init("````\na ``` b\nc\n````\n", .markdown);
+    defer fx.deinit();
+    // The caret is at the START of the `c` line, so the separator opens on the
+    // line already there rather than adding a blank one inside the first body.
+    try fx.ed.splitBlock(13);
+    try fx.expectSource("````\na ``` b\n````\n\n````\nc\n````\n");
+    var blocks: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .code_block) blocks += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), blocks);
+}
+
+test "split_block: a table is NotEditable" {
+    // A newline mid-cell doesn't divide a table, it destroys one. Splitting a
+    // table into two tables is a table gesture, not this one.
+    var fx = try Fixture.init("| a | b |\n|---|---|\n| c | d |\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.splitBlock(3));
+    try fx.expectSource("| a | b |\n|---|---|\n| c | d |\n");
+}
+
+test "split_block: a setext heading is NotEditable, not silently normalised" {
+    // Its `---` underline belongs to a block that would no longer be under it.
+    // `setBlock` converts one to ATX, which makes the split work.
+    var fx = try Fixture.init("ab\n---\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.splitBlock(1));
+    try fx.expectSource("ab\n---\n");
+}
+
+test "split_block: an indented code block is NotEditable" {
+    // A blank line inside one is interior, not a separator — the "split" would
+    // parse back as a single block, so refusing beats pretending.
+    var fx = try Fixture.init("    abc\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.splitBlock(6));
+    try fx.expectSource("    abc\n");
+}
+
+test "split_block: an empty document has no block to divide" {
+    var fx = try Fixture.init("", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NoBlock, fx.ed.splitBlock(0));
+}
+
+test "split_block: an offset past the source is InvalidRange" {
+    var fx = try Fixture.init("ab\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.InvalidRange, fx.ed.splitBlock(99));
+    try fx.expectSource("ab\n");
+}
+
+test "split_block: at a paragraph's end the empty block is unrepresentable" {
+    // No format spells an empty paragraph, so this is the one boundary case that
+    // cannot produce a second node. The blank line is written and the caret sits
+    // where the next paragraph begins; the node appears when there is text.
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(1);
+    try fx.expectSource("a\n\n\n");
+    var paras: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .para) paras += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), paras);
 }
 
 // ── code blocks ──────────────────────────────────────────────────────────────

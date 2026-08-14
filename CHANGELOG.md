@@ -46,16 +46,43 @@ exists.
 
 ### Added
 
-- **Seven caret gestures**, each driven by `Syntax` spelling data rather than a
+- **Eight caret gestures**, each driven by `Syntax` spelling data rather than a
   format switch, and wired through the C ABI and both Rust crates:
-  `insertThematicBreak`, `toggleCodeBlock`, `setCodeLanguage`, `toggleTaskItem`,
-  `setTaskChecked`, `toggleTaskChecked`, `insertFootnote`.
+  `insertThematicBreak`, `splitBlock`, `toggleCodeBlock`, `setCodeLanguage`,
+  `toggleTaskItem`, `setTaskChecked`, `toggleTaskChecked`, `insertFootnote`.
   `toggleTaskItem` / `setTaskChecked` / `toggleTaskChecked` are what a rendered
   checkbox needs to become a clickable one.
 
   `Syntax` grows `thematic_break`, `code_fence`, `task_marker` and `footnote`;
   two error codes, `InvalidLanguage` and `InvalidLabel`, both mapping to
   `TWIG_STATUS_INVALID_ARGUMENT`.
+
+  `insertThematicBreak` places the rule AFTER the caret's block, blank-separated
+  — a rule is a block, so there is no spelling for one mid-paragraph, and the
+  blank above is load-bearing rather than cosmetic (`---` flush under a
+  paragraph is a setext `<h2>` that eats it). "The caret's block" is
+  `locate.lineOwningBlock`, the child of the innermost container whose children
+  each own their lines. That is what makes a caret in a CODE BLOCK or a TABLE
+  anchor to the whole construct — after the closing fence, after the last row.
+  The narrower `locate.innermostBlock` (`para`/`heading` only, which is all
+  `setBlock` rewrites markers for) would report no block at all there, and the
+  no-block fallback writes at the caret's line end: `---` inside the fence,
+  where it is text and not a rule, or between a table's header and its
+  delimiter row, which stops it being a table.
+
+  `splitBlock` is the gesture `insertThematicBreak` deliberately is not: it
+  divides a block AT the caret, both halves the same kind. A host whose rule
+  button splits the paragraph composes the two rather than getting a second
+  spelling of either. It is a pure insertion — the bytes on either side never
+  move — and only the separator is minted: a blank line for a paragraph, the
+  item's marker repeated for a list item (so `- this is |a list item` yields two
+  items, and Enter at an item's end opens an empty one), the heading's own
+  marker at its own level, or a fence pair reproducing the opening line so width
+  and info string survive. `NotEditable` for a table (a newline mid-cell
+  destroys rather than divides; splitting one table into two has to decide what
+  the second one's header is, which makes it a table gesture), a setext heading,
+  and an indented code block. A paragraph is the one boundary case where the
+  empty block cannot be spelled, since no format has an empty paragraph.
 
 - **Conversion diagnostics, reachable from outside Zig.** `src/diagnostics.zig`
   answers "what would converting this document to that format silently lose?",

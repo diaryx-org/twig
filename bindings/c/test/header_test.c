@@ -249,6 +249,26 @@ static void test_new_block_gestures_link_and_edit(void) {
 
     twig_editor_destroy(editor);
 
+    // Splitting a list item repeats its marker, so the second half is a sibling
+    // item and not a paragraph that ends the list. A table refuses.
+    static const char item[] = "- ab\n";
+    TwigEditor *splitter = NULL;
+    CHECK(twig_editor_create((const uint8_t *)item, sizeof(item) - 1,
+                             TWIG_FORMAT_MARKDOWN, &splitter) == TWIG_STATUS_OK);
+    if (splitter == NULL) return;
+    CHECK(twig_editor_split_block(splitter, 3, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(splitter, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 8 && memcmp(out, "- a\n- b\n", 8) == 0);
+    twig_editor_destroy(splitter);
+
+    static const char tbl[] = "| a | b |\n|---|---|\n| c | d |\n";
+    TwigEditor *table_ed = NULL;
+    CHECK(twig_editor_create((const uint8_t *)tbl, sizeof(tbl) - 1,
+                             TWIG_FORMAT_MARKDOWN, &table_ed) == TWIG_STATUS_OK);
+    if (table_ed == NULL) return;
+    CHECK(twig_editor_split_block(table_ed, 3, &change) == TWIG_STATUS_NOT_EDITABLE);
+    twig_editor_destroy(table_ed);
+
     // has_language == 0 leaves the fence bare; a set language tags it. Both
     // write valid source, so only the bytes tell them apart.
     static const char para[] = "x\n";

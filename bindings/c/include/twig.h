@@ -1231,6 +1231,52 @@ TwigStatus twig_editor_insert_thematic_break(
     TwigChange *out_change
 );
 
+// Split the block at `offset` in two AT THE CARET, both halves the SAME KIND —
+// Enter in the middle of a paragraph, and the gesture
+// twig_editor_insert_thematic_break deliberately is not. A host wanting "rule at
+// the caret" calls this and then that.
+//
+// This is a pure INSERTION at `offset`: the bytes on either side never move, and
+// all that is minted is the separator between them.
+//
+//   * A PARAGRAPH gets a blank line. Inside a quote the blank carries the quote's
+//     marker and the second half its full prefix, so the split happens inside the
+//     quote rather than ending it.
+//   * A paragraph in a LIST ITEM gets the item's MARKER instead of a blank, so
+//     the second half is a sibling item: `- this is |a list item` becomes
+//     `- this is ` and `- a list item`. The marker is repeated VERBATIM, ordered
+//     numbers included, so a split `1.` item yields two `1.` items — both formats
+//     renumber on render, and twig_editor_renumber_ordered_lists is the gesture
+//     for fixing the source. A TASK item's new half is an UNCHECKED box whatever
+//     the original's state.
+//   * A HEADING repeats its own marker at its own level. twig_editor_set_block is
+//     how a caller demotes the second half instead.
+//   * A CODE BLOCK becomes two code blocks, the opening fence line reproduced
+//     verbatim so its width and info string both survive. A consumer that doesn't
+//     want the gesture offered there can ask the tree what block the caret is in
+//     before calling.
+//
+// AT A BLOCK BOUNDARY this still splits, which is what makes it Enter: at the end
+// of a list item it opens an EMPTY sibling item, which is the block the caller
+// wants to type into. A paragraph is the one place that empty block cannot be
+// spelled — no format has an empty paragraph — so the source gains a blank line
+// and reparses as one paragraph; the node appears when there is text to hold.
+//
+// TWIG_STATUS_NOT_EDITABLE where a caret-split has no honest meaning: a TABLE
+// (whose structure is rows and cells, so a newline mid-cell destroys rather than
+// divides — splitting a table into two tables is a table gesture, not this one),
+// a SETEXT heading (whose `---` underline would end up under the second half
+// alone; twig_editor_set_block normalises one to ATX, which makes this work), and
+// an INDENTED code block (where a blank line is interior, so the split would
+// parse back as one block). TWIG_STATUS_NOT_FOUND when nothing covers `offset` —
+// an empty document has no block to divide. TWIG_STATUS_INVALID_ARGUMENT when
+// `offset` is past the source.
+TwigStatus twig_editor_split_block(
+    TwigEditor *editor,
+    size_t offset,
+    TwigChange *out_change
+);
+
 // Toggle a FENCED CODE BLOCK over the blocks `[start, end)` covers: fence them if
 // the caret is not in a code block, unfence the one it is in if it is.
 //

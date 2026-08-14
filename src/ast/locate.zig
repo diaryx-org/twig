@@ -81,8 +81,45 @@ pub fn ancestorChain(
     }
 }
 
+/// The LINE-OWNING BLOCK holding `offset`: the child of the innermost
+/// block-parent container on the descent, or `null` when no node covers the
+/// offset at all (an empty document, or one whose root spans nothing).
+///
+/// This is what a gesture placing a NEW BLOCK BESIDE the caret's block needs,
+/// and it is deliberately not `innermostBlock`. That one answers a narrower
+/// question — which `para`/`heading`'s marker to rewrite — and returns `null`
+/// for a caret in a code block or a table, because `setBlock` has nothing to do
+/// there. A gesture that reads that `null` as "there is no block here" and
+/// falls back to the caret's own line writes its block INTO the fence or
+/// BETWEEN a table's header and its delimiter row, which loses the table.
+///
+/// `isBlockParent` is the right hinge because of what it already asserts: a
+/// kind belongs to it only if its children EACH START ON THEIR OWN LINE. So the
+/// child on the descent path is, by that list's own contract, a block owning
+/// whole lines — and stopping there is what escapes a table (a `cell` is
+/// deliberately not a block parent, so the walk stops at the `table` rather
+/// than at a `para` inside a cell) while still descending into a quote or a
+/// list item, whose contents genuinely do start their own lines.
+/// `block` is the block itself; `parent` is the container holding it — which
+/// `Editor.splitBlock` needs, because what a split writes between the halves is
+/// the parent's business (a `list_item` parent means repeat the item's marker,
+/// so the second half is an item and not a stray paragraph).
+pub const LineBlock = struct { parent: AST.Node.Id, block: AST.Node.Id };
+
+pub fn lineOwningBlock(doc: *const Document, offset: usize) ?LineBlock {
+    var result: ?LineBlock = null;
+    var cur = doc.ast.root;
+    while (childContaining(doc, cur, offset)) |child| {
+        if (isBlockParent(doc.ast.nodes[cur].kind)) result = .{ .parent = cur, .block = child };
+        cur = child;
+    }
+    return result;
+}
+
 /// The innermost `heading`/`para` on the descent to `offset`, or `null` — the
-/// block `Editor.setBlock` rewrites the marker of.
+/// block `Editor.setBlock` rewrites the marker of. For "the block the caret is
+/// in" in the general sense, including code blocks and tables, see
+/// `lineOwningBlock`.
 pub fn innermostBlock(doc: *const Document, offset: usize) ?AST.Node.Id {
     var result: ?AST.Node.Id = null;
     var cur = doc.ast.root;

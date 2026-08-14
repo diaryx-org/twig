@@ -1587,7 +1587,7 @@ impl Editor {
     ///
     /// A selection starting or ending strictly **inside** an autolink without
     /// being contained by it — running from ordinary text into the middle of a
-    /// URL — is refused with [`Status::NotEditable`]: half of it is real text,
+    /// URL — is refused with [`Error::NotEditable`]: half of it is real text,
     /// so there is nothing to re-point, and any splice would rewrite the URL.
     /// A selection that *contains* an autolink whole is unaffected — it splices
     /// at the edges and wraps as usual.
@@ -1728,6 +1728,51 @@ impl Editor {
     /// (XML, HTML); [`Error::InvalidArgument`] when `offset` is past the source.
     pub fn insert_thematic_break(&mut self, offset: usize) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe { ffi::twig_editor_insert_thematic_break(ed, offset, out) })
+    }
+
+    /// Split the block at `offset` in two at the caret, both halves the same
+    /// kind — Enter in the middle of a paragraph, and the gesture
+    /// [`Editor::insert_thematic_break`] deliberately is not. A host wanting
+    /// "rule at the caret" calls this and then that.
+    ///
+    /// This is a pure insertion at `offset`: the bytes on either side never
+    /// move, and all that is minted is the separator between them.
+    ///
+    /// * A **paragraph** gets a blank line. Inside a quote the blank carries the
+    ///   quote's marker and the second half its full prefix, so the split
+    ///   happens inside the quote rather than ending it.
+    /// * A paragraph in a **list item** gets the item's marker instead of a
+    ///   blank, so the second half is a sibling item: `- this is |a list item`
+    ///   becomes `- this is ` and `- a list item`. The marker is repeated
+    ///   verbatim, ordered numbers included, so a split `1.` item yields two
+    ///   `1.` items — both formats renumber on render, and
+    ///   [`Editor::renumber_ordered_lists`] is the gesture for fixing the
+    ///   source. A **task** item's new half is an unchecked box whatever the
+    ///   original's state.
+    /// * A **heading** repeats its own marker at its own level;
+    ///   [`Editor::set_block`] is how a caller demotes the second half instead.
+    /// * A **code block** becomes two code blocks, the opening fence line
+    ///   reproduced verbatim so its width and info string both survive. A
+    ///   consumer that doesn't want the gesture offered there can ask the tree
+    ///   what block the caret is in before calling.
+    ///
+    /// At a block boundary this still splits, which is what makes it Enter: at
+    /// the end of a list item it opens an empty sibling item, which is the block
+    /// the caller wants to type into. A paragraph is the one place that empty
+    /// block cannot be spelled — no format has an empty paragraph — so the
+    /// source gains a blank line and reparses as one paragraph; the node appears
+    /// when there is text to hold.
+    ///
+    /// [`Error::NotEditable`] where a caret-split has no honest meaning: a
+    /// **table** (a newline mid-cell destroys rather than divides; splitting one
+    /// table into two is a table gesture, not this one), a **setext heading**
+    /// (whose `---` underline would end up under the second half alone —
+    /// [`Editor::set_block`] normalises one to ATX, which makes this work), and
+    /// an **indented code block** (where a blank line is interior, so the split
+    /// would parse back as one block). [`Error::NotFound`] when nothing covers
+    /// `offset`; [`Error::InvalidArgument`] when `offset` is past the source.
+    pub fn split_block(&mut self, offset: usize) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_split_block(ed, offset, out) })
     }
 
     /// Toggle a fenced code block over the blocks `[start, end)` covers: fence
@@ -4067,6 +4112,35 @@ mod tests {
 
         let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
         assert_eq!(xml.insert_thematic_break(3), Err(Error::UnsupportedFormat));
+    }
+
+    #[test]
+    fn editor_split_block_keeps_both_halves_the_same_kind() {
+        // A list item's halves are both items — the marker is repeated, so the
+        // second half doesn't fall out of the list as a paragraph.
+        let mut item = Editor::new_str("- this is a list item\n", Format::Markdown).expect("editor");
+        item.split_block(10).expect("split");
+        assert_eq!(item.source_str().unwrap(), "- this is \n- a list item\n");
+        let nodes = item.nodes().expect("nodes");
+        assert_eq!(nodes.iter().filter(|n| n.kind == Kind::ListItem).count(), 2);
+
+        // At the item's end the empty sibling IS the point — that is Enter.
+        let mut tail = Editor::new_str("- a\n", Format::Markdown).expect("editor");
+        tail.split_block(3).expect("split");
+        assert_eq!(tail.source_str().unwrap(), "- a\n- \n");
+
+        // A paragraph divides on a blank line instead.
+        let mut para = Editor::new_str("ab\n", Format::Markdown).expect("editor");
+        para.split_block(1).expect("split");
+        assert_eq!(para.source_str().unwrap(), "a\n\nb\n");
+
+        // A table has no honest caret-split: a newline mid-cell destroys it.
+        let mut table =
+            Editor::new_str("| a | b |\n|---|---|\n| c | d |\n", Format::Markdown).expect("editor");
+        assert_eq!(table.split_block(3), Err(Error::NotEditable));
+
+        let mut empty = Editor::new_str("", Format::Markdown).expect("editor");
+        assert_eq!(empty.split_block(0), Err(Error::NotFound));
     }
 
     #[test]
