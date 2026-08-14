@@ -153,6 +153,27 @@ pub struct TwigQueryMatch {
     pub kind: *const c_char,
 }
 
+/// C ABI mirror of Zig's `TwigWarning` — one thing a conversion would silently
+/// lose. `path` is a slash-separated child-index trail from the analyzed root
+/// (empty for the root itself); `kind` is a NUL-terminated node-kind name in
+/// static, library-owned storage. Both borrow, with the lifetime of the
+/// `twig_document_diagnostics` output array they came from.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TwigWarning {
+    pub fidelity: c_int,
+    pub path_ptr: *const u8,
+    pub path_len: usize,
+    pub kind: *const c_char,
+}
+
+/// [`TwigWarning::fidelity`] codes. `FAITHFUL` completes the space and is never
+/// the value of a reported warning — a faithful node is not a warning.
+#[allow(dead_code)]
+pub const TWIG_FIDELITY_FAITHFUL: c_int = 0;
+pub const TWIG_FIDELITY_DEGRADED: c_int = 1;
+pub const TWIG_FIDELITY_DROPPED: c_int = 2;
+
 /// The sentinel `node_id` for "no such node" in a [`TwigFlatNode`] link field.
 pub const TWIG_NO_NODE: u32 = u32::MAX;
 
@@ -321,6 +342,12 @@ unsafe extern "C" {
     pub fn twig_document_nodes(
         doc: *mut TwigDocument,
         out_ptr: *mut *const TwigFlatNode,
+        out_len: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_document_diagnostics(
+        doc: *mut TwigDocument,
+        format: c_int,
+        out_ptr: *mut *const TwigWarning,
         out_len: *mut usize,
     ) -> TwigStatus;
     pub fn twig_document_children(

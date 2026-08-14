@@ -63,6 +63,9 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\        ast        dump the shared AST as pretty-printed JSON
         \\        canonical  round-trip serialize back to the source format
         \\                   (only formats with a serializer support this)
+        \\      --warn reports to stderr what the conversion will silently
+        \\      lose -- a node the target has no spelling for is degraded or
+        \\      dropped without failing, which is what makes it easy to miss.
         \\
         \\  identify <file>
         \\      Detect and print a file's input format; performs no conversion.
@@ -151,12 +154,58 @@ pub fn runIdentify(stdout: *Writer, opts: args_mod.IdentifyOptions) !void {
 ///                    has no serializer.
 pub fn runConvert(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, opts: args_mod.ConvertOptions) ActionError!void {
     const source = try readSource(allocator, io, opts.file, stderr);
-    try convertSource(allocator, source, opts.file, opts.input, opts.parse_config, opts.output, opts.output_target, stdout, stderr);
+    try convertSource(allocator, source, opts.file, opts.input, opts.parse_config, opts.output, opts.output_target, opts.warn, stdout, stderr);
     stdout.flush() catch |err| {
         stderr.print("error: failed to write output: {t}\n", .{err}) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
+}
+
+/// Print one line per thing this conversion will silently lose, to stderr.
+///
+/// The target is the one the output is actually going to: `-o html` diagnoses
+/// against HTML, a bare `-o canonical` against the input's own format (where
+/// the interesting warnings are the ones that say a document does not survive
+/// its OWN serializer). `-o ast` is exempt — a JSON dump of the tree is the one
+/// output that loses nothing, so there is nothing to say about it.
+///
+/// Never fails the conversion. A lossy conversion still produces a valid
+/// document, so a warning is advice; `stdout` is byte-for-byte what it would
+/// have been without `--warn`.
+fn warnAboutLoss(
+    allocator: Allocator,
+    doc: *const format.ParsedDoc,
+    output: format.OutputMode,
+    output_target: ?format.Target,
+    input: format.InputFormat,
+    stderr: *Writer,
+) ActionError!void {
+    const target: format.Target = switch (output) {
+        .ast => return,
+        .html => .html,
+        .canonical => output_target orelse format.targetFor(input),
+    };
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const d = doc.document();
+    const warnings = twig.diagnostics.analyze(arena.allocator(), &d.ast, d.ast.root, target) catch |err| switch (err) {
+        // Nothing to diagnose: `convertSource` is about to fail on the same
+        // capability answer and say so properly.
+        error.UnsupportedFormat => return,
+        error.OutOfMemory => {
+            stderr.print("warning: ran out of memory computing conversion diagnostics\n", .{}) catch {};
+            stderr.flush() catch {};
+            return;
+        },
+    };
+    for (warnings) |w| {
+        stderr.writeAll("warning: ") catch {};
+        w.render(stderr, target) catch {};
+        stderr.writeByte('\n') catch {};
+    }
+    stderr.flush() catch {};
 }
 
 /// The parse-then-dispatch core of `runConvert`, split out from the
@@ -172,6 +221,7 @@ fn convertSource(
     parse_config: format.ParseConfig,
     output: format.OutputMode,
     output_target: ?format.Target,
+    warn: bool,
     stdout: *Writer,
     stderr: *Writer,
 ) ActionError!void {
@@ -183,6 +233,8 @@ fn convertSource(
         return error.ActionFailed;
     };
     defer doc.deinit();
+
+    if (warn) try warnAboutLoss(allocator, &doc, output, output_target, input, stderr);
 
     switch (output) {
         .html => entry.renderHtml(allocator, &doc, stdout) catch |err| {
@@ -575,13 +627,34 @@ test "runHelp mentions every command and both format flags" {
     try testing.expect(std.mem.indexOf(u8, out, "-o") != null);
 }
 
+test "convertSource: --warn reports the loss on stderr and leaves stdout alone" {
+    var out_buf: [512]u8 = undefined;
+    var err_buf: [512]u8 = undefined;
+    var out = Writer.fixed(&out_buf);
+    var err = Writer.fixed(&err_buf);
+    // A djot superscript has no Markdown spelling. The conversion still
+    // succeeds and still writes the same bytes — that is the whole point of
+    // the flag: the loss was never an error, only quiet.
+    try convertSource(testing.allocator, "a^b^ c\n", "-", .djot, .{}, .canonical, .markdown, true, &out, &err);
+    try testing.expectEqualStrings("a^b^ c\n", out.buffered());
+    try testing.expect(std.mem.indexOf(u8, err.buffered(), "`superscript`") != null);
+    try testing.expect(std.mem.indexOf(u8, err.buffered(), "markdown") != null);
+
+    // Without the flag, stderr stays empty and stdout is unchanged.
+    var out2 = Writer.fixed(&out_buf);
+    var err2 = Writer.fixed(&err_buf);
+    try convertSource(testing.allocator, "a^b^ c\n", "-", .djot, .{}, .canonical, .markdown, false, &out2, &err2);
+    try testing.expectEqualStrings("a^b^ c\n", out2.buffered());
+    try testing.expectEqualStrings("", err2.buffered());
+}
+
 test "convertSource: html output for djot goes through Djot.html.render (footnotes resolve)" {
     var out_buf: [4096]u8 = undefined;
     var err_buf: [256]u8 = undefined;
     var out: Writer = .fixed(&out_buf);
     var err: Writer = .fixed(&err_buf);
 
-    try convertSource(testing.allocator, "hi[^1]\n\n[^1]: a note\n", "-", .djot, .{}, .html, null, &out, &err);
+    try convertSource(testing.allocator, "hi[^1]\n\n[^1]: a note\n", "-", .djot, .{}, .html, null, false, &out, &err);
     // `role="doc-endnotes"`/`id="fn1"` only appear when the djot-specific
     // side-table-aware render path (`Djot.html.render`) actually resolved the
     // footnote reference — the generic `Html.serialize(..., null)` path
@@ -598,7 +671,7 @@ test "convertSource: ast output is JSON starting with a doc-kind object" {
     var out: Writer = .fixed(&out_buf);
     var err: Writer = .fixed(&err_buf);
 
-    try convertSource(testing.allocator, "hello\n", "-", .djot, .{}, .ast, null, &out, &err);
+    try convertSource(testing.allocator, "hello\n", "-", .djot, .{}, .ast, null, false, &out, &err);
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "\"kind\": \"doc\"") != null);
 }
 
@@ -608,7 +681,7 @@ test "convertSource: xml canonical output round-trips through Xml.serializeAlloc
     var out: Writer = .fixed(&out_buf);
     var err: Writer = .fixed(&err_buf);
 
-    try convertSource(testing.allocator, "<a><b/></a>", "-", .xml, .{}, .canonical, null, &out, &err);
+    try convertSource(testing.allocator, "<a><b/></a>", "-", .xml, .{}, .canonical, null, false, &out, &err);
     try testing.expectEqualStrings("<a><b/></a>", out.buffered());
 }
 
@@ -618,7 +691,7 @@ test "convertSource: djot canonical output uses Djot.serializeAlloc" {
     var out: Writer = .fixed(&out_buf);
     var err: Writer = .fixed(&err_buf);
 
-    try convertSource(testing.allocator, "hello *world*\n", "-", .djot, .{}, .canonical, null, &out, &err);
+    try convertSource(testing.allocator, "hello *world*\n", "-", .djot, .{}, .canonical, null, false, &out, &err);
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "*world*") != null);
 }
 
@@ -628,7 +701,7 @@ test "convertSource: markdown canonical output uses Markdown.serializeAlloc" {
     var out: Writer = .fixed(&out_buf);
     var err: Writer = .fixed(&err_buf);
 
-    try convertSource(testing.allocator, "[x][a]\n\n[a]: /u\n", "-", .markdown, .{}, .canonical, null, &out, &err);
+    try convertSource(testing.allocator, "[x][a]\n\n[a]: /u\n", "-", .markdown, .{}, .canonical, null, false, &out, &err);
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "[a]: /u") != null);
 }
 
@@ -638,7 +711,7 @@ test "convertSource: -o djot with markdown input cross-converts via Djot.seriali
     var out: Writer = .fixed(&out_buf);
     var err: Writer = .fixed(&err_buf);
 
-    try convertSource(testing.allocator, "This is *markdown*.\n", "-", .markdown, .{}, .canonical, .djot, &out, &err);
+    try convertSource(testing.allocator, "This is *markdown*.\n", "-", .markdown, .{}, .canonical, .djot, false, &out, &err);
     // Markdown's `*markdown*` (emph) round-trips through the shared `AST`
     // as an `emph` node, which the Djot serializer renders djot-style, with
     // underscores rather than asterisks.
@@ -651,7 +724,7 @@ test "convertSource: -o markdown with djot input cross-converts via Markdown.ser
     var out: Writer = .fixed(&out_buf);
     var err: Writer = .fixed(&err_buf);
 
-    try convertSource(testing.allocator, "This is _djot emphasis_.\n", "-", .djot, .{}, .canonical, .markdown, &out, &err);
+    try convertSource(testing.allocator, "This is _djot emphasis_.\n", "-", .djot, .{}, .canonical, .markdown, false, &out, &err);
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "*djot emphasis*") != null);
 }
 

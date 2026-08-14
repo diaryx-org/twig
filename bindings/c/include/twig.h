@@ -250,6 +250,59 @@ typedef struct TwigFlatNode {
 // block.
 #define TWIG_CONTAINER_ORIGIN_DIRECTIVE 1
 
+// One thing converting a document to a given target would silently lose.
+//
+// path_ptr/path_len is a slash-separated child-index trail from the analyzed
+// root ("1/0/2"); EMPTY (NULL/0) means the root itself. `kind` is the affected
+// node's published kind name, in static library-owned storage. Both are
+// borrowed and share the lifetime of twig_document_diagnostics's output array.
+//
+// There is deliberately no message string: a warning is structured, and every
+// consumer that renders one wants its own wording.
+typedef struct TwigWarning {
+    int fidelity;
+    const uint8_t *path_ptr;
+    size_t path_len;
+    const char *kind;
+} TwigWarning;
+
+// TwigWarning.fidelity codes. FAITHFUL exists so the space is complete and a
+// consumer can spell the concept; it is never the value of a reported warning,
+// because a faithful node is not a warning.
+#define TWIG_FIDELITY_FAITHFUL 0
+// Something is emitted, but the target's parser reads it back as a DIFFERENT
+// kind. The content survives; its meaning does not.
+#define TWIG_FIDELITY_DEGRADED 1
+// Nothing is emitted at all: the node and its subtree leave no trace.
+#define TWIG_FIDELITY_DROPPED 2
+
+// What converting `doc` to `format` would silently LOSE: one TwigWarning per
+// lossy node, in document order, borrowed until the next
+// twig_document_diagnostics call on this document or twig_document_destroy.
+//
+// Every serializer degrades or drops a node when the target has no spelling for
+// it — a djot {=mark=} written into Markdown comes back as plain text, an HTML
+// comment converted to djot vanishes — and none of it is an error, so all of it
+// happens quietly. This is where it stops being quiet.
+//
+// The answer is a property of the (document, target) PAIR, which is why it is
+// computed on demand rather than stored: the same document converted to two
+// targets has two different answers and neither belongs to the document.
+//
+// A format with no serializer at all (XML, AsciiDoc) reports
+// TWIG_STATUS_UNSUPPORTED_FORMAT rather than warning about every node in turn.
+//
+// An empty result (*out_len == 0, *out_warnings == NULL) means the conversion
+// is lossless — a real answer, not a failure.
+// Non-const `doc` for the reason every other read here is: the result is
+// cached on the handle so the caller can borrow it.
+TwigStatus twig_document_diagnostics(
+    TwigDocument *doc,
+    int format,
+    const TwigWarning **out_warnings,
+    size_t *out_len
+);
+
 // The C ABI contract version (see the "ABI stability contract" above); compare
 // against the TWIG_ABI_VERSION you compiled with to detect a layout mismatch.
 // Bumped only on a breaking ABI change, never on an additive one.

@@ -513,6 +513,46 @@ impl Document {
         collect_flat_nodes(|ptr, len| unsafe { ffi::twig_document_nodes(raw, ptr, len) })
     }
 
+    /// What converting this document to `target` would silently **lose**: one
+    /// [`Warning`] per lossy node, in document order. An empty vec means the
+    /// conversion is lossless.
+    ///
+    /// Twig's serializers degrade or drop a node whenever the target has no
+    /// spelling for it — a djot `{=mark=}` written into Markdown comes back as
+    /// plain text, an HTML comment converted to djot vanishes entirely. None of
+    /// it is an error, so all of it happens quietly. This is the call that makes
+    /// it loud, and it replaces guessing from the outside: the answers are
+    /// measured against the serializers by a round-trip probe in the Zig
+    /// library, not asserted.
+    ///
+    /// The answer belongs to the (document, target) PAIR, not to the document —
+    /// the same document has different answers for different targets, which is
+    /// why this takes one and why nothing is cached on [`Document`] itself.
+    ///
+    /// [`Error::UnsupportedFormat`] for a target with no serializer at all
+    /// ([`Target::Xml`], [`Target::Asciidoc`]): "this cannot be written" is a
+    /// capability answer, not a per-node diagnosis.
+    pub fn diagnostics(&mut self, target: Target) -> Result<Vec<Warning>, Error> {
+        let raw = self.raw.as_ptr();
+        let code = ffi::TwigFormat::from(target) as c_int;
+        let mut ptr: *const ffi::TwigWarning = std::ptr::null();
+        let mut len = 0usize;
+        let status = unsafe { ffi::twig_document_diagnostics(raw, code, &mut ptr, &mut len) };
+        Error::from_status(status)?;
+        if len == 0 || ptr.is_null() {
+            return Ok(Vec::new());
+        }
+        let raw_warnings = unsafe { std::slice::from_raw_parts(ptr, len) };
+        Ok(raw_warnings
+            .iter()
+            .map(|w| Warning {
+                fidelity: Fidelity::from_c(w.fidelity),
+                path: borrowed_bytes(w.path_ptr, w.path_len).unwrap_or_default(),
+                kind: borrowed_cstr(w.kind).unwrap_or_default(),
+            })
+            .collect())
+    }
+
     /// The direct children of `node` as [`QueryMatch`]es (id, span, kind) —
     /// `None` enumerates the document root's children (the top-level blocks).
     /// The cheap enumeration an incremental renderer walks to decide which
@@ -1975,6 +2015,45 @@ impl SmartPunctuation {
 ///
 /// Read-only: it records what a parser saw, and there is nothing to set on the
 /// build path.
+/// One thing a conversion would silently lose. See [`Document::diagnostics`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Warning {
+    pub fidelity: Fidelity,
+    /// A slash-separated child-index trail from the document root (`"1/0/2"`),
+    /// EMPTY for the root itself.
+    ///
+    /// A path and not a byte span, because the output being described does not
+    /// exist yet — there is nothing in it to point at. Resolve it against the
+    /// tree you already have.
+    pub path: String,
+    /// The affected node's kind name, with family members reported as
+    /// themselves (`"superscript"`, not `"inline_mark"`).
+    pub kind: String,
+}
+
+/// How much of a node survives a conversion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Fidelity {
+    /// Something is emitted, but the target's parser reads it back as a
+    /// DIFFERENT kind. The content survives; its meaning does not.
+    Degraded,
+    /// Nothing is emitted at all: the node and its subtree leave no trace.
+    Dropped,
+}
+
+impl Fidelity {
+    /// Only the lossy codes have a variant — a faithful node is never reported
+    /// as a warning, so there is nothing for it to map to. An unknown code
+    /// reads as [`Fidelity::Degraded`], the weaker of the two claims.
+    fn from_c(v: c_int) -> Self {
+        match v {
+            ffi::TWIG_FIDELITY_DROPPED => Fidelity::Dropped,
+            _ => Fidelity::Degraded,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ContainerOrigin {
@@ -2663,6 +2742,89 @@ mod tests {
         if let Some(s) = picture_kids_str {
             assert!(s.name.is_none() && s.attrs.is_empty());
         }
+    }
+
+    #[test]
+    fn diagnostics_report_what_a_conversion_would_lose() {
+        // A djot superscript has no Markdown spelling. The two answers below
+        // are for the SAME document — fidelity is a property of the
+        // (document, target) pair, which is why it is asked per target.
+        let mut doc = Document::parse_str("a^b^ c\n", Format::Djot).expect("parse djot");
+
+        let to_md = doc
+            .diagnostics(Target::Markdown)
+            .expect("markdown diagnostics");
+        assert_eq!(
+            to_md,
+            vec![Warning {
+                fidelity: Fidelity::Degraded,
+                path: "0/1".to_string(),
+                kind: "superscript".to_string(),
+            }]
+        );
+
+        // Lossless to djot: an empty vec is a real answer, not a failure.
+        assert_eq!(
+            doc.diagnostics(Target::Djot).expect("djot diagnostics"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn diagnostics_separate_a_droppable_node_from_a_degradable_one() {
+        // An HTML comment converted to djot leaves NOTHING behind — a
+        // different and worse answer than "comes back as something else", and
+        // the distinction a consumer needs to decide whether to warn or refuse.
+        let mut doc =
+            Document::parse_str("<p>hi</p><!-- secret -->", Format::Html).expect("parse html");
+        let warnings = doc.diagnostics(Target::Djot).expect("djot diagnostics");
+        let comment = warnings
+            .iter()
+            .find(|w| w.kind == "comment")
+            .expect("a warning about the comment");
+        assert_eq!(comment.fidelity, Fidelity::Dropped);
+    }
+
+    #[test]
+    fn diagnostics_refuse_a_target_with_no_serializer() {
+        // "This target cannot be written" is a capability answer, not a
+        // per-node diagnosis of every node in the document.
+        let mut doc = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
+        assert_eq!(doc.diagnostics(Target::Xml), Err(Error::UnsupportedFormat));
+        assert_eq!(
+            doc.diagnostics(Target::Asciidoc),
+            Err(Error::UnsupportedFormat)
+        );
+    }
+
+    #[test]
+    fn diagnostics_flag_a_header_less_table_and_leave_a_headed_one_alone() {
+        // The instance-level answer, and the one a consumer cannot reach by
+        // looking at kinds: both documents contain a `table`, and only one of
+        // them costs anything to convert. GFM's delimiter row is mandatory, so
+        // the header-less table gets an empty header synthesized above it.
+        let mut headed = Document::parse_str(
+            "<table><tr><th>H</th></tr><tr><td>a</td></tr></table>",
+            Format::Html,
+        )
+        .expect("parse headed table");
+        assert!(
+            headed
+                .diagnostics(Target::Markdown)
+                .expect("diagnostics")
+                .iter()
+                .all(|w| w.kind != "table")
+        );
+
+        let mut headless = Document::parse_str("<table><tr><td>a</td></tr></table>", Format::Html)
+            .expect("parse header-less table");
+        let table_warning = headless
+            .diagnostics(Target::Markdown)
+            .expect("diagnostics")
+            .into_iter()
+            .find(|w| w.kind == "table")
+            .expect("a warning about the table");
+        assert_eq!(table_warning.fidelity, Fidelity::Degraded);
     }
 
     #[test]

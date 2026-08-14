@@ -31,7 +31,7 @@ pub const Action = enum { help, version, convert, identify, edit, query, filter 
 /// parse, so they fall back to the top-level synopsis.
 pub fn commandUsage(action: Action) []const u8 {
     return switch (action) {
-        .convert => "convert [-i <format>] [-o <format>] <file|->",
+        .convert => "convert [-i <format>] [-o <format>] [--warn] <file|->",
         .identify => "identify [-i <format>] <file>",
         .query => "query [-i <format>] <file> <selector>",
         .edit => "edit [-i <format>] <file|-> <operation>",
@@ -63,6 +63,13 @@ pub const ConvertOptions = struct {
     /// Markdown extension flags (`--directives`, `--math`, `--commonmark`,
     /// `--gfm`); ignored for non-Markdown inputs. See `applyExtFlag`.
     parse_config: format.ParseConfig = .{},
+    /// `--warn`: report to stderr what this conversion will silently lose.
+    ///
+    /// Off by default, and deliberately not an error even when it fires. A
+    /// lossy conversion still produces a valid document — which is what makes
+    /// the loss quiet in the first place — so the warnings go to stderr while
+    /// stdout stays exactly what it would have been.
+    warn: bool = false,
 };
 
 pub const IdentifyOptions = struct {
@@ -286,6 +293,7 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
     var input_override: ?InputFormat = null;
     var output: OutputMode = .html;
     var output_target: ?format.Target = null;
+    var warn = false;
     var file: ?[]const u8 = null;
     var parse_config = format.ParseConfig{};
 
@@ -300,6 +308,8 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
                 try stderr.flush();
                 return ArgError.UnsupportedFormat;
             };
+        } else if (std.mem.eql(u8, arg, "--warn")) {
+            warn = true;
         } else if (std.mem.eql(u8, arg, "--output") or std.mem.eql(u8, arg, "-o")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .convert, "convert: -o/--output needs a format value", ArgError.MissingFormatValue);
             const selection = format.parseOutputSelection(name) orelse {
@@ -323,7 +333,7 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
     return .{
         .action = .convert,
         .binary_name = binary_name,
-        .options = .{ .convert = .{ .file = path, .input = resolved, .output = output, .output_target = output_target, .parse_config = parse_config } },
+        .options = .{ .convert = .{ .file = path, .input = resolved, .output = output, .output_target = output_target, .parse_config = parse_config, .warn = warn } },
     };
 }
 

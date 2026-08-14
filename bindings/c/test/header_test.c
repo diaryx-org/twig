@@ -286,8 +286,47 @@ static void test_abi_version_matches_header(void) {
     CHECK(twig_abi_version() == TWIG_ABI_VERSION);
 }
 
+static void test_diagnostics_report_what_a_conversion_loses(void) {
+    // A djot superscript has no Markdown spelling, so converting to Markdown
+    // degrades it — and converting to djot costs nothing. The point of the
+    // call is that the two answers differ for the SAME document: fidelity is a
+    // property of the (document, target) pair.
+    const char *src = "a^b^ c\n";
+    TwigDocument *doc = NULL;
+    CHECK(twig_parse((const uint8_t *)src, strlen(src), TWIG_FORMAT_DJOT, &doc) ==
+          TWIG_STATUS_OK);
+
+    const TwigWarning *warnings = NULL;
+    size_t len = 0;
+    CHECK(twig_document_diagnostics(doc, TWIG_FORMAT_MARKDOWN, &warnings, &len) ==
+          TWIG_STATUS_OK);
+    CHECK(len == 1);
+    if (len == 1) {
+        CHECK(warnings[0].fidelity == TWIG_FIDELITY_DEGRADED);
+        CHECK(strcmp(warnings[0].kind, "superscript") == 0);
+        // "0/1": second child of the first block, not a byte offset — the
+        // output does not exist yet, so there is nothing to point at in it.
+        CHECK(warnings[0].path_len == 3);
+        CHECK(memcmp(warnings[0].path_ptr, "0/1", 3) == 0);
+    }
+
+    // Lossless to djot: an empty result, and a real answer rather than an error.
+    CHECK(twig_document_diagnostics(doc, TWIG_FORMAT_DJOT, &warnings, &len) ==
+          TWIG_STATUS_OK);
+    CHECK(len == 0);
+    CHECK(warnings == NULL);
+
+    // A target with no serializer is a capability answer, not a per-node
+    // diagnosis of everything in the document.
+    CHECK(twig_document_diagnostics(doc, TWIG_FORMAT_XML, &warnings, &len) ==
+          TWIG_STATUS_UNSUPPORTED_FORMAT);
+
+    twig_document_destroy(doc);
+}
+
 int main(void) {
     test_abi_version_matches_header();
+    test_diagnostics_report_what_a_conversion_loses();
     test_align_codes_match_runtime();
     test_cell_extent_accessors();
     test_editor_document_shares_the_read_surface();

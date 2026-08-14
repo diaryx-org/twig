@@ -127,7 +127,9 @@ pub const Warning = struct {
     path: []const u8,
     /// The affected node's published kind name — `Kind.kindName`, so a family
     /// member reports as itself (`"superscript"`, not `"inline_mark"`).
-    kind: []const u8,
+    /// Sentinel-terminated, so the C ABI can hand it out as a `const char *`
+    /// without copying.
+    kind: [:0]const u8,
 
     /// The default human-readable message, no trailing newline. Bindings may
     /// render their own from the structured fields instead.

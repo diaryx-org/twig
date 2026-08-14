@@ -192,6 +192,36 @@ pub const TWIG_ALIGN_CENTER: c_int = 3;
 /// not a form you can build with.
 pub const TWIG_DIRECTIVE_NONE: c_int = -1;
 
+/// One thing converting a document to a given target would silently lose —
+/// the C mirror of `diagnostics.Warning`.
+///
+/// `path` is a slash-separated child-index trail from the analyzed root
+/// (`"1/0/2"`); EMPTY means the root itself. `kind` is the affected node's
+/// published kind name, in static library-owned storage. Both are borrowed and
+/// share the lifetime of `twig_document_diagnostics`'s output array.
+///
+/// There is deliberately no message string. A warning is structured, and every
+/// consumer that renders one wants its own wording — the Zig side's
+/// `Warning.render` is a default, not the contract.
+pub const TwigWarning = extern struct {
+    /// `TWIG_FIDELITY_*`. Never `TWIG_FIDELITY_FAITHFUL`: a faithful node is
+    /// not a warning and is not reported.
+    fidelity: c_int,
+    path_ptr: ?[*]const u8,
+    path_len: usize,
+    kind: [*:0]const u8,
+};
+
+/// `TwigWarning.fidelity` codes. `FAITHFUL` exists so the space is complete and
+/// a consumer can spell the concept; it is never the value of a reported
+/// warning.
+pub const TWIG_FIDELITY_FAITHFUL: c_int = 0;
+/// Something is emitted, but the target's parser reads it back as a DIFFERENT
+/// kind. The content survives; its meaning does not.
+pub const TWIG_FIDELITY_DEGRADED: c_int = 1;
+/// Nothing is emitted at all: the node and its subtree leave no trace.
+pub const TWIG_FIDELITY_DROPPED: c_int = 2;
+
 /// `TwigFlatNode.container_origin`: nothing recorded an origin for this node.
 /// Either it is not a `container`, or no parser produced it (a
 /// `twig_builder_*` tree).
@@ -255,6 +285,13 @@ const DocumentHandle = struct {
     ancestor_matches: []TwigQueryMatch = &.{},
     /// The last `twig_document_children` result (direct-children enumeration).
     child_matches: []TwigQueryMatch = &.{},
+    /// The last `twig_document_diagnostics` result, and the arena its `path`
+    /// strings live in. Paired: replaced together, freed together. The arena is
+    /// necessary because `diagnostics.analyze` allocates one path string per
+    /// warning and hands back borrowed slices of them — there is no single
+    /// buffer to own the way `flat_attrs` owns its records.
+    warnings: []TwigWarning = &.{},
+    warnings_arena: ?*std.heap.ArenaAllocator = null,
 
     /// The `Document` this handle reads, by value — a borrowed view either way
     /// (`ParsedDoc.document()` is itself one), so it must never be deinited.
@@ -279,6 +316,11 @@ const DocumentHandle = struct {
         if (self.subtree_attrs.len != 0) allocator.free(self.subtree_attrs);
         if (self.ancestor_matches.len != 0) allocator.free(self.ancestor_matches);
         if (self.child_matches.len != 0) allocator.free(self.child_matches);
+        if (self.warnings.len != 0) allocator.free(self.warnings);
+        if (self.warnings_arena) |arena| {
+            arena.deinit();
+            allocator.destroy(arena);
+        }
         self.* = .{ .view = self.view };
     }
 };
@@ -688,6 +730,88 @@ pub export fn twig_document_query(
 
     if (handle.query_matches.len != 0) allocator.free(handle.query_matches);
     handle.query_matches = out;
+
+    ptr_out.* = if (out.len == 0) null else out.ptr;
+    len_out.* = out.len;
+    return .ok;
+}
+
+/// What converting `doc` to `format` would silently LOSE: one `TwigWarning` per
+/// lossy node, in document order, borrowed until the next
+/// `twig_document_diagnostics` call on this document or its destruction.
+///
+/// This is the read-only pass behind twig's own claim that a conversion is
+/// lossy. Every serializer degrades or drops a node when the target has no
+/// spelling for it — a djot `{=mark=}` written into Markdown comes back as
+/// plain text, an HTML comment converted to djot vanishes — and none of it is
+/// an error, so all of it happens quietly. This is where it stops being quiet.
+///
+/// The answer is a property of the (document, target) PAIR, which is why it is
+/// computed on demand rather than stored: the same document converted to two
+/// targets has two different answers, and neither belongs to the document.
+///
+/// A `format` with no serializer at all (XML, AsciiDoc) reports
+/// TWIG_STATUS_UNSUPPORTED_FORMAT rather than warning about every node in turn:
+/// "this target cannot be written" is a capability answer, not a diagnosis.
+///
+/// An empty result (`*out_len == 0`, `*out_ptr == NULL`) means the conversion
+/// is lossless — which is a real and useful answer, not a failure.
+pub export fn twig_document_diagnostics(
+    doc: ?*TwigDocument,
+    format: c_int,
+    out_ptr: ?*?[*]const TwigWarning,
+    out_len: ?*usize,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+    const target = intToTarget(format) orelse return .unsupported_format;
+
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const d = handle.document();
+
+    const arena = allocator.create(std.heap.ArenaAllocator) catch return .out_of_memory;
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    errdefer {
+        arena.deinit();
+        allocator.destroy(arena);
+    }
+
+    const warnings = twig.diagnostics.analyze(arena.allocator(), &d.ast, d.ast.root, target) catch |err| {
+        arena.deinit();
+        allocator.destroy(arena);
+        return switch (err) {
+            error.OutOfMemory => .out_of_memory,
+            error.UnsupportedFormat => .unsupported_format,
+        };
+    };
+
+    const out = allocator.alloc(TwigWarning, warnings.len) catch {
+        arena.deinit();
+        allocator.destroy(arena);
+        return .out_of_memory;
+    };
+    for (warnings, out) |w, *slot| {
+        slot.* = .{
+            .fidelity = switch (w.fidelity) {
+                .faithful => TWIG_FIDELITY_FAITHFUL, // never recorded
+                .degraded => TWIG_FIDELITY_DEGRADED,
+                .dropped => TWIG_FIDELITY_DROPPED,
+            },
+            .path_ptr = if (w.path.len == 0) null else w.path.ptr,
+            .path_len = w.path.len,
+            .kind = w.kind.ptr,
+        };
+    }
+
+    if (handle.warnings.len != 0) allocator.free(handle.warnings);
+    if (handle.warnings_arena) |old| {
+        old.deinit();
+        allocator.destroy(old);
+    }
+    handle.warnings = out;
+    handle.warnings_arena = arena;
 
     ptr_out.* = if (out.len == 0) null else out.ptr;
     len_out.* = out.len;

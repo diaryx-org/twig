@@ -361,7 +361,10 @@ pub const Node = struct {
         /// `"strong"`), never `"inline_mark"`. The family is an internal
         /// structuring; the published vocabulary predates it and does not
         /// move because of it.
-        pub fn kindName(self: Kind) []const u8 {
+        /// Sentinel-terminated because every arm is a `@tagName` literal, and
+        /// the C ABI hands this straight out as a `const char *` — see
+        /// `c_abi.zig`'s `kindNameZ`, which relies on the same property.
+        pub fn kindName(self: Kind) [:0]const u8 {
             return switch (self) {
                 .inline_mark => |m| @tagName(m),
                 .text_leaf => |l| @tagName(l.kind),
