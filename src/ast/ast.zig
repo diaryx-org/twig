@@ -283,10 +283,17 @@ pub const Node = struct {
         pub const ProcessingInstruction = struct { target: []const u8, data: []const u8 };
 
         pub const Container = struct {
-            /// The tag or directive type: `"div"`, `"span"`, `"video"`,
-            /// `"svg:rect"`, `"note"`. Never empty — djot's anonymous `:::`
-            /// and `[…]{…}` carry `"div"`/`"span"`, which is what they render
-            /// as and what makes them compare equal to the HTML forms.
+            /// The tag or directive type: `"div"`, `"video"`, `"svg:rect"`,
+            /// `"note"`.
+            ///
+            /// EMPTY for djot's anonymous `:::` and `[…]{…}`, which carry
+            /// their identity as a class instead. Naming them `"div"`/`"span"`
+            /// was considered and rejected when the four kinds merged: a
+            /// Markdown `:span[x]{title="a b"}` is a directive NAMED span, and
+            /// the two would have parsed to the same node. `origin` is the
+            /// axis that keeps such a collision decidable where it does still
+            /// arise — an HTML `<div>` and a Markdown `:::div` agree on every
+            /// other field.
             name: []const u8,
             /// How the container was spelled, when the producing format draws
             /// a distinction its serializer must reproduce (see `Form`).

@@ -715,16 +715,21 @@ pub const TreeBuilder = struct {
 
             inline .emph_open, .strong_open, .span_open, .mark_open, .superscript_open, .subscript_open, .delete_open, .insert_open, .double_quoted_open, .single_quoted_open => try self.pushContainer(ev.start),
 
-            .emph_close => try self.closeSimpleInline(ev, .{ .inline_mark = .emph }),
-            .strong_close => try self.closeSimpleInline(ev, .{ .inline_mark = .strong }),
-            .span_close => try self.closeSimpleInline(ev, .{ .container = .{ .name = "", .form = .inline_text } }),
-            .mark_close => try self.closeSimpleInline(ev, .{ .inline_mark = .mark }),
-            .superscript_close => try self.closeSimpleInline(ev, .{ .inline_mark = .superscript }),
-            .subscript_close => try self.closeSimpleInline(ev, .{ .inline_mark = .subscript }),
-            .delete_close => try self.closeSimpleInline(ev, .{ .inline_mark = .delete }),
-            .insert_close => try self.closeSimpleInline(ev, .{ .inline_mark = .insert }),
-            .double_quoted_close => try self.closeSimpleInline(ev, .{ .inline_mark = .double_quoted }),
-            .single_quoted_close => try self.closeSimpleInline(ev, .{ .inline_mark = .single_quoted }),
+            .emph_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .emph }),
+            .strong_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .strong }),
+            // Djot's own generic containers, so their origin is `directive`
+            // rather than `element` — see `Document.Spelling.ContainerOrigin`.
+            .span_close => {
+                const id = try self.closeSimpleInline(ev, .{ .container = .{ .name = "", .form = .inline_text } });
+                self.spellings.items[id] = .{ .container_origin = .directive };
+            },
+            .mark_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .mark }),
+            .superscript_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .superscript }),
+            .subscript_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .subscript }),
+            .delete_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .delete }),
+            .insert_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .insert }),
+            .double_quoted_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .double_quoted }),
+            .single_quoted_close => _ = try self.closeSimpleInline(ev, .{ .inline_mark = .single_quoted }),
 
             .attributes_open => try self.pushContainer(ev.start),
             .attributes_close => try self.closeInlineAttributes(ev),
@@ -967,6 +972,7 @@ pub const TreeBuilder = struct {
                 var c = self.popContainer();
                 defer c.deinit(self.allocator);
                 const id = try self.addNode(.{ .container = .{ .name = "", .form = .block_fenced } }, Span.init(c.start, ev.end + 1));
+                self.spellings.items[id] = .{ .container_origin = .directive };
                 self.nodes.items[id].first_child = c.first_child;
                 self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
                 try self.commitAttrs(id, &c.attrs);
@@ -1030,13 +1036,17 @@ pub const TreeBuilder = struct {
     /// Takes a whole `Node.Kind` rather than a tag: djot's `[…]{…}` span is no
     /// longer a kind of its own but a `container` named "span", so the closer
     /// has to carry a payload and a bare tag can no longer name it.
-    fn closeSimpleInline(self: *TreeBuilder, ev: Event, kind: Node.Kind) Allocator.Error!void {
+    /// Returns the new node's id, so a caller with something further to record
+    /// about it (a span's `container_origin`) does not need its own copy of
+    /// this.
+    fn closeSimpleInline(self: *TreeBuilder, ev: Event, kind: Node.Kind) Allocator.Error!Node.Id {
         var c = self.popContainer();
         defer c.deinit(self.allocator);
         const id = try self.addNode(kind, Span.init(c.start, ev.end + 1));
         self.nodes.items[id].first_child = c.first_child;
         self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
         self.addChildToTip(id);
+        return id;
     }
 
     fn addSmartPunct(self: *TreeBuilder, ev: Event, kind: AST.SmartPunctuationKind) Allocator.Error!void {

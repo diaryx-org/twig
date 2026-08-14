@@ -398,6 +398,7 @@ pub const Parser = struct {
             self.pos += 1;
             const id = try self.builder.addContainer(.{ .container = .{ .name = name } }, &.{});
             self.builder.setSpan(id, Span.init(start, self.pos));
+            self.builder.setSpelling(id, .{ .container_origin = .element });
             try self.builder.setAttrs(id, .{ .entries = attrs });
             // `content_span` stays `null`: that's the signal to the
             // serializer that this element was written self-closing (see
@@ -451,6 +452,7 @@ pub const Parser = struct {
         const id = try self.builder.addContainer(.{ .container = .{ .name = name } }, children.items);
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(content_start, content_end));
+        self.builder.setSpelling(id, .{ .container_origin = .element });
         try self.builder.setAttrs(id, .{ .entries = attrs });
         return id;
     }

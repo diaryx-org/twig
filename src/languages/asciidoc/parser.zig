@@ -364,6 +364,7 @@ const Parser = struct {
             // presence as a child (not whether `setAttrs` ran) is what
             // signals `encode` to write the `"attributes"` key at all.
             const attrs_marker = try self.b.addNode(.{ .container = .{ .name = "document-attributes" } });
+            self.b.setSpelling(attrs_marker, .{ .container_origin = .directive });
             if (attr_entries.items.len > 0) try self.b.setAttrs(attrs_marker, .{ .entries = attr_entries.items });
             attrs_id = attrs_marker;
 
@@ -481,8 +482,11 @@ const Parser = struct {
             } else if (self.isThematicBreak(i) or self.isPageBreak(i)) {
                 const id = if (self.isThematicBreak(i))
                     try self.b.addNode(.thematic_break)
-                else
-                    try self.b.addNode(.{ .container = .{ .name = "page-break" } });
+                else blk: {
+                    const pb = try self.b.addNode(.{ .container = .{ .name = "page-break" } });
+                    self.b.setSpelling(pb, .{ .container_origin = .directive });
+                    break :blk pb;
+                };
                 const span = Span.init(block_start, self.lines[i].end);
                 self.b.setSpan(id, span);
                 try children.append(self.allocator, id);
@@ -584,7 +588,13 @@ const Parser = struct {
             .compound => blk: {
                 const inner = try self.parseFlatBlocks(content_lo, content_hi);
                 defer self.allocator.free(inner.items);
-                break :blk try self.b.addContainer(kindForCompound(delim.name), inner.items);
+                const kind = kindForCompound(delim.name);
+                const cid = try self.b.addContainer(kind, inner.items);
+                // Every compound but `quote` takes the generic escape hatch,
+                // and a delimited block is AsciiDoc's directive-family
+                // spelling — see `Document.Spelling.ContainerOrigin`.
+                if (kind == .container) self.b.setSpelling(cid, .{ .container_origin = .directive });
+                break :blk cid;
             },
             .dropped => unreachable, // returned above
         };

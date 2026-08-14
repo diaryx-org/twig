@@ -33,7 +33,16 @@ extern "C" {
 // 4: TwigFlatNode grew directive_form (136 -> 144 bytes), and name_ptr now also
 //    reports a directive's type — the two halves of a directive's identity,
 //    neither of which `kind` ("directive") carries. Appended, same as 2.
-#define TWIG_ABI_VERSION 4
+// 5: TwigFlatNode grew container_origin — whether a container was written as a
+//    tag or as a directive. An HTML <div> and a Markdown :::div agree on kind,
+//    on name_ptr and on directive_form, field for field, so none of those three
+//    could answer it. Unlike 2-4 this one lands in directive_form's tail
+//    padding: sizeof is still 144 and every prior offset is unchanged, so a
+//    version-4 consumer linked against this library is bit-for-bit correct and
+//    needs no rebuild. The bump is for the other direction — a version-5
+//    consumer against an older library reads uninitialized padding, and
+//    twig_abi_version() is the only way to catch that.
+#define TWIG_ABI_VERSION 5
 
 // The TWIG_FORMAT_* codes span BOTH format axes, in one integer space:
 //   - what a document can be PARSED as   (twig_parse, twig_editor_create)
@@ -152,19 +161,34 @@ typedef struct TwigKeyVal {
 // not `level`'s 0-means-absent trick, because a cell's TWIG_ALIGN_DEFAULT is
 // itself a meaningful value.
 //
-// name_ptr is the name a kind carries in its own payload: a generic element's
-// tag ("picture", "source", ...) or a directive's type ("note", "embed", ...,
-// no leading colons) — NULL for every other kind, since `kind` reports them all
-// as "element" / "directive". directive_form (TWIG_DIRECTIVE_*, or
-// TWIG_DIRECTIVE_NONE for a non-directive) says which of the three surface
-// forms a directive was written in; a consumer needs both, since the same type
-// renders as a span inline, a standalone block as a leaf, and a wrapper as a
-// container. attrs
-// is the node's (key, value) attributes in source order (attrs_len of them), or
-// NULL/0 for a node with none. Both borrow the node's payload with the same
-// lifetime as text_ptr/destination_ptr (invalid after the next successful edit);
-// the TwigKeyVal records additionally live in a snapshot-owned buffer replaced
-// on the next twig_editor_nodes / twig_editor_subtree call.
+// name_ptr is the name a generic container carries in its own payload: an
+// HTML/XML tag ("picture", "video", "svg:rect") or a directive's type ("note",
+// "embed", no leading colons) — NULL for every other kind. `kind` reports every
+// one of them as "container", so this is the whole of a container's identity.
+// It is EMPTY (non-NULL, length 0) for djot's anonymous ::: and [...]{...},
+// which carry theirs as a class instead.
+//
+// The two int fields beside it answer two different questions, and mixing them
+// up is the mistake this comment exists to prevent:
+//
+//   directive_form (TWIG_DIRECTIVE_*, or TWIG_DIRECTIVE_NONE) says WHICH OF THE
+//     THREE generic-container spellings fits — inline :name[x], block leaf
+//     ::name{...}, or a :::name fence. A consumer must render those
+//     differently. It is NOT "is this a directive?": HTML's parser sets a form
+//     on <div> and <span>, the two tags djot and Markdown have generic
+//     spellings for, so a <div> reports CONTAINER and a <video> reports NONE.
+//
+//   container_origin (TWIG_CONTAINER_ORIGIN_*) says whether the node was
+//     WRITTEN as a tag or as a directive. This is the one that separates an
+//     HTML <div> from a Markdown :::div; they agree on kind, name_ptr and
+//     directive_form. TWIG_CONTAINER_ORIGIN_NONE means nothing recorded it —
+//     the node is not a container, or no parser produced it.
+//
+// attrs is the node's (key, value) attributes in source order (attrs_len of
+// them), or NULL/0 for a node with none. Both borrow the node's payload with the
+// same lifetime as text_ptr/destination_ptr (invalid after the next successful
+// edit); the TwigKeyVal records additionally live in a snapshot-owned buffer
+// replaced on the next twig_editor_nodes / twig_editor_subtree call.
 typedef struct TwigFlatNode {
     uint32_t id;
     uint32_t parent;
@@ -186,6 +210,7 @@ typedef struct TwigFlatNode {
     const TwigKeyVal *attrs_ptr;
     size_t attrs_len;
     int directive_form;
+    int container_origin;
 } TwigFlatNode;
 
 // TwigFlatNode.head for a node that is neither a row nor a cell.
@@ -205,9 +230,25 @@ typedef struct TwigFlatNode {
 // around blocks (CONTAINER) — and this one is deliberately not among them, for
 // the same reason TWIG_ALIGN_NONE isn't a TwigAlignment: that enum is also
 // twig_builder_add_directive's parameter type, and "not a directive" is not a
-// form you can build with. All three real forms report kind == "directive" and
+// form you can build with. All three real forms report kind == "container" and
 // carry their type in name_ptr.
 #define TWIG_DIRECTIVE_NONE (-1)
+
+// TwigFlatNode.container_origin: whether a generic container was WRITTEN as a
+// tag or as a directive — the question kind/name_ptr/directive_form agree on
+// for an HTML <div> and a Markdown :::div, and so cannot answer between them.
+//
+// TWIG_CONTAINER_ORIGIN_NONE means nothing recorded an origin: the node is not
+// a container, or no parser produced it (a twig_builder_* tree). Not a
+// TwigContainerOrigin enumerator, for the same reason TWIG_ALIGN_NONE isn't a
+// TwigAlignment.
+#define TWIG_CONTAINER_ORIGIN_NONE (-1)
+// An HTML or XML tag: <div>, <video>, <svg:rect>.
+#define TWIG_CONTAINER_ORIGIN_ELEMENT 0
+// A lightweight-markup generic container: a djot fenced div or bracketed span,
+// a Markdown :::note / ::name / :name, an rST .. note::, an AsciiDoc delimited
+// block.
+#define TWIG_CONTAINER_ORIGIN_DIRECTIVE 1
 
 // The C ABI contract version (see the "ABI stability contract" above); compare
 // against the TWIG_ABI_VERSION you compiled with to detect a layout mismatch.

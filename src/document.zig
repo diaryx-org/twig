@@ -148,9 +148,44 @@ pub const Spelling = union(enum) {
     bullet: Bullet,
     /// An `ordered_list`'s marker punctuation: `1.`, `1)`, or `(1)`.
     ordered_delim: OrderedDelim,
+    /// Which syntax family a `container` was written in. See `ContainerOrigin`.
+    container_origin: ContainerOrigin,
 
     pub const Bullet = enum { dash, plus, star };
     pub const OrderedDelim = enum { period, paren_after, paren_both };
+
+    /// Whether a `container` was written as a TAG or as a DIRECTIVE — the axis
+    /// `Kind.Form` is repeatedly mistaken for and cannot answer.
+    ///
+    /// `Form` is a SERIALIZER HINT: it says which of a directive-capable
+    /// target's three spellings fits a node. That is why HTML's parser sets it
+    /// on `<div>` and `<span>` — the two tags djot and Markdown have generic
+    /// spellings for — and leaves it `null` on `<video>`. Which makes `form` a
+    /// bad proxy for "is this a directive?": right often enough to look
+    /// usable, wrong on exactly the two tags a consumer meets first.
+    ///
+    /// `name` cannot answer it either. A Markdown `:::div` and an HTML `<div>`
+    /// agree on name AND form, field for field, and the container unification
+    /// that produced them deliberately made a name and a class different
+    /// things rather than collapsing them. Until this axis existed the only
+    /// way to separate the two was to re-read the source under the node's span
+    /// and look at the first byte — a correct answer, spans being exact, but
+    /// not one a consumer should have to reach for.
+    ///
+    /// ── Why this is spelling and not `Kind` ────────────────────────────────
+    /// This file's criterion: a fact belongs here iff two documents differing
+    /// only in it render identically. `:::div` and `<div>` both render to
+    /// `<div>`, so it does. `Kind.Form` fails the same test and stays in
+    /// `Kind` — it decides block versus inline, so `<div>` and `<span>` render
+    /// differently.
+    pub const ContainerOrigin = enum {
+        /// An HTML or XML tag: `<div>`, `<video>`, `<svg:rect>`.
+        element,
+        /// A lightweight-markup generic container: a djot fenced div or
+        /// bracketed span, a Markdown `:::note` / `::name` / `:name`, an rST
+        /// `.. note::`.
+        directive,
+    };
 };
 
 pub fn deinit(self: *Document) void {
@@ -179,6 +214,18 @@ pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
 pub fn spelling(self: *const Document, id: AST.Node.Id) ?Spelling {
     if (id >= self.node_spelling.len) return null;
     return self.node_spelling[id];
+}
+
+/// Whether the `container` at `id` was written as a tag or as a directive, or
+/// `null` when nothing recorded it — the node is not a container, or no parser
+/// produced it. See `Spelling.ContainerOrigin`, which is also where the reason
+/// this is not answerable from `Kind` alone is written down.
+pub fn containerOrigin(self: *const Document, id: AST.Node.Id) ?Spelling.ContainerOrigin {
+    const sp = self.spelling(id) orelse return null;
+    return switch (sp) {
+        .container_origin => |o| o,
+        .bullet, .ordered_delim => null,
+    };
 }
 
 /// The source span of the attribute block attached to NODE `id`, or `null` when

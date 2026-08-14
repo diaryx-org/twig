@@ -206,6 +206,7 @@ pub const Parser = struct {
             defer if (no_children.len > 0) self.allocator.free(no_children);
             const id = try self.builder.addContainer(kind, no_children);
             self.builder.setSpan(id, Span.init(start, self.pos));
+            self.markElementOrigin(id, kind);
             try self.builder.setAttrs(id, .{ .entries = attrs });
             return id;
         }
@@ -236,8 +237,21 @@ pub const Parser = struct {
         const id = try self.builder.addContainer(kind, children);
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(content_start, content_end));
+        self.markElementOrigin(id, kind);
         try self.builder.setAttrs(id, .{ .entries = attrs });
         return id;
+    }
+
+    /// Record that a generic container came from a TAG, for the nodes where
+    /// that is not otherwise recoverable.
+    ///
+    /// `<div>` and `<span>` are the two tags `semanticKind` gives a `form` to —
+    /// they are what djot and Markdown have generic spellings for — so on
+    /// those two `form` looks like it answers "tag or directive?" and answers
+    /// it wrong. A Markdown `:::div` produces the identical node, field for
+    /// field. See `Document.Spelling.ContainerOrigin`.
+    fn markElementOrigin(self: *Parser, id: Node.Id, kind: Node.Kind) void {
+        if (kind == .container) self.builder.setSpelling(id, .{ .container_origin = .element });
     }
 
     /// Map the subset of HTML that Twig's own HTML renderer emits back to the

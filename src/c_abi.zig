@@ -127,10 +127,12 @@ pub const TwigFlatNode = extern struct {
     head: c_int,
     /// A `cell`'s column alignment (`TwigAlignment`), -1 for every other kind.
     alignment: c_int,
-    /// A generic `element`'s tag name (`"picture"`, `"source"`, …), NULL for
-    /// every other kind — the one piece of an element's identity `kind`
-    /// ("element") doesn't carry. Borrows the node payload, same lifetime as
-    /// `text`/`destination`.
+    /// A generic `container`'s name — an HTML/XML tag (`"picture"`, `"video"`)
+    /// or a directive type (`"note"`, no leading colons) — and NULL for every
+    /// other kind. `kind` reports every one of them as `"container"`, so this
+    /// is the whole of a container's identity. EMPTY (non-NULL, length 0) for
+    /// djot's anonymous `:::` and `[…]{…}`, which carry theirs as a class.
+    /// Borrows the node payload, same lifetime as `text`/`destination`.
     name_ptr: ?[*]const u8,
     name_len: usize,
     /// The node's `{...}` / HTML attributes as `(key, value)` pairs in source
@@ -143,12 +145,31 @@ pub const TwigFlatNode = extern struct {
     /// invalidates them too.
     attrs_ptr: ?[*]const TwigKeyVal,
     attrs_len: usize,
-    /// A `directive`'s surface form (`TWIG_DIRECTIVE_*`), `TWIG_DIRECTIVE_NONE`
-    /// for every other kind. All three forms report `kind == "directive"` and
-    /// carry their type in `name`, so this is the only thing distinguishing an
-    /// inline `:name[x]` from a block `::name{…}` or a `:::name` fence — and a
-    /// consumer must render them differently.
+    /// Which of the three generic-container SPELLINGS this node's producer
+    /// draws (`TWIG_DIRECTIVE_*`), or `TWIG_DIRECTIVE_NONE`.
+    ///
+    /// It distinguishes an inline `:name[x]` from a block `::name{…}` and a
+    /// `:::name` fence, which a consumer must render differently. It does NOT
+    /// answer "is this a directive?" — read `container_origin` for that. HTML's
+    /// parser sets a form on `<div>` and `<span>`, the two tags djot and
+    /// Markdown have generic spellings for, so this reports `CONTAINER` for a
+    /// `<div>` and `NONE` for a `<video>`.
     directive_form: c_int,
+    /// Whether a `container` was written as a TAG or as a DIRECTIVE
+    /// (`TWIG_CONTAINER_ORIGIN_*`), or `TWIG_CONTAINER_ORIGIN_NONE` when
+    /// nothing recorded it — the node is not a container, or no parser produced
+    /// it.
+    ///
+    /// This is the field that separates an HTML `<div>` from a Markdown
+    /// `:::div`. They agree on `kind` ("container"), on `name` ("div") and on
+    /// `directive_form` (CONTAINER), field for field, and before this there was
+    /// no way to tell them apart but to re-read the source under `span` and
+    /// look at the first byte.
+    ///
+    /// Sits in what was `directive_form`'s tail padding, so `sizeof` and every
+    /// prior offset are unchanged — see `TWIG_ABI_VERSION`'s note 5 for why it
+    /// is still a bump.
+    container_origin: c_int,
 };
 
 /// `TwigFlatNode.head` for a node that is neither a `row` nor a `cell`.
@@ -170,6 +191,17 @@ pub const TWIG_ALIGN_CENTER: c_int = 3;
 /// also `twig_builder_add_directive`'s parameter type, and "not a directive" is
 /// not a form you can build with.
 pub const TWIG_DIRECTIVE_NONE: c_int = -1;
+
+/// `TwigFlatNode.container_origin`: nothing recorded an origin for this node.
+/// Either it is not a `container`, or no parser produced it (a
+/// `twig_builder_*` tree).
+pub const TWIG_CONTAINER_ORIGIN_NONE: c_int = -1;
+/// Written as an HTML/XML tag: `<div>`, `<video>`, `<svg:rect>`.
+pub const TWIG_CONTAINER_ORIGIN_ELEMENT: c_int = 0;
+/// Written as a lightweight-markup generic container: a djot fenced div or
+/// bracketed span, a Markdown `:::note` / `::name` / `:name`, an rST
+/// `.. note::`, an AsciiDoc delimited block.
+pub const TWIG_CONTAINER_ORIGIN_DIRECTIVE: c_int = 1;
 
 pub const TwigDocument = opaque {};
 
@@ -351,7 +383,15 @@ pub export fn twig_version_string() [*:0]const u8 {
 /// identity, which `kind` ("directive") carries neither of. Filling an
 /// existing field for a kind that used to report NULL is source-compatible;
 /// the appended field is what makes it a bump.
-pub const TWIG_ABI_VERSION: u32 = 4;
+/// 5: `TwigFlatNode` grew `container_origin` — whether a container was written
+/// as a tag or as a directive, which `kind`/`name`/`directive_form` agree on
+/// for an HTML `<div>` and a Markdown `:::div` and so cannot answer. The field
+/// lands in `directive_form`'s tail padding, so `@sizeOf` is still 144 and
+/// every prior offset is unchanged: a version-4 consumer linked against this
+/// library is bit-for-bit correct and needs no rebuild. The bump is for the
+/// other direction — a version-5 consumer against an older library would read
+/// uninitialized padding, and `twig_abi_version` is the only way to catch it.
+pub const TWIG_ABI_VERSION: u32 = 5;
 
 pub export fn twig_abi_version() u32 {
     return TWIG_ABI_VERSION;
@@ -408,6 +448,9 @@ comptime {
         assert(@offsetOf(TwigFlatNode, "attrs_ptr") == 120);
         assert(@offsetOf(TwigFlatNode, "attrs_len") == 128);
         assert(@offsetOf(TwigFlatNode, "directive_form") == 136);
+        // In what used to be tail padding: the struct is still 144 bytes and
+        // every offset above is untouched. See `TWIG_ABI_VERSION` note 5.
+        assert(@offsetOf(TwigFlatNode, "container_origin") == 140);
 
         assert(@sizeOf(TwigKeyVal) == 32);
         assert(@offsetOf(TwigKeyVal, "key") == 0);
@@ -1551,6 +1594,21 @@ fn kindDirectiveForm(node: *const twig.AST.Node) c_int {
     };
 }
 
+/// Whether the container `node` was written as a tag or a directive, as a
+/// `TWIG_CONTAINER_ORIGIN_*` code.
+///
+/// Unlike the other `kind*` helpers this one needs the `Document`, not just the
+/// node: the answer renders identically either way (`:::div` and `<div>` both
+/// render to `<div>`), which is exactly the criterion that puts a fact in
+/// `Document`'s spelling side-table rather than in `Kind`.
+fn containerOriginOf(doc: *const twig.Document, node: *const twig.AST.Node) c_int {
+    const origin = doc.containerOrigin(node.id) orelse return TWIG_CONTAINER_ORIGIN_NONE;
+    return switch (origin) {
+        .element => TWIG_CONTAINER_ORIGIN_ELEMENT,
+        .directive => TWIG_CONTAINER_ORIGIN_DIRECTIVE,
+    };
+}
+
 /// A heading's level, or 0 for any other kind.
 fn kindLevel(node: *const twig.AST.Node) u32 {
     return switch (node.kind) {
@@ -1909,6 +1967,7 @@ fn flatNodeOf(doc: *const twig.Document, node: *const twig.AST.Node, id: u32, pa
         .attrs_ptr = null,
         .attrs_len = 0,
         .directive_form = kindDirectiveForm(node),
+        .container_origin = containerOriginOf(doc, node),
     };
 }
 

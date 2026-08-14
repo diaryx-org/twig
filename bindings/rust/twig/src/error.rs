@@ -53,7 +53,9 @@ impl fmt::Display for Error {
             Error::Ambiguous => f.write_str("selector matched more than one node"),
             Error::NotEditable => f.write_str("node has no editable span"),
             Error::EditConflict => f.write_str("edit produced an unparseable document"),
-            Error::UnsafeMetadata => f.write_str("metadata contains </script; unsafe to embed in HTML"),
+            Error::UnsafeMetadata => {
+                f.write_str("metadata contains </script; unsafe to embed in HTML")
+            }
             Error::Internal => f.write_str("internal error"),
         }
     }

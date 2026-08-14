@@ -1145,6 +1145,9 @@ fn closeTop(
         else => false,
     };
     const id = try b.addContainer(kind, if (absorbed) &.{} else frame.children.items);
+    // Everything rST spells generically is directive-family: a `.. name::`
+    // block, a role, or a doctree element with no twig kind of its own.
+    if (kind == .container) b.setSpelling(id, .{ .container_origin = .directive });
     if (attr_buf.items.len > 0) try b.setAttrs(id, .{ .entries = attr_buf.items });
 
     if (stack.items.len == 0) {

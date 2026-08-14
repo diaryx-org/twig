@@ -398,6 +398,7 @@ const Parser = struct {
         const title_str = try self.b.addLeaf(.{ .str = tm.text });
         self.b.setSpan(title_str, tm.text_span);
         const title_id = try self.b.addContainer(.{ .container = .{ .name = "title" } }, &.{title_str});
+        self.b.setSpelling(title_id, .{ .container_origin = .directive });
         self.b.setSpan(title_id, tm.text_span);
 
         const slug = try self.makeSlug(tm.text);
@@ -689,10 +690,11 @@ const Parser = struct {
         // zero children instead decodes (and must therefore be built) as a
         // generic, childless `container`, or `encode` would write a spurious
         // blank text line `markup_leaf`'s payload always contributes one of.
-        const id = if (comment_text.len == 0)
-            try self.b.addLeaf(.{ .container = .{ .name = "comment" } })
-        else
-            try self.b.addLeaf(.{ .markup_leaf = .{ .kind = .comment, .text = comment_text } });
+        const id = if (comment_text.len == 0) blk: {
+            const cid = try self.b.addLeaf(.{ .container = .{ .name = "comment" } });
+            self.b.setSpelling(cid, .{ .container_origin = .directive });
+            break :blk cid;
+        } else try self.b.addLeaf(.{ .markup_leaf = .{ .kind = .comment, .text = comment_text } });
         self.b.setSpan(id, Span.init(self.lines[i].start, self.lines[next - 1].end));
         // docutils marks every text-preserving element this way; it is a
         // fixed invariant of the construct, not a reading of anything in the
@@ -987,6 +989,7 @@ const Parser = struct {
             const name_str = try self.b.addLeaf(.{ .str = fm.name });
             self.b.setSpan(name_str, marker_span);
             const name_id = try self.b.addContainer(.{ .container = .{ .name = "field_name" } }, &.{name_str});
+            self.b.setSpelling(name_id, .{ .container_origin = .directive });
             self.b.setSpan(name_id, marker_span);
 
             const body = try self.parseMarkedBody(i, hi, indent, content, fm.rel_start, fm.has_content, .own_minimum);
@@ -994,9 +997,11 @@ const Parser = struct {
             // docutils appends the `field_body` unconditionally, so a field
             // with nothing after its marker still has an (empty) one.
             const body_id = try self.b.addContainer(.{ .container = .{ .name = "field_body" } }, body.items);
+            self.b.setSpelling(body_id, .{ .container_origin = .directive });
             self.b.setSpan(body_id, Span.init(self.lines[i].start, self.lines[body.stopped_at - 1].end));
 
             const field_id = try self.b.addContainer(.{ .container = .{ .name = "field" } }, &.{ name_id, body_id });
+            self.b.setSpelling(field_id, .{ .container_origin = .directive });
             self.b.setSpan(field_id, Span.init(self.lines[i].start, self.lines[body.stopped_at - 1].end));
             try fields.append(self.allocator, field_id);
 
@@ -1006,6 +1011,7 @@ const Parser = struct {
 
         const field_ids = try fields.toOwnedSlice(self.allocator);
         const list_id = try self.b.addContainer(.{ .container = .{ .name = "field_list" } }, field_ids);
+        self.b.setSpelling(list_id, .{ .container_origin = .directive });
         self.allocator.free(field_ids);
         self.b.setSpan(list_id, Span.init(self.lines[lo].start, list_end));
         return .{ .id = list_id, .next = i };
@@ -1054,6 +1060,7 @@ const Parser = struct {
                 const c_str = try self.b.addLeaf(.{ .str = classifier });
                 self.b.setSpan(c_str, term_span);
                 const c_id = try self.b.addContainer(.{ .container = .{ .name = "classifier" } }, &.{c_str});
+                self.b.setSpelling(c_id, .{ .container_origin = .directive });
                 self.b.setSpan(c_id, term_span);
                 try item_children.append(self.allocator, c_id);
             }

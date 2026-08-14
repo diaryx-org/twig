@@ -14,12 +14,30 @@ use std::ptr::NonNull;
 pub use error::Error;
 pub use ffi::TwigSpan as Span;
 
+/// Every format Twig can **parse** — the input axis, as opposed to [`Target`],
+/// which is where output bytes can go.
+///
+/// `#[non_exhaustive]` for the same reason [`Target`] is: Twig's parser list
+/// grows (reStructuredText is written and awaiting a registry entry), and a
+/// caller matching on this enum should not have to be recompiled to keep
+/// compiling. Match with a `_` arm.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Format {
     Djot,
     Markdown,
     Xml,
     Html,
+    /// Parsed and rendered, but **not** serialized: `Target::Asciidoc` reports
+    /// [`Error::UnsupportedFormat`], and no [`Editor`] gesture applies to an
+    /// AsciiDoc document.
+    ///
+    /// The parser also covers a *slice* of AsciiDoc rather than all of it —
+    /// the header, paragraphs, sections, lists, delimited blocks and the inline
+    /// spans. What it does not implement survives as literal source text rather
+    /// than failing the parse, so a successful parse is not by itself a claim
+    /// that the whole document was understood.
+    Asciidoc,
 }
 
 impl From<Format> for ffi::TwigFormat {
@@ -29,6 +47,7 @@ impl From<Format> for ffi::TwigFormat {
             Format::Markdown => ffi::TwigFormat::Markdown,
             Format::Xml => ffi::TwigFormat::Xml,
             Format::Html => ffi::TwigFormat::Html,
+            Format::Asciidoc => ffi::TwigFormat::Asciidoc,
         }
     }
 }
@@ -54,6 +73,12 @@ pub enum Target {
     Markdown,
     Xml,
     Html,
+    /// Nameable, and always [`Error::UnsupportedFormat`] at the moment of
+    /// serializing — AsciiDoc has a parser and no serializer. Present for the
+    /// reason [`From<Format> for Target`](#impl-From<Format>-for-Target) is
+    /// total: an input format Twig cannot write back is a *runtime* answer, not
+    /// an unnameable target.
+    Asciidoc,
 }
 
 impl Target {
@@ -69,6 +94,7 @@ impl Target {
             Target::Markdown => Some(Format::Markdown),
             Target::Xml => Some(Format::Xml),
             Target::Html => Some(Format::Html),
+            Target::Asciidoc => Some(Format::Asciidoc),
         }
     }
 }
@@ -83,6 +109,7 @@ impl From<Format> for Target {
             Format::Markdown => Target::Markdown,
             Format::Xml => Target::Xml,
             Format::Html => Target::Html,
+            Format::Asciidoc => Target::Asciidoc,
         }
     }
 }
@@ -94,6 +121,7 @@ impl From<Target> for ffi::TwigFormat {
             Target::Markdown => ffi::TwigFormat::Markdown,
             Target::Xml => ffi::TwigFormat::Xml,
             Target::Html => ffi::TwigFormat::Html,
+            Target::Asciidoc => ffi::TwigFormat::Asciidoc,
         }
     }
 }
@@ -183,13 +211,31 @@ pub struct FlatNode {
     /// what tells them apart, which is why it is not optional in practice for
     /// anything a renderer cares about.
     pub name: Option<String>,
-    /// Which of the three surface forms a `directive` was written in; `None` for
-    /// every other kind. Pairs with [`name`](Self::name): the name says *which*
-    /// directive, this says *how it was written*, and a renderer needs both —
-    /// the same type is a span inline ([`DirectiveForm::Text`]), a standalone
-    /// block with no body ([`DirectiveForm::Leaf`]), and a wrapper around blocks
+    /// Which of the three generic-container SPELLINGS this node's producer
+    /// draws; `None` when it draws none. Pairs with [`name`](Self::name): the
+    /// name says *which* container, this says *how it is written*, and a
+    /// renderer needs both — the same type is a span inline
+    /// ([`DirectiveForm::Text`]), a standalone block with no body
+    /// ([`DirectiveForm::Leaf`]), and a wrapper around blocks
     /// ([`DirectiveForm::Container`]).
+    ///
+    /// **This does not answer "is it a directive?"** — use
+    /// [`origin`](Self::origin). HTML's parser sets a form on `<div>` and
+    /// `<span>`, the two tags djot and Markdown have generic spellings for, so
+    /// this reports `Some(Container)` for a `<div>` and `None` for a
+    /// `<video>`: right often enough to look usable, wrong on the two tags you
+    /// meet first.
     pub directive_form: Option<DirectiveForm>,
+    /// Whether a generic container was WRITTEN as a tag or as a directive;
+    /// `None` when nothing recorded it — the node is not a container, or no
+    /// parser produced it (a [`Builder`] tree).
+    ///
+    /// This is the field that separates an HTML `<div>` from a Markdown
+    /// `:::div`. Those two agree on [`kind`](Self::kind) (`"container"`), on
+    /// [`name`](Self::name) (`"div"`) and on
+    /// [`directive_form`](Self::directive_form) (`Container`), field for field,
+    /// so none of the three can tell you which one you have.
+    pub origin: Option<ContainerOrigin>,
     /// The node's `{...}` / HTML attributes as `(key, value)` pairs in source
     /// order (empty when it has none). A bare attribute (HTML `disabled`, or a
     /// `<source media=…>` used as a flag) has a `None` value.
@@ -424,9 +470,8 @@ impl Document {
     /// recorded content span.
     pub fn content_span(&mut self, node: NodeId) -> Result<Option<Range<usize>>, Error> {
         let mut span = ffi::TwigSpan { start: 0, end: 0 };
-        let status = unsafe {
-            ffi::twig_document_node_content_span(self.raw.as_ptr(), node.0, &mut span)
-        };
+        let status =
+            unsafe { ffi::twig_document_node_content_span(self.raw.as_ptr(), node.0, &mut span) };
         match status.0 {
             ffi::TwigStatus::OK => Ok(Some(span.start..span.end)),
             ffi::TwigStatus::NOT_FOUND => Ok(None),
@@ -455,9 +500,7 @@ impl Document {
             _ => return Err(Error::from_status(status).unwrap_err()),
         }
         let mut rowspan: u32 = 0;
-        Error::from_status(unsafe {
-            ffi::twig_document_cell_rowspan(raw, node.0, &mut rowspan)
-        })?;
+        Error::from_status(unsafe { ffi::twig_document_cell_rowspan(raw, node.0, &mut rowspan) })?;
         Ok(Some((colspan, rowspan)))
     }
 
@@ -612,8 +655,9 @@ impl Editor {
     pub fn new(input: &[u8], format: Format) -> Result<Self, Error> {
         let mut raw = std::ptr::null_mut();
         let ffi_format: ffi::TwigFormat = format.into();
-        let status =
-            unsafe { ffi::twig_editor_create(input.as_ptr(), input.len(), ffi_format as i32, &mut raw) };
+        let status = unsafe {
+            ffi::twig_editor_create(input.as_ptr(), input.len(), ffi_format as i32, &mut raw)
+        };
         Error::from_status(status)?;
         let raw = NonNull::new(raw).ok_or(Error::Internal)?;
         Ok(Self { raw })
@@ -627,7 +671,11 @@ impl Editor {
     /// other formats). The editor reparses with these after every edit, so a
     /// directive-bearing document stays parseable — needed before
     /// [`Editor::filter`] can match `directive[...]` selectors.
-    pub fn new_ext(input: &[u8], format: Format, extensions: MarkdownExtensions) -> Result<Self, Error> {
+    pub fn new_ext(
+        input: &[u8],
+        format: Format,
+        extensions: MarkdownExtensions,
+    ) -> Result<Self, Error> {
         let mut raw = std::ptr::null_mut();
         let ffi_format: ffi::TwigFormat = format.into();
         let status = unsafe {
@@ -692,9 +740,8 @@ impl Editor {
     /// Delete the located node (removes exactly its span; no whitespace
     /// cleanup).
     pub fn delete(&mut self, locator: &str) -> Result<(), Error> {
-        let status = unsafe {
-            ffi::twig_editor_delete(self.raw.as_ptr(), locator.as_ptr(), locator.len())
-        };
+        let status =
+            unsafe { ffi::twig_editor_delete(self.raw.as_ptr(), locator.as_ptr(), locator.len()) };
         Error::from_status(status)
     }
 
@@ -711,9 +758,8 @@ impl Editor {
     /// keep the children) — e.g. peel a `:::vis{...}` container. A node with no
     /// interior (a leaf, or an empty container) is removed.
     pub fn unwrap_node(&mut self, locator: &str) -> Result<(), Error> {
-        let status = unsafe {
-            ffi::twig_editor_unwrap(self.raw.as_ptr(), locator.as_ptr(), locator.len())
-        };
+        let status =
+            unsafe { ffi::twig_editor_unwrap(self.raw.as_ptr(), locator.as_ptr(), locator.len()) };
         Error::from_status(status)
     }
 
@@ -721,7 +767,12 @@ impl Editor {
     /// selector except those also matching `keep` (`None` spares nothing),
     /// then — if `unwrap_kept` — unwrap the survivors. Read the result with
     /// [`Editor::source`].
-    pub fn filter(&mut self, drop: &str, keep: Option<&str>, unwrap_kept: bool) -> Result<(), Error> {
+    pub fn filter(
+        &mut self,
+        drop: &str,
+        keep: Option<&str>,
+        unwrap_kept: bool,
+    ) -> Result<(), Error> {
         let (keep_ptr, keep_len) = match keep {
             Some(k) => (k.as_ptr(), k.len()),
             None => (std::ptr::null(), 0),
@@ -907,8 +958,9 @@ impl Editor {
     /// caret *before* an edit so the retired undo step captures it. An empty
     /// blob clears the current caret.
     pub fn set_caret_blob(&mut self, blob: &[u8]) -> Result<(), Error> {
-        let status =
-            unsafe { ffi::twig_editor_set_caret_blob(self.raw.as_ptr(), blob.as_ptr(), blob.len()) };
+        let status = unsafe {
+            ffi::twig_editor_set_caret_blob(self.raw.as_ptr(), blob.as_ptr(), blob.len())
+        };
         Error::from_status(status)
     }
 
@@ -1046,7 +1098,12 @@ impl Editor {
     /// [`Error::UnsupportedFormat`] if the document's format can't spell `kind`
     /// (e.g. a Markdown [`InlineKind::Mark`]); [`Error::InvalidArgument`] for a
     /// bad range; [`Error::EditConflict`] if the result doesn't reparse.
-    pub fn wrap_range(&mut self, start: usize, end: usize, kind: InlineKind) -> Result<Change, Error> {
+    pub fn wrap_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        kind: InlineKind,
+    ) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_wrap_range(ed, start, end, kind.to_c(), out)
         })
@@ -1056,7 +1113,12 @@ impl Editor {
     /// *is* a node of `kind` (its whole span or its rendered interior), else
     /// wrap it — a rich editor's Cmd-B. Same error rules as
     /// [`Editor::wrap_range`].
-    pub fn toggle_inline(&mut self, start: usize, end: usize, kind: InlineKind) -> Result<Change, Error> {
+    pub fn toggle_inline(
+        &mut self,
+        start: usize,
+        end: usize,
+        kind: InlineKind,
+    ) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_toggle_inline(ed, start, end, kind.to_c(), out)
         })
@@ -1155,7 +1217,11 @@ impl Editor {
     }
 
     /// Set the caret's column to `alignment`.
-    pub fn table_set_alignment(&mut self, offset: usize, alignment: Alignment) -> Result<(), Error> {
+    pub fn table_set_alignment(
+        &mut self,
+        offset: usize,
+        alignment: Alignment,
+    ) -> Result<(), Error> {
         self.table_edit(offset, ffi::TWIG_TABLE_SET_ALIGNMENT, alignment.to_c())
     }
 
@@ -1170,9 +1236,7 @@ impl Editor {
     }
 
     fn table_edit(&mut self, offset: usize, op: c_int, arg: c_int) -> Result<(), Error> {
-        self.change_op(|ed, out| unsafe {
-            ffi::twig_editor_table_edit(ed, offset, op, arg, out)
-        })?;
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_table_edit(ed, offset, op, arg, out) })?;
         Ok(())
     }
 
@@ -1596,7 +1660,13 @@ fn query_match_from_ffi(m: &ffi::TwigQueryMatch) -> Result<QueryMatch, Error> {
 
 /// Copy a borrowed C ABI [`ffi::TwigFlatNode`] into an owned [`FlatNode`].
 fn flat_node_from_ffi(n: &ffi::TwigFlatNode) -> Result<FlatNode, Error> {
-    let node_id = |v: u32| if v == ffi::TWIG_NO_NODE { None } else { Some(NodeId(v)) };
+    let node_id = |v: u32| {
+        if v == ffi::TWIG_NO_NODE {
+            None
+        } else {
+            Some(NodeId(v))
+        }
+    };
     Ok(FlatNode {
         id: NodeId(n.id),
         parent: node_id(n.parent),
@@ -1619,6 +1689,7 @@ fn flat_node_from_ffi(n: &ffi::TwigFlatNode) -> Result<FlatNode, Error> {
         alignment: Alignment::from_c(n.alignment),
         name: borrowed_bytes(n.name_ptr, n.name_len),
         directive_form: DirectiveForm::from_c(n.directive_form),
+        origin: ContainerOrigin::from_c(n.container_origin),
         attrs: borrowed_attrs(n.attrs_ptr, n.attrs_len),
     })
 }
@@ -1891,6 +1962,42 @@ impl SmartPunctuation {
     }
 }
 
+/// Whether a generic container was written as a TAG or as a DIRECTIVE — the
+/// axis [`DirectiveForm`] is repeatedly mistaken for and cannot answer.
+///
+/// `DirectiveForm` is a spelling hint: which of a directive-capable format's
+/// three spellings fits this node. Twig's HTML parser sets one on `<div>` and
+/// `<span>` because those are the two tags djot and Markdown have generic
+/// spellings for — so a `<div>` and a Markdown `:::div` produce nodes that
+/// agree on kind, name and form alike. Until this axis existed, the only way
+/// to separate them was to re-read the source bytes under the node's span and
+/// look at the first character.
+///
+/// Read-only: it records what a parser saw, and there is nothing to set on the
+/// build path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ContainerOrigin {
+    /// An HTML or XML tag: `<div>`, `<video>`, `<svg:rect>`.
+    Element,
+    /// A lightweight-markup generic container: a djot fenced div or bracketed
+    /// span, a Markdown `:::note` / `::name` / `:name`, an rST `.. note::`, an
+    /// AsciiDoc delimited block.
+    Directive,
+}
+
+impl ContainerOrigin {
+    /// `None` for [`ffi::TWIG_CONTAINER_ORIGIN_NONE`] (nothing recorded an
+    /// origin) or any code this binding doesn't know.
+    fn from_c(v: c_int) -> Option<Self> {
+        match v {
+            ffi::TWIG_CONTAINER_ORIGIN_ELEMENT => Some(ContainerOrigin::Element),
+            ffi::TWIG_CONTAINER_ORIGIN_DIRECTIVE => Some(ContainerOrigin::Directive),
+            _ => None,
+        }
+    }
+}
+
 /// The surface form of a generic directive for [`Builder::add_directive`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DirectiveForm {
@@ -1960,7 +2067,9 @@ impl Builder {
 
     /// Add a single-string-payload node (a `str`, code span, url, comment, …).
     pub fn add_text(&mut self, kind: TextKind, text: &str) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_text(b, kind.to_c(), text.as_ptr(), text.len(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_text(b, kind.to_c(), text.as_ptr(), text.len(), out)
+        })
     }
 
     /// Add a heading of the given level (attach its inline children afterward).
@@ -1971,27 +2080,50 @@ impl Builder {
     /// Add a code block, with an optional info-string language.
     pub fn add_code_block(&mut self, lang: Option<&str>, text: &str) -> Result<NodeId, Error> {
         let (lp, ll, has) = opt_str(lang);
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_code_block(b, lp, ll, has, text.as_ptr(), text.len(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_code_block(b, lp, ll, has, text.as_ptr(), text.len(), out)
+        })
     }
 
     /// Add a raw block targeting `format` (e.g. `"html"`).
     pub fn add_raw_block(&mut self, format: &str, text: &str) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
-            ffi::twig_builder_add_raw_block(b, format.as_ptr(), format.len(), text.as_ptr(), text.len(), out)
+            ffi::twig_builder_add_raw_block(
+                b,
+                format.as_ptr(),
+                format.len(),
+                text.as_ptr(),
+                text.len(),
+                out,
+            )
         })
     }
 
     /// Add a document-metadata block written in config language `lang`.
     pub fn add_metadata(&mut self, lang: &str, text: &str) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
-            ffi::twig_builder_add_metadata(b, lang.as_ptr(), lang.len(), text.as_ptr(), text.len(), out)
+            ffi::twig_builder_add_metadata(
+                b,
+                lang.as_ptr(),
+                lang.len(),
+                text.as_ptr(),
+                text.len(),
+                out,
+            )
         })
     }
 
     /// Add a raw inline targeting `format`.
     pub fn add_raw_inline(&mut self, format: &str, text: &str) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
-            ffi::twig_builder_add_raw_inline(b, format.as_ptr(), format.len(), text.as_ptr(), text.len(), out)
+            ffi::twig_builder_add_raw_inline(
+                b,
+                format.as_ptr(),
+                format.len(),
+                text.as_ptr(),
+                text.len(),
+                out,
+            )
         })
     }
 
@@ -1999,7 +2131,11 @@ impl Builder {
     /// compatibility but ignored by the underlying builder: the node's
     /// spelling is always the canonical one for `kind` (e.g. `"---"` for an
     /// em dash), never a caller-supplied one.
-    pub fn add_smart_punctuation(&mut self, kind: SmartPunctuation, text: &str) -> Result<NodeId, Error> {
+    pub fn add_smart_punctuation(
+        &mut self,
+        kind: SmartPunctuation,
+        text: &str,
+    ) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
             ffi::twig_builder_add_smart_punctuation(b, kind.to_c(), text.as_ptr(), text.len(), out)
         })
@@ -2007,14 +2143,22 @@ impl Builder {
 
     /// Add a link with an optional destination and/or reference label (attach
     /// the link text as children).
-    pub fn add_link(&mut self, destination: Option<&str>, reference: Option<&str>) -> Result<NodeId, Error> {
+    pub fn add_link(
+        &mut self,
+        destination: Option<&str>,
+        reference: Option<&str>,
+    ) -> Result<NodeId, Error> {
         let (dp, dl, hd) = opt_str(destination);
         let (rp, rl, hr) = opt_str(reference);
         self.emit(|b, out| unsafe { ffi::twig_builder_add_link(b, dp, dl, hd, rp, rl, hr, out) })
     }
 
     /// Add an image — like [`Builder::add_link`], but children are the alt text.
-    pub fn add_image(&mut self, destination: Option<&str>, reference: Option<&str>) -> Result<NodeId, Error> {
+    pub fn add_image(
+        &mut self,
+        destination: Option<&str>,
+        reference: Option<&str>,
+    ) -> Result<NodeId, Error> {
         let (dp, dl, hd) = opt_str(destination);
         let (rp, rl, hr) = opt_str(reference);
         self.emit(|b, out| unsafe { ffi::twig_builder_add_image(b, dp, dl, hd, rp, rl, hr, out) })
@@ -2022,24 +2166,41 @@ impl Builder {
 
     /// Add a generic directive of the given form and name.
     pub fn add_directive(&mut self, form: DirectiveForm, name: &str) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_directive(b, form.to_c(), name.as_ptr(), name.len(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_directive(b, form.to_c(), name.as_ptr(), name.len(), out)
+        })
     }
 
     /// Add a generic named element (the escape hatch for HTML/XML tags).
     pub fn add_element(&mut self, name: &str) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_element(b, name.as_ptr(), name.len(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_element(b, name.as_ptr(), name.len(), out)
+        })
     }
 
     /// Add an XML processing instruction (`<?target data?>`).
-    pub fn add_processing_instruction(&mut self, target: &str, data: &str) -> Result<NodeId, Error> {
+    pub fn add_processing_instruction(
+        &mut self,
+        target: &str,
+        data: &str,
+    ) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
-            ffi::twig_builder_add_processing_instruction(b, target.as_ptr(), target.len(), data.as_ptr(), data.len(), out)
+            ffi::twig_builder_add_processing_instruction(
+                b,
+                target.as_ptr(),
+                target.len(),
+                data.as_ptr(),
+                data.len(),
+                out,
+            )
         })
     }
 
     /// Add a footnote definition with the given label.
     pub fn add_footnote(&mut self, label: &str) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_footnote(b, label.as_ptr(), label.len(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_footnote(b, label.as_ptr(), label.len(), out)
+        })
     }
 
     /// Add a citation definition — reStructuredText's `.. [CIT2002] ...`. Holds
@@ -2047,26 +2208,39 @@ impl Builder {
     /// them, which is why this is its own call and not a flag on
     /// [`Builder::add_footnote`].
     pub fn add_citation(&mut self, label: &str) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_citation(b, label.as_ptr(), label.len(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_citation(b, label.as_ptr(), label.len(), out)
+        })
     }
 
     /// Add a substitution definition — reStructuredText's
     /// `.. |name| image:: p.png`. Unlike a footnote or citation, its children
     /// are INLINE nodes.
     pub fn add_substitution(&mut self, label: &str) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_substitution(b, label.as_ptr(), label.len(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_substitution(b, label.as_ptr(), label.len(), out)
+        })
     }
 
     /// Add a link/image reference definition (`label` → `destination`).
     pub fn add_reference(&mut self, label: &str, destination: &str) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
-            ffi::twig_builder_add_reference(b, label.as_ptr(), label.len(), destination.as_ptr(), destination.len(), out)
+            ffi::twig_builder_add_reference(
+                b,
+                label.as_ptr(),
+                label.len(),
+                destination.as_ptr(),
+                destination.len(),
+                out,
+            )
         })
     }
 
     /// Add a bullet list.
     pub fn add_bullet_list(&mut self, style: BulletStyle, tight: bool) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_bullet_list(b, style.to_c(), tight as c_int, out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_bullet_list(b, style.to_c(), tight as c_int, out)
+        })
     }
 
     /// Add an ordered list, with an optional explicit start number.
@@ -2082,7 +2256,15 @@ impl Builder {
             None => (0, 0),
         };
         self.emit(|b, out| unsafe {
-            ffi::twig_builder_add_ordered_list(b, numbering.to_c(), delim.to_c(), tight as c_int, start_val, has_start, out)
+            ffi::twig_builder_add_ordered_list(
+                b,
+                numbering.to_c(),
+                delim.to_c(),
+                tight as c_int,
+                start_val,
+                has_start,
+                out,
+            )
         })
     }
 
@@ -2093,7 +2275,9 @@ impl Builder {
 
     /// Add a task-list item with the given checkbox state.
     pub fn add_task_list_item(&mut self, checked: bool) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_task_list_item(b, checked as c_int, out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_task_list_item(b, checked as c_int, out)
+        })
     }
 
     /// Add a table row (`head` marks a header row).
@@ -2103,7 +2287,9 @@ impl Builder {
 
     /// Add a one-square table cell (`head` marks a header cell).
     pub fn add_cell(&mut self, head: bool, alignment: Alignment) -> Result<NodeId, Error> {
-        self.emit(|b, out| unsafe { ffi::twig_builder_add_cell(b, head as c_int, alignment.to_c(), out) })
+        self.emit(|b, out| unsafe {
+            ffi::twig_builder_add_cell(b, head as c_int, alignment.to_c(), out)
+        })
     }
 
     /// Add a table cell occupying `colspan` columns and `rowspan` rows — a grid
@@ -2118,7 +2304,14 @@ impl Builder {
         rowspan: u32,
     ) -> Result<NodeId, Error> {
         self.emit(|b, out| unsafe {
-            ffi::twig_builder_add_cell_spanning(b, head as c_int, alignment.to_c(), colspan, rowspan, out)
+            ffi::twig_builder_add_cell_spanning(
+                b,
+                head as c_int,
+                alignment.to_c(),
+                colspan,
+                rowspan,
+                out,
+            )
         })
     }
 
@@ -2126,7 +2319,9 @@ impl Builder {
     /// Each child id should appear in exactly one `set_children` call.
     pub fn set_children(&mut self, parent: NodeId, children: &[NodeId]) -> Result<(), Error> {
         let ids: Vec<u32> = children.iter().map(|n| n.0).collect();
-        let status = unsafe { ffi::twig_builder_set_children(self.raw.as_ptr(), parent.0, ids.as_ptr(), ids.len()) };
+        let status = unsafe {
+            ffi::twig_builder_set_children(self.raw.as_ptr(), parent.0, ids.as_ptr(), ids.len())
+        };
         Error::from_status(status)
     }
 
@@ -2143,7 +2338,9 @@ impl Builder {
                 value_len: v.map_or(0, |s| s.len()),
             })
             .collect();
-        let status = unsafe { ffi::twig_builder_set_attrs(self.raw.as_ptr(), id.0, kvs.as_ptr(), kvs.len()) };
+        let status = unsafe {
+            ffi::twig_builder_set_attrs(self.raw.as_ptr(), id.0, kvs.as_ptr(), kvs.len())
+        };
         Error::from_status(status)
     }
 
@@ -2237,6 +2434,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_asciidoc_and_refuses_to_write_it() {
+        let mut doc = Document::parse_str("= Title\n\nsome *bold* text\n", Format::Asciidoc)
+            .expect("parse asciidoc");
+        let html = String::from_utf8_lossy(&doc.render_html().expect("render html")).into_owned();
+        assert!(html.contains("<h1>Title</h1>"), "got {html:?}");
+        assert!(html.contains("<strong>bold</strong>"), "got {html:?}");
+
+        // Nameable as a target, and always a runtime refusal: AsciiDoc has a
+        // parser and no serializer. This is the case `Target`'s totality
+        // exists for — the answer is `UnsupportedFormat`, not "unnameable".
+        assert_eq!(
+            doc.serialize_to(Target::Asciidoc),
+            Err(Error::UnsupportedFormat)
+        );
+        assert_eq!(Target::from(Format::Asciidoc), Target::Asciidoc);
+        assert_eq!(Target::Asciidoc.as_format(), Some(Format::Asciidoc));
+    }
+
+    #[test]
     fn serialize_round_trips_and_cross_converts() {
         let mut doc = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
 
@@ -2324,9 +2540,13 @@ mod tests {
         let mut doc = Document::parse_str(source, Format::Markdown).expect("parse markdown");
         let heading = doc.query("heading").expect("query").pop().expect("heading");
 
-        assert_eq!(doc.span(NodeId(heading.node_id)).expect("span"), heading.span);
         assert_eq!(
-            doc.content_span(NodeId(heading.node_id)).expect("content span"),
+            doc.span(NodeId(heading.node_id)).expect("span"),
+            heading.span
+        );
+        assert_eq!(
+            doc.content_span(NodeId(heading.node_id))
+                .expect("content span"),
             heading.content_span
         );
         assert_eq!(doc.span(NodeId(u32::MAX)), Err(Error::InvalidArgument));
@@ -2372,7 +2592,10 @@ mod tests {
             assert_eq!(view.span(NodeId(kids[0].node_id)).expect("span"), 0..5);
             // The two the view can't serve.
             assert_eq!(view.render_html(), Err(Error::UnsupportedFormat));
-            assert_eq!(view.serialize(Format::Markdown), Err(Error::UnsupportedFormat));
+            assert_eq!(
+                view.serialize(Format::Markdown),
+                Err(Error::UnsupportedFormat)
+            );
         }
 
         ed.replace("0", "# one and a half").expect("replace");
@@ -2403,7 +2626,10 @@ mod tests {
         let mut ed = Editor::new_ext(
             src.as_bytes(),
             Format::Markdown,
-            MarkdownExtensions { html_elements: true, ..Default::default() },
+            MarkdownExtensions {
+                html_elements: true,
+                ..Default::default()
+            },
         )
         .expect("editor");
         let nodes = ed.nodes().expect("nodes");
@@ -2415,14 +2641,20 @@ mod tests {
         assert_eq!(
             source.attrs,
             vec![
-                ("media".to_string(), Some("(prefers-color-scheme: dark)".to_string())),
+                (
+                    "media".to_string(),
+                    Some("(prefers-color-scheme: dark)".to_string())
+                ),
                 ("srcset".to_string(), Some("d.svg".to_string())),
             ]
         );
 
         // The `<img>` fallback stays an `image` node (no element name), and its
         // `src` is the ordinary `destination`.
-        let img = nodes.iter().find(|n| n.kind == "image").expect("an image node");
+        let img = nodes
+            .iter()
+            .find(|n| n.kind == "image")
+            .expect("an image node");
         assert!(img.name.is_none());
         assert_eq!(img.destination.as_deref(), Some("l.svg"));
 
@@ -2430,6 +2662,56 @@ mod tests {
         let picture_kids_str = nodes.iter().find(|n| n.kind == "str");
         if let Some(s) = picture_kids_str {
             assert!(s.name.is_none() && s.attrs.is_empty());
+        }
+    }
+
+    #[test]
+    fn container_origin_separates_a_div_from_a_div() {
+        // The collision this field exists for. These two documents produce
+        // container nodes that agree on `kind`, on `name` AND on
+        // `directive_form` — so a consumer holding one of them could not say
+        // which syntax the author wrote without re-reading the source bytes.
+        let mut html =
+            Editor::new("<div>hi</div>\n".as_bytes(), Format::Html).expect("html editor");
+        let mut md = Editor::new_ext(
+            ":::div\nhi\n:::\n".as_bytes(),
+            Format::Markdown,
+            MarkdownExtensions {
+                directives: true,
+                ..Default::default()
+            },
+        )
+        .expect("markdown editor");
+
+        let html_nodes = html.nodes().expect("html nodes");
+        let md_nodes = md.nodes().expect("markdown nodes");
+        let tag = html_nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some("div"))
+            .expect("a <div> container");
+        let directive = md_nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some("div"))
+            .expect("a :::div container");
+
+        // Indistinguishable on every field that predates `origin`.
+        assert_eq!(tag.kind, directive.kind);
+        assert_eq!(tag.name, directive.name);
+        assert_eq!(tag.directive_form, directive.directive_form);
+        assert_eq!(tag.directive_form, Some(DirectiveForm::Container));
+
+        // And decidable now.
+        assert_eq!(tag.origin, Some(ContainerOrigin::Element));
+        assert_eq!(directive.origin, Some(ContainerOrigin::Directive));
+    }
+
+    #[test]
+    fn container_origin_is_none_for_non_containers() {
+        // The field is a container's, so everything else reports `None` rather
+        // than a default that would read as a real answer.
+        let mut ed = Editor::new("# hi\n\npara\n".as_bytes(), Format::Markdown).expect("editor");
+        for n in ed.nodes().expect("nodes") {
+            assert_eq!(n.origin, None, "{} should carry no origin", n.kind);
         }
     }
 
@@ -2444,7 +2726,10 @@ mod tests {
         let mut ed = Editor::new_ext(
             src.as_bytes(),
             Format::Markdown,
-            MarkdownExtensions { directives: true, ..Default::default() },
+            MarkdownExtensions {
+                directives: true,
+                ..Default::default()
+            },
         )
         .expect("editor");
         let nodes = ed.nodes().expect("nodes");
@@ -2465,8 +2750,14 @@ mod tests {
 
         // The attributes still ride the ordinary side-table, and a non-directive
         // reports no form at all.
-        let embed = nodes.iter().find(|n| n.name.as_deref() == Some("embed")).expect("embed");
-        assert_eq!(embed.attrs, vec![("src".to_string(), Some("demo.html".to_string()))]);
+        let embed = nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some("embed"))
+            .expect("embed");
+        assert_eq!(
+            embed.attrs,
+            vec![("src".to_string(), Some("demo.html".to_string()))]
+        );
         let para = nodes.iter().find(|n| n.kind == "para").expect("a para");
         assert!(para.directive_form.is_none() && para.name.is_none());
     }
@@ -2483,7 +2774,8 @@ mod tests {
     #[test]
     fn editor_edits_by_selector() {
         let mut ed = Editor::new_str("# One\n\n## Two\n", Format::Markdown).expect("editor");
-        ed.replace("heading(\"Two\")", "## Renamed").expect("replace");
+        ed.replace("heading(\"Two\")", "## Renamed")
+            .expect("replace");
         assert_eq!(ed.source_str().expect("source"), "# One\n\n## Renamed\n");
     }
 
@@ -2554,7 +2846,8 @@ mod tests {
         let mut ed = Editor::new_str("# One\n\n## Two\n", Format::Markdown).expect("editor");
         assert_eq!(ed.last_change(), None); // nothing edited yet
 
-        ed.replace("heading(\"Two\")", "## Renamed").expect("replace");
+        ed.replace("heading(\"Two\")", "## Renamed")
+            .expect("replace");
         assert_eq!(ed.source_str().unwrap(), "# One\n\n## Renamed\n");
         let c = ed.last_change().expect("a change was recorded");
         // "## Two" occupied [7,13); "## Renamed" (10 bytes) now occupies [7,17).
@@ -2578,7 +2871,10 @@ mod tests {
         assert_eq!(roots[0].kind, "doc");
 
         // The heading carries its level; the "Hi" text is reachable as a payload.
-        let heading = nodes.iter().find(|n| n.kind == "heading").expect("a heading");
+        let heading = nodes
+            .iter()
+            .find(|n| n.kind == "heading")
+            .expect("a heading");
         assert_eq!(heading.level, Some(1));
         assert!(nodes.iter().any(|n| n.text.as_deref() == Some("Hi")));
 
@@ -2599,7 +2895,11 @@ mod tests {
                 }
                 kid = nodes[k as usize].next_sibling;
             }
-            assert!(seen, "node {:?} not found among its parent's children", n.id);
+            assert!(
+                seen,
+                "node {:?} not found among its parent's children",
+                n.id
+            );
         }
     }
 
@@ -2626,16 +2926,29 @@ mod tests {
             assert_eq!(m.span, all[id.0 as usize].span, "child span");
         }
         // The span addresses the block as written (absolute offsets).
-        assert!(src[top[0].span.clone()].starts_with('#'), "first block is the heading");
+        assert!(
+            src[top[0].span.clone()].starts_with('#'),
+            "first block is the heading"
+        );
 
         // child_spans works below the top level too.
-        let list = top.iter().find(|m| m.kind.ends_with("list")).expect("a list");
+        let list = top
+            .iter()
+            .find(|m| m.kind.ends_with("list"))
+            .expect("a list");
         let items = ed.child_spans(Some(NodeId(list.node_id))).expect("items");
         assert_eq!(items.len(), 2);
-        assert!(items.iter().all(|m| m.kind == "list_item"), "items: {items:?}");
+        assert!(
+            items.iter().all(|m| m.kind == "list_item"),
+            "items: {items:?}"
+        );
 
         // subtree(para) is self-contained, local-indexed, and spans stay absolute.
-        let para = top.iter().find(|m| m.kind == "para").expect("a para").node_id;
+        let para = top
+            .iter()
+            .find(|m| m.kind == "para")
+            .expect("a para")
+            .node_id;
         let sub = ed.subtree(NodeId(para)).expect("subtree");
         assert_eq!(sub[0].id, NodeId(0), "root is local id 0");
         assert_eq!(sub[0].parent, None, "root has no parent inside the subtree");
@@ -2643,8 +2956,14 @@ mod tests {
         assert_eq!(sub[0].kind, "para");
         for (i, n) in sub.iter().enumerate() {
             assert_eq!(n.id, NodeId(i as u32), "dense local ids");
-            for link in [n.parent, n.first_child, n.next_sibling].into_iter().flatten() {
-                assert!((link.0 as usize) < sub.len(), "link {link:?} escapes the subtree");
+            for link in [n.parent, n.first_child, n.next_sibling]
+                .into_iter()
+                .flatten()
+            {
+                assert!(
+                    (link.0 as usize) < sub.len(),
+                    "link {link:?} escapes the subtree"
+                );
             }
         }
         assert!(
@@ -2675,7 +2994,10 @@ mod tests {
         assert_eq!(got_kinds, want_kinds, "subtree kinds match the arena");
 
         // Out-of-range id is rejected.
-        assert!(matches!(ed.subtree(NodeId(9999)), Err(Error::InvalidArgument)));
+        assert!(matches!(
+            ed.subtree(NodeId(9999)),
+            Err(Error::InvalidArgument)
+        ));
     }
 
     #[test]
@@ -2705,7 +3027,8 @@ mod tests {
 
         // A table with no alignment spelled out reports Default — a real value,
         // distinct from the None a non-cell reports.
-        let mut plain = Editor::new_str("| A |\n| --- |\n| b |\n", Format::Markdown).expect("editor");
+        let mut plain =
+            Editor::new_str("| A |\n| --- |\n| b |\n", Format::Markdown).expect("editor");
         let pnodes = plain.nodes().expect("nodes");
         let pcell = pnodes.iter().find(|n| n.kind == "cell").expect("a cell");
         assert_eq!(pcell.alignment, Some(Alignment::Default));
@@ -2728,7 +3051,8 @@ mod tests {
         assert_eq!(doc.cell_extent(cells[1]).expect("extent"), Some((1, 1)));
 
         // A pipe table cannot express a span at all, so every cell is (1, 1).
-        let mut pipe = Document::parse_str("| a |\n| --- |\n| b |\n", Format::Markdown).expect("parse");
+        let mut pipe =
+            Document::parse_str("| a |\n| --- |\n| b |\n", Format::Markdown).expect("parse");
         let pipe_cell = pipe
             .nodes()
             .expect("nodes")
@@ -2747,7 +3071,9 @@ mod tests {
     fn builder_add_cell_spanning_renders_colspan_and_rowspan() {
         let mut b = Builder::new().expect("builder");
         let wide_text = b.add_text(TextKind::Str, "wide").expect("str");
-        let wide = b.add_cell_spanning(false, Alignment::Default, 2, 3).expect("cell");
+        let wide = b
+            .add_cell_spanning(false, Alignment::Default, 2, 3)
+            .expect("cell");
         b.set_children(wide, &[wide_text]).expect("children");
         let plain_text = b.add_text(TextKind::Str, "one").expect("str");
         let plain = b.add_cell(false, Alignment::Default).expect("cell");
@@ -2758,7 +3084,10 @@ mod tests {
         b.set_children(table, &[row]).expect("children");
 
         let html = String::from_utf8(b.render_html(table).expect("html")).expect("utf-8");
-        assert!(html.contains("<td colspan=\"2\" rowspan=\"3\">wide</td>"), "{html}");
+        assert!(
+            html.contains("<td colspan=\"2\" rowspan=\"3\">wide</td>"),
+            "{html}"
+        );
         // `add_cell` is the one-square case: the default extent writes nothing.
         assert!(html.contains("<td>one</td>"), "{html}");
 
@@ -2774,7 +3103,10 @@ mod tests {
         let mut ed = Editor::new_str("# Hi\n\ntext\n", Format::Markdown).expect("editor");
 
         // Offset 2 is the "H" of the heading "# Hi" [0,4).
-        let m = ed.node_at(2).expect("node_at").expect("a node covers offset 2");
+        let m = ed
+            .node_at(2)
+            .expect("node_at")
+            .expect("a node covers offset 2");
         assert!(m.span.contains(&2));
 
         // The ancestor chain is root-first and ends at the deepest (== node_at).
@@ -2799,7 +3131,8 @@ mod tests {
         assert_eq!(&ed.source_str().unwrap()[c.new.clone()], "**word**");
 
         // Toggle it off by selecting the strong node's interior [4,8).
-        ed.toggle_inline(4, 8, InlineKind::Strong).expect("toggle off");
+        ed.toggle_inline(4, 8, InlineKind::Strong)
+            .expect("toggle off");
         assert_eq!(ed.source_str().unwrap(), "a word b\n");
 
         // Toggle emphasis on when the range isn't already marked.
@@ -2811,7 +3144,10 @@ mod tests {
     fn editor_inline_kind_support_is_format_specific() {
         // Markdown has no highlight/mark spelling.
         let mut md = Editor::new_str("a word b\n", Format::Markdown).expect("editor");
-        assert_eq!(md.wrap_range(2, 6, InlineKind::Mark), Err(Error::UnsupportedFormat));
+        assert_eq!(
+            md.wrap_range(2, 6, InlineKind::Mark),
+            Err(Error::UnsupportedFormat)
+        );
 
         // Djot spells it {=…=}.
         let mut dj = Editor::new_str("a word b\n", Format::Djot).expect("editor");
@@ -2823,13 +3159,15 @@ mod tests {
     fn editor_toggle_strips_verbatim_via_content_span() {
         let mut ed = Editor::new_str("a `code` b\n", Format::Markdown).expect("editor");
         // The verbatim node [2,8) reports content_span [3,7); toggle peels it.
-        ed.toggle_inline(2, 8, InlineKind::Verbatim).expect("toggle code off");
+        ed.toggle_inline(2, 8, InlineKind::Verbatim)
+            .expect("toggle code off");
         assert_eq!(ed.source_str().unwrap(), "a code b\n");
 
         // A multi-backtick span peels BOTH runs via content_span, not by
         // stripping a single delimiter (which would corrupt it to "`x`").
         let mut ed2 = Editor::new_str("a ``x`` b\n", Format::Markdown).expect("editor");
-        ed2.toggle_inline(2, 7, InlineKind::Verbatim).expect("toggle multi off");
+        ed2.toggle_inline(2, 7, InlineKind::Verbatim)
+            .expect("toggle multi off");
         assert_eq!(ed2.source_str().unwrap(), "a x b\n");
     }
 
@@ -2853,10 +3191,16 @@ mod tests {
     #[test]
     fn editor_set_block_rejects_bad_level_and_format() {
         let mut md = Editor::new_str("hi\n", Format::Markdown).expect("editor");
-        assert_eq!(md.set_block(0, BlockKind::Heading(9)), Err(Error::InvalidArgument));
+        assert_eq!(
+            md.set_block(0, BlockKind::Heading(9)),
+            Err(Error::InvalidArgument)
+        );
 
         let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
-        assert_eq!(xml.set_block(1, BlockKind::Heading(1)), Err(Error::UnsupportedFormat));
+        assert_eq!(
+            xml.set_block(1, BlockKind::Heading(1)),
+            Err(Error::UnsupportedFormat)
+        );
     }
 
     #[test]
@@ -2998,10 +3342,16 @@ mod tests {
     #[test]
     fn editor_insert_image_rejects_a_newline_destination() {
         let mut ed = Editor::new_str("w\n", Format::Djot).expect("editor");
-        assert_eq!(ed.insert_image(0, 1, "a\nb.png"), Err(Error::InvalidArgument));
+        assert_eq!(
+            ed.insert_image(0, 1, "a\nb.png"),
+            Err(Error::InvalidArgument)
+        );
 
         let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
-        assert_eq!(xml.insert_image(3, 5, "x.png"), Err(Error::UnsupportedFormat));
+        assert_eq!(
+            xml.insert_image(3, 5, "x.png"),
+            Err(Error::UnsupportedFormat)
+        );
     }
 
     #[test]
@@ -3043,7 +3393,12 @@ mod tests {
         let mut ed2 = Editor::new_str("z\n", Format::Markdown).expect("editor");
         ed2.insert_literal(0, "# ").expect("literal");
         assert_eq!(ed2.source_str().unwrap(), "\\# z\n");
-        assert!(!ed2.nodes().expect("nodes").iter().any(|n| n.kind == "heading"));
+        assert!(
+            !ed2.nodes()
+                .expect("nodes")
+                .iter()
+                .any(|n| n.kind == "heading")
+        );
     }
 
     #[test]
@@ -3075,8 +3430,7 @@ mod tests {
         assert_eq!(para.insert_line_break(3), Err(Error::NotFound));
 
         // Djot has no in-cell break spelling → UnsupportedFormat.
-        let mut dj =
-            Editor::new_str("| a | b |\n| --- | --- |\n", Format::Djot).expect("editor");
+        let mut dj = Editor::new_str("| a | b |\n| --- | --- |\n", Format::Djot).expect("editor");
         assert_eq!(dj.insert_line_break(3), Err(Error::UnsupportedFormat));
 
         // Out-of-range offset → InvalidArgument.
@@ -3296,7 +3650,10 @@ mod tests {
         // reported range is a superset covering both edits.
         ed.edit_range(9, 9, "Z").expect("edit"); // source is now "abXYcdefgZh\n"
         let d = ed.dirty_range().expect("dirty");
-        assert!(d.start <= 2 && d.end >= 10, "range {d:?} must cover both edits");
+        assert!(
+            d.start <= 2 && d.end >= 10,
+            "range {d:?} must cover both edits"
+        );
 
         // clear_dirty acknowledges without moving the revision.
         let rev = ed.revision();
@@ -3350,8 +3707,7 @@ mod tests {
 
     #[test]
     fn editor_renumber_ordered_lists_fixes_a_stale_sequence() {
-        let mut ed =
-            Editor::new_str("1. a\n2. x\n2. b\n3. c\n", Format::Markdown).expect("editor");
+        let mut ed = Editor::new_str("1. a\n2. x\n2. b\n3. c\n", Format::Markdown).expect("editor");
         ed.renumber_ordered_lists(0).expect("renumber ok");
         assert_eq!(ed.source_str().unwrap(), "1. a\n2. x\n3. b\n4. c\n");
     }
@@ -3385,7 +3741,8 @@ mod tests {
     fn editor_set_block_converts_setext_heading() {
         // A setext heading rebuilt from its content_span collapses the underline.
         let mut ed = Editor::new_str("Title\n=====\n\nbody\n", Format::Markdown).expect("editor");
-        ed.set_block(0, BlockKind::Heading(1)).expect("setext to atx");
+        ed.set_block(0, BlockKind::Heading(1))
+            .expect("setext to atx");
         assert_eq!(ed.source_str().unwrap(), "# Title\n\nbody\n");
     }
 
@@ -3411,7 +3768,10 @@ mod tests {
         let mut ext = Editor::new_ext(
             src.as_bytes(),
             Format::Markdown,
-            MarkdownExtensions { directives: true, ..Default::default() },
+            MarkdownExtensions {
+                directives: true,
+                ..Default::default()
+            },
         )
         .expect("editor");
         assert_eq!(ext.query("directive").expect("query").len(), 1);
@@ -3427,7 +3787,10 @@ mod tests {
         let mut ext = Document::parse_str_with(
             src,
             Format::Markdown,
-            MarkdownExtensions { html_elements: true, ..Default::default() },
+            MarkdownExtensions {
+                html_elements: true,
+                ..Default::default()
+            },
         )
         .expect("parse");
         let images = ext.query("image").expect("query");
@@ -3441,7 +3804,10 @@ mod tests {
         let mut ed = Editor::new_ext(
             src.as_bytes(),
             Format::Markdown,
-            MarkdownExtensions { directives: true, ..Default::default() },
+            MarkdownExtensions {
+                directives: true,
+                ..Default::default()
+            },
         )
         .expect("editor");
         // Drop every vis block except the public one, then unwrap it.
@@ -3457,7 +3823,10 @@ mod tests {
     #[test]
     fn editor_filter_rejects_a_malformed_selector() {
         let mut ed = Editor::new_str("hi\n", Format::Markdown).expect("editor");
-        assert_eq!(ed.filter("list >", None, false), Err(Error::InvalidArgument));
+        assert_eq!(
+            ed.filter("list >", None, false),
+            Err(Error::InvalidArgument)
+        );
     }
 
     #[test]
@@ -3501,7 +3870,8 @@ mod tests {
         let inner = b.add_text(TextKind::Str, "hi").unwrap();
         let el = b.add_element("section").unwrap();
         b.set_children(el, &[inner]).unwrap();
-        b.set_attrs(el, &[("class", Some("note")), ("hidden", None)]).unwrap();
+        b.set_attrs(el, &[("class", Some("note")), ("hidden", None)])
+            .unwrap();
 
         let html = String::from_utf8(b.render_html(el).unwrap()).unwrap();
         assert!(html.contains("<section"), "{html}");
@@ -3527,7 +3897,12 @@ mod tests {
         b.set_children(two, &[two_para]).unwrap();
 
         let list = b
-            .add_ordered_list(OrderedNumbering::Decimal, OrderedDelim::Period, true, Some(1))
+            .add_ordered_list(
+                OrderedNumbering::Decimal,
+                OrderedDelim::Period,
+                true,
+                Some(1),
+            )
             .unwrap();
         b.set_children(list, &[one, two]).unwrap();
         let doc = b.add(VoidKind::Doc).unwrap();
@@ -3551,7 +3926,8 @@ mod tests {
         // A root id past the end can't be rendered.
         let mut ptr = std::ptr::null();
         let mut len = 0usize;
-        let status = unsafe { ffi::twig_builder_render_html(b.raw.as_ptr(), 4242, &mut ptr, &mut len) };
+        let status =
+            unsafe { ffi::twig_builder_render_html(b.raw.as_ptr(), 4242, &mut ptr, &mut len) };
         assert_eq!(Error::from_status(status), Err(Error::InvalidArgument));
     }
 }

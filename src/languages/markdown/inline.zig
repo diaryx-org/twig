@@ -1616,6 +1616,7 @@ fn buildTextDirective(sc: *Scanner, d: TextDirective) Allocator.Error!Node.Id {
     defer if (children.len > 0) b.allocator.free(children);
 
     const id = try b.addContainer(.{ .container = .{ .form = .inline_text, .name = d.name } }, children);
+    b.setSpelling(id, .{ .container_origin = .directive });
     if (d.attrs) |p| {
         defer p.deinit(b.allocator);
         try b.setAttrs(id, .{ .entries = p.entries });

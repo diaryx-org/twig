@@ -275,7 +275,14 @@ static void test_new_block_gestures_link_and_edit(void) {
 
 static void test_abi_version_matches_header(void) {
     // If these disagree, the header and the linked library are from different
-    // builds — the exact mismatch TWIG_ABI_VERSION exists to catch.
+    // builds — the exact mismatch TWIG_ABI_VERSION exists to catch. Print both
+    // when it fires: the interesting case is a STALE HEADER reached through an
+    // include path nobody meant to be searched, and "which two numbers" is the
+    // whole diagnosis.
+    if (twig_abi_version() != TWIG_ABI_VERSION) {
+        fprintf(stderr, "abi mismatch: header says %d, library says %u\n",
+                TWIG_ABI_VERSION, twig_abi_version());
+    }
     CHECK(twig_abi_version() == TWIG_ABI_VERSION);
 }
 

@@ -13,7 +13,7 @@ use std::os::raw::{c_char, c_int};
 /// The C ABI contract version this binding is written against; see
 /// `twig_abi_version`. Must match the value baked into the linked library
 /// (asserted at runtime by the `abi_version_matches` test in `lib.rs`).
-pub const TWIG_ABI_VERSION: u32 = 4;
+pub const TWIG_ABI_VERSION: u32 = 5;
 
 // Freeze the canonical 64-bit layout of every `#[repr(C)]` mirror below so it
 // can never silently drift from the Zig `extern struct` it shadows. These are
@@ -62,6 +62,9 @@ const _: () = {
     assert!(offset_of!(TwigFlatNode, attrs_ptr) == 120);
     assert!(offset_of!(TwigFlatNode, attrs_len) == 128);
     assert!(offset_of!(TwigFlatNode, directive_form) == 136);
+    // In what was `directive_form`'s tail padding: `size_of` is still 144 and
+    // every offset above is unchanged. See the ABI note 5 in twig.h.
+    assert!(offset_of!(TwigFlatNode, container_origin) == 140);
 
     assert!(size_of::<TwigKeyVal>() == 32);
     assert!(offset_of!(TwigKeyVal, key) == 0);
@@ -96,6 +99,12 @@ pub enum TwigFormat {
     Markdown = 2,
     Xml = 3,
     Html = 4,
+    /// Parses and renders, but does not serialize: `twig_document_serialize`
+    /// with this code reports `TWIG_STATUS_UNSUPPORTED_FORMAT`, and no editing
+    /// gesture applies to an AsciiDoc document. The parser also covers a SLICE
+    /// of the language rather than all of it; what it doesn't implement
+    /// survives as literal source text.
+    Asciidoc = 5,
 }
 
 /// Markdown extension flags for the `md_flags` bitmask of `twig_parse_ext` and
@@ -164,9 +173,12 @@ pub struct TwigChange {
 /// borrow the current parse's payloads (NULL when the kind carries none).
 /// `head`/`alignment` carry a `row`/`cell` payload, each `-1` for a kind that
 /// has none (see [`TWIG_HEAD_NONE`] / [`TWIG_ALIGN_NONE`]). `name_ptr` is a
-/// generic element's tag name — or a `directive`'s type — and NULL for every
-/// other kind; `directive_form` is a [`TWIG_DIRECTIVE_NONE`]-defaulted code for
-/// which of the three surface forms a directive took; `attrs_ptr` points at
+/// generic container's name — an HTML/XML tag or a directive's type — and NULL
+/// for every other kind; `directive_form` is a [`TWIG_DIRECTIVE_NONE`]-defaulted
+/// code for which of the three surface forms it took; `container_origin` is a
+/// [`TWIG_CONTAINER_ORIGIN_NONE`]-defaulted code for whether it was WRITTEN as a
+/// tag or a directive (the two questions are different — see the constants);
+/// `attrs_ptr` points at
 /// `attrs_len` [`TwigKeyVal`]s (NULL/0 when the node has no attributes). Both
 /// borrow the current parse's payloads with the same lifetime as `text_ptr`.
 #[repr(C)]
@@ -192,6 +204,7 @@ pub struct TwigFlatNode {
     pub attrs_ptr: *const TwigKeyVal,
     pub attrs_len: usize,
     pub directive_form: c_int,
+    pub container_origin: c_int,
 }
 
 /// `TwigFlatNode::head` for a node that is neither a `row` nor a `cell`.
@@ -217,6 +230,23 @@ pub const TWIG_DIRECTIVE_NONE: c_int = -1;
 pub const TWIG_DIRECTIVE_TEXT: c_int = 0;
 pub const TWIG_DIRECTIVE_LEAF: c_int = 1;
 pub const TWIG_DIRECTIVE_CONTAINER: c_int = 2;
+
+/// `TwigFlatNode::container_origin` codes — whether a generic container was
+/// WRITTEN as a tag or as a directive.
+///
+/// A different question from [`TWIG_DIRECTIVE_TEXT`] and friends, which say
+/// which of the three directive spellings a node's producer draws. HTML's
+/// parser gives `<div>` and `<span>` a `directive_form` (they are the two tags
+/// djot and Markdown have generic spellings for), so `directive_form` cannot
+/// separate an HTML `<div>` from a Markdown `:::div`: those two agree on kind,
+/// on name and on form, field for field. This is the code that separates them.
+///
+/// `NONE` means nothing recorded an origin — the node isn't a container, or no
+/// parser produced it.
+#[allow(dead_code)]
+pub const TWIG_CONTAINER_ORIGIN_NONE: c_int = -1;
+pub const TWIG_CONTAINER_ORIGIN_ELEMENT: c_int = 0;
+pub const TWIG_CONTAINER_ORIGIN_DIRECTIVE: c_int = 1;
 
 // `op` codes for `twig_editor_table_edit` — mirror of `TwigTableOp` in twig.h.
 pub const TWIG_TABLE_INSERT_ROW: c_int = 0;
@@ -427,8 +457,7 @@ unsafe extern "C" {
     pub fn twig_editor_redo(editor: *mut TwigEditor, out_change: *mut TwigChange) -> TwigStatus;
     pub fn twig_editor_coalesce_last(editor: *mut TwigEditor) -> TwigStatus;
     pub fn twig_editor_revision(editor: *mut TwigEditor) -> u64;
-    pub fn twig_editor_dirty_range(editor: *mut TwigEditor, out_span: *mut TwigSpan)
-        -> TwigStatus;
+    pub fn twig_editor_dirty_range(editor: *mut TwigEditor, out_span: *mut TwigSpan) -> TwigStatus;
     pub fn twig_editor_clear_dirty(editor: *mut TwigEditor) -> TwigStatus;
     pub fn twig_editor_set_caret_blob(
         editor: *mut TwigEditor,
@@ -590,7 +619,8 @@ unsafe extern "C" {
 
     pub fn twig_builder_create(out_builder: *mut *mut TwigBuilder) -> TwigStatus;
     pub fn twig_builder_destroy(builder: *mut TwigBuilder);
-    pub fn twig_builder_add(builder: *mut TwigBuilder, kind: c_int, out_id: *mut u32) -> TwigStatus;
+    pub fn twig_builder_add(builder: *mut TwigBuilder, kind: c_int, out_id: *mut u32)
+    -> TwigStatus;
     pub fn twig_builder_add_text(
         builder: *mut TwigBuilder,
         kind: c_int,
@@ -598,7 +628,11 @@ unsafe extern "C" {
         text_len: usize,
         out_id: *mut u32,
     ) -> TwigStatus;
-    pub fn twig_builder_add_heading(builder: *mut TwigBuilder, level: u32, out_id: *mut u32) -> TwigStatus;
+    pub fn twig_builder_add_heading(
+        builder: *mut TwigBuilder,
+        level: u32,
+        out_id: *mut u32,
+    ) -> TwigStatus;
     pub fn twig_builder_add_code_block(
         builder: *mut TwigBuilder,
         lang: *const u8,
@@ -721,10 +755,27 @@ unsafe extern "C" {
         has_start: c_int,
         out_id: *mut u32,
     ) -> TwigStatus;
-    pub fn twig_builder_add_task_list(builder: *mut TwigBuilder, tight: c_int, out_id: *mut u32) -> TwigStatus;
-    pub fn twig_builder_add_task_list_item(builder: *mut TwigBuilder, checked: c_int, out_id: *mut u32) -> TwigStatus;
-    pub fn twig_builder_add_row(builder: *mut TwigBuilder, head: c_int, out_id: *mut u32) -> TwigStatus;
-    pub fn twig_builder_add_cell(builder: *mut TwigBuilder, head: c_int, alignment: c_int, out_id: *mut u32) -> TwigStatus;
+    pub fn twig_builder_add_task_list(
+        builder: *mut TwigBuilder,
+        tight: c_int,
+        out_id: *mut u32,
+    ) -> TwigStatus;
+    pub fn twig_builder_add_task_list_item(
+        builder: *mut TwigBuilder,
+        checked: c_int,
+        out_id: *mut u32,
+    ) -> TwigStatus;
+    pub fn twig_builder_add_row(
+        builder: *mut TwigBuilder,
+        head: c_int,
+        out_id: *mut u32,
+    ) -> TwigStatus;
+    pub fn twig_builder_add_cell(
+        builder: *mut TwigBuilder,
+        head: c_int,
+        alignment: c_int,
+        out_id: *mut u32,
+    ) -> TwigStatus;
     pub fn twig_builder_add_cell_spanning(
         builder: *mut TwigBuilder,
         head: c_int,

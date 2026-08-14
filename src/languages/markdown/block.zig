@@ -1290,6 +1290,7 @@ pub const Parser = struct {
             const syntactic = Span.init(self.lineStart(c.start_line), self.lineEnd(@min(c.end_line, line_idx)));
             self.builder.setSpan(id, containerSpanExtended(&self.builder, id, syntactic));
             setContentSpanFromChildren(&self.builder, id);
+            self.builder.setSpelling(id, .{ .container_origin = .directive });
             if (c.directive_attrs) |p| {
                 try self.builder.setAttrs(id, .{ .entries = p.entries });
                 if (c.directive_attrs_span) |sp| self.builder.setAttrsSpan(id, sp);
@@ -2013,6 +2014,7 @@ pub const Parser = struct {
             self.builder.setSpan(nid, Span.init(self.lineStart(idx), self.lineEnd(idx)));
             break :blk nid;
         };
+        self.builder.setSpelling(id, .{ .container_origin = .directive });
         if (attrs) |p| {
             try self.builder.setAttrs(id, .{ .entries = p.entries });
             self.builder.setAttrsSpan(id, self.attrsSpanIn(s, p));
