@@ -40,6 +40,19 @@
 //! kind is present again exactly when the table claims `.faithful`. A serializer
 //! change that alters a round-trip fails here rather than drifting.
 //!
+//! The probe's default question is "did a node of this kind come back?", which
+//! is too coarse twice over, and both refinements exist because the coarse
+//! answer was hiding a real loss:
+//!
+//!   * `KindRef.container_named` puts a container's NAME in the match. Djot has
+//!     only classes to hold a name in, so `:::note` came back as an anonymous
+//!     div classed `note` — a container, therefore a survival, therefore
+//!     `.faithful`, for as long as the serializer was deleting the name.
+//!   * `Probe.intact` asks a second question of the reparsed tree, for a loss
+//!     that leaves the kind in place. GFM's delimiter row is mandatory, so a
+//!     header-less table has a header SYNTHESIZED for it: a table goes out and
+//!     a table comes back, and a row appeared.
+//!
 //! That mattered immediately: the nearest thing twig already had to a capability
 //! model, `syntax.zig`'s `Delims.authorable`, turns out NOT to be one. It is
 //! false for both djot's and Markdown's smart-quote containers, but converting
@@ -48,12 +61,24 @@
 //! answers — the flag means "an editor gesture may not mint this", which is a
 //! different question from "the target can hold this".
 //!
+//! ── Kind-level and node-level ──────────────────────────────────────────────
+//! `fidelity` is a function of `Kind`, so it can answer for anything the parser
+//! put IN a node (a container's name) and nothing about what hangs BELOW it.
+//! `nodeFidelity` is the second layer, and the one `analyze` calls: it takes
+//! the table's answer and downgrades it by what only the node can say. A
+//! header-less table is the case that forced it — one `.table` row had to
+//! answer for a table that round-trips and a table that came back as a
+//! paragraph, and it answered `.faithful` for both.
+//!
+//! Refinements only ever make an answer WORSE: the table is the ceiling.
+//!
 //! ── What is NOT covered yet ────────────────────────────────────────────────
-//! Node kinds only. Attributes are the declared next axis: Markdown's serializer
-//! writes a `{...}` block for a directive and nothing anywhere else, so a djot
+//! Attributes are the declared next axis: Markdown's serializer writes a
+//! `{...}` block for a directive and nothing anywhere else, so a djot
 //! paragraph's `{#id .cls}` is lost with no warning today. That needs its own
 //! per-format answer and its own probe, so it is named here rather than guessed
-//! at.
+//! at. `nodeFidelity` is where it would land — attributes are a side table, so
+//! `Kind` cannot see them either.
 //!
 //! fig's `Warning.cause` (`format_limitation` vs `explicit_option`) is also
 //! absent, because twig has no serializer option that drops anything — every
@@ -161,7 +186,7 @@ const Collector = struct {
 
     fn walk(self: *Collector, id: Node.Id, path: []const u8) AnalyzeError!void {
         const kind = self.ast.nodes[id].kind;
-        const f = fidelity(self.target, kind);
+        const f = nodeFidelity(self.target, self.ast, id);
         if (f.isLossy()) {
             try self.warnings.append(self.arena, .{
                 .fidelity = f,
@@ -196,6 +221,10 @@ fn childPath(arena: Allocator, parent: []const u8, i: usize) Allocator.Error![]c
 // parent that does. A lossy parent is reported once, at the parent.
 
 /// How `kind` survives a conversion to `target`. See the note above the table.
+///
+/// This is the KIND-level answer, and for most kinds it is the whole answer.
+/// Where a loss depends on what hangs BELOW a node rather than on the node
+/// itself, `nodeFidelity` is the one to ask — and `analyze` asks it.
 pub fn fidelity(target: Target, kind: Node.Kind) Fidelity {
     return switch (target) {
         // No `serializeFromAst`; `analyze` refuses before reaching the table.
@@ -204,6 +233,67 @@ pub fn fidelity(target: Target, kind: Node.Kind) Fidelity {
         .markdown => markdownFidelity(kind),
         .html => htmlFidelity(kind),
     };
+}
+
+/// `fidelity` for one NODE — the table's answer for its kind, downgraded by
+/// whatever only the node's own contents can say.
+///
+/// A `Kind` carries what the parser put *in* it (a container's name, a
+/// heading's level), so a payload-dependent loss is already expressible in the
+/// table. What is not is a loss that depends on a node's CHILDREN, and the
+/// table has no way to represent one: it is a function of `Kind` alone, so it
+/// must answer once for every table in every document.
+///
+/// GFM is where that bites. Its delimiter row is mandatory, so a table with a
+/// header row round-trips and a table without one has a header SYNTHESIZED for
+/// it — the same kind, in the same target, with two different answers. The
+/// table said `.faithful` for both, and a consumer asking "what will this
+/// conversion cost me?" was told nothing about the row that appeared.
+///
+/// Refinements only ever make the answer WORSE. A node cannot survive better
+/// than its kind can, so this can be read as: the table is the ceiling.
+pub fn nodeFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
+    const kind = ast.nodes[id].kind;
+    const base = fidelity(target, kind);
+    return switch (kind) {
+        .table => worst(base, tableFidelity(target, ast, id)),
+        .container => worst(base, containerFidelity(target, ast, id)),
+        else => base,
+    };
+}
+
+/// The more severe of two answers, `faithful` < `degraded` < `dropped`.
+fn worst(a: Fidelity, b: Fidelity) Fidelity {
+    return if (@intFromEnum(b) > @intFromEnum(a)) b else a;
+}
+
+/// A table's instance-level answer: whether its FIRST row is a header.
+///
+/// Only Markdown cares. GFM cannot write a table without a delimiter row and
+/// cannot put one anywhere but under the first row, so a header-less table
+/// gets an empty header synthesized above it (see the serializer's `.table`
+/// arm) — the rows all survive, in order, and the document gains a row it did
+/// not have. Djot's separator line is optional and HTML has `<tbody>` without
+/// `<thead>`, so for those two a header-less table is simply a table.
+fn tableFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
+    if (target != .markdown) return .faithful;
+    var rows = ast.tableRows(id);
+    const first = rows.next() orelse return .faithful;
+    return if (first.head) .faithful else .degraded;
+}
+
+/// A container's instance-level answer: whether it has anything to be spelled
+/// WITH.
+///
+/// Djot's inline container is `[text]{attrs}`, and the attribute block is what
+/// makes it a span at all — an anonymous one with no attributes has no
+/// spelling, so the wrapper is dropped and only its children come through.
+/// `Kind` cannot see this: attributes live in a side table, not in the payload.
+fn containerFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
+    const c = ast.nodes[id].kind.container;
+    if (target != .djot) return .faithful;
+    if (c.form != .inline_text or c.name.len > 0) return .faithful;
+    return if (ast.attrsOf(id).isEmpty()) .dropped else .faithful;
 }
 
 /// Djot holds nearly all of twig's vocabulary — unsurprising, since most of it
@@ -521,6 +611,43 @@ test "analyze refuses a target with no serializer rather than reporting every no
     try testing.expectError(error.UnsupportedFormat, analyze(arena.allocator(), &ast, ast.root, .xml));
 }
 
+test "two tables, same kind, different answers — and only the header-less one is reported" {
+    const allocator = testing.allocator;
+    var b = AST.Builder.init(allocator);
+    defer b.deinit();
+
+    // [0] a table WITH a header row: GFM's delimiter row has something to
+    // describe, and the conversion costs nothing.
+    const h = try b.addContainer(.{ .cell = .{ .head = true, .alignment = .default } }, &.{try str(&b, "H")});
+    const hr = try b.addContainer(.{ .row = .{ .head = true } }, &.{h});
+    const with = try b.addContainer(.table, &.{hr});
+
+    // [1] the same table WITHOUT one, which gets a header synthesized above it.
+    const c = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{try str(&b, "a")});
+    const r = try b.addContainer(.{ .row = .{ .head = false } }, &.{c});
+    const without = try b.addContainer(.table, &.{r});
+
+    var ast = try b.finish(try b.addContainer(.doc, &.{ with, without }));
+    defer ast.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const warnings = try analyze(arena.allocator(), &ast, ast.root, .markdown);
+
+    // One warning, on the second table. The kind-level table cannot tell these
+    // apart — this is the whole reason `nodeFidelity` exists.
+    try testing.expectEqual(@as(usize, 1), warnings.len);
+    try testing.expectEqualStrings("table", warnings[0].kind);
+    try testing.expectEqualStrings("1", warnings[0].path);
+    try testing.expectEqual(Fidelity.degraded, warnings[0].fidelity);
+
+    // Djot's separator line is optional, so neither table costs anything there
+    // — the answer is a property of the (document, target) PAIR, not of either
+    // one alone.
+    const djot_warnings = try analyze(arena.allocator(), &ast, ast.root, .djot);
+    try testing.expectEqual(@as(usize, 0), djot_warnings.len);
+}
+
 test "an HTML comment converted to djot is reported as dropped, and really is" {
     const allocator = testing.allocator;
     var b = AST.Builder.init(allocator);
@@ -646,21 +773,57 @@ const Probe = struct {
     want: AST.KindRef,
     kind: Node.Kind,
     build: *const fn (*AST.Builder) anyerror!Node.Id,
+    /// An extra condition on the REPARSED tree, for a loss that leaves the
+    /// kind in place. `want` asks whether the node came back; this asks
+    /// whether it came back UNCHANGED, and only a probe with something to
+    /// check sets it.
+    ///
+    /// The header-less table is why it exists. GFM's mandatory delimiter row
+    /// means the serializer synthesizes a header the document did not have, so
+    /// a `table` goes out and a `table` comes back — `want` is satisfied, and
+    /// the round-trip still added a row. Without somewhere to say that, the
+    /// only way to keep the probe passing would have been to call the
+    /// synthesized header faithful.
+    intact: ?*const fn (*const AST) bool = null,
 };
 
 /// Only ever called with a `round_trippable` target, so both unwraps below hold:
 /// the write half comes from the TARGET row and the read half from the INPUT row
 /// the target names, which is the whole shape of the two-table split.
-fn survives(allocator: Allocator, ast: *const AST, target: Target, want: AST.KindRef) !bool {
+fn survives(
+    allocator: Allocator,
+    ast: *const AST,
+    target: Target,
+    want: AST.KindRef,
+    intact: ?*const fn (*const AST) bool,
+) !bool {
     const src = try format.targetEntryFor(target).serializeFromAst.?(allocator, ast);
     defer allocator.free(src);
     const cfg = format.ParseConfig{};
     var back = try format.entryFor(target.asFormat().?).parseToAst(&cfg, allocator, src);
     defer back.deinit();
+    var found = false;
     for (back.ast.nodes) |n| {
-        if (want.matches(n.kind)) return true;
+        if (want.matches(n.kind)) {
+            found = true;
+            break;
+        }
     }
-    return false;
+    if (!found) return false;
+    const check = intact orelse return true;
+    return check(&back.ast);
+}
+
+/// The id of the node a probe is ABOUT, within the document it built — the
+/// first whose kind tag matches `p.kind`'s. Probes build a minimal document
+/// around exactly one node of the kind under test, so "first match" is that
+/// node. Needed because the claim being checked is now `nodeFidelity`'s, which
+/// is a question about a node rather than about a kind.
+fn probedNode(ast: *const AST, kind: Node.Kind) ?Node.Id {
+    for (ast.nodes, 0..) |n, i| {
+        if (std.meta.activeTag(n.kind) == std.meta.activeTag(kind)) return @intCast(i);
+    }
+    return null;
 }
 
 test "the fidelity table matches what the serializers actually do" {
@@ -673,8 +836,8 @@ test "the fidelity table matches what the serializers actually do" {
         defer ast.deinit();
 
         for (round_trippable) |target| {
-            const claimed = fidelity(target, p.kind);
-            const observed = try survives(allocator, &ast, target, p.want);
+            const claimed = nodeFidelity(target, &ast, probedNode(&ast, p.kind).?);
+            const observed = try survives(allocator, &ast, target, p.want, p.intact);
             if ((claimed == .faithful) != observed) {
                 std.debug.print(
                     "\nfidelity({s}, {s}) claims .{s}, but the kind {s} a round-trip\n",
@@ -770,6 +933,35 @@ const probes = [_]Probe{
             return blockDoc(b, .table, &.{ cap, r1, r2 });
         }
     }.f },
+    // The same table with NO header row — the instance case, and the one that
+    // sent a downstream consumer hand-rolling a `pipes_that_are_not_a_table`
+    // heuristic because the table above answered for both. `nodeFidelity` is
+    // what lets these two rows disagree; before it, one `.table => .faithful`
+    // had to cover a table that round-trips and a table that came back as a
+    // paragraph.
+    .{
+        .label = "table(header-less)",
+        .want = .{ .tag = .table },
+        .kind = .table,
+        .build = struct {
+            fn f(b: *AST.Builder) anyerror!Node.Id {
+                const c = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{try str(b, "a")});
+                const r = try b.addContainer(.{ .row = .{ .head = false } }, &.{c});
+                return blockDoc(b, .table, &.{r});
+            }
+        }.f,
+        .intact = struct {
+            // Built with no header row, so a header row in the reparse is one the
+            // conversion invented.
+            fn f(back: *const AST) bool {
+                for (back.nodes) |n| switch (n.kind) {
+                    .row => |r| if (r.head) return false,
+                    else => {},
+                };
+                return true;
+            }
+        }.f,
+    },
     // The same table with a COLUMN AXIS. Probed separately from `table` so the
     // two claims stay independent: the table survives every target and the
     // column survives none, and a single probe asserting both would pass on the
@@ -908,7 +1100,7 @@ test "every inline mark and text leaf is probed against the table" {
         defer ast.deinit();
         for (round_trippable) |target| {
             const claimed = fidelity(target, .{ .inline_mark = m });
-            const observed = try survives(allocator, &ast, target, .{ .mark = m });
+            const observed = try survives(allocator, &ast, target, .{ .mark = m }, null);
             if ((claimed == .faithful) != observed) {
                 std.debug.print("\nfidelity({s}, mark {s}) claims .{s}, observed survives={}\n", .{ @tagName(target), @tagName(m), @tagName(claimed), observed });
                 return error.FidelityTableStale;
@@ -936,7 +1128,7 @@ test "every inline mark and text leaf is probed against the table" {
         defer ast.deinit();
         for (round_trippable) |target| {
             const claimed = fidelity(target, .{ .text_leaf = .{ .kind = k, .text = "" } });
-            const observed = try survives(allocator, &ast, target, .{ .text_leaf = k });
+            const observed = try survives(allocator, &ast, target, .{ .text_leaf = k }, null);
             if ((claimed == .faithful) != observed) {
                 std.debug.print("\nfidelity({s}, leaf {s}) claims .{s}, observed survives={}\n", .{ @tagName(target), @tagName(k), @tagName(claimed), observed });
                 return error.FidelityTableStale;
