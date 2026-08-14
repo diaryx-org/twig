@@ -324,8 +324,40 @@ static void test_diagnostics_report_what_a_conversion_loses(void) {
     twig_document_destroy(doc);
 }
 
+static void test_definitions_are_reachable_only_through_their_own_call(void) {
+    // A footnote definition is resolved by label, so it is nobody's child: the
+    // flat array has TWO nodes with parent == TWIG_NO_NODE, which is exactly
+    // what the array's own documentation used to deny.
+    const char *src = "text[^1]\n\n[^1]: note\n";
+    TwigDocument *doc = NULL;
+    CHECK(twig_parse((const uint8_t *)src, strlen(src), TWIG_FORMAT_MARKDOWN, &doc) ==
+          TWIG_STATUS_OK);
+
+    const TwigFlatNode *nodes = NULL;
+    size_t node_count = 0;
+    CHECK(twig_document_nodes(doc, &nodes, &node_count) == TWIG_STATUS_OK);
+    size_t parentless = 0;
+    for (size_t i = 0; i < node_count; i++) {
+        if (nodes[i].parent == TWIG_NO_NODE) {
+            parentless++;
+        }
+    }
+    CHECK(parentless == 2);
+
+    const TwigQueryMatch *defs = NULL;
+    size_t def_count = 0;
+    CHECK(twig_document_definitions(doc, &defs, &def_count) == TWIG_STATUS_OK);
+    CHECK(def_count == 1);
+    if (def_count == 1) {
+        CHECK(strcmp(defs[0].kind, "footnote") == 0);
+    }
+
+    twig_document_destroy(doc);
+}
+
 int main(void) {
     test_abi_version_matches_header();
+    test_definitions_are_reachable_only_through_their_own_call();
     test_diagnostics_report_what_a_conversion_loses();
     test_align_codes_match_runtime();
     test_cell_extent_accessors();

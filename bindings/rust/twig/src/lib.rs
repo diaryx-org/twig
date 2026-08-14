@@ -777,6 +777,27 @@ impl Document {
         collect_flat_nodes(|ptr, len| unsafe { ffi::twig_document_nodes(raw, ptr, len) })
     }
 
+    /// The document-level **definitions**: every node that hangs off no parent
+    /// and is not the document root, in arena order. Usually empty.
+    ///
+    /// A parsed document is not one tree. Footnote definitions and
+    /// link-reference definitions are resolved by LABEL rather than by
+    /// position, so twig attaches them to nothing — walking from the root over
+    /// [`FlatNode::first_child`] never reaches them, and a renderer that wants
+    /// to resolve `[^1]` has to find the definition some other way. This is
+    /// that way, and it replaces scanning the whole [`Document::nodes`] array
+    /// for entries whose `parent` is `None`.
+    ///
+    /// Not filtered to a kind list: WHICH kinds end up detached is a property
+    /// of how a format resolves its definitions (djot and Markdown detach
+    /// [`Kind::Footnote`] and [`Kind::Reference`]; rST adds [`Kind::Citation`]
+    /// and [`Kind::Substitution`]), not something a caller should enumerate.
+    /// Read the [`kind`](QueryMatch::kind) on each match.
+    pub fn definitions(&mut self) -> Result<Vec<QueryMatch>, Error> {
+        let raw = self.raw.as_ptr();
+        collect_matches(|ptr, len| unsafe { ffi::twig_document_definitions(raw, ptr, len) })
+    }
+
     /// What converting this document to `target` would silently **lose**: one
     /// [`Warning`] per lossy node, in document order. An empty vec means the
     /// conversion is lossless.
@@ -3006,6 +3027,53 @@ mod tests {
         if let Some(s) = picture_kids_str {
             assert!(s.name.is_none() && s.attrs.is_empty());
         }
+    }
+
+    #[test]
+    fn definitions_finds_what_a_walk_from_the_root_cannot() {
+        // Both definitions are resolved by label, so neither is anybody's
+        // child: the document root's subtree contains the paragraph and
+        // nothing else.
+        let mut doc = Document::parse_str(
+            "text[^1] [x][a]\n\n[^1]: note\n\n[a]: /u\n",
+            Format::Markdown,
+        )
+        .expect("parse markdown");
+
+        let defs = doc.definitions().expect("definitions");
+        let mut kinds: Vec<Kind> = defs.iter().map(|m| m.kind.clone()).collect();
+        kinds.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        assert_eq!(kinds, vec![Kind::Footnote, Kind::Reference]);
+
+        // None of them is reachable from the root — the property that made a
+        // whole-arena rescan the only way to find them.
+        let all = doc.nodes().expect("nodes");
+        let root = all
+            .iter()
+            .find(|n| n.kind == Kind::Doc)
+            .expect("a doc root");
+        let mut reachable = vec![root.id];
+        let mut i = 0;
+        while i < reachable.len() {
+            let n = &all[reachable[i].0 as usize];
+            let mut c = n.first_child;
+            while let Some(cid) = c {
+                reachable.push(cid);
+                c = all[cid.0 as usize].next_sibling;
+            }
+            i += 1;
+        }
+        for d in &defs {
+            assert!(
+                !reachable.contains(&NodeId(d.node_id)),
+                "{} should be unreachable from the root",
+                d.kind
+            );
+        }
+
+        // A document that defines nothing gets an empty vec, not an error.
+        let mut plain = Document::parse_str("just text\n", Format::Markdown).expect("parse");
+        assert_eq!(plain.definitions().expect("definitions"), Vec::new());
     }
 
     #[test]

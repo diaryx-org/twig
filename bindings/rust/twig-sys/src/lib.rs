@@ -344,6 +344,11 @@ unsafe extern "C" {
         out_ptr: *mut *const TwigFlatNode,
         out_len: *mut usize,
     ) -> TwigStatus;
+    pub fn twig_document_definitions(
+        doc: *mut TwigDocument,
+        out_ptr: *mut *const TwigQueryMatch,
+        out_len: *mut usize,
+    ) -> TwigStatus;
     pub fn twig_document_diagnostics(
         doc: *mut TwigDocument,
         format: c_int,

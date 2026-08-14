@@ -51,6 +51,7 @@ pub const getIdByPath = reader.getIdByPath;
 pub const getNodeByPath = reader.getNodeByPath;
 pub const pathOf = reader.pathOf;
 pub const subtreeIds = reader.subtreeIds;
+pub const definitionRoots = reader.definitionRoots;
 pub const PathError = reader.PathError;
 
 allocator: Allocator,

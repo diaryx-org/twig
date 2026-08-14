@@ -430,6 +430,27 @@ TwigStatus twig_document_node_content_span(
 // A new function rather than a field on TwigFlatNode: the range is per
 // attribute BLOCK, not per (key, value) pair, so TwigKeyVal is the wrong home,
 // and growing TwigFlatNode would bump TWIG_ABI_VERSION. Additive in ABI v4.
+// The document-level DEFINITIONS: every node that hangs off no parent and is
+// not the document root, as TwigQueryMatches in arena order. Borrowed until the
+// next twig_document_definitions call on this document or twig_document_destroy.
+//
+// Footnote definitions and link-reference definitions are resolved by LABEL
+// rather than by position, so the parsers attach them to nothing — a walk from
+// the document root never reaches them, and a renderer that wants to resolve a
+// footnote reference has to find them some other way. This is that other way.
+//
+// Deliberately not filtered to a kind list: WHICH kinds end up detached is a
+// property of how a format resolves its definitions (djot and Markdown detach
+// `footnote` and `reference`; rST adds `citation` and `substitution`), not
+// something a caller should have to enumerate. Read the `kind` on each match.
+//
+// An empty result is the common case — most documents define nothing.
+TwigStatus twig_document_definitions(
+    TwigDocument *doc,
+    const TwigQueryMatch **out_ptr,
+    size_t *out_len
+);
+
 TwigStatus twig_document_attrs_span(
     TwigDocument *doc,
     uint32_t node_id,
@@ -471,8 +492,16 @@ TwigStatus twig_document_cell_rowspan(
 
 // Snapshot the whole tree as a flat array of TwigFlatNode, one per arena node,
 // indexed so array[i].id == i. Walk it via the parent / first_child /
-// next_sibling id links (TWIG_NO_NODE where absent); the root is the node whose
-// parent == TWIG_NO_NODE.
+// next_sibling id links (TWIG_NO_NODE where absent).
+//
+// The array is the whole ARENA, and a parsed document is not one tree, so
+// SEVERAL nodes can have parent == TWIG_NO_NODE. The document root is one of
+// them; the others are the document-level definitions — footnote and
+// link-reference definitions are resolved by label rather than by position, so
+// the parsers attach them to nothing. A walk from the document root will not
+// reach them. Use twig_document_definitions to enumerate them rather than
+// re-deriving them by scanning this array (this text used to say "the root is
+// the node whose parent == TWIG_NO_NODE", which is where that scan came from).
 //
 // Borrowed from `doc`, valid until the next twig_document_nodes call on that
 // handle or until it is destroyed. For an editor view, the text/destination
@@ -853,7 +882,9 @@ TwigStatus twig_editor_document(
 // Snapshot the editor's current tree as a flat array of TwigFlatNode, one per
 // arena node, indexed so array[i].id == i. The JSON-free read path for a
 // renderer: walk it via the parent / first_child / next_sibling id links
-// (TWIG_NO_NODE where absent); the root is the node whose parent == TWIG_NO_NODE.
+// (TWIG_NO_NODE where absent). As with twig_document_nodes, MORE THAN ONE node
+// can have parent == TWIG_NO_NODE: the document root plus any detached
+// definition (see twig_document_definitions).
 // Borrowed from `editor`, valid until the next twig_editor_nodes /
 // twig_document_nodes call or destroy; the text/destination pointers within
 // additionally require no successful edit since (a reparse frees the payloads

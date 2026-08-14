@@ -148,6 +148,47 @@ pub fn subtreeIds(self: *const AST, gpa: std.mem.Allocator, root: Node.Id) std.m
     return order.toOwnedSlice(gpa);
 }
 
+/// Every node in the arena that hangs off NO parent and is not `root` — the
+/// document-level DEFINITIONS, in arena order. Caller frees the slice.
+///
+/// A parsed document is not one tree. Footnote definitions and link-reference
+/// definitions are resolved by LABEL rather than by position, so the parsers
+/// attach them to nothing and leave them in the arena as extra roots (see
+/// `languages/markdown/block.zig`'s `finish`). A walk from `root` therefore
+/// does not reach them, and a consumer that wants them has no choice but to
+/// scan the whole arena for parentless nodes — which is what this is, done
+/// once and named, rather than re-derived by every caller.
+///
+/// Deliberately not filtered to a kind list. What ends up detached is a
+/// property of how a format resolves its definitions, not of the kind: djot
+/// and Markdown put `footnote` and `reference` here, rST adds `citation` and
+/// `substitution`, and a format that resolves something else this way should
+/// not need this function edited.
+pub fn definitionRoots(self: *const AST, gpa: std.mem.Allocator) std.mem.Allocator.Error![]Node.Id {
+    // One linear pass to mark every node that is somebody's child; whatever is
+    // left unmarked has no parent. Cheaper than asking `pathOf` per node, and
+    // it does not care whether the arena is compacted.
+    const parented = try gpa.alloc(bool, self.nodes.len);
+    defer gpa.free(parented);
+    @memset(parented, false);
+    for (self.nodes) |node| {
+        var c = node.first_child;
+        while (c) |cid| {
+            parented[cid] = true;
+            c = self.nodes[cid].next_sibling;
+        }
+    }
+
+    var out: std.ArrayList(Node.Id) = .empty;
+    errdefer out.deinit(gpa);
+    for (parented, 0..) |has_parent, i| {
+        const id: Node.Id = @intCast(i);
+        if (has_parent or id == self.root) continue;
+        try out.append(gpa, id);
+    }
+    return out.toOwnedSlice(gpa);
+}
+
 fn findPath(self: *const AST, gpa: std.mem.Allocator, id: Node.Id, target: Node.Id, acc: *std.ArrayList(usize)) std.mem.Allocator.Error!bool {
     if (id == target) return true;
     var idx: usize = 0;
@@ -200,6 +241,44 @@ test "subtreeIds returns the root first, then every descendant" {
     const all = try ast.subtreeIds(testing.allocator, doc);
     defer testing.allocator.free(all);
     try testing.expectEqual(ast.nodes.len, all.len);
+}
+
+test "definitionRoots finds the definitions a walk from the root cannot reach" {
+    const testing = std.testing;
+    const Markdown = @import("../languages/markdown/markdown.zig");
+
+    // Both a footnote definition and a link-reference definition are resolved
+    // by LABEL, so neither is anybody's child. A consumer walking from `doc`
+    // sees the paragraph and nothing else.
+    var doc = try Markdown.parse(testing.allocator, "text[^1] [x][a]\n\n[^1]: note\n\n[a]: /u\n", .{});
+    defer doc.deinit();
+
+    const reachable = try doc.ast.subtreeIds(testing.allocator, doc.ast.root);
+    defer testing.allocator.free(reachable);
+
+    const roots = try doc.ast.definitionRoots(testing.allocator);
+    defer testing.allocator.free(roots);
+    try testing.expect(roots.len >= 2);
+
+    var saw_footnote = false;
+    var saw_reference = false;
+    for (roots) |id| {
+        // Every one of them is genuinely unreachable from the document root —
+        // which is the property that made a whole-arena rescan the only way to
+        // find them.
+        try testing.expect(std.mem.indexOfScalar(AST.Node.Id, reachable, id) == null);
+        switch (doc.ast.nodes[id].kind) {
+            .footnote => saw_footnote = true,
+            .reference => saw_reference = true,
+            else => {},
+        }
+    }
+    try testing.expect(saw_footnote);
+    try testing.expect(saw_reference);
+
+    // The document root is never among them: it has no parent either, and it
+    // is the one parentless node that is not a detached definition.
+    try testing.expect(std.mem.indexOfScalar(AST.Node.Id, roots, doc.ast.root) == null);
 }
 
 test "tableRows yields only rows, skipping a caption and a column axis" {

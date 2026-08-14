@@ -283,6 +283,10 @@ const DocumentHandle = struct {
     /// The last `twig_document_nodes_at` ancestor chain. Independent of
     /// `query_matches` so a hit-test doesn't invalidate a prior query.
     ancestor_matches: []TwigQueryMatch = &.{},
+    /// The last `twig_document_definitions` result — the parentless definition
+    /// roots. Independent of `query_matches` for the same reason
+    /// `ancestor_matches` is.
+    definition_matches: []TwigQueryMatch = &.{},
     /// The last `twig_document_children` result (direct-children enumeration).
     child_matches: []TwigQueryMatch = &.{},
     /// The last `twig_document_diagnostics` result, and the arena its `path`
@@ -316,6 +320,7 @@ const DocumentHandle = struct {
         if (self.subtree_attrs.len != 0) allocator.free(self.subtree_attrs);
         if (self.ancestor_matches.len != 0) allocator.free(self.ancestor_matches);
         if (self.child_matches.len != 0) allocator.free(self.child_matches);
+        if (self.definition_matches.len != 0) allocator.free(self.definition_matches);
         if (self.warnings.len != 0) allocator.free(self.warnings);
         if (self.warnings_arena) |arena| {
             arena.deinit();
@@ -815,6 +820,56 @@ pub export fn twig_document_diagnostics(
 
     ptr_out.* = if (out.len == 0) null else out.ptr;
     len_out.* = out.len;
+    return .ok;
+}
+
+/// The document-level DEFINITIONS: every node that hangs off no parent and is
+/// not the document root, as `TwigQueryMatch`es in arena order. Borrowed until
+/// the next `twig_document_definitions` call on this document or its
+/// destruction.
+///
+/// A parsed document is not one tree. Footnote definitions and link-reference
+/// definitions are resolved by LABEL rather than by position, so the parsers
+/// attach them to nothing: a walk from the root over
+/// `parent`/`first_child`/`next_sibling` never reaches them, and until now the
+/// only way to find them was to scan the whole `twig_document_nodes` array for
+/// nodes whose `parent` is TWIG_NO_NODE — which is also why the ABI's own
+/// description of that array used to say "the root" in the singular.
+///
+/// An empty result is the common case: most documents define nothing.
+pub export fn twig_document_definitions(
+    doc: ?*TwigDocument,
+    out_ptr: ?*?[*]const TwigQueryMatch,
+    out_len: ?*usize,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const view = handle.document();
+
+    const ids = view.ast.definitionRoots(allocator) catch return .out_of_memory;
+    defer allocator.free(ids);
+
+    const buf = allocator.alloc(TwigQueryMatch, ids.len) catch return .out_of_memory;
+    for (ids, buf) |id, *slot| {
+        const cs = view.contentSpan(id);
+        slot.* = .{
+            .node_id = id,
+            .span = spanC(view.span(id)),
+            .content_span = if (cs) |c| spanC(c) else .{ .start = 0, .end = 0 },
+            .has_content_span = if (cs != null) 1 else 0,
+            .kind = kindName(&view.ast.nodes[id]),
+        };
+    }
+
+    if (handle.definition_matches.len != 0) allocator.free(handle.definition_matches);
+    handle.definition_matches = buf;
+
+    ptr_out.* = if (buf.len == 0) null else buf.ptr;
+    len_out.* = buf.len;
     return .ok;
 }
 
