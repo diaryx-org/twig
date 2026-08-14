@@ -1236,8 +1236,12 @@ TwigStatus twig_editor_insert_thematic_break(
 // twig_editor_insert_thematic_break deliberately is not. A host wanting "rule at
 // the caret" calls this and then that.
 //
-// This is a pure INSERTION at `offset`: the bytes on either side never move, and
-// all that is minted is the separator between them.
+// Nearly a pure INSERTION at `offset`: what is minted is the separator between
+// the halves, and the only bytes REMOVED are the second half's leading spaces and
+// tabs, which are structure rather than content at the start of a block (a split
+// at `- b| c` that kept its space would write `-  c`, setting that item's content
+// indent to three). A code block sheds nothing — there leading whitespace IS the
+// content.
 //
 //   * A PARAGRAPH gets a blank line. Inside a quote the blank carries the quote's
 //     marker and the second half its full prefix, so the split happens inside the
@@ -1248,7 +1252,9 @@ TwigStatus twig_editor_insert_thematic_break(
 //     numbers included, so a split `1.` item yields two `1.` items — both formats
 //     renumber on render, and twig_editor_renumber_ordered_lists is the gesture
 //     for fixing the source. A TASK item's new half is an UNCHECKED box whatever
-//     the original's state.
+//     the original's state. A NESTED item's leading indent rides along with its
+//     marker, so the new sibling stays in its own list rather than dropping to
+//     column zero and joining the enclosing one.
 //   * A HEADING repeats its own marker at its own level. twig_editor_set_block is
 //     how a caller demotes the second half instead.
 //   * A CODE BLOCK becomes two code blocks, the opening fence line reproduced

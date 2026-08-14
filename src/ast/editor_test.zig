@@ -1221,6 +1221,130 @@ test "split_block: at the end of a list item it opens an empty sibling" {
     try testing.expectEqual(@as(usize, 2), items);
 }
 
+test "split_block: a nested item's new sibling keeps its nesting depth" {
+    // `listMarkerAt` puts `start` at the bullet, so taking the marker from there
+    // dropped the indent and dumped the new item at column zero — out of its own
+    // list and into the enclosing one. The indent between the quote prefix and
+    // the bullet IS the nesting.
+    var two = try Fixture.init("- a\n  - b c\n", .markdown);
+    defer two.deinit();
+    try two.ed.splitBlock(9);
+    try two.expectSource("- a\n  - b\n  - c\n");
+
+    var four = try Fixture.init("- a\n    - b c\n", .markdown);
+    defer four.deinit();
+    try four.ed.splitBlock(11);
+    try four.expectSource("- a\n    - b\n    - c\n");
+
+    // Djot needs the blank line to nest at all: without one, `  - b` is literal
+    // text continuing the paragraph, which the reference corpus asserts
+    // (djot.js/test/lists.test) and twig matches. So the djot case is spelled
+    // the way djot actually nests, not the way Markdown does.
+    var dj = try Fixture.init("- a\n\n  - b c\n", .djot);
+    defer dj.deinit();
+    try dj.ed.splitBlock(10);
+    try dj.expectSource("- a\n\n  - b\n  - c\n");
+}
+
+test "split_block: djot's non-nesting continuation splits at the outer level" {
+    // `- a\n  - b c` is ONE djot item whose paragraph reads `a`, a soft break,
+    // then the literal text `- b c`. Splitting it repeats the OUTER marker,
+    // which looks like the nesting bug above and is not one — there is no inner
+    // list in the tree to keep.
+    var fx = try Fixture.init("- a\n  - b c\n", .djot);
+    defer fx.deinit();
+    try testing.expect(fx.find(.{ .tag = .bullet_list }) != null);
+    var lists: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .bullet_list) lists += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), lists);
+
+    try fx.ed.splitBlock(9);
+    try fx.expectSource("- a\n  - b\n- c\n");
+
+    // And the outer marker is not merely faithful to the tree, it is the only
+    // spelling that WORKS: an indented `  - ` there would continue the same
+    // paragraph as more literal text, so the gesture would add no item at all.
+    // Column zero is what actually opens one.
+    var items: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .list_item) items += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), items);
+
+    var indented = try Fixture.init("- a\n  - b\n  - c\n", .djot);
+    defer indented.deinit();
+    var indented_items: usize = 0;
+    for (indented.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .list_item) indented_items += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), indented_items);
+}
+
+test "split_block: nesting and a quote prefix compose" {
+    // The prefix is re-minted from the quote markers and the indent is taken
+    // from between them and the bullet, so both survive at once.
+    var fx = try Fixture.init("> - a\n>   - b c\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(13);
+    try fx.expectSource("> - a\n>   - b\n>   - c\n");
+}
+
+test "split_block: the second half sheds leading spaces, but not in code" {
+    // At the start of a block, spaces are structure rather than content: keeping
+    // them would write `-  c`, setting that item's content indent to three.
+    var item = try Fixture.init("- a b\n", .markdown);
+    defer item.deinit();
+    try item.ed.splitBlock(3);
+    try item.expectSource("- a\n- b\n");
+
+    var para = try Fixture.init("a   b\n", .markdown);
+    defer para.deinit();
+    try para.ed.splitBlock(1);
+    try para.expectSource("a\n\nb\n");
+
+    // Inside a fence leading whitespace IS the content, so nothing is shed.
+    var code = try Fixture.init("```\na  b\n```\n", .markdown);
+    defer code.deinit();
+    try code.ed.splitBlock(5);
+    try code.expectSource("```\na\n```\n\n```\n  b\n```\n");
+}
+
+test "split_block: Enter at an item's end works with a sibling following" {
+    // Markdown's `list_item` span STOPS BEFORE its trailing newline while djot's
+    // covers it, so in Markdown a caret at the item's end is in the gap between
+    // items — inside the `bullet_list` and inside no item. The deepest hit is
+    // then the list, which is not splittable, so the retry has to key on "not
+    // splittable" rather than on "nothing found".
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("- one\n- two\n", fmt);
+        defer fx.deinit();
+        try fx.ed.splitBlock(5);
+        try fx.expectSource("- one\n- \n- two\n");
+
+        var items: usize = 0;
+        for (fx.ed.astView().nodes) |n| {
+            if (std.meta.activeTag(n.kind) == .list_item) items += 1;
+        }
+        try testing.expectEqual(@as(usize, 3), items);
+    }
+
+    // Ordered items too, marker repeated verbatim as everywhere else.
+    var ord = try Fixture.init("1. one\n2. two\n", .markdown);
+    defer ord.deinit();
+    try ord.ed.splitBlock(6);
+    try ord.expectSource("1. one\n1. \n2. two\n");
+}
+
+test "split_block: a refusal still reports against the block pointed at" {
+    // The retry must not turn a genuine `NotEditable` into `NoBlock` by walking
+    // back off the construct the caller actually named.
+    var fx = try Fixture.init("| a | b |\n|---|---|\n| c | d |\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.splitBlock(9));
+}
+
 test "split_block: a list marker is repeated as written, not rebuilt" {
     // `*` stays `*` and `1)` stays `1)` — the author's spelling survives. An
     // ordered split repeats the NUMBER too; both formats renumber on render, and
@@ -1730,3 +1854,5 @@ test "insertFootnote: a parse-only format spells none" {
         try testing.expectError(error.UnsupportedFormat, fx.ed.insertFootnote(3, "a"));
     }
 }
+
+

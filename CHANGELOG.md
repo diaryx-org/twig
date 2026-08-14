@@ -73,12 +73,16 @@ exists.
   `splitBlock` is the gesture `insertThematicBreak` deliberately is not: it
   divides a block AT the caret, both halves the same kind. A host whose rule
   button splits the paragraph composes the two rather than getting a second
-  spelling of either. It is a pure insertion — the bytes on either side never
-  move — and only the separator is minted: a blank line for a paragraph, the
-  item's marker repeated for a list item (so `- this is |a list item` yields two
-  items, and Enter at an item's end opens an empty one), the heading's own
-  marker at its own level, or a fence pair reproducing the opening line so width
-  and info string survive. `NotEditable` for a table (a newline mid-cell
+  spelling of either. Nearly a pure insertion: only the separator is minted, and
+  the only bytes removed are the second half's leading spaces, which are
+  structure rather than content at a block's start. The separator is a blank line
+  for a paragraph, the item's marker repeated for a list item (so
+  `- this is |a list item` yields two items, a nested item's indent rides along
+  so its sibling stays in its own list, and Enter at an item's end opens an empty
+  one — including when a sibling follows, where Markdown's `list_item` span stops
+  before its trailing newline and puts the caret in the gap between items), the
+  heading's own marker at its own level, or a fence pair reproducing the opening
+  line so width and info string survive. `NotEditable` for a table (a newline mid-cell
   destroys rather than divides; splitting one table into two has to decide what
   the second one's header is, which makes it a table gesture), a setext heading,
   and an indented code block. A paragraph is the one boundary case where the

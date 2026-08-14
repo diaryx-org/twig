@@ -451,9 +451,13 @@ pub const Editor = struct {
     /// KIND — Enter in the middle of a paragraph, and the gesture
     /// `insertThematicBreak` deliberately isn't.
     ///
-    /// This is a pure INSERTION at `offset`: the bytes on either side never
-    /// move, and all that is minted is the separator between them. What that
-    /// separator is, is the only thing that varies:
+    /// Nearly a pure INSERTION at `offset`: what is minted is the separator
+    /// between the halves, and the only bytes REMOVED are the second half's
+    /// leading spaces and tabs. Those are structure rather than content at the
+    /// start of a block — a split at `- b| c` that kept its space would write
+    /// `-  c`, setting that item's content indent to three. A code block sheds
+    /// nothing, because there leading whitespace IS the content. What the
+    /// separator is, is the only other thing that varies:
     ///
     ///   * A PARAGRAPH gets a blank line — `ab` -> `a`/`b`. Inside a quote the
     ///     blank carries the quote's marker and the second half its full prefix
@@ -467,7 +471,11 @@ pub const Editor = struct {
     ///     and `renumberOrderedLists` is the gesture for fixing the source when
     ///     the caller wants it fixed. A TASK item's new half is an UNCHECKED
     ///     box regardless of the original's state: splitting one done thing in
-    ///     two does not make the remainder done.
+    ///     two does not make the remainder done. The marker is taken from the
+    ///     END OF ANY QUOTE PREFIX rather than from the bullet, so a NESTED
+    ///     item's indent rides along with it and the new sibling stays in its
+    ///     own list instead of dropping to column zero and joining the
+    ///     enclosing one.
     ///   * A HEADING repeats its own marker at its own level, because both
     ///     halves being the same kind is what "split" means here; `setBlock` is
     ///     how the caller demotes the second half if that is what they wanted.
@@ -505,14 +513,7 @@ pub const Editor = struct {
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
         const doc = &self.splicer.doc;
-        // A block's span is half-open, so a caret at its very END is in no block
-        // at all — and "Enter at the end of the item" is the single most common
-        // way this gesture is asked for. Retry one byte back, which lands in the
-        // block just closed. (At a blank line between blocks that resolves to
-        // the earlier block, which is as good an answer as the ambiguity has.)
-        const found = locate.lineOwningBlock(doc, offset) orelse
-            locate.lineOwningBlock(doc, offset -| 1) orelse
-            return error.NoBlock;
+        const found = splitTarget(doc, offset) orelse return error.NoBlock;
 
         const block_start = doc.span(found.block).start;
         const prefix = containerPrefix(src, block_start);
@@ -523,21 +524,30 @@ pub const Editor = struct {
         // When the caret already sits at a line start, the line end before it is
         // the separator's first newline — emitting another would leave a blank
         // line trailing inside the FIRST half (and, in a code block, inside its
-        // body). The bytes on either side still never move; this only decides
-        // whether the separator needs to open a line or is already on one.
+        // body). This only decides whether the separator needs to open a line or
+        // is already on one.
         const at_line_start = offset == 0 or src[offset - 1] == '\n';
 
         const allocator = self.splicer.allocator;
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
 
-        switch (std.meta.activeTag(doc.ast.nodes[found.block].kind)) {
-            // The two line-owning text blocks: a blank line divides them, unless
-            // a list item's marker has to be repeated instead.
-            .para, .heading => {
+        // How many bytes after the caret the second half must SHED. Leading
+        // spaces at the start of a block are structure, not content — a split at
+        // `- b| c` whose second half kept its space would write `-  c`, setting
+        // that item's content indent to three. This is the one place the gesture
+        // isn't a pure insertion, and it is deliberately not done for a code
+        // block, where leading whitespace IS the content.
+        var shed: usize = 0;
+
+        switch (splitShape(std.meta.activeTag(doc.ast.nodes[found.block].kind))) {
+            .text => {
                 var marker: std.ArrayList(u8) = .empty;
                 defer marker.deinit(allocator);
                 const in_item = try self.splitMarker(found, block_start, &marker);
+
+                while (offset + shed < src.len and
+                    (src[offset + shed] == ' ' or src[offset + shed] == '\t')) shed += 1;
 
                 if (!at_line_start) try out.append(allocator, '\n');
                 // A list item's halves stay in ONE list, so no blank line
@@ -551,7 +561,7 @@ pub const Editor = struct {
                 try out.appendSlice(allocator, marker.items);
             },
 
-            .code_block => {
+            .code => {
                 const fence = self.syntax.code_fence orelse return error.UnsupportedFormat;
                 const open = src[locate.lineStartAt(src, block_start)..locate.lineEndAt(src, block_start)];
                 // No fence on the opening line means an INDENTED code block,
@@ -571,59 +581,10 @@ pub const Editor = struct {
                 try out.append(allocator, '\n');
             },
 
-            // Structure whose parts are not lines, or containers a split would
-            // have to descend into rather than divide. Spelled out rather than
-            // left to an `else`, so a new `Kind` is a compile error here and
-            // gets an answer on purpose — this switch is the checklist.
-            .table,
-            .doc,
-            .section,
-            .block_quote,
-            .bullet_list,
-            .ordered_list,
-            .task_list,
-            .definition_list,
-            .line_block,
-            .list_item,
-            .task_list_item,
-            .definition_list_item,
-            .term,
-            .definition,
-            .line,
-            .row,
-            .cell,
-            .column,
-            .caption,
-            .footnote,
-            .reference,
-            .citation,
-            .substitution,
-            .container,
-            // Blocks with no interior to divide: a rule is one line, and
-            // metadata and raw blocks are inert islands whose bytes are not
-            // ours to punctuate.
-            .thematic_break,
-            .metadata,
-            .raw_block,
-            // Inlines. `lineOwningBlock` cannot return one — it stops at a
-            // block parent's child — but naming them is what keeps this switch
-            // exhaustive, and a refusal is the right answer if that ever changes.
-            .str,
-            .soft_break,
-            .hard_break,
-            .non_breaking_space,
-            .text_leaf,
-            .raw_inline,
-            .smart_punctuation,
-            .link,
-            .image,
-            .inline_mark,
-            .markup_leaf,
-            .processing_instruction,
-            => return error.NotEditable,
+            .refuse => return error.NotEditable,
         }
 
-        return self.commitSplice(offset, offset, out.items);
+        return self.commitSplice(offset, offset + shed, out.items);
     }
 
     /// Append to `out` what the second half of a split must carry to come back
@@ -653,7 +614,13 @@ pub const Editor = struct {
             var from: usize = 0;
             while (skipQuoteMarker(line, from)) |j| from = j;
             const m = listMarkerAt(line, from) orelse return error.NotEditable;
-            try out.appendSlice(allocator, line[m.start..m.end]);
+            // From the end of the quote prefix, NOT from `m.start` — the run of
+            // spaces between them is the item's NESTING DEPTH, and dropping it
+            // moves the new sibling to column zero, out of its own list and into
+            // the enclosing one. `listMarkerAt` puts `start` at the bullet on
+            // purpose (its other callers want the indent left where it is), so
+            // taking it back is this caller's job.
+            try out.appendSlice(allocator, line[from..m.end]);
 
             // A task item's new half is an UNCHECKED box: the marker as written,
             // then this format's empty box rather than the original's state.
@@ -1430,6 +1397,107 @@ fn quoteDepthAbove(ast: *const AST, chain: []const AST.Node.Id, target: AST.Node
         if (std.meta.activeTag(ast.nodes[id].kind) == .block_quote) depth += 1;
     }
     return depth;
+}
+
+/// What `Editor.splitBlock` does with a block of a given kind. Having ONE
+/// exhaustive switch answer this — rather than a "can I split it?" predicate
+/// beside the switch that builds the separator — is what keeps `splitTarget`
+/// and the builder from drifting apart about which kinds are splittable.
+const SplitShape = enum { text, code, refuse };
+
+/// Spelled out rather than left to an `else`, so a new `Kind` is a compile error
+/// here and gets an answer on purpose — this switch is the checklist.
+fn splitShape(tag: locate.KindTag) SplitShape {
+    return switch (tag) {
+        // The line-owning text blocks: a blank line divides them, unless a list
+        // item's marker has to be repeated instead.
+        .para, .heading => .text,
+        .code_block => .code,
+
+        // Structure whose parts are not lines, or containers a split would have
+        // to descend into rather than divide.
+        .table,
+        .doc,
+        .section,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .line_block,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .line,
+        .row,
+        .cell,
+        .column,
+        .caption,
+        .footnote,
+        .reference,
+        .citation,
+        .substitution,
+        .container,
+        // Blocks with no interior to divide: a rule is one line, and metadata
+        // and raw blocks are inert islands whose bytes are not ours to
+        // punctuate.
+        .thematic_break,
+        .metadata,
+        .raw_block,
+        // Inlines. `lineOwningBlock` cannot return one — it stops at a block
+        // parent's child — but naming them is what keeps this exhaustive, and a
+        // refusal is the right answer if that ever changes.
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .text_leaf,
+        .raw_inline,
+        .smart_punctuation,
+        .link,
+        .image,
+        .inline_mark,
+        .markup_leaf,
+        .processing_instruction,
+        => .refuse,
+    };
+}
+
+/// The block `Editor.splitBlock` should divide for a caret at `offset`, which is
+/// not simply "the block at `offset`" — because of where a caret at the END of a
+/// block actually lands.
+///
+/// Spans are half-open, so a caret at a block's end is outside it. Whether it is
+/// outside EVERYTHING depends on the format, and the two authorable ones
+/// disagree: djot's `list_item` covers its trailing newline (`[0,6)` for
+/// `- one\n`), while Markdown's stops before it (`[0,5)`). So for
+/// `- one|\n- two\n` the caret at 5 is inside djot's item but, in Markdown, in
+/// the GAP between two items — inside the `bullet_list` and inside no item at
+/// all. A lookup that trusts the deepest hit gets the LIST, which is not
+/// splittable, and "Enter at the end of an item" — the single most common way
+/// this gesture is asked for — fails on the format where lists are commonest.
+///
+/// Retrying one byte back is therefore not a null-check: the answer at `offset`
+/// can be non-null and still wrong. What makes it wrong is that it isn't
+/// splittable, so that is what the retry keys on. A caret in any gap resolves to
+/// the block that just ENDED, which is where the text cursor visually sits.
+///
+/// When neither position yields a splittable block the ORIGINAL is returned, so
+/// a genuine refusal (a caret in a table) still reports `NotEditable` against
+/// the block the caller actually pointed at rather than `NoBlock`.
+fn splitTarget(doc: *const Document, offset: usize) ?locate.LineBlock {
+    const at = locate.lineOwningBlock(doc, offset);
+    if (at) |lb| {
+        if (splitShape(std.meta.activeTag(doc.ast.nodes[lb.block].kind)) != .refuse) return lb;
+    }
+    if (offset > 0) {
+        if (locate.lineOwningBlock(doc, offset - 1)) |back| {
+            if (splitShape(std.meta.activeTag(doc.ast.nodes[back.block].kind)) != .refuse) return back;
+        }
+    }
+    return at;
 }
 
 /// Advance past one `>` quote marker — its optional indent, the `>`, and the one

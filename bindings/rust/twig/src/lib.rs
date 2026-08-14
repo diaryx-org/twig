@@ -1735,8 +1735,12 @@ impl Editor {
     /// [`Editor::insert_thematic_break`] deliberately is not. A host wanting
     /// "rule at the caret" calls this and then that.
     ///
-    /// This is a pure insertion at `offset`: the bytes on either side never
-    /// move, and all that is minted is the separator between them.
+    /// Nearly a pure insertion at `offset`: what is minted is the separator
+    /// between the halves, and the only bytes removed are the second half's
+    /// leading spaces and tabs, which are structure rather than content at the
+    /// start of a block — a split at `- b| c` that kept its space would write
+    /// `-  c`, setting that item's content indent to three. A code block sheds
+    /// nothing, because there leading whitespace *is* the content.
     ///
     /// * A **paragraph** gets a blank line. Inside a quote the blank carries the
     ///   quote's marker and the second half its full prefix, so the split
@@ -1748,7 +1752,9 @@ impl Editor {
     ///   `1.` items — both formats renumber on render, and
     ///   [`Editor::renumber_ordered_lists`] is the gesture for fixing the
     ///   source. A **task** item's new half is an unchecked box whatever the
-    ///   original's state.
+    ///   original's state. A **nested** item's leading indent rides along with
+    ///   its marker, so the new sibling stays in its own list rather than
+    ///   dropping to column zero and joining the enclosing one.
     /// * A **heading** repeats its own marker at its own level;
     ///   [`Editor::set_block`] is how a caller demotes the second half instead.
     /// * A **code block** becomes two code blocks, the opening fence line
