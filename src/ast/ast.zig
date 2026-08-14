@@ -822,6 +822,15 @@ pub const KindRef = union(enum) {
     mark: InlineMark,
     text_leaf: TextLeafKind,
     markup_leaf: MarkupLeafKind,
+    /// A `container` carrying exactly this NAME — the one payload a `tag`
+    /// match is too coarse for. Every other kind's identity is its tag (a
+    /// `heading` that comes back is a heading), but a container's identity is
+    /// its name, and a target can return the tag while dropping the name:
+    /// djot has only classes to hold a name in, so a Markdown `:::note`
+    /// arrives as an anonymous div classed `note`. Matching on the tag alone
+    /// scored that as a survival and let `diagnostics.zig`'s table call it
+    /// `faithful` for as long as the name was being deleted outright.
+    container_named: []const u8,
 
     pub fn matches(self: KindRef, kind: Node.Kind) bool {
         return switch (self) {
@@ -829,6 +838,7 @@ pub const KindRef = union(enum) {
             .mark => |m| kind == .inline_mark and kind.inline_mark == m,
             .text_leaf => |k| kind == .text_leaf and kind.text_leaf.kind == k,
             .markup_leaf => |k| kind == .markup_leaf and kind.markup_leaf.kind == k,
+            .container_named => |n| kind == .container and std.mem.eql(u8, kind.container.name, n),
         };
     }
 };

@@ -385,7 +385,10 @@ pub const Syntax = struct {
             // SINGLE copy of those spellings, so a table here would create
             // the duplicate that `inline_delims` existed to remove. No
             // remaining `.tag` kind is spelled by a symmetric pair.
-            .markup_leaf, .tag => null,
+            // A `container_named` is never spelled by a symmetric pair either:
+            // its name goes in the opener alone (`:::note` … `:::`), which is
+            // `ContainerSpelling`'s job, not this table's.
+            .markup_leaf, .tag, .container_named => null,
         };
     }
 

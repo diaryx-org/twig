@@ -322,13 +322,30 @@ const Renderer = struct {
                 const p = Prefix{ .parent = ctx.prefix, .segment = "> " };
                 try self.renderBlocks(id, .{ .prefix = &p }, true);
             },
-            .container => {
+            .container => |c| {
+                // A div's attributes attach to the line BEFORE the fence.
+                // `::: {#i .c}` is not that spelling — djot reads everything
+                // after the colons as the class line, so the brace block never
+                // becomes attributes and the whole construct reparses as a
+                // PARAGRAPH: the div, its id, its classes and its block
+                // structure all gone. This was djot → djot, so `-o canonical`
+                // did not round-trip ANY div carrying attributes.
+                if (self.ast.attrsOf(id).entries.len > 0) {
+                    try self.writePrefix(ctx);
+                    try self.writeDjotAttrs(id);
+                    try self.writer.writeByte('\n');
+                }
                 try self.writePrefix(ctx);
                 try self.writer.writeAll(":::");
-                if (self.ast.attrsOf(id).entries.len > 0) {
-                    try self.writer.writeByte(' ');
-                    try self.writeDjotAttrs(id);
-                }
+                // Djot's own divs are anonymous — they carry their identity as
+                // a class, which is why the parser leaves `name` empty. A
+                // NAMED container reaching here came from a format that has
+                // one (a Markdown `:::note`, an rST directive, an HTML tag),
+                // and the fence's class line is where djot can hold it. Dropping
+                // it, as this arm used to, deleted the only thing that said
+                // which kind of note the note was. A class from the attribute
+                // block above and this one merge, so both survive.
+                if (c.name.len > 0) try self.writer.print(" {s}", .{c.name});
                 try self.writer.writeByte('\n');
                 const p = Prefix{ .parent = ctx.prefix, .segment = "  " };
                 try self.renderBlocks(id, .{ .prefix = &p }, true);
@@ -628,10 +645,27 @@ const Renderer = struct {
                 try self.writer.writeByte(']');
                 if (im.destination) |dest| try self.writer.print("({s})", .{dest}) else if (im.reference) |lab| try self.writer.print("[{s}]", .{lab});
             },
-            .container => {
+            .container => |c| {
+                // What makes `[x]` a SPAN is the attribute block after it; a
+                // bare `[x]` is literal text, brackets and all. So a container
+                // with neither a name nor attributes has nothing to spell —
+                // writing the brackets anyway put two characters into the
+                // output that the author never wrote and the reparse keeps.
+                const attrs = self.ast.attrsOf(id);
+                if (c.name.len == 0 and attrs.entries.len == 0) {
+                    try self.renderInlineChildren(id, ctx);
+                    return;
+                }
                 try self.writer.writeByte('[');
                 try self.renderInlineChildren(id, ctx);
                 try self.writer.writeByte(']');
+                // Same reasoning as the block arm: djot holds a container's
+                // identity as a class, so a name from a format that has one
+                // rides as a class rather than being deleted. Two adjacent
+                // blocks merge into one attribute set, so this composes with
+                // the node's own `{...}` instead of having to be spliced into
+                // it.
+                if (c.name.len > 0) try self.writer.print("{{.{s}}}", .{c.name});
                 try self.writeDjotAttrs(id);
             },
             else => try self.renderInlineChildren(id, ctx),
@@ -936,4 +970,74 @@ test "serializeAlloc: a loose bullet list's first paragraph starts on the marker
     // to column 0.
     try testing.expect(std.mem.indexOf(u8, out, "- one\n  two\n\n- three\n") != null);
     try testing.expect(std.mem.indexOf(u8, out, "- \n") == null);
+}
+
+test "serializeAlloc: a div's attributes go ABOVE the fence, so the div survives its own round-trip" {
+    // `::: {#i .c}` is not djot: everything after the colons is the class
+    // line, so the brace block never becomes attributes and the construct
+    // reparses as a PARAGRAPH. This was djot -> djot, which makes it the
+    // canonical round-trip — `-o canonical` did not preserve any div carrying
+    // attributes, and said nothing about it.
+    var doc = try djot.parse(testing.allocator, "{#i .c}\n:::\nhi\n:::\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+
+    var back = try djot.parse(testing.allocator, out);
+    defer back.deinit();
+    var found = false;
+    for (back.ast.nodes, 0..) |n, i| {
+        if (n.kind != .container) continue;
+        found = true;
+        const attrs = back.ast.attrsOf(@intCast(i));
+        try testing.expectEqualStrings("i", attrs.get("id").?);
+        try testing.expectEqualStrings("c", attrs.get("class").?);
+    }
+    try testing.expect(found);
+}
+
+test "serializeAstAlloc: a named container keeps its name as a class rather than losing it" {
+    // Djot's own divs are anonymous, so this arm ignored `name` entirely — and
+    // a Markdown `:::note` or an rST directive converted to djot came out as a
+    // bare `:::`, with the only thing that said WHICH directive it was deleted.
+    // Djot holds that identity as a class, which is where it goes.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const p = try b.addContainer(.para, &.{try b.addLeaf(.{ .str = "hi" })});
+    const div = try b.addContainer(.{ .container = .{ .name = "note", .form = .block_fenced } }, &.{p});
+    var ast = try b.finish(try b.addContainer(.doc, &.{div}));
+    defer ast.deinit();
+
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+
+    var back = try djot.parse(testing.allocator, out);
+    defer back.deinit();
+    var found = false;
+    for (back.ast.nodes, 0..) |n, i| {
+        if (n.kind != .container) continue;
+        found = true;
+        try testing.expectEqualStrings("note", back.ast.attrsOf(@intCast(i)).get("class").?);
+    }
+    try testing.expect(found);
+}
+
+test "serializeAstAlloc: a bare inline container writes no brackets of its own" {
+    // What makes `[x]` a span is the attribute block after it. With neither a
+    // name nor attributes there is nothing to spell, and writing `[x]` anyway
+    // put two characters into the output that the author never wrote — and
+    // that the reparse faithfully keeps, as literal text.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const span = try b.addContainer(
+        .{ .container = .{ .name = "", .form = .inline_text } },
+        &.{try b.addLeaf(.{ .str = "x" })},
+    );
+    const para = try b.addContainer(.para, &.{span});
+    var ast = try b.finish(try b.addContainer(.doc, &.{para}));
+    defer ast.deinit();
+
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("x\n", out);
 }

@@ -81,6 +81,9 @@ fn kindTag(kind: anytype) Splicer.KindTag {
         .text_leaf => unreachable,
         .mark => unreachable,
         .markup_leaf => unreachable,
+        // `kindRef` never mints one: it maps a gesture vocabulary, and no
+        // gesture names a container by name.
+        .container_named => unreachable,
     };
 }
 

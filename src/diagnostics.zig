@@ -249,10 +249,19 @@ fn djotFidelity(kind: Node.Kind) Fidelity {
         // is what makes it `degraded` rather than faithful — two labels that
         // were distinct across registries can now collide.
         .citation => .degraded,
-        // Djot's inline generic container is a bracketed span carrying its
-        // identity in `attrs`, so a NAMED one (an rST role, a Markdown inline
-        // directive) comes back with the name gone.
-        .container => |c| if (c.form == .inline_text) .degraded else .faithful,
+        // Djot holds a container's identity in `attrs`, as a class — both the
+        // fenced div's class line and the bracketed span's `{...}`. So the
+        // answer turns on the NAME, not on the form: an anonymous container is
+        // djot's own and returns as itself, while a named one (an rST role, a
+        // Markdown directive, an HTML tag) comes back anonymous-and-classed.
+        // The kind survives, its identity does not.
+        //
+        // This read `if (c.form == .inline_text) .degraded else .faithful`
+        // while the serializer was deleting the name outright, and the probe
+        // agreed, because `want` matched on the TAG — a container came back,
+        // so a container had survived. `KindRef.container_named` is what makes
+        // the difference measurable.
+        .container => |c| if (c.name.len == 0) .faithful else .degraded,
         // Math is emitted as `$`…`` — a verbatim wearing a sigil — and djot's
         // parser returns the verbatim without it. A citation reference follows
         // its definition into the footnote registry; a substitution reference is
@@ -428,6 +437,14 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
         // honest entry today is the same as the other two targets'. This is the
         // arm to revisit first if `Kind.column` ever grows a typed payload.
         .column => .dropped,
+        // A NAMED container is HTML's own — `<video>` goes out as `<video>` and
+        // comes back as one. An ANONYMOUS one cannot be: there is no such thing
+        // as an unnamed HTML tag, so the serializer picks `div` or `span` by
+        // level and the parser reads that back as a container NAMED "div" or
+        // "span". The node survives; the fact that it had no name does not, and
+        // afterwards it is indistinguishable from a document that really did
+        // write `<div>`.
+        .container => |c| if (c.name.len == 0) .degraded else .faithful,
         // Rendered as Unicode glyphs, which come back as ordinary text.
         .smart_punctuation, .non_breaking_space => .degraded,
         .inline_mark => |m| switch (m) {
@@ -464,7 +481,6 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
         .hard_break,
         .link,
         .image,
-        .container,
         => .faithful,
     };
 }
@@ -802,15 +818,26 @@ const probes = [_]Probe{
             return b.addContainer(.doc, &.{ body, def });
         }
     }.f },
-    .{ .label = "container(block)", .want = .{ .tag = .container }, .kind = .{ .container = .{ .name = "note", .form = .block_fenced } }, .build = struct {
+    .{ .label = "container(block)", .want = .{ .container_named = "note" }, .kind = .{ .container = .{ .name = "note", .form = .block_fenced } }, .build = struct {
         fn f(b: *AST.Builder) anyerror!Node.Id {
             const p = try b.addContainer(.para, &.{try str(b, "x")});
             return blockDoc(b, .{ .container = .{ .name = "note", .form = .block_fenced } }, &.{p});
         }
     }.f },
-    .{ .label = "container(inline)", .want = .{ .tag = .container }, .kind = .{ .container = .{ .name = "span", .form = .inline_text } }, .build = struct {
+    .{ .label = "container(inline)", .want = .{ .container_named = "span" }, .kind = .{ .container = .{ .name = "span", .form = .inline_text } }, .build = struct {
         fn f(b: *AST.Builder) anyerror!Node.Id {
             return inlineDoc(b, .{ .container = .{ .name = "span", .form = .inline_text } }, &.{try str(b, "x")});
+        }
+    }.f },
+    // The ANONYMOUS container, probed apart from the two named ones because
+    // the answer differs by instance rather than by kind: djot's own divs
+    // carry no name, so there is nothing for djot to lose and `:::` returns as
+    // itself — while the named probes above measure a name djot can only hold
+    // as a class. One `.container` row could not have said both.
+    .{ .label = "container(anonymous)", .want = .{ .container_named = "" }, .kind = .{ .container = .{ .name = "", .form = .block_fenced } }, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            const p = try b.addContainer(.para, &.{try str(b, "x")});
+            return blockDoc(b, .{ .container = .{ .name = "", .form = .block_fenced } }, &.{p});
         }
     }.f },
     .{ .label = "comment", .want = .{ .markup_leaf = .comment }, .kind = .{ .markup_leaf = .{ .kind = .comment, .text = "" } }, .build = struct {

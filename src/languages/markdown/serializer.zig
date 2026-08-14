@@ -107,6 +107,54 @@ const Renderer = struct {
         try attrs_writer.write(self.writer, self.ast.attrsOf(id), sp, "");
     }
 
+    /// One `| a | b |` line for `row`'s cells.
+    fn writeTableRow(self: *Renderer, ctx: Ctx, row: Node.Id) Writer.Error!void {
+        try self.writePrefix(ctx);
+        try self.writer.writeByte('|');
+        // Inside a cell a `hard_break` must spell as `<br>`, not a
+        // row-breaking newline — flag the descent so the break arm knows
+        // (see `Ctx.in_cell`).
+        var cell_ctx = ctx;
+        cell_ctx.in_cell = true;
+        var it = self.ast.children(row);
+        while (it.next()) |cell| {
+            try self.writer.writeByte(' ');
+            try self.renderInlineChildren(cell.id, cell_ctx);
+            try self.writer.writeAll(" |");
+        }
+        try self.writer.writeByte('\n');
+    }
+
+    /// The `|:---|---:|` line, one entry per cell of `row`, carrying that
+    /// cell's alignment — the only place a column's alignment can be written,
+    /// since the delimiter row is consumed by the parser and has no node.
+    fn writeTableDelimiter(self: *Renderer, ctx: Ctx, row: Node.Id) Writer.Error!void {
+        try self.writePrefix(ctx);
+        try self.writer.writeByte('|');
+        var it = self.ast.children(row);
+        while (it.next()) |cell| {
+            const delim: []const u8 = switch (self.ast.nodes[cell.id].kind.cell.alignment) {
+                .left => ":---",
+                .right => "---:",
+                .center => ":---:",
+                .default => "---",
+            };
+            try self.writer.print(" {s} |", .{delim});
+        }
+        try self.writer.writeByte('\n');
+    }
+
+    /// A `|  |  |` line as wide as `row` — the synthesized header a headerless
+    /// table needs to stay a table. See the `.table` arm for why an empty
+    /// header beats promoting the first data row.
+    fn writeTableEmptyHeader(self: *Renderer, ctx: Ctx, row: Node.Id) Writer.Error!void {
+        try self.writePrefix(ctx);
+        try self.writer.writeByte('|');
+        var it = self.ast.children(row);
+        while (it.next()) |_| try self.writer.writeAll("  |");
+        try self.writer.writeByte('\n');
+    }
+
     fn fenceTicks(text: []const u8, min: usize) usize {
         var best = min;
         var i: usize = 0;
@@ -376,40 +424,39 @@ const Renderer = struct {
                 // Only rows produce a pipe line; `tableRows` skips the caption
                 // and any `column` children, and hands over `head` without
                 // reopening the union.
+                //
+                // GFM's delimiter row is what MAKES a run of pipe lines a
+                // table, and its position is fixed: it must follow the first
+                // row and nothing else. Both halves are load-bearing here, and
+                // writing it from `row.head` alone got both wrong. A table
+                // with no header row emitted no delimiter at all and reparsed
+                // as a PARAGRAPH — every cell boundary gone, silently. A table
+                // whose header was not its first row emitted the delimiter
+                // mid-table, which ends the table there.
+                //
+                // So the delimiter is written after the first row
+                // unconditionally, and a first row that is not a header gets a
+                // synthesized empty header above it. The empty header is a
+                // lie, but the smallest available one: promoting the first
+                // data row instead would re-tag its cells as `<th>` — a claim
+                // that those values are labels — while an empty header row is
+                // visibly empty and leaves every original row a data row, in
+                // its original position. `diagnostics.zig` reports the
+                // difference as `degraded` either way.
+                var probe = self.ast.tableRows(id);
+                const first = probe.next() orelse return;
+                var wrote_delim = false;
+                if (!first.head) {
+                    try self.writeTableEmptyHeader(ctx, first.id);
+                    try self.writeTableDelimiter(ctx, first.id);
+                    wrote_delim = true;
+                }
                 var row_it = self.ast.tableRows(id);
-                var saw_header = false;
                 while (row_it.next()) |row| {
-                    try self.writePrefix(ctx);
-                    try self.writer.writeByte('|');
-                    var cell_it = self.ast.children(row.id);
-                    // Inside a cell a `hard_break` must spell as `<br>`, not a
-                    // row-breaking newline — flag the descent so the break arm
-                    // knows (see `Ctx.in_cell`).
-                    var cell_ctx = ctx;
-                    cell_ctx.in_cell = true;
-                    while (cell_it.next()) |cell| {
-                        try self.writer.writeByte(' ');
-                        try self.renderInlineChildren(cell.id, cell_ctx);
-                        try self.writer.writeAll(" |");
-                    }
-                    try self.writer.writeByte('\n');
-
-                    if (!saw_header and row.head) {
-                        saw_header = true;
-                        try self.writePrefix(ctx);
-                        try self.writer.writeByte('|');
-                        var ac_it = self.ast.children(row.id);
-                        while (ac_it.next()) |cell| {
-                            const al = self.ast.nodes[cell.id].kind.cell.alignment;
-                            const delim: []const u8 = switch (al) {
-                                .left => ":---",
-                                .right => "---:",
-                                .center => ":---:",
-                                .default => "---",
-                            };
-                            try self.writer.print(" {s} |", .{delim});
-                        }
-                        try self.writer.writeByte('\n');
+                    try self.writeTableRow(ctx, row.id);
+                    if (!wrote_delim) {
+                        wrote_delim = true;
+                        try self.writeTableDelimiter(ctx, row.id);
                     }
                 }
             },
@@ -422,9 +469,15 @@ const Renderer = struct {
             // and an anonymous djot div is the container NAMED "div".
             .container => |c| {
                 const form = c.form orelse {
-                    // Unclassified: an HTML/XML element passing through.
+                    // Unclassified: an HTML/XML element passing through. Its
+                    // ATTRIBUTES pass through with it — writing the bare tag
+                    // dropped `controls` and `src` off a `<video>` with no
+                    // warning, which is the same silent corruption as
+                    // inventing a directive, one field down.
                     try self.writePrefix(ctx);
-                    try self.writer.print("<{s}>", .{c.name});
+                    try self.writer.print("<{s}", .{c.name});
+                    try attrs_writer.writeHtmlAttrs(self.writer, self.ast.attrsOf(id));
+                    try self.writer.writeByte('>');
                     try self.renderBlocks(id, ctx, false);
                     try self.writer.print("</{s}>\n", .{c.name});
                     return;
@@ -607,14 +660,32 @@ const Renderer = struct {
             .container => |c| {
                 // djot's bracketed span carries its identity in `attrs`, so
                 // Markdown — which has no `[…]{…}` — drops the wrapper and
-                // keeps the text. Anything else is an inline directive
-                // `:name[label]{attrs}`; a stray block form reaching the
-                // inline path emits the single-colon spelling as a safe lossy
-                // fallback, as it always has.
+                // keeps the text.
                 if (c.name.len == 0) {
                     try self.renderInlineChildren(id, ctx);
                     return;
                 }
+                // An UNCLASSIFIED container is an HTML/XML element, and the
+                // directive spelling is not available to it: `<my-widget>`
+                // written as `:my-widget` reparses as a DIRECTIVE named
+                // my-widget with the extension on, and as the literal text
+                // `:my-widget[…]` without it. Either way the output claims the
+                // author wrote something they did not. The block arm above has
+                // always passed such a node through as a tag; this is the same
+                // answer on the inline path, where the tag comes back as
+                // `raw_inline` rather than as itself — degraded, but every
+                // byte the author wrote is still their own.
+                if (c.form == null) {
+                    try self.writer.print("<{s}", .{c.name});
+                    try attrs_writer.writeHtmlAttrs(self.writer, self.ast.attrsOf(id));
+                    try self.writer.writeByte('>');
+                    try self.renderInlineChildren(id, ctx);
+                    try self.writer.print("</{s}>", .{c.name});
+                    return;
+                }
+                // A real inline directive `:name[label]{attrs}`; a stray block
+                // form reaching the inline path emits the single-colon
+                // spelling as a safe lossy fallback, as it always has.
                 try self.writer.print(":{s}", .{c.name});
                 if (node.first_child != null) {
                     try self.writer.writeByte('[');
@@ -822,6 +893,99 @@ test "serializeAlloc: a loose bullet list's first paragraph starts on the marker
     // to column 0.
     try testing.expect(std.mem.indexOf(u8, out, "- one\n  two\n\n- three\n") != null);
     try testing.expect(std.mem.indexOf(u8, out, "- \n") == null);
+}
+
+// ── what the output must READ BACK as ───────────────────────────────────
+//
+// Every test below asserts on the REPARSE, not on the bytes. The bugs they
+// pin all produced plausible-looking output — `| a | b |`, `:my-widget[y]` —
+// that a byte assertion would have accepted while the document silently
+// changed shape underneath it.
+
+test "a header-less table reparses as a TABLE, not a paragraph" {
+    // `<table><tr><td>a</td><td>b</td></tr></table>` — HTML needs no header
+    // row, GFM's delimiter row is mandatory, and the serializer used to write
+    // the delimiter only when it saw a `head` row. The output was `| a | b |`,
+    // which is a PARAGRAPH: every cell boundary in the document, gone, with
+    // nothing reporting it.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const c1 = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{try b.addLeaf(.{ .str = "a" })});
+    const c2 = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{try b.addLeaf(.{ .str = "b" })});
+    const row = try b.addContainer(.{ .row = .{ .head = false } }, &.{ c1, c2 });
+    const table = try b.addContainer(.table, &.{row});
+    var ast = try b.finish(try b.addContainer(.doc, &.{table}));
+    defer ast.deinit();
+
+    const src = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(src);
+    // Tables are off in the strict-CommonMark preset; the default set is the
+    // one that can read a pipe table back at all.
+    var back = try markdown.parse(testing.allocator, src, .{});
+    defer back.deinit();
+
+    var found_table = false;
+    var body_cells: usize = 0;
+    for (back.ast.nodes) |n| switch (n.kind) {
+        .table => found_table = true,
+        // The synthesized header is a real header row on the way back, so the
+        // original row must still be the one that is NOT a header — the data
+        // stayed data rather than being promoted to labels.
+        .cell => |c| if (!c.head) {
+            body_cells += 1;
+        },
+        else => {},
+    };
+    try testing.expect(found_table);
+    try testing.expectEqual(@as(usize, 2), body_cells);
+}
+
+test "an unclassified container passes through as a tag, and never as a directive" {
+    // An HTML `<my-widget>` is a container with NO form. Markdown has no
+    // spelling for it, and the inline arm used to reach for the directive one
+    // anyway: `:my-widget[y]`, which reparses as a DIRECTIVE named my-widget
+    // with the extension on and as literal text without it. Either way the
+    // output claims the author wrote a directive. The block arm had always
+    // passed such a node through as a tag; this is the same answer inline.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const el = try b.addContainer(
+        .{ .container = .{ .name = "my-widget", .form = null } },
+        &.{try b.addLeaf(.{ .str = "y" })},
+    );
+    const para = try b.addContainer(.para, &.{ try b.addLeaf(.{ .str = "x " }), el });
+    var ast = try b.finish(try b.addContainer(.doc, &.{para}));
+    defer ast.deinit();
+
+    const src = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(src);
+    try testing.expect(std.mem.indexOf(u8, src, "<my-widget>y</my-widget>") != null);
+    try testing.expect(std.mem.indexOf(u8, src, ":my-widget") == null);
+
+    // Even with directives ENABLED — the reading under which the old output
+    // was most wrong — nothing in the reparse is a container.
+    var doc = try markdown.parse(testing.allocator, src, directives_on);
+    defer doc.deinit();
+    for (doc.ast.nodes) |n| try testing.expect(n.kind != .container);
+}
+
+test "an unclassified container keeps its attributes" {
+    // `<video controls src="a.mp4">` went out as a bare `<video>`: the tag
+    // survived and every attribute on it was dropped in silence.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const p = try b.addContainer(.para, &.{try b.addLeaf(.{ .str = "hi" })});
+    const el = try b.addContainer(.{ .container = .{ .name = "video", .form = null } }, &.{p});
+    try b.setAttrs(el, .{ .entries = &.{
+        .{ .key = "controls", .value = null },
+        .{ .key = "src", .value = "a.mp4" },
+    } });
+    var ast = try b.finish(try b.addContainer(.doc, &.{el}));
+    defer ast.deinit();
+
+    const src = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(src);
+    try testing.expect(std.mem.indexOf(u8, src, "<video controls src=\"a.mp4\">") != null);
 }
 
 // ── generic directives ──────────────────────────────────────────────────

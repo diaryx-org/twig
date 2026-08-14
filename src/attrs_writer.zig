@@ -66,6 +66,40 @@ pub fn write(
     if (wrote_any) try w.writeAll(sp.close);
 }
 
+/// Spell `attrs` as an HTML tag's interior — ` key="value"`, or a bare ` key`
+/// for a valueless one — with the four characters that would end the value or
+/// the tag escaped. Writes nothing for an empty set, so the caller can always
+/// call it between the tag name and the `>`.
+///
+/// This is the fallback spelling for a generic container whose target has no
+/// name for it: an UNCLASSIFIED container (`form == null`) is an HTML/XML
+/// element passing through a lightweight target, and `<video controls>` is the
+/// only honest thing Markdown can write for one. Emitting the directive
+/// spelling instead invents syntax the author never wrote, and emitting the
+/// bare tag without this drops every attribute silently.
+///
+/// `html/serializer.zig` is still NOT a client of this file (see the header):
+/// its `renderAttributes` merges a synthesized `extra` list into the node's own
+/// entries and dedups keys across the two, which is output machinery rather
+/// than surface spelling. This is the spelling half only.
+pub fn writeHtmlAttrs(w: *Writer, attrs: AST.Attrs) Writer.Error!void {
+    for (attrs.entries) |kv| {
+        const value = kv.value orelse {
+            try w.print(" {s}", .{kv.key});
+            continue;
+        };
+        try w.print(" {s}=\"", .{kv.key});
+        for (value) |c| switch (c) {
+            '&' => try w.writeAll("&amp;"),
+            '<' => try w.writeAll("&lt;"),
+            '>' => try w.writeAll("&gt;"),
+            '"' => try w.writeAll("&quot;"),
+            else => try w.writeByte(c),
+        };
+        try w.writeByte('"');
+    }
+}
+
 /// Whether `kv` spells anything under `sp`. The two degenerate cases are an
 /// `id` with no value and a `class` whose value holds no classes: both are
 /// unreachable from any parser (an `id`/`class` entry always carries a
