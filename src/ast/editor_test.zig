@@ -1048,3 +1048,432 @@ test "insert_literal: an offset past the source is InvalidRange" {
     try testing.expectError(error.InvalidRange, insertLiteral(&fx, 99, "x"));
     try fx.expectSource("ab\n");
 }
+
+// ── thematic break ───────────────────────────────────────────────────────────
+
+test "thematic_break: lands after the caret's block, blank-separated" {
+    var md = try Fixture.init("a\n\nb\n", .markdown);
+    defer md.deinit();
+    try md.ed.insertThematicBreak(0);
+    try md.expectSource("a\n\n---\n\nb\n");
+
+    var dj = try Fixture.init("a\n\nb\n", .djot);
+    defer dj.deinit();
+    try dj.ed.insertThematicBreak(0);
+    try dj.expectSource("a\n\n* * *\n\nb\n");
+}
+
+test "thematic_break: the blank line above is what keeps `---` from being a setext heading" {
+    // Markdown's spelling is only a rule when a blank line precedes it: flush
+    // against the paragraph, `---` underlines it into an `<h2>` and the
+    // paragraph disappears into the heading. The reparsed KIND is the assertion,
+    // not the bytes — both spellings "look right" in the source.
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(0);
+    try fx.expectSource("a\n\n---\n");
+    try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+    try fx.expectNoNodeOfKind(.{ .tag = .heading });
+}
+
+test "thematic_break: after a multi-line paragraph, not inside it" {
+    // A rule is a block, so it goes after the whole paragraph the caret is in —
+    // the caret's own line is not a boundary.
+    var fx = try Fixture.init("a\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(0);
+    try fx.expectSource("a\nb\n\n---\n");
+}
+
+test "thematic_break: inside a quote it stays inside the quote" {
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("> a\n", fmt);
+        defer fx.deinit();
+        try fx.ed.insertThematicBreak(2);
+        const rule = if (fmt == .markdown) "---" else "* * *";
+        var buf: [64]u8 = undefined;
+        try fx.expectSource(try std.fmt.bufPrint(&buf, "> a\n>\n> {s}\n", .{rule}));
+        // The blank continuation line is `>`, not `> `, and the rule carries the
+        // quote's marker — so the break is the quote's child, not the doc's.
+        const id = fx.find(.{ .tag = .thematic_break }) orelse return error.NoRule;
+        const quote = fx.find(.{ .tag = .block_quote }) orelse return error.NoQuote;
+        try testing.expect(id > quote);
+    }
+}
+
+test "thematic_break: inside a list it splits the list rather than corrupting it" {
+    // `containerPrefix` reproduces quote markers but not a list item's indent,
+    // so the rule lands at column zero after the caret's item. Nothing is
+    // swallowed — the list becomes two lists with a rule between — which is why
+    // this is allowed where the same gap makes `toggleCodeBlock` refuse.
+    var fx = try Fixture.init("- a\n- b\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(2);
+    try fx.expectSource("- a\n\n---\n\n- b\n");
+    try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+    // Both items survive AS items: the markers were not eaten.
+    var items: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .list_item) items += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), items);
+}
+
+test "thematic_break: an existing blank line below is not doubled" {
+    var fx = try Fixture.init("a\n\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(0);
+    try fx.ed.insertThematicBreak(0);
+    // The second rule lands after the paragraph again, above the first.
+    try fx.expectSource("a\n\n---\n\n---\n\nb\n");
+}
+
+test "thematic_break: an empty document is a legitimate place for one" {
+    var fx = try Fixture.init("", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(0);
+    try fx.expectSource("---\n");
+    try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+}
+
+test "thematic_break: a parse-only format spells none" {
+    for ([_]format.Format{ .xml, .html }) |fmt| {
+        var fx = try Fixture.init("<r>ab</r>", fmt);
+        defer fx.deinit();
+        try testing.expectError(error.UnsupportedFormat, fx.ed.insertThematicBreak(3));
+    }
+}
+
+// ── code blocks ──────────────────────────────────────────────────────────────
+
+/// The info string the parser reads back off the edited source — the only thing
+/// that proves a fence was tagged rather than merely written.
+fn expectCodeLang(fx: *Fixture, expected: ?[]const u8) !void {
+    const id = fx.find(.{ .tag = .code_block }) orelse return error.NoCodeBlock;
+    const lang = fx.ed.astView().nodes[id].kind.code_block.lang;
+    if (expected) |want| {
+        try testing.expectEqualStrings(want, lang orelse return error.NoLang);
+    } else {
+        try testing.expect(lang == null or lang.?.len == 0);
+    }
+}
+
+test "toggleCodeBlock: fences a paragraph and unfences it back" {
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("a\n", fmt);
+        defer fx.deinit();
+        try fx.ed.toggleCodeBlock(Span.init(0, 1), "zig");
+        try fx.expectSource("```zig\na\n```\n");
+        try expectCodeLang(&fx, "zig");
+
+        try fx.ed.toggleCodeBlock(Span.init(0, 0), null);
+        try fx.expectSource("a\n");
+        try fx.expectNoNodeOfKind(.{ .tag = .code_block });
+    }
+}
+
+test "toggleCodeBlock: an untagged fence is fine" {
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(0, 1), null);
+    try fx.expectSource("```\na\n```\n");
+    try expectCodeLang(&fx, null);
+}
+
+test "toggleCodeBlock: the fence outgrows a run in the body" {
+    // Three backticks in the text would close a three-backtick fence on the
+    // body's own line, leaving the tail as prose. The fence is measured, so it
+    // opens with four and the whole body survives as code.
+    var fx = try Fixture.init("a ``` b\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(0, 7), null);
+    try fx.expectSource("````\na ``` b\n````\n");
+    const id = fx.find(.{ .tag = .code_block }) orelse return error.NoCodeBlock;
+    try testing.expectEqualStrings("a ``` b\n", fx.ed.astView().nodes[id].kind.code_block.text);
+}
+
+test "toggleCodeBlock: fencing inside a quote keeps the quote" {
+    var fx = try Fixture.init("> a\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(2, 3), null);
+    // Only the two fence lines are minted; the body line keeps the `> ` it
+    // already had, which is what keeps the block inside the quote.
+    try fx.expectSource("> ```\n> a\n> ```\n");
+    const quote = fx.find(.{ .tag = .block_quote }) orelse return error.NoQuote;
+    const code = fx.find(.{ .tag = .code_block }) orelse return error.NoCodeBlock;
+    try testing.expect(code > quote);
+}
+
+test "toggleCodeBlock: inside a list item it refuses instead of eating the marker" {
+    // A fence at column zero here would pull the item's `- ` into the code body,
+    // and the document would LOSE the list item rather than gain a code block.
+    // Refusing is the same choice `insertLink` makes over a half-selected URL.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("- a\n- b\n", fmt);
+        defer fx.deinit();
+        try testing.expectError(error.NotEditable, fx.ed.toggleCodeBlock(Span.init(2, 3), null));
+        try fx.expectSource("- a\n- b\n");
+    }
+    // And the same in the other direction: a code block already inside an item
+    // is left alone rather than half-unwrapped.
+    var fx = try Fixture.init("- ```\n  a\n  ```\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.toggleCodeBlock(Span.init(8, 8), null));
+    try fx.expectSource("- ```\n  a\n  ```\n");
+}
+
+test "toggleCodeBlock: unfencing an INDENTED Markdown code block dedents it" {
+    // The older spelling carries no fence to peel, so the toggle has to know its
+    // framing IS the indentation — otherwise it would eat two lines of code.
+    var fx = try Fixture.init("    code\n    more\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(0, 0), null);
+    try fx.expectSource("code\nmore\n");
+    try fx.expectNoNodeOfKind(.{ .tag = .code_block });
+}
+
+test "toggleCodeBlock: an unterminated fence keeps its last line" {
+    // No closing fence means the last line is content, not framing.
+    var fx = try Fixture.init("```\na\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(4, 4), null);
+    try fx.expectSource("a\nb\n");
+}
+
+test "setCodeLanguage: retags and clears the info string, fence width untouched" {
+    var fx = try Fixture.init("````zig\na ``` b\n````\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.setCodeLanguage(0, "rust");
+    try fx.expectSource("````rust\na ``` b\n````\n");
+    try expectCodeLang(&fx, "rust");
+
+    try fx.ed.setCodeLanguage(0, null);
+    try fx.expectSource("````\na ``` b\n````\n");
+    try expectCodeLang(&fx, null);
+}
+
+test "setCodeLanguage: an indented code block has nowhere to carry one" {
+    var fx = try Fixture.init("    code\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.setCodeLanguage(0, "zig"));
+    try fx.expectSource("    code\n");
+}
+
+test "setCodeLanguage: outside a code block is NoBlock" {
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NoBlock, fx.ed.setCodeLanguage(0, "zig"));
+}
+
+test "code fence: an info string the fence can't carry is refused" {
+    // The fence byte would widen or close the fence in either format...
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("a\n", fmt);
+        defer fx.deinit();
+        try testing.expectError(error.InvalidLanguage, fx.ed.toggleCodeBlock(Span.init(0, 1), "a`b"));
+        try testing.expectError(error.InvalidLanguage, fx.ed.toggleCodeBlock(Span.init(0, 1), "a\nb"));
+        try fx.expectSource("a\n");
+    }
+    // ...but only Markdown ends its info string at whitespace, so only Markdown
+    // refuses a space. Djot's runs to the end of the line.
+    var md = try Fixture.init("a\n", .markdown);
+    defer md.deinit();
+    try testing.expectError(error.InvalidLanguage, md.ed.toggleCodeBlock(Span.init(0, 1), "a b"));
+
+    var dj = try Fixture.init("a\n", .djot);
+    defer dj.deinit();
+    try dj.ed.toggleCodeBlock(Span.init(0, 1), "a b");
+    try dj.expectSource("```a b\na\n```\n");
+}
+
+test "code blocks: a parse-only format spells no fence" {
+    for ([_]format.Format{ .xml, .html }) |fmt| {
+        var fx = try Fixture.init("<r>ab</r>", fmt);
+        defer fx.deinit();
+        try testing.expectError(error.UnsupportedFormat, fx.ed.toggleCodeBlock(Span.init(3, 5), null));
+        try testing.expectError(error.UnsupportedFormat, fx.ed.setCodeLanguage(3, "zig"));
+    }
+}
+
+// ── task list checkboxes ─────────────────────────────────────────────────────
+
+/// The checked state the parser reads back — the box's meaning, not its bytes.
+fn expectTaskChecked(fx: *Fixture, expected: bool) !void {
+    const id = fx.find(.{ .tag = .task_list_item }) orelse return error.NoTaskItem;
+    try testing.expectEqual(expected, fx.ed.astView().nodes[id].kind.task_list_item.checked);
+}
+
+test "toggleTaskItem: a bullet gains a box, and loses it again" {
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("- a\n", fmt);
+        defer fx.deinit();
+        try fx.ed.toggleTaskItem(2);
+        try fx.expectSource("- [ ] a\n");
+        try expectTaskChecked(&fx, false);
+
+        try fx.ed.toggleTaskItem(6);
+        try fx.expectSource("- a\n");
+        try fx.expectNoNodeOfKind(.{ .tag = .task_list_item });
+        try testing.expect(fx.find(.{ .tag = .list_item }) != null);
+    }
+}
+
+test "setTaskChecked: ticks and unticks, and is a no-op when already there" {
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("- [ ] a\n", fmt);
+        defer fx.deinit();
+        try fx.ed.setTaskChecked(6, true);
+        try fx.expectSource("- [x] a\n");
+        try expectTaskChecked(&fx, true);
+
+        // Already checked: no edit at all, so no undo step to burn.
+        const before = fx.ed.lastChange();
+        try fx.ed.setTaskChecked(6, true);
+        try testing.expectEqual(before, fx.ed.lastChange());
+
+        try fx.ed.setTaskChecked(6, false);
+        try fx.expectSource("- [ ] a\n");
+        try expectTaskChecked(&fx, false);
+    }
+}
+
+test "toggleTaskChecked: flips whichever way the box is pointing" {
+    var fx = try Fixture.init("- [ ] a\n- [x] b\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleTaskChecked(6);
+    try fx.expectSource("- [x] a\n- [x] b\n");
+    try fx.ed.toggleTaskChecked(14);
+    try fx.expectSource("- [x] a\n- [ ] b\n");
+}
+
+test "task boxes: a capital [X] is a checked box, not a second one to add" {
+    // Source in the wild spells it both ways. Matching the box's INTERIOR rather
+    // than the canonical spelling is what keeps the toggle from writing
+    // `- [ ] [X] a`.
+    var fx = try Fixture.init("- [X] a\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleTaskChecked(6);
+    try fx.expectSource("- [ ] a\n");
+    try expectTaskChecked(&fx, false);
+}
+
+test "task boxes: an item inside a quote is found past the quote markers" {
+    // The list marker doesn't start the line here, which is the whole reason
+    // `listMarkerAt` takes a starting offset.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("> - [ ] a\n", fmt);
+        defer fx.deinit();
+        try fx.ed.setTaskChecked(8, true);
+        try fx.expectSource("> - [x] a\n");
+        try expectTaskChecked(&fx, true);
+    }
+}
+
+test "task boxes: an item's continuation lines are untouched" {
+    // The box is inline content of the item's first paragraph, not part of the
+    // marker, so the content column never moves — unlike a container toggle,
+    // which has to re-indent.
+    var fx = try Fixture.init("- a\n  b\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleTaskItem(2);
+    try fx.expectSource("- [ ] a\n  b\n");
+    try expectTaskChecked(&fx, false);
+}
+
+test "setTaskChecked: a plain bullet has no box to tick" {
+    // Minting one here would make "set checked" silently convert the item;
+    // `toggleTaskItem` is how a caller asks for that.
+    var fx = try Fixture.init("- a\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.setTaskChecked(2, true));
+    try testing.expectError(error.NotEditable, fx.ed.toggleTaskChecked(2));
+    try fx.expectSource("- a\n");
+}
+
+test "task boxes: a caret in no list item is NoBlock" {
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NoBlock, fx.ed.toggleTaskItem(0));
+    try testing.expectError(error.NoBlock, fx.ed.setTaskChecked(0, true));
+}
+
+test "task boxes: a parse-only format spells none" {
+    for ([_]format.Format{ .xml, .html }) |fmt| {
+        var fx = try Fixture.init("<r>ab</r>", fmt);
+        defer fx.deinit();
+        try testing.expectError(error.UnsupportedFormat, fx.ed.toggleTaskItem(3));
+        try testing.expectError(error.UnsupportedFormat, fx.ed.setTaskChecked(3, true));
+    }
+}
+
+// ── footnotes ────────────────────────────────────────────────────────────────
+
+test "insertFootnote: writes the reference AND the definition" {
+    // Half a footnote is not a footnote: a bare `[^a]` renders as four literal
+    // characters. So the reparse has to show both nodes, not just the bytes.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("see\n", fmt);
+        defer fx.deinit();
+        try fx.ed.insertFootnote(3, "a");
+        try fx.expectSource("see[^a]\n\n[^a]: \n");
+        try fx.expectSpelled(.{ .text_leaf = .footnote_reference }, "a");
+        const def = fx.find(.{ .tag = .footnote }) orelse return error.NoDefinition;
+        try testing.expectEqualStrings("a", fx.ed.astView().nodes[def].kind.footnote.label);
+    }
+}
+
+test "insertFootnote: a second reference to the same label adds no second definition" {
+    var fx = try Fixture.init("see\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertFootnote(3, "a");
+    try fx.ed.insertFootnote(7, "a");
+    try fx.expectSource("see[^a][^a]\n\n[^a]: \n");
+
+    var defs: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .footnote) defs += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), defs);
+}
+
+test "insertFootnote: a distinct label gets its own definition, below the first" {
+    var fx = try Fixture.init("see\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertFootnote(3, "a");
+    try fx.ed.insertFootnote(7, "b");
+    try fx.expectSource("see[^a][^b]\n\n[^a]: \n\n[^b]: \n");
+}
+
+test "insertFootnote: a source with no trailing newline still gets a whole block" {
+    var fx = try Fixture.init("see", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertFootnote(3, "a");
+    try fx.expectSource("see[^a]\n\n[^a]: \n");
+}
+
+test "insertFootnote: it is ONE edit, so one undo takes both halves back" {
+    // The two halves sit at opposite ends of the document but are one gesture:
+    // two splices would need two undos and would report only half the change.
+    var fx = try Fixture.init("see\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertFootnote(3, "a");
+    _ = try fx.ed.splicer.undo();
+    try fx.expectSource("see\n");
+}
+
+test "insertFootnote: a label the reference brackets can't hold is refused" {
+    var fx = try Fixture.init("see\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.InvalidLabel, fx.ed.insertFootnote(3, ""));
+    try testing.expectError(error.InvalidLabel, fx.ed.insertFootnote(3, "a\nb"));
+    try testing.expectError(error.InvalidLabel, fx.ed.insertFootnote(3, "a]b"));
+    try fx.expectSource("see\n");
+}
+
+test "insertFootnote: a parse-only format spells none" {
+    for ([_]format.Format{ .xml, .html }) |fmt| {
+        var fx = try Fixture.init("<r>ab</r>", fmt);
+        defer fx.deinit();
+        try testing.expectError(error.UnsupportedFormat, fx.ed.insertFootnote(3, "a"));
+    }
+}

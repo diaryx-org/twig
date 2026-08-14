@@ -101,6 +101,13 @@ pub const Editor = struct {
         InvalidLevel,
         /// A destination this format cannot hold (one containing a newline).
         InvalidDestination,
+        /// An info string this format's code fence cannot hold — one carrying a
+        /// line end, the fence byte itself, or (where the format ends its info
+        /// string at whitespace) a space.
+        InvalidLanguage,
+        /// A footnote label this format cannot hold: empty, or carrying a line
+        /// end or a reference bracket.
+        InvalidLabel,
         /// The `Syntax` table has no spelling for this gesture in this format.
         UnsupportedFormat,
         /// No block covers the offset/range this gesture needs one for.
@@ -359,6 +366,310 @@ pub const Editor = struct {
         // Identical bytes: don't spend an edit (and an undo step) on a no-op.
         if (std.mem.eql(u8, out.items, src[region_start..region_end])) return;
         return self.commitSplice(region_start, region_end, out.items);
+    }
+
+    // ── Thematic break ───────────────────────────────────────────────────────
+
+    /// Insert a thematic break — a horizontal rule — as its own block, on the
+    /// line after the block `offset` sits in.
+    ///
+    /// Decisions:
+    ///   * It goes AFTER the caret's block rather than AT the caret. A rule is a
+    ///     block, not an inline, so there is no spelling for one in the middle of
+    ///     a paragraph; splitting the paragraph in two would be a different
+    ///     gesture the caller didn't ask for.
+    ///   * It is BLANK-SEPARATED from its neighbours unconditionally, and that is
+    ///     load-bearing rather than cosmetic: Markdown reads `---` on the line
+    ///     directly under a paragraph as a setext `<h2>` underline, so a rule
+    ///     written flush against its predecessor silently becomes a heading and
+    ///     eats it. The blank above is what makes one spelling safe in both
+    ///     formats. The blank below is added only when the next line isn't
+    ///     already blank, so repeating the gesture doesn't accumulate them.
+    ///   * It inherits the caret block's QUOTE PREFIX, so a rule inside a quote
+    ///     stays inside it (`> a` gains `>` and `> * * *`, not a rule that ends
+    ///     the quote). Only quote markers are reproduced — a list item's indent
+    ///     is not — so a rule requested inside a list lands at column zero after
+    ///     the caret's ITEM, which SPLITS the list in two with the rule between.
+    ///     That is a real document rather than a corrupted one (nothing is
+    ///     swallowed and no item loses its marker), and it is the honest reading
+    ///     of a rule at column zero, so unlike `toggleCodeBlock` — where the same
+    ///     prefix gap would eat the item's marker — it is allowed rather than
+    ///     refused.
+    ///
+    /// `error.UnsupportedFormat` when the format has no thematic break. There is
+    /// no `error.NoBlock`: an empty document is a legitimate place for a rule, and
+    /// with no block to sit after it goes at the caret's line end.
+    pub fn insertThematicBreak(self: *Editor, offset: usize) Error!void {
+        const rule = self.syntax.thematic_break orelse return error.UnsupportedFormat;
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const allocator = self.splicer.allocator;
+
+        const block = locate.innermostBlock(&self.splicer.doc, offset);
+        const anchor = if (block) |b| self.splicer.doc.span(b).end -| 1 else offset;
+        const pos = locate.lineEndAt(src, anchor);
+        const prefix = if (block) |b| containerPrefix(src, self.splicer.doc.span(b).start) else "";
+        // A quote's blank line carries its marker but not the space after it —
+        // the same rule `ContainerSpelling.blank` states for the toggle.
+        const blank = std.mem.trimEnd(u8, prefix, " ");
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        if (pos > 0) {
+            try out.appendSlice(allocator, blank);
+            try out.append(allocator, '\n');
+        }
+        try out.appendSlice(allocator, prefix);
+        try out.appendSlice(allocator, rule);
+        try out.append(allocator, '\n');
+        if (pos < src.len and !locate.isBlankLine(locate.lineBody(src[pos..locate.lineEndAt(src, pos)]))) {
+            try out.appendSlice(allocator, blank);
+            try out.append(allocator, '\n');
+        }
+
+        return self.commitSplice(pos, pos, out.items);
+    }
+
+    // ── Code blocks ──────────────────────────────────────────────────────────
+
+    /// Toggle a fenced code block over the blocks `[start, end)` covers: fence
+    /// them if the caret isn't in a code block, unfence the one it is in if it
+    /// is. `lang` is the info string to tag the opening fence with, ignored when
+    /// unfencing.
+    ///
+    /// Fencing is an INSERTION at the covered region's edges, not a rewrite of
+    /// its lines: the body is source that already parsed where it sits, and its
+    /// enclosing container's prefix is already on every line, so leaving the
+    /// lines alone is what keeps a fence inside a quote working (`> a` becomes
+    /// `` > ``` ``/`> a`/`` > ``` ``). Only the two fence lines are minted, and
+    /// they carry the same quote prefix for the same reason
+    /// `insertThematicBreak` does.
+    ///
+    /// The fence is measured, not fixed: it is one byte longer than the longest
+    /// run of the fence character anywhere in the body, so fencing text that
+    /// itself holds a fence nests instead of closing early. `CodeFence.min` is
+    /// the floor.
+    ///
+    /// Unfencing peels the opening line and — when it is one — the closing fence
+    /// line, leaving the interior verbatim. A Markdown INDENTED code block has no
+    /// fences to peel, so it is dedented by up to four spaces a line instead;
+    /// that is the same construct with a different spelling, and refusing it
+    /// would make the toggle irreversible on a document that merely happens to
+    /// use the older form.
+    ///
+    /// Unfencing is the one gesture here that can produce something other than
+    /// what it removed: a code body is by definition text the parser did not
+    /// read as markup, so `# x` inside a fence becomes a heading once the fence
+    /// is gone. That is what unfencing MEANS, not a defect — but it is why this
+    /// is a toggle over whole blocks rather than an "unwrap" that promises to
+    /// give the same tree back.
+    ///
+    /// INSIDE A LIST ITEM this is `error.NotEditable`. A quote's prefix is on
+    /// every line already, but a list item's is not: its content is held by
+    /// INDENTATION whose width is the marker's, and only the item's first line
+    /// carries that marker. A fence written at column zero there swallows the
+    /// `- ` into the code body and the item stops being an item — the document
+    /// loses a node rather than gaining a code block. Refusing beats that, for
+    /// the same reason a selection running into the middle of a URL is refused
+    /// rather than spliced; fencing inside a list wants marker-width prefixing,
+    /// which is `toggleBlockContainer`'s machinery and not a one-line prefix's.
+    pub fn toggleCodeBlock(self: *Editor, span: Span, lang: ?[]const u8) Error!void {
+        try self.checkRange(span.start, span.end);
+        const fence = self.syntax.code_fence orelse return error.UnsupportedFormat;
+        if (lang) |l| try checkInfoString(fence, l);
+
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+        const doc = &self.splicer.doc;
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, span.start, &chain);
+        // Refused rather than mangled — see the doc comment. A fence written at
+        // the container prefix would sit at column zero inside a list item and
+        // swallow the item's own marker into the code body.
+        if (insideListItem(doc, chain.items)) return error.NotEditable;
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        if (locate.innermostOfKind(doc, chain.items, .code_block)) |cb| {
+            const b = doc.span(cb);
+            const region_start = locate.lineStartAt(src, b.start);
+            const region_end = locate.lineEndAt(src, b.end -| 1);
+            try buildUnfence(allocator, src, region_start, region_end, fence, &out);
+            return self.commitSplice(region_start, region_end, out.items);
+        }
+
+        const blocks = coveredBlocks(allocator, doc, span.start, span.end) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.NoBlock,
+        };
+        defer allocator.free(blocks.chain);
+
+        const region_start = locate.lineStartAt(src, doc.span(blocks.first).start);
+        const region_end = locate.lineEndAt(src, doc.span(blocks.last).end -| 1);
+        const prefix = containerPrefix(src, doc.span(blocks.first).start);
+        const width = fenceWidth(src[region_start..region_end], fence.char, fence.min);
+
+        try out.appendSlice(allocator, prefix);
+        try out.appendNTimes(allocator, fence.char, width);
+        if (lang) |l| try out.appendSlice(allocator, l);
+        try out.append(allocator, '\n');
+        try out.appendSlice(allocator, src[region_start..region_end]);
+        // An unterminated last line would otherwise fuse with the closing fence.
+        if (region_end > region_start and src[region_end - 1] != '\n') try out.append(allocator, '\n');
+        try out.appendSlice(allocator, prefix);
+        try out.appendNTimes(allocator, fence.char, width);
+        try out.append(allocator, '\n');
+
+        return self.commitSplice(region_start, region_end, out.items);
+    }
+
+    /// Retag the code block at `offset` with `lang`, or clear its info string
+    /// when `lang` is null — the "language" dropdown next to a code block.
+    ///
+    /// Only the info string is rewritten; the fence's own width is kept, because
+    /// it was measured against a body this gesture doesn't touch. An INDENTED
+    /// Markdown code block is `error.NotEditable`: it has no fence, so it has
+    /// nowhere to carry a language (convert it with `toggleCodeBlock` twice).
+    pub fn setCodeLanguage(self: *Editor, offset: usize, lang: ?[]const u8) Error!void {
+        const fence = self.syntax.code_fence orelse return error.UnsupportedFormat;
+        if (lang) |l| try checkInfoString(fence, l);
+
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const allocator = self.splicer.allocator;
+        const doc = &self.splicer.doc;
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, offset, &chain);
+        const cb = locate.innermostOfKind(doc, chain.items, .code_block) orelse return error.NoBlock;
+
+        const line_start = locate.lineStartAt(src, doc.span(cb).start);
+        const line = src[line_start..locate.lineEndAt(src, line_start)];
+        const f = fenceAt(line, fence.char, fence.min) orelse return error.NotEditable;
+
+        const info_start = line_start + f.start + f.width;
+        const info_end = line_start + locate.lineBody(line).len;
+        return self.commitSplice(info_start, info_end, lang orelse "");
+    }
+
+    // ── Task list checkboxes ─────────────────────────────────────────────────
+    // A checkbox is not a node an editor wraps a range in: it is a marker on an
+    // ITEM, so every gesture here is addressed by a caret `offset` and edits the
+    // few bytes after that item's list marker. Nothing else on the line moves —
+    // in particular the box is INLINE CONTENT of the item's first paragraph, not
+    // part of the marker, so adding or removing one leaves the item's
+    // continuation-line indentation alone (unlike `toggleBlockContainer`, which
+    // has to re-indent).
+
+    /// Add a checkbox to the list item at `offset`, or take one away — the
+    /// gesture that converts between a `list_item` and a `task_list_item`. A box
+    /// is added UNCHECKED; use `setTaskChecked` to tick it.
+    ///
+    /// `error.NoBlock` when `offset` is in no list item, `error.NotEditable`
+    /// when the item's line carries no recognizable list marker to hang a box
+    /// off (a lazy continuation line).
+    pub fn toggleTaskItem(self: *Editor, offset: usize) Error!void {
+        const tm = self.syntax.task_marker orelse return error.UnsupportedFormat;
+        const found = try self.locateTaskBox(offset);
+        if (found.box) |b| return self.commitSplice(b.start, b.end + found.space, "");
+
+        const allocator = self.splicer.allocator;
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+        try out.appendSlice(allocator, tm.unchecked);
+        try out.appendSlice(allocator, tm.space);
+        return self.commitSplice(found.at, found.at, out.items);
+    }
+
+    /// Tick or untick the task item at `offset` — a click on the checkbox.
+    ///
+    /// Rewrites the BOX ALONE, never the space after it, so an item spelled with
+    /// unusual spacing keeps it. A no-op (no edit, no undo step) when the box is
+    /// already in the requested state. `error.NotEditable` when the item has no
+    /// box: minting one here would make a "set checked" call silently convert a
+    /// bullet into a task, which is `toggleTaskItem`'s job to do explicitly.
+    pub fn setTaskChecked(self: *Editor, offset: usize, checked: bool) Error!void {
+        const tm = self.syntax.task_marker orelse return error.UnsupportedFormat;
+        const found = try self.locateTaskBox(offset);
+        const b = found.box orelse return error.NotEditable;
+        if (found.checked == checked) return;
+        return self.commitSplice(b.start, b.end, if (checked) tm.checked else tm.unchecked);
+    }
+
+    /// Flip the task item at `offset` — `setTaskChecked` against its current
+    /// state, which is what a checkbox click actually is when the caller doesn't
+    /// already know the state.
+    pub fn toggleTaskChecked(self: *Editor, offset: usize) Error!void {
+        if (self.syntax.task_marker == null) return error.UnsupportedFormat;
+        const found = try self.locateTaskBox(offset);
+        if (found.box == null) return error.NotEditable;
+        return self.setTaskChecked(offset, !found.checked);
+    }
+
+    /// Where the checkbox on the list item at `offset` is, or would go. The
+    /// shared body of the three gestures above.
+    fn locateTaskBox(self: *Editor, offset: usize) Error!TaskBox {
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const tm = self.syntax.task_marker orelse return error.UnsupportedFormat;
+        const allocator = self.splicer.allocator;
+        const doc = &self.splicer.doc;
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, offset, &chain);
+
+        // The innermost item of EITHER kind, walked directly rather than through
+        // two `innermostOfKind` calls: a plain item can gain a box and a task
+        // item can lose one, so both are targets and whichever is deeper wins.
+        var item: ?AST.Node.Id = null;
+        var i = chain.items.len;
+        while (i > 0) {
+            i -= 1;
+            switch (std.meta.activeTag(doc.ast.nodes[chain.items[i]].kind)) {
+                .list_item, .task_list_item => {
+                    item = chain.items[i];
+                    break;
+                },
+                else => {},
+            }
+        }
+        const id = item orelse return error.NoBlock;
+
+        // The item's FIRST line, which is the only one a marker can open. Djot
+        // starts a quoted item at its marker and Markdown at column 0, so the
+        // line start is taken from the span rather than the span itself.
+        const line_start = locate.lineStartAt(src, doc.span(id).start);
+        const line = src[line_start..locate.lineEndAt(src, line_start)];
+        var from: usize = 0;
+        while (skipQuoteMarker(line, from)) |j| from = j;
+        const m = listMarkerAt(line, from) orelse return error.NotEditable;
+
+        const at = line_start + m.end;
+        const rest = line[m.end..];
+        const width = tm.unchecked.len;
+        if (rest.len >= width and rest[0] == '[' and rest[width - 1] == ']') {
+            // The box's INTERIOR, read rather than compared against the two
+            // spellings: source in the wild writes `[X]` as well as `[x]`, and a
+            // literal match would call the capital form "not a checkbox at all"
+            // and hand the caller a second box to insert beside it.
+            const inner = rest[1 .. width - 1];
+            const checked = std.mem.indexOfAny(u8, inner, tm.checked_chars) != null;
+            if (checked or locate.isBlankLine(inner)) return .{
+                .at = at,
+                .box = Span.init(at, at + width),
+                // However the author spaced it — removing the box takes the
+                // separator with it, ticking it leaves the separator alone.
+                .space = if (rest.len > width and rest[width] == ' ') 1 else 0,
+                .checked = checked,
+            };
+        }
+        return .{ .at = at, .box = null, .space = 0, .checked = false };
     }
 
     // ── Tables ───────────────────────────────────────────────────────────────
@@ -629,6 +940,71 @@ pub const Editor = struct {
         return self.commitSplice(span.start, span.end, out.items);
     }
 
+    // ── Footnotes ────────────────────────────────────────────────────────────
+
+    /// Insert a footnote reference at `offset` and, unless one already exists,
+    /// the matching definition at the end of the document.
+    ///
+    /// Decisions:
+    ///   * It writes BOTH HALVES, because in neither format is half a footnote a
+    ///     footnote: a bare `[^a]` with nothing defining it renders as the
+    ///     literal four characters. That is also why `Syntax.footnote` is one
+    ///     field holding both spellings rather than a reference entry in
+    ///     `text_leaf_delims` (which is there for the serializer, and which
+    ///     `assertCoherent` pins to this).
+    ///   * The definition body is left EMPTY, and that parses — both parsers
+    ///     read `[^a]: ` as a footnote with no children. The caller then types
+    ///     into it like any other block; minting a placeholder body here would be
+    ///     text the author has to delete.
+    ///   * A label that is ALREADY DEFINED gets only the reference. Referring to
+    ///     an existing footnote twice is an ordinary thing to want, and appending
+    ///     a second definition for the same label is not — the parsers keep one
+    ///     and the other becomes dead source.
+    ///   * It is ONE splice, spanning the caret to the end of the document, even
+    ///     though the two halves are far apart and the bytes between them are
+    ///     rewritten unchanged. Two splices would be less wasteful and strictly
+    ///     worse: the pair would take two undo steps to reverse, and `lastChange`
+    ///     — the range a caller re-renders from — would describe only the second,
+    ///     silently omitting the reference the caret is sitting in.
+    ///
+    /// `error.InvalidLabel` for a label that is empty or holds a line end or a
+    /// reference bracket; `error.UnsupportedFormat` where the format has no
+    /// footnotes.
+    pub fn insertFootnote(self: *Editor, offset: usize, label: []const u8) Error!void {
+        try self.checkRange(offset, offset);
+        const fs = self.syntax.footnote orelse return error.UnsupportedFormat;
+        if (label.len == 0) return error.InvalidLabel;
+        if (std.mem.indexOfAny(u8, label, "\r\n") != null) return error.InvalidLabel;
+        if (std.mem.indexOfAny(u8, label, fs.label_forbids) != null) return error.InvalidLabel;
+
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        try out.appendSlice(allocator, fs.ref_open);
+        try out.appendSlice(allocator, label);
+        try out.appendSlice(allocator, fs.ref_close);
+
+        if (footnoteDefined(self.astView(), label)) {
+            return self.commitSplice(offset, offset, out.items);
+        }
+
+        try out.appendSlice(allocator, src[offset..]);
+        // The definition is a block of its own at the end of the document, so it
+        // needs a line to itself and a blank line above it.
+        if (src.len > 0 and src[src.len - 1] != '\n') try out.append(allocator, '\n');
+        if (!endsWithBlankLine(src)) try out.append(allocator, '\n');
+        try out.appendSlice(allocator, fs.ref_open);
+        try out.appendSlice(allocator, label);
+        try out.appendSlice(allocator, fs.ref_close);
+        try out.appendSlice(allocator, fs.def_suffix);
+        try out.append(allocator, '\n');
+
+        return self.commitSplice(offset, src.len, out.items);
+    }
+
     // ── Literal text ─────────────────────────────────────────────────────────
 
     /// Insert `text` at `offset` as a LITERAL run: every byte the format reads as
@@ -817,12 +1193,16 @@ fn skipQuoteMarker(line: []const u8, i: usize) ?usize {
     return j;
 }
 
-/// The `[start, end)` of a list marker on `line` — `start` at the bullet/first
-/// digit (so the indent before it stays put, keeping an enclosing container's
-/// prefix intact) and `end` past the marker's trailing spaces. `null` if the
-/// line doesn't open a list item.
-fn listMarkerAt(line: []const u8) ?struct { start: usize, end: usize } {
-    var j: usize = 0;
+/// The `[start, end)` of a list marker on `line`, scanning from `from` —
+/// `start` at the bullet/first digit (so the indent before it stays put, keeping
+/// an enclosing container's prefix intact) and `end` past the marker's trailing
+/// spaces. `null` if the line doesn't open a list item.
+///
+/// `from` is how a caller skips a prefix the marker sits after: the checkbox
+/// gestures pass the end of the line's quote markers, so `> - [ ] a` is found.
+/// The container builders pass 0, which is the whole line.
+fn listMarkerAt(line: []const u8, from: usize) ?struct { start: usize, end: usize } {
+    var j: usize = from;
     while (j < line.len and (line[j] == ' ' or line[j] == '\t')) j += 1;
     const start = j;
     if (j >= line.len) return null;
@@ -997,7 +1377,7 @@ fn buildListRewrite(
             // Only when the list is going away: a conversion keeps the items as
             // items, so it must not loosen a tight list.
             if (sp == null and seen_item and !last_blank) try out.append(allocator, '\n');
-            const m = listMarkerAt(line) orelse {
+            const m = listMarkerAt(line, 0) orelse {
                 try out.appendSlice(allocator, line);
                 line_start = line_end;
                 continue;
@@ -1052,7 +1432,7 @@ fn buildRenumber(
     while (line_start < region_end) {
         const line_end = locate.lineEndAt(src, line_start);
         const line = src[line_start..line_end];
-        const m = listMarkerAt(line);
+        const m = listMarkerAt(line, 0);
         const numbered = if (m) |mm| isNumberedMarker(line[mm.start..mm.end]) else false;
         if (numbered) {
             const mm = m.?;
@@ -1097,6 +1477,160 @@ fn isNumberedMarker(marker: []const u8) bool {
     var j: usize = 0;
     if (j < marker.len and marker[j] == '(') j += 1;
     return j < marker.len and marker[j] >= '0' and marker[j] <= '9';
+}
+
+/// The run of QUOTE MARKERS opening the line `at` sits on — the prefix a new
+/// block written beside it must repeat to stay in the same containers.
+///
+/// Quote markers only, because a quote's marker is on EVERY line it covers
+/// while a list item's is on its first line alone — a list item holds its
+/// content by indentation of the marker's width, which this cannot see from one
+/// line. The callers differ on what to do about that gap: `insertThematicBreak`
+/// accepts landing at column zero (it splits the list, corrupting nothing),
+/// while `toggleCodeBlock` refuses, because there the same gap would pull the
+/// item's marker into the code body.
+fn containerPrefix(src: []const u8, at: usize) []const u8 {
+    const line_start = locate.lineStartAt(src, at);
+    const line = src[line_start..locate.lineEndAt(src, at)];
+    var i: usize = 0;
+    while (skipQuoteMarker(line, i)) |j| i = j;
+    return line[0..i];
+}
+
+/// Whether `chain` passes through a list item — the containers `containerPrefix`
+/// cannot reproduce, and so the ones a gesture that relies on it must refuse.
+fn insideListItem(doc: *const Document, chain: []const AST.Node.Id) bool {
+    for (chain) |id| {
+        switch (std.meta.activeTag(doc.ast.nodes[id].kind)) {
+            .list_item, .task_list_item => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+// ── Code-fence internals ───────────────────────────────────────────────────
+
+/// How many fence characters a fence over `body` needs: one more than the
+/// longest run of `char` anywhere in it, floored at `min`. That is what lets a
+/// code block hold a code block — the outer fence simply outgrows the inner one.
+fn fenceWidth(body: []const u8, char: u8, min: usize) usize {
+    var longest: usize = 0;
+    var run: usize = 0;
+    for (body) |c| {
+        if (c != char) {
+            run = 0;
+            continue;
+        }
+        run += 1;
+        if (run > longest) longest = run;
+    }
+    return @max(min, longest + 1);
+}
+
+/// The fence opening `line`: where its first character sits and how many there
+/// are, after any quote prefix and up to three spaces of indentation. `null`
+/// when the line opens no fence — which is not a malformed document but the
+/// ordinary shape of a Markdown INDENTED code block.
+fn fenceAt(line: []const u8, char: u8, min: usize) ?struct { start: usize, width: usize } {
+    var i: usize = 0;
+    while (skipQuoteMarker(line, i)) |j| i = j;
+    var indent: usize = 0;
+    while (i < line.len and line[i] == ' ' and indent < 3) : (indent += 1) i += 1;
+    const start = i;
+    while (i < line.len and line[i] == char) i += 1;
+    return if (i - start >= min) .{ .start = start, .width = i - start } else null;
+}
+
+/// The interior of the code block occupying `[region_start, region_end)`, with
+/// its framing removed — the body of `Editor.toggleCodeBlock`'s unfence half,
+/// where its reasoning lives.
+fn buildUnfence(
+    allocator: Allocator,
+    src: []const u8,
+    region_start: usize,
+    region_end: usize,
+    fence: syntax_mod.CodeFence,
+    out: *std.ArrayList(u8),
+) !void {
+    const first_end = locate.lineEndAt(src, region_start);
+    if (fenceAt(src[region_start..first_end], fence.char, fence.min) == null) {
+        // No opening fence: a Markdown indented code block, whose framing IS its
+        // indentation. Four spaces is the marker; a line indented further keeps
+        // the rest, which is the indentation the code itself carried.
+        var line_start = region_start;
+        while (line_start < region_end) {
+            const line_end = locate.lineEndAt(src, line_start);
+            const line = src[line_start..line_end];
+            var j: usize = 0;
+            while (j < line.len and j < 4 and line[j] == ' ') j += 1;
+            try out.appendSlice(allocator, line[j..]);
+            line_start = line_end;
+        }
+        return;
+    }
+
+    // Fenced: drop the opening line, and the closing one when there IS one — an
+    // unterminated fence at the end of the document has no closing line, and its
+    // last line is content that must survive.
+    var body_end = region_end;
+    const last_start = locate.lineStartAt(src, region_end -| 1);
+    if (last_start >= first_end and
+        fenceAt(src[last_start..region_end], fence.char, fence.min) != null)
+    {
+        body_end = last_start;
+    }
+    try out.appendSlice(allocator, src[first_end..@max(first_end, body_end)]);
+}
+
+/// Refuse an info string this format's fence cannot carry back out: a line end
+/// (which would end the fence line), the fence character itself (which would
+/// widen or close the fence), and whatever else the format forbids — Markdown
+/// ends its info string at whitespace, so a space there would come back
+/// truncated rather than broken, which is worse.
+fn checkInfoString(fence: syntax_mod.CodeFence, lang: []const u8) Editor.Error!void {
+    if (std.mem.indexOfAny(u8, lang, "\r\n") != null) return error.InvalidLanguage;
+    if (std.mem.indexOfScalar(u8, lang, fence.char) != null) return error.InvalidLanguage;
+    if (std.mem.indexOfAny(u8, lang, fence.info_forbids) != null) return error.InvalidLanguage;
+}
+
+// ── Task-checkbox internals ────────────────────────────────────────────────
+
+/// Where a list item's checkbox is, or would go. `box` is the brackets and what
+/// is between them and NOTHING else — `space` counts the separator after it
+/// separately, because ticking a box must not touch the author's spacing while
+/// removing one must take the separator with it.
+const TaskBox = struct {
+    at: usize,
+    box: ?Span,
+    space: usize,
+    checked: bool,
+};
+
+// ── Footnote internals ─────────────────────────────────────────────────────
+
+/// Whether `label` already has a DEFINITION in this tree.
+///
+/// A linear scan of `ast.nodes` rather than a walk from the root, because a
+/// footnote definition is attached to no parent: both parsers resolve them by
+/// label, not by position, so the node is a detached root that a child walk
+/// never reaches.
+fn footnoteDefined(ast: *const AST, label: []const u8) bool {
+    for (ast.nodes) |n| {
+        if (std.meta.activeTag(n.kind) != .footnote) continue;
+        if (std.mem.eql(u8, n.kind.footnote.label, label)) return true;
+    }
+    return false;
+}
+
+/// Whether `src` already ends in a blank line — so appending a block needs only
+/// a line of its own, not a separator too. An EMPTY document counts: there is
+/// nothing above for the new block to fuse with.
+fn endsWithBlankLine(src: []const u8) bool {
+    if (src.len == 0) return true;
+    if (src[src.len - 1] != '\n') return false;
+    const last = locate.lineStartAt(src, src.len - 1);
+    return locate.isBlankLine(locate.lineBody(src[last..]));
 }
 
 // ── Link internals ─────────────────────────────────────────────────────────

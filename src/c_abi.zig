@@ -1134,7 +1134,12 @@ fn markdownOptionsFromFlags(flags: u32) twig.Markdown.ParseOptions {
 fn statusOfEditorError(err: twig.Editor.Error) TwigStatus {
     return switch (err) {
         error.OutOfMemory => .out_of_memory,
-        error.InvalidRange, error.InvalidLevel, error.InvalidDestination => .invalid_argument,
+        error.InvalidRange,
+        error.InvalidLevel,
+        error.InvalidDestination,
+        error.InvalidLanguage,
+        error.InvalidLabel,
+        => .invalid_argument,
         error.UnsupportedFormat => .unsupported_format,
         error.NoBlock => .not_found,
         error.NotEditable => .not_editable,
@@ -2309,6 +2314,181 @@ pub export fn twig_editor_insert_line_break(
     const handle = asEditor(raw);
 
     handle.editor.insertLineBreak(offset) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+// ── Thematic break ─────────────────────────────────────────────────────────────
+// The engine is `twig.Editor.insertThematicBreak`: the format's `Syntax
+// .thematic_break` spelling, blank-separated and carrying the caret block's quote
+// prefix.
+
+/// Insert a thematic break (horizontal rule) after the block at `offset`. See
+/// `twig.h` for the semantics and `twig.Editor.insertThematicBreak` for the
+/// implementation and its rationale — in particular why the blank line above it
+/// is load-bearing rather than cosmetic.
+pub export fn twig_editor_insert_thematic_break(
+    ed: ?*TwigEditor,
+    offset: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.insertThematicBreak(offset) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+// ── Code blocks ────────────────────────────────────────────────────────────────
+// The engine is `twig.Editor`'s `toggleCodeBlock` / `setCodeLanguage`: the
+// format's `Syntax.code_fence`, the fence width measured against the body, and
+// the indented-code-block spelling Markdown still admits.
+//
+// The info string is OPTIONAL, and "absent" is not "present but empty" — so it
+// arrives as this ABI's `(ptr, len, has_*)` triple, the same spelling
+// `twig_builder_add_code_block` has always used for this exact value. NULL is
+// not available to carry it: `sliceOf` already spends NULL+0 on the empty
+// string, which is the right reading everywhere else on this surface.
+
+/// Fence the blocks `[start, end)` covers as a code block, or unfence the code
+/// block the caret is in. `language` tags the opening fence (`has_language == 0`
+/// for none) and is ignored when unfencing. See `twig.h` for the semantics and
+/// `twig.Editor.toggleCodeBlock` for the implementation — in particular why this
+/// is `not_editable` inside a list item.
+pub export fn twig_editor_toggle_code_block(
+    ed: ?*TwigEditor,
+    start: usize,
+    end: usize,
+    language_ptr: ?[*]const u8,
+    language_len: usize,
+    has_language: c_int,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const lang: ?[]const u8 = if (has_language != 0)
+        (sliceOf(language_ptr, language_len) orelse return .invalid_argument)
+    else
+        null;
+
+    handle.editor.toggleCodeBlock(twig.Span.init(start, end), lang) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Retag the code block at `offset` with `language`, or clear its info string
+/// when `has_language == 0`. See `twig.h` for the semantics and
+/// `twig.Editor.setCodeLanguage` for the implementation.
+pub export fn twig_editor_set_code_language(
+    ed: ?*TwigEditor,
+    offset: usize,
+    language_ptr: ?[*]const u8,
+    language_len: usize,
+    has_language: c_int,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const lang: ?[]const u8 = if (has_language != 0)
+        (sliceOf(language_ptr, language_len) orelse return .invalid_argument)
+    else
+        null;
+
+    handle.editor.setCodeLanguage(offset, lang) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+// ── Task list checkboxes ───────────────────────────────────────────────────────
+// The engine is `twig.Editor`'s `toggleTaskItem` / `setTaskChecked` /
+// `toggleTaskChecked` over `Syntax.task_marker`. Two distinct gestures, and the
+// split is the point: adding or removing the BOX converts between a list item and
+// a task item, while ticking it changes only what the box holds.
+
+/// Add a checkbox to the list item at `offset`, or take one away — the gesture
+/// that converts between a plain list item and a task item. A box is added
+/// unchecked. See `twig.h` for the semantics and `twig.Editor.toggleTaskItem`.
+pub export fn twig_editor_toggle_task_item(
+    ed: ?*TwigEditor,
+    offset: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.toggleTaskItem(offset) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Tick (`checked` non-zero) or untick the task item at `offset`.
+///
+/// When the box is ALREADY in the requested state this is a no-op that still
+/// returns `.ok`, and — exactly as for `twig_editor_renumber_ordered_lists` —
+/// `out_change` then reports the most recent PRIOR edit, or is left untouched
+/// when there is none. So a caller must not read a `.ok` return as proof the
+/// source moved. `not_editable` when the item has no box to tick; use
+/// `twig_editor_toggle_task_item` to give it one.
+pub export fn twig_editor_set_task_checked(
+    ed: ?*TwigEditor,
+    offset: usize,
+    checked: c_int,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.setTaskChecked(offset, checked != 0) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| {
+        if (handle.editor.lastChange()) |c| slot.* = changeC(c);
+    }
+    return .ok;
+}
+
+/// Flip the task item at `offset` — what a click on a checkbox actually is when
+/// the caller doesn't already know the state. Always edits (or fails), so unlike
+/// `twig_editor_set_task_checked` there is no silent no-op to guard against.
+pub export fn twig_editor_toggle_task_checked(
+    ed: ?*TwigEditor,
+    offset: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.toggleTaskChecked(offset) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+// ── Footnotes ──────────────────────────────────────────────────────────────────
+// The engine is `twig.Editor.insertFootnote`: the reference at the caret AND the
+// definition at the end of the document, as ONE edit.
+
+/// Insert a footnote reference at `offset` and, unless the label is already
+/// defined, its definition at the end of the document. See `twig.h` for the
+/// semantics and `twig.Editor.insertFootnote` for the implementation — in
+/// particular why both halves are one edit and why the definition body is empty.
+pub export fn twig_editor_insert_footnote(
+    ed: ?*TwigEditor,
+    offset: usize,
+    label_ptr: ?[*]const u8,
+    label_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const label = sliceOf(label_ptr, label_len) orelse return .invalid_argument;
+
+    handle.editor.insertFootnote(offset, label) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;

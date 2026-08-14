@@ -60,6 +60,14 @@ pub const table: syntax.Syntax = .{
         .ordered_list = .{ .marker = "", .cont = "", .blank = "", .numbered = true },
     }),
     .heading_marker = '#',
+    // What the serializer emits. Djot also reads a bare `***`/`---`, but the
+    // spaced form is the canonical spelling and the one a round-trip reproduces.
+    .thematic_break = "* * *",
+    // Djot's info string runs to the end of the line and may hold spaces, so
+    // only the fence byte itself is forbidden (the `info_forbids` default).
+    .code_fence = .{ .char = '`' },
+    .task_marker = .{ .unchecked = "[ ]", .checked = "[x]" },
+    .footnote = .{ .ref_open = "[^", .ref_close = "]", .def_suffix = ": " },
     // `{#id .class key="val"}`. Djot quotes every value — its attribute grammar
     // admits a bare value, but the serializer has always quoted, and quoting is
     // never wrong.

@@ -1019,7 +1019,7 @@ TwigStatus twig_editor_insert_link(
 // re-point reasoning — an image has no bare-URL spelling, and re-pointing an
 // existing one is a read of its destination plus an insert, above this op.
 //
-// TWIG_STATUS_INVALID_DESTINATION when `destination` holds a newline;
+// TWIG_STATUS_INVALID_ARGUMENT when `destination` holds a newline;
 // TWIG_STATUS_UNSUPPORTED_FORMAT for a parse-only format (XML, HTML).
 TwigStatus twig_editor_insert_image(
     TwigEditor *editor,
@@ -1078,6 +1078,177 @@ TwigStatus twig_editor_insert_literal(
 TwigStatus twig_editor_insert_line_break(
     TwigEditor *editor,
     size_t offset,
+    TwigChange *out_change
+);
+
+// Insert a THEMATIC BREAK (a horizontal rule) as its own block, on the line after
+// the block `offset` sits in. A rule is a block, so there is no spelling for one
+// mid-paragraph; splitting the paragraph would be a different gesture.
+//
+// The rule is blank-line separated from its neighbours, and that is load-bearing
+// rather than cosmetic: Markdown reads `---` on the line directly under a
+// paragraph as a setext `<h2>` underline, so a rule written flush against its
+// predecessor silently becomes a heading and swallows it. The blank below is
+// added only when the next line isn't already blank, so repeating the gesture
+// doesn't accumulate them. The spelling itself is the format's (`---` for
+// Markdown, `* * *` for djot) and not the caller's to reproduce.
+//
+// Inside a block quote the rule inherits the quote's prefix and stays in the
+// quote. Inside a LIST it lands at column zero after the caret's item, which
+// splits the list in two with the rule between — a real document, nothing
+// swallowed. There is no TWIG_STATUS_NOT_FOUND: an empty document is a fine place
+// for a rule, and with no block to sit after it goes at the caret's line end.
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a format with no thematic break (XML, HTML);
+// TWIG_STATUS_INVALID_ARGUMENT when `offset` is past the source.
+TwigStatus twig_editor_insert_thematic_break(
+    TwigEditor *editor,
+    size_t offset,
+    TwigChange *out_change
+);
+
+// Toggle a FENCED CODE BLOCK over the blocks `[start, end)` covers: fence them if
+// the caret is not in a code block, unfence the one it is in if it is.
+//
+// `language` tags the opening fence and is ignored when unfencing. It is
+// OPTIONAL, spelled as this ABI's (ptr, len, has_*) triple — the same spelling
+// twig_builder_add_code_block uses for the same value. has_language == 0 leaves
+// the fence bare; otherwise language[0..language_len] is the info string, and an
+// empty one is a distinct request from an absent one even though both write a
+// bare fence. A NULL pointer with has_language != 0 and a non-zero length is
+// TWIG_STATUS_INVALID_ARGUMENT.
+//
+// Fencing INSERTS at the covered region's edges rather than rewriting its lines:
+// the body already parsed where it sits and already carries its container's
+// prefix, so only the two fence lines are minted (and they carry the quote prefix
+// too, which is what makes fencing inside a quote work). The fence is MEASURED,
+// not fixed — one character longer than the longest run of the fence character in
+// the body — so fencing text that itself contains a fence nests instead of
+// closing early.
+//
+// Unfencing peels the opening line and, when there is one, the closing fence
+// line. A Markdown INDENTED code block has no fence to peel and is dedented by up
+// to four spaces a line instead, so the toggle stays reversible on documents
+// using the older spelling. Note that unfencing can produce a different tree than
+// the one that was fenced: a code body is by definition text the parser did not
+// read as markup, so `# x` inside a fence becomes a heading once the fence is
+// gone. That is what unfencing means.
+//
+// Returns TWIG_STATUS_NOT_EDITABLE INSIDE A LIST ITEM, in both directions. A
+// quote's marker is on every line it covers; a list item's is on its first line
+// only, and its content is held by indentation of the marker's width — so a fence
+// written at column zero there would pull the `- ` into the code body and the
+// item would stop being an item. Refusing beats losing a node.
+// TWIG_STATUS_INVALID_ARGUMENT for an info string the fence cannot carry (one
+// holding a line end, the fence character itself, or — in Markdown, whose info
+// string ends at whitespace — a space); TWIG_STATUS_UNSUPPORTED_FORMAT for a
+// format with no code fence (XML, HTML); TWIG_STATUS_NOT_FOUND when no block
+// covers the range.
+TwigStatus twig_editor_toggle_code_block(
+    TwigEditor *editor,
+    size_t start,
+    size_t end,
+    const uint8_t *language,
+    size_t language_len,
+    int has_language,
+    TwigChange *out_change
+);
+
+// Retag the code block at `offset` with `language`, or CLEAR its info string when
+// has_language == 0 — the language dropdown beside a code block. Same optional-
+// string convention as twig_editor_toggle_code_block.
+//
+// Only the info string is rewritten; the fence's own width is kept, because it
+// was measured against a body this gesture does not touch.
+// TWIG_STATUS_NOT_EDITABLE for an INDENTED Markdown code block, which has no
+// fence and so nowhere to carry a language; TWIG_STATUS_NOT_FOUND when `offset`
+// is not in a code block; TWIG_STATUS_INVALID_ARGUMENT and
+// TWIG_STATUS_UNSUPPORTED_FORMAT as above.
+TwigStatus twig_editor_set_code_language(
+    TwigEditor *editor,
+    size_t offset,
+    const uint8_t *language,
+    size_t language_len,
+    int has_language,
+    TwigChange *out_change
+);
+
+// Add a CHECKBOX to the list item at `offset`, or take one away — the gesture
+// that converts between a plain list item and a task list item. A box is added
+// unchecked; twig_editor_set_task_checked ticks it.
+//
+// The box is inline content of the item's first paragraph, not part of its
+// marker, so adding or removing one leaves the item's continuation-line
+// indentation alone — unlike twig_editor_toggle_block_container, which has to
+// re-indent. An item inside a quote is found past the quote markers.
+// TWIG_STATUS_NOT_FOUND when `offset` is in no list item;
+// TWIG_STATUS_NOT_EDITABLE when the item's line carries no recognizable list
+// marker to hang a box off; TWIG_STATUS_UNSUPPORTED_FORMAT for a format with no
+// checkbox (XML, HTML).
+TwigStatus twig_editor_toggle_task_item(
+    TwigEditor *editor,
+    size_t offset,
+    TwigChange *out_change
+);
+
+// Tick (`checked` non-zero) or untick the task item at `offset` — a click on the
+// checkbox when the caller knows which way it should end up.
+//
+// Rewrites the BOX ALONE, never the space after it, so an item spelled with
+// unusual spacing keeps it. A capital `[X]` is read as checked, so this does not
+// mistake one for an unchecked box.
+//
+// When the box is ALREADY in the requested state this is a no-op that still
+// returns TWIG_STATUS_OK — the source is left byte-for-byte unchanged. As for
+// twig_editor_renumber_ordered_lists, `out_change` then reports the most recent
+// PRIOR edit (or is left untouched when there is none), so a TWIG_STATUS_OK
+// return is not proof the source moved; re-read twig_editor_source.
+//
+// TWIG_STATUS_NOT_EDITABLE when the item has no box: minting one here would make
+// "set checked" silently convert a bullet into a task, which is
+// twig_editor_toggle_task_item's job to do explicitly. TWIG_STATUS_NOT_FOUND when
+// `offset` is in no list item.
+TwigStatus twig_editor_set_task_checked(
+    TwigEditor *editor,
+    size_t offset,
+    int checked,
+    TwigChange *out_change
+);
+
+// Flip the task item at `offset` — what a checkbox click actually is when the
+// caller does not already know the state. Always edits or fails, so unlike
+// twig_editor_set_task_checked there is no silent no-op to guard against. Same
+// errors as that function.
+TwigStatus twig_editor_toggle_task_checked(
+    TwigEditor *editor,
+    size_t offset,
+    TwigChange *out_change
+);
+
+// Insert a FOOTNOTE reference at `offset` and, unless the label is already
+// defined, the matching definition at the end of the document.
+//
+// It writes BOTH HALVES because in neither format is half a footnote a footnote:
+// a bare `[^a]` with nothing defining it renders as four literal characters. The
+// definition body is left EMPTY — that parses, and the caller then types into it
+// like any other block, where a minted placeholder would be text to delete. A
+// label that is ALREADY DEFINED gets only the reference, so referring to one
+// footnote twice does not append a second, dead definition.
+//
+// It is ONE edit, spanning the caret to the end of the document even though the
+// two halves are far apart. Two edits would take two undos to reverse, and
+// twig_editor_last_change would describe only the second — silently omitting the
+// reference the caret is sitting in. So one twig_editor_undo takes both halves
+// back, and the reported change covers both.
+//
+// TWIG_STATUS_INVALID_ARGUMENT for a label that is empty or holds a line end or a
+// reference bracket; TWIG_STATUS_UNSUPPORTED_FORMAT for a format with no
+// footnotes (XML, HTML); TWIG_STATUS_INVALID_ARGUMENT when `offset` is past the
+// source.
+TwigStatus twig_editor_insert_footnote(
+    TwigEditor *editor,
+    size_t offset,
+    const uint8_t *label,
+    size_t label_len,
     TwigChange *out_change
 );
 

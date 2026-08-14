@@ -212,6 +212,67 @@ static void test_editor_document_shares_the_read_surface(void) {
     twig_editor_destroy(editor);
 }
 
+static void test_new_block_gestures_link_and_edit(void) {
+    // Compiles the newer gesture declarations as C and links them, and pins the
+    // one wire convention a compile check can't see: `has_language`. NULL-vs-set
+    // is the whole difference between "no info string" and "an empty one", and
+    // the header would happily compile either way.
+    static const char src[] = "- a\n";
+
+    TwigEditor *editor = NULL;
+    TwigStatus st = twig_editor_create(
+        (const uint8_t *)src, sizeof(src) - 1, TWIG_FORMAT_MARKDOWN, &editor);
+    CHECK(st == TWIG_STATUS_OK);
+    if (st != TWIG_STATUS_OK || editor == NULL) return;
+
+    // A checkbox onto the bullet, then tick it.
+    TwigChange change = {{0, 0}, {0, 0}};
+    CHECK(twig_editor_toggle_task_item(editor, 2, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_set_task_checked(editor, 6, 1, &change) == TWIG_STATUS_OK);
+
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    CHECK(twig_editor_source(editor, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 8 && memcmp(out, "- [x] a\n", 8) == 0);
+
+    // Ticking again is the documented no-op: still OK, source unmoved.
+    CHECK(twig_editor_set_task_checked(editor, 6, 1, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(editor, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 8);
+
+    // A rule after the list, then a footnote — both halves in one edit.
+    CHECK(twig_editor_insert_thematic_break(editor, 6, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_insert_footnote(editor, 7, (const uint8_t *)"a", 1, &change)
+          == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(editor, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len > 8);
+
+    twig_editor_destroy(editor);
+
+    // has_language == 0 leaves the fence bare; a set language tags it. Both
+    // write valid source, so only the bytes tell them apart.
+    static const char para[] = "x\n";
+    TwigEditor *bare = NULL;
+    CHECK(twig_editor_create((const uint8_t *)para, sizeof(para) - 1,
+                             TWIG_FORMAT_MARKDOWN, &bare) == TWIG_STATUS_OK);
+    if (bare == NULL) return;
+    CHECK(twig_editor_toggle_code_block(bare, 0, 1, NULL, 0, 0, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(bare, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 10 && memcmp(out, "```\nx\n```\n", 10) == 0);
+
+    CHECK(twig_editor_set_code_language(bare, 0, (const uint8_t *)"zig", 3, 1, &change)
+          == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(bare, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 13 && memcmp(out, "```zig\nx\n```\n", 13) == 0);
+
+    // A space is not a Markdown info string, and the refusal is a status, not a
+    // mangled fence.
+    CHECK(twig_editor_set_code_language(bare, 0, (const uint8_t *)"a b", 3, 1, &change)
+          == TWIG_STATUS_INVALID_ARGUMENT);
+
+    twig_editor_destroy(bare);
+}
+
 static void test_abi_version_matches_header(void) {
     // If these disagree, the header and the linked library are from different
     // builds — the exact mismatch TWIG_ABI_VERSION exists to catch.
@@ -223,6 +284,7 @@ int main(void) {
     test_align_codes_match_runtime();
     test_cell_extent_accessors();
     test_editor_document_shares_the_read_surface();
+    test_new_block_gestures_link_and_edit();
     if (failures != 0) {
         fprintf(stderr, "c header test: %d check(s) failed\n", failures);
         return 1;

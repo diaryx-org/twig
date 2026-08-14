@@ -539,6 +539,55 @@ unsafe extern "C" {
         out_change: *mut TwigChange,
     ) -> TwigStatus;
 
+    pub fn twig_editor_insert_thematic_break(
+        editor: *mut TwigEditor,
+        offset: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    // `language` is OPTIONAL, carried as this ABI's (ptr, len, has_*) triple:
+    // has_language == 0 leaves the fence bare, and "absent" is a different
+    // request from "present but empty".
+    pub fn twig_editor_toggle_code_block(
+        editor: *mut TwigEditor,
+        start: usize,
+        end: usize,
+        language: *const u8,
+        language_len: usize,
+        has_language: c_int,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    pub fn twig_editor_set_code_language(
+        editor: *mut TwigEditor,
+        offset: usize,
+        language: *const u8,
+        language_len: usize,
+        has_language: c_int,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    pub fn twig_editor_toggle_task_item(
+        editor: *mut TwigEditor,
+        offset: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    pub fn twig_editor_set_task_checked(
+        editor: *mut TwigEditor,
+        offset: usize,
+        checked: c_int,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    pub fn twig_editor_toggle_task_checked(
+        editor: *mut TwigEditor,
+        offset: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    pub fn twig_editor_insert_footnote(
+        editor: *mut TwigEditor,
+        offset: usize,
+        label: *const u8,
+        label_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+
     pub fn twig_builder_create(out_builder: *mut *mut TwigBuilder) -> TwigStatus;
     pub fn twig_builder_destroy(builder: *mut TwigBuilder);
     pub fn twig_builder_add(builder: *mut TwigBuilder, kind: c_int, out_id: *mut u32) -> TwigStatus;

@@ -1319,6 +1319,157 @@ impl Editor {
         self.change_op(|ed, out| unsafe { ffi::twig_editor_insert_line_break(ed, offset, out) })
     }
 
+    /// Insert a thematic break (a horizontal rule) as its own block, on the line
+    /// after the block `offset` sits in. A rule is a block, so there is no
+    /// spelling for one mid-paragraph.
+    ///
+    /// The rule is blank-line separated from its neighbours, and that is
+    /// load-bearing rather than cosmetic: Markdown reads `---` on the line
+    /// directly under a paragraph as a setext `<h2>` underline, so a rule written
+    /// flush against its predecessor silently becomes a heading and swallows it.
+    /// The blank below is added only when the next line isn't already blank. The
+    /// spelling is the format's (`---` for Markdown, `* * *` for djot) and not
+    /// the caller's to reproduce.
+    ///
+    /// Inside a block quote the rule inherits the quote's prefix and stays in the
+    /// quote. Inside a list it lands at column zero after the caret's item, which
+    /// splits the list in two with the rule between — a real document, nothing
+    /// swallowed. There is no [`Error::NotFound`]: an empty document is a fine
+    /// place for a rule. [`Error::UnsupportedFormat`] for a parse-only format
+    /// (XML, HTML); [`Error::InvalidArgument`] when `offset` is past the source.
+    pub fn insert_thematic_break(&mut self, offset: usize) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_insert_thematic_break(ed, offset, out) })
+    }
+
+    /// Toggle a fenced code block over the blocks `[start, end)` covers: fence
+    /// them if the caret is not in a code block, unfence the one it is in if it
+    /// is. `language` tags the opening fence and is ignored when unfencing.
+    ///
+    /// `None` and `Some("")` are different requests: both write a bare fence, but
+    /// the second says the caller asked for an empty info string. Reading the
+    /// language back gives `None` either way — the distinction is in the ask, not
+    /// the bytes. (Across the C ABI this rides as the `(ptr, len, has_*)` triple,
+    /// the same spelling [`Builder::add_code_block`] uses for the same value.)
+    ///
+    /// Fencing *inserts* at the covered region's edges rather than rewriting its
+    /// lines, so a body already carrying a quote's `> ` keeps it and the fence
+    /// lines get the same prefix. The fence is **measured** — one character
+    /// longer than the longest run of the fence character in the body — so
+    /// fencing text that itself contains a fence nests instead of closing early.
+    ///
+    /// Unfencing peels the opening line and, when there is one, the closing fence
+    /// line; a Markdown *indented* code block has no fence to peel and is
+    /// dedented instead, so the toggle stays reversible on the older spelling.
+    /// Note that unfencing can yield a different tree than the one that was
+    /// fenced: a code body is by definition text the parser did not read as
+    /// markup, so `# x` inside a fence becomes a heading once the fence is gone.
+    ///
+    /// [`Error::NotEditable`] **inside a list item**, in both directions: a
+    /// quote's marker is on every line, a list item's is on its first line only,
+    /// so a fence at column zero there would pull the `- ` into the code body and
+    /// the item would stop being an item. [`Error::InvalidArgument`] for an info
+    /// string the fence cannot carry (a line end, the fence character, or — in
+    /// Markdown, whose info string ends at whitespace — a space);
+    /// [`Error::UnsupportedFormat`] for a parse-only format;
+    /// [`Error::NotFound`] when no block covers the range.
+    pub fn toggle_code_block(
+        &mut self,
+        start: usize,
+        end: usize,
+        language: Option<&str>,
+    ) -> Result<Change, Error> {
+        let (ptr, len, has) = opt_str(language);
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_toggle_code_block(ed, start, end, ptr, len, has, out)
+        })
+    }
+
+    /// Retag the code block at `offset` with `language`, or clear its info string
+    /// with `None` — the language dropdown beside a code block. Same
+    /// `None`/`Some("")` distinction as [`Editor::toggle_code_block`].
+    ///
+    /// Only the info string is rewritten; the fence's own width is kept, because
+    /// it was measured against a body this does not touch. [`Error::NotEditable`]
+    /// for an *indented* Markdown code block, which has no fence and so nowhere
+    /// to carry a language; [`Error::NotFound`] when `offset` is not in a code
+    /// block.
+    pub fn set_code_language(
+        &mut self,
+        offset: usize,
+        language: Option<&str>,
+    ) -> Result<Change, Error> {
+        let (ptr, len, has) = opt_str(language);
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_set_code_language(ed, offset, ptr, len, has, out)
+        })
+    }
+
+    /// Add a checkbox to the list item at `offset`, or take one away — the
+    /// gesture that converts between a plain list item and a task list item. A
+    /// box is added unchecked; [`Editor::set_task_checked`] ticks it.
+    ///
+    /// The box is inline content of the item's first paragraph, not part of its
+    /// marker, so adding or removing one leaves the item's continuation-line
+    /// indentation alone. An item inside a quote is found past the quote markers.
+    /// [`Error::NotFound`] when `offset` is in no list item;
+    /// [`Error::NotEditable`] when the item's line carries no recognizable list
+    /// marker; [`Error::UnsupportedFormat`] for a format with no checkbox.
+    pub fn toggle_task_item(&mut self, offset: usize) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_toggle_task_item(ed, offset, out) })
+    }
+
+    /// Tick or untick the task item at `offset` — a checkbox click when the
+    /// caller knows which way it should end up.
+    ///
+    /// Rewrites the box alone, never the space after it, so an item spelled with
+    /// unusual spacing keeps it. A capital `[X]` is read as checked.
+    ///
+    /// When the box is already in the requested state this is a no-op that still
+    /// returns `Ok` — the source is left byte-for-byte unchanged. The `Change` is
+    /// not returned because a no-op has none; re-read [`Editor::source_str`].
+    ///
+    /// [`Error::NotEditable`] when the item has no box: minting one here would
+    /// make "set checked" silently convert a bullet into a task, which is
+    /// [`Editor::toggle_task_item`]'s job to do explicitly.
+    pub fn set_task_checked(&mut self, offset: usize, checked: bool) -> Result<(), Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_set_task_checked(ed, offset, checked as c_int, out)
+        })?;
+        Ok(())
+    }
+
+    /// Flip the task item at `offset` — what a checkbox click actually is when
+    /// the caller does not already know the state. Always edits or fails, so
+    /// unlike [`Editor::set_task_checked`] there is no silent no-op and the
+    /// `Change` is always real.
+    pub fn toggle_task_checked(&mut self, offset: usize) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_toggle_task_checked(ed, offset, out) })
+    }
+
+    /// Insert a footnote reference at `offset` and, unless the label is already
+    /// defined, the matching definition at the end of the document.
+    ///
+    /// It writes **both halves**, because in neither format is half a footnote a
+    /// footnote: a bare `[^a]` with nothing defining it renders as four literal
+    /// characters. The definition body is left empty — that parses, and the
+    /// caller then types into it like any other block. A label that is already
+    /// defined gets only the reference, so referring to one footnote twice does
+    /// not append a second, dead definition.
+    ///
+    /// It is **one** edit, spanning the caret to the end of the document even
+    /// though the halves are far apart: two edits would take two undos to
+    /// reverse, and the returned `Change` would describe only the second,
+    /// omitting the reference the caret is sitting in.
+    ///
+    /// [`Error::InvalidArgument`] for a label that is empty or holds a line end
+    /// or a reference bracket; [`Error::UnsupportedFormat`] for a format with no
+    /// footnotes.
+    pub fn insert_footnote(&mut self, offset: usize, label: &str) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_insert_footnote(ed, offset, label.as_ptr(), label.len(), out)
+        })
+    }
+
     /// Shared plumbing for the change-returning ops: run `op` (which fills a
     /// `TwigChange` out-param) and wrap the result.
     fn change_op(
@@ -2932,6 +3083,155 @@ mod tests {
         let mut ed =
             Editor::new_str("| a | b |\n| --- | --- |\n", Format::Markdown).expect("editor");
         assert_eq!(ed.insert_line_break(9999), Err(Error::InvalidArgument));
+    }
+
+    #[test]
+    fn editor_insert_thematic_break_is_blank_separated_per_format() {
+        // The blank line above is load-bearing, not cosmetic: flush against the
+        // paragraph, Markdown's `---` is a setext underline and the paragraph
+        // becomes an <h2>. So assert the reparsed KIND, not just the bytes.
+        let mut md = Editor::new_str("a\n", Format::Markdown).expect("editor");
+        md.insert_thematic_break(0).expect("rule");
+        assert_eq!(md.source_str().unwrap(), "a\n\n---\n");
+        let nodes = md.nodes().expect("nodes");
+        assert!(nodes.iter().any(|n| n.kind == "thematic_break"));
+        assert!(!nodes.iter().any(|n| n.kind == "heading"));
+
+        // Djot spells the same construct differently — the reason the spelling
+        // is the library's and not the caller's.
+        let mut dj = Editor::new_str("a\n", Format::Djot).expect("editor");
+        dj.insert_thematic_break(0).expect("rule");
+        assert_eq!(dj.source_str().unwrap(), "a\n\n* * *\n");
+
+        let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+        assert_eq!(xml.insert_thematic_break(3), Err(Error::UnsupportedFormat));
+    }
+
+    #[test]
+    fn editor_toggle_code_block_round_trips_and_measures_the_fence() {
+        let mut ed = Editor::new_str("a\n", Format::Markdown).expect("editor");
+        ed.toggle_code_block(0, 1, Some("zig")).expect("fence");
+        assert_eq!(ed.source_str().unwrap(), "```zig\na\n```\n");
+        let nodes = ed.nodes().expect("nodes");
+        assert!(nodes.iter().any(|n| n.kind == "code_block"));
+
+        ed.toggle_code_block(0, 0, None).expect("unfence");
+        assert_eq!(ed.source_str().unwrap(), "a\n");
+
+        // Three backticks in the body would close a three-backtick fence, so the
+        // fence is measured against the body rather than fixed.
+        let mut runs = Editor::new_str("a ``` b\n", Format::Markdown).expect("editor");
+        runs.toggle_code_block(0, 7, None).expect("fence");
+        assert_eq!(runs.source_str().unwrap(), "````\na ``` b\n````\n");
+    }
+
+    #[test]
+    fn editor_toggle_code_block_refuses_inside_a_list_item() {
+        // A fence at column zero here would pull the item's `- ` into the code
+        // body and the item would stop being an item.
+        let mut ed = Editor::new_str("- a\n- b\n", Format::Markdown).expect("editor");
+        assert_eq!(ed.toggle_code_block(2, 3, None), Err(Error::NotEditable));
+        assert_eq!(ed.source_str().unwrap(), "- a\n- b\n");
+    }
+
+    #[test]
+    fn editor_set_code_language_retags_clears_and_refuses() {
+        let mut ed = Editor::new_str("```zig\na\n```\n", Format::Markdown).expect("editor");
+        ed.set_code_language(0, Some("rust")).expect("retag");
+        assert_eq!(ed.source_str().unwrap(), "```rust\na\n```\n");
+
+        // `None` clears the info string; `Some("")` writes the same bytes but is
+        // a different request.
+        ed.set_code_language(0, None).expect("clear");
+        assert_eq!(ed.source_str().unwrap(), "```\na\n```\n");
+        ed.set_code_language(0, Some("")).expect("empty");
+        assert_eq!(ed.source_str().unwrap(), "```\na\n```\n");
+
+        // Markdown's info string ends at whitespace, so a space would come back
+        // truncated — refused rather than silently clipped.
+        assert_eq!(
+            ed.set_code_language(0, Some("a b")),
+            Err(Error::InvalidArgument)
+        );
+        // Djot's runs to the end of the line, so the same string is fine there.
+        let mut dj = Editor::new_str("```\na\n```\n", Format::Djot).expect("editor");
+        dj.set_code_language(0, Some("a b"))
+            .expect("djot info string");
+        assert_eq!(dj.source_str().unwrap(), "```a b\na\n```\n");
+
+        let mut para = Editor::new_str("x\n", Format::Markdown).expect("editor");
+        assert_eq!(para.set_code_language(0, Some("zig")), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn editor_task_checkbox_gestures() {
+        let mut ed = Editor::new_str("- a\n", Format::Markdown).expect("editor");
+
+        // The box is added by one gesture and ticked by another — adding
+        // converts the item's kind, ticking only changes what the box holds.
+        ed.toggle_task_item(2).expect("add box");
+        assert_eq!(ed.source_str().unwrap(), "- [ ] a\n");
+        assert!(
+            ed.nodes()
+                .unwrap()
+                .iter()
+                .any(|n| n.kind == "task_list_item")
+        );
+
+        ed.set_task_checked(6, true).expect("tick");
+        assert_eq!(ed.source_str().unwrap(), "- [x] a\n");
+        // Already checked: a no-op that still succeeds and moves nothing.
+        ed.set_task_checked(6, true).expect("no-op");
+        assert_eq!(ed.source_str().unwrap(), "- [x] a\n");
+
+        ed.toggle_task_checked(6).expect("flip");
+        assert_eq!(ed.source_str().unwrap(), "- [ ] a\n");
+
+        ed.toggle_task_item(6).expect("remove box");
+        assert_eq!(ed.source_str().unwrap(), "- a\n");
+
+        // A plain bullet has no box to tick; `toggle_task_item` is how a caller
+        // asks for one.
+        assert_eq!(ed.set_task_checked(2, true), Err(Error::NotEditable));
+        // And a caret in no list item has no item at all.
+        let mut para = Editor::new_str("a\n", Format::Markdown).expect("editor");
+        assert_eq!(para.toggle_task_item(0), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn editor_insert_footnote_writes_both_halves_as_one_edit() {
+        for format in [Format::Markdown, Format::Djot] {
+            let mut ed = Editor::new_str("see\n", format).expect("editor");
+            ed.insert_footnote(3, "a").expect("footnote");
+            assert_eq!(ed.source_str().unwrap(), "see[^a]\n\n[^a]: \n");
+
+            // Half a footnote is not a footnote, so assert both nodes exist.
+            let nodes = ed.nodes().expect("nodes");
+            assert!(nodes.iter().any(|n| n.kind == "footnote_reference"));
+            assert!(nodes.iter().any(|n| n.kind == "footnote"));
+
+            // One edit, so one undo takes both halves back.
+            ed.undo().expect("undo");
+            assert_eq!(ed.source_str().unwrap(), "see\n");
+        }
+    }
+
+    #[test]
+    fn editor_insert_footnote_reuses_an_existing_definition() {
+        let mut ed = Editor::new_str("see\n", Format::Markdown).expect("editor");
+        ed.insert_footnote(3, "a").expect("first");
+        ed.insert_footnote(7, "a").expect("second reference");
+        assert_eq!(ed.source_str().unwrap(), "see[^a][^a]\n\n[^a]: \n");
+        let defs = ed
+            .nodes()
+            .unwrap()
+            .iter()
+            .filter(|n| n.kind == "footnote")
+            .count();
+        assert_eq!(defs, 1);
+
+        assert_eq!(ed.insert_footnote(3, ""), Err(Error::InvalidArgument));
+        assert_eq!(ed.insert_footnote(3, "a]b"), Err(Error::InvalidArgument));
     }
 
     #[test]

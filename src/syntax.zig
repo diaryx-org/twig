@@ -89,6 +89,66 @@ pub const ContainerSpelling = struct {
     numbered: bool = false,
 };
 
+/// How a format spells a FENCED code block.
+///
+/// A fence is not a fixed string, which is why this is a struct and not a
+/// `[]const u8`: the opener must be LONGER than any run of `char` in the body,
+/// or the code closes its own block. `Editor` does that measurement (the
+/// algorithm is format-independent); this says only which byte to count and how
+/// short a fence may be.
+pub const CodeFence = struct {
+    /// The fence byte, repeated. Both authorable formats use a backtick; the
+    /// tilde form exists in Markdown but is not what its serializer emits, and
+    /// a second spelling would give the toggle two shapes to reverse.
+    char: u8,
+    /// The shortest run that opens a fence.
+    min: usize = 3,
+    /// Bytes that cannot appear in the info string, beyond `char` itself and
+    /// the line ends every format forbids. Empty when the format's info string
+    /// admits anything else.
+    info_forbids: []const u8 = "",
+};
+
+/// How a format spells a TASK-LIST item's checkbox — the `[ ]`/`[x]` that
+/// follows a bullet marker and turns a `list_item` into a `task_list_item`.
+///
+/// The box and its separator are separate fields because the two gestures need
+/// different pieces: ticking a box rewrites the BOX ALONE (so it never touches
+/// how the author spaced the item), while adding one has to write the separator
+/// too or the box would run into the text and stay literal.
+pub const TaskMarker = struct {
+    /// The box, brackets included and nothing else: `[ ]`.
+    unchecked: []const u8,
+    /// The checked box, which must be the same width as `unchecked` — ticking
+    /// one is an in-place overwrite.
+    checked: []const u8,
+    /// What separates the box from the item's text.
+    space: []const u8 = " ",
+    /// The bytes a box may hold to count as CHECKED when reading source back
+    /// (`x` and `X` in both formats). The unchecked box is always a space.
+    checked_chars: []const u8 = "xX",
+};
+
+/// How a format spells a footnote — both halves, because they are one gesture.
+///
+/// A reference with no definition is not a footnote in either format: it either
+/// renders as literal `[^label]` or dangles. So the spelling an editor needs is
+/// the PAIR, and `Syntax.footnote` being non-null is the claim that this format
+/// can author both. The reference delimiters are also in `text_leaf_delims`
+/// (where the serializer reads them); `assertCoherent` pins the two together so
+/// the duplicate cannot drift.
+pub const FootnoteSpelling = struct {
+    /// Opens a reference: `[^`.
+    ref_open: []const u8,
+    /// Closes a reference: `]`.
+    ref_close: []const u8,
+    /// Follows the reference spelling to open a DEFINITION at a line start:
+    /// `[^label]` + `: ` + the body.
+    def_suffix: []const u8,
+    /// Bytes a label cannot hold, beyond the line ends every format forbids.
+    label_forbids: []const u8 = "[]",
+};
+
 /// How a format escapes a link's `(destination)` position.
 ///
 /// This is NOT `link_text_escapes`' alphabet: this one guards the position
@@ -192,6 +252,33 @@ pub const Syntax = struct {
     /// The byte that opens an ATX heading, repeated `level` times then a space.
     /// `null` = this format has no heading marker, so `setBlock` is unsupported.
     heading_marker: ?u8 = null,
+
+    /// A thematic break, as the whole line it occupies (no trailing newline).
+    /// `null` = this format has no thematic break, so `insertThematicBreak` is
+    /// unsupported.
+    ///
+    /// The formats disagree on the spelling for a reason worth keeping: djot's
+    /// `* * *` and Markdown's `---` are both what their serializers emit, and
+    /// Markdown's choice is NOT free — a `---` line is only a break when a blank
+    /// line precedes it, since after a paragraph line it is a setext heading
+    /// underline instead. `Editor.insertThematicBreak` blank-separates
+    /// unconditionally, which is what makes one spelling safe for both.
+    thematic_break: ?[]const u8 = null,
+
+    /// How a fenced code block is spelled. `null` = this format cannot author
+    /// one, so the code-block gestures are unsupported. See `CodeFence`.
+    code_fence: ?CodeFence = null,
+
+    /// How a task-list checkbox is spelled. `null` = this format has no
+    /// checkbox. See `TaskMarker`.
+    ///
+    /// A checkbox rides on a bullet item, so a format spelling one must also
+    /// spell a bullet list — `assertCoherent` checks that.
+    task_marker: ?TaskMarker = null,
+
+    /// How a footnote's reference and definition are spelled. `null` = this
+    /// format has no footnotes. See `FootnoteSpelling`.
+    footnote: ?FootnoteSpelling = null,
 
     /// The bytes a link's TEXT position must have backslash-escaped for the text
     /// to reparse as the literal string handed in. Each one either opens a
@@ -321,6 +408,24 @@ pub const Syntax = struct {
         // literal run: a format that could escape mid-line specials but not
         // block markers (or vice versa) would let `insertLiteral` mint the other.
         std.debug.assert((self.text_escapes == null) == (self.block_start_escapes == null));
+        // A checkbox is written after a bullet marker, so the two spellings are
+        // one construct: `- ` + `[ ] `. A format with a checkbox and no bullet
+        // list would have nowhere to put it.
+        if (self.task_marker) |tm| {
+            std.debug.assert(self.container_spelling.get(.bullet_list) != null);
+            // Ticking a box overwrites it in place, so the two spellings must
+            // be the same width or the item's text would shift.
+            std.debug.assert(tm.checked.len == tm.unchecked.len);
+        }
+        // The reference half of a footnote is spelled TWICE — here, for the
+        // gesture, and in `text_leaf_delims` for the serializer. Neither is
+        // redundant (one authors a pair, the other prints a leaf), so the
+        // duplicate is pinned rather than removed.
+        if (self.footnote) |fs| {
+            const d = self.text_leaf_delims.get(.footnote_reference).?;
+            std.debug.assert(std.mem.eql(u8, d.open, fs.ref_open));
+            std.debug.assert(std.mem.eql(u8, d.close, fs.ref_close));
+        }
     }
 };
 

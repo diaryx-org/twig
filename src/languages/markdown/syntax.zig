@@ -55,6 +55,20 @@ pub const table: syntax.Syntax = .{
         .ordered_list = .{ .marker = "", .cont = "", .blank = "", .numbered = true },
     }),
     .heading_marker = '#',
+    // What the serializer emits. `---` is only a break when a blank line comes
+    // first — after a paragraph line it is a setext `<h2>` underline — which is
+    // why `Editor.insertThematicBreak` blank-separates rather than trusting the
+    // spelling alone.
+    .thematic_break = "---",
+    // Backticks, not tildes: `~~~` is valid CommonMark but the serializer emits
+    // backticks, and a toggle that writes one form must recognize the same one.
+    // An info string ends at whitespace, so a `lang` holding a space would come
+    // back truncated — refused rather than silently clipped.
+    .code_fence = .{ .char = '`', .info_forbids = " \t" },
+    // GFM task list items.
+    .task_marker = .{ .unchecked = "[ ]", .checked = "[x]" },
+    // GFM footnotes.
+    .footnote = .{ .ref_open = "[^", .ref_close = "]", .def_suffix = ": " },
     // A generic directive's `{#id .class key=val}` shorthand. Unlike djot, a
     // value is left bare when `attributes.zig`'s `isNameChar` grammar can read
     // it back, and quoted (escaping `"`/`\`) otherwise.
