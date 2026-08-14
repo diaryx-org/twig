@@ -34,28 +34,140 @@ behaviour was plainly wrong.
 
 Nothing yet.
 
-## 2.9.0 — editor gestures
+## 3.0.0 — editor gestures, and telling consumers what a conversion costs
+
+Major because the Rust binding's `kind` changes type. Twig has shipped
+read-path breaks in a minor before — 2.8.0's four-kind collapse changed which
+strings `kind` reports — but that was a change in a *value*, which a consumer
+discovers at runtime. This one changes a *type*, so every downstream Rust crate
+fails to compile until it is updated. That is the line between a minor and a
+major, and 2.8.0 landing on the wrong side of it is most of why this file
+exists.
 
 ### Added
 
-- Seven caret gestures, each driven by `Syntax` spelling data rather than a
+- **Seven caret gestures**, each driven by `Syntax` spelling data rather than a
   format switch, and wired through the C ABI and both Rust crates:
   `insertThematicBreak`, `toggleCodeBlock`, `setCodeLanguage`, `toggleTaskItem`,
   `setTaskChecked`, `toggleTaskChecked`, `insertFootnote`.
   `toggleTaskItem` / `setTaskChecked` / `toggleTaskChecked` are what a rendered
   checkbox needs to become a clickable one.
-- `Syntax` grows `thematic_break`, `code_fence`, `task_marker` and `footnote`.
-- Two error codes, `InvalidLanguage` and `InvalidLabel`, both mapping to
+
+  `Syntax` grows `thematic_break`, `code_fence`, `task_marker` and `footnote`;
+  two error codes, `InvalidLanguage` and `InvalidLabel`, both mapping to
   `TWIG_STATUS_INVALID_ARGUMENT`.
 
-ABI additions only, so `TWIG_ABI_VERSION` stays at 4.
+- **Conversion diagnostics, reachable from outside Zig.** `src/diagnostics.zig`
+  answers "what would converting this document to that format silently lose?",
+  and until now had no C ABI symbol, no Rust wrapper and no CLI flag — so every
+  consumer that needed the answer was re-deriving it by heuristic against a
+  library that already knew.
+  - `twig_document_diagnostics(doc, format, &warnings, &len)` → one
+    `TwigWarning` (`{fidelity, path, kind}`) per lossy node, in document order.
+  - `Document::diagnostics(target) -> Vec<Warning>` in Rust, with a
+    `#[non_exhaustive]` `Fidelity` (`Degraded` / `Dropped`).
+  - `twig convert --warn` prints them to stderr, without changing stdout or the
+    exit status.
+
+  An empty result means the conversion is lossless. A target with no serializer
+  at all (XML, AsciiDoc) reports `UNSUPPORTED_FORMAT` rather than a warning per
+  node: that is a capability answer, not a diagnosis.
+
+- **`container_origin`** — whether a generic container was written as a **tag**
+  or as a **directive**. An HTML `<div>` and a Markdown `:::div` agree on
+  `kind`, on `name` and on `directive_form`, field for field; nothing in the
+  tree separated them, and the only way to ask was to re-read the source bytes
+  under the node's span. `TwigFlatNode.container_origin` in C,
+  `Node.origin: Option<ContainerOrigin>` in Rust.
+
+  `directive_form` is *not* this field and never was: it is a spelling hint, and
+  twig's HTML parser sets one on `<div>` and `<span>` because those are the two
+  tags djot and Markdown have generic spellings for.
+
+- **`twig_document_definitions` / `Document::definitions()` /
+  `AST.definitionRoots`** — the document-level definitions, which hang off no
+  parent and which a walk from the root therefore never reaches.
+
+- **A typed `Kind` in the Rust binding**, replacing `kind: String` on
+  `FlatNode`, `QueryMatch` and `Warning`. `#[non_exhaustive]`, with an
+  `Other(String)` arm for a name a newer library hands an older binding.
+
+- **`Format::Asciidoc` in the Rust binding.** The C ABI has had
+  `TWIG_FORMAT_ASCIIDOC` since 2.8.0; only the Rust enum was missing it.
+
+- `Document.containerOrigin(id)`, `Document::Spelling.container_origin`, and
+  `KindRef.container_named` on the Zig side.
 
 ### Behavioural changes
 
-- None.
+The first four change bytes that existing code may be matching on. All four are
+bug fixes, and all four are listed for the reason this section exists: the
+previous output being wrong does not make the new output a non-event for
+someone who had worked around it.
+
+- **A header-less table converted to Markdown now round-trips.** It previously
+  emitted no delimiter row — `| a | b |`, which reparses as a *paragraph*, with
+  every cell boundary gone. It now gets a synthesized empty header row above it,
+  so the output is three lines where it was one. Reported as `degraded` by the
+  new diagnostics.
+
+- **An unclassified container converted to Markdown is written as a tag, not a
+  directive.** An HTML `<my-widget>y</my-widget>` inline used to come out as
+  `:my-widget[y]` — invented syntax that reparses as a directive with the
+  extension on, and as literal text without it. It now passes through as
+  `<my-widget>y</my-widget>`.
+
+- **An unclassified container converted to Markdown keeps its attributes.**
+  `<video controls src="a.mp4">` used to be written as a bare `<video>`.
+
+- **A djot div's attributes are written on the line above the fence.**
+  `::: {#i .c}` is not djot — the brace block never parses as attributes and the
+  whole construct reparses as a paragraph, so `-o canonical` did not round-trip
+  *any* div carrying attributes. Djot output for such a div gains a line.
+
+  Related, same commit: djot's container arms ignored a container's `name`, so a
+  Markdown `:::note` arrived as a bare `:::`. The name now rides as a class
+  (`::: note`), which is where djot holds a container's identity.
+
+- **`diagnostics.fidelity` now answers per node, not only per kind.**
+  `nodeFidelity` refines the table's answer with what only a node can say, so a
+  header-less table and a table with a header get different answers. Any code
+  reading `fidelity` directly should read `nodeFidelity`.
+
+### Breaking
+
+- **`TWIG_ABI_VERSION` 4 → 5.** `TwigFlatNode` gained `container_origin` in what
+  was `directive_form`'s tail padding: `sizeof` is still 144 and *every prior
+  offset is unchanged*, so a version-4 consumer linked against this library is
+  bit-for-bit correct and needs no rebuild. The bump is for the other direction —
+  a version-5 consumer against an older library would read uninitialized
+  padding, and `twig_abi_version()` is the only way to catch that.
+
+- **Rust: `kind` is a `Kind`, not a `String`.** Every `node.kind == "image"`
+  becomes `node.kind == Kind::Image`. There is deliberately no
+  `PartialEq<&str>`: it would keep those comparisons compiling, which is exactly
+  the silence this change removes. Use `Kind::as_str()` where the name is
+  genuinely what you want.
+
+- **Rust: `Format` is `#[non_exhaustive]` and gained `Asciidoc`.** Matches on it
+  need a `_` arm. `Target` gained `Asciidoc` too (it was already
+  `#[non_exhaustive]`); serializing to it reports `UnsupportedFormat`.
+
+- **Zig: `Kind.kindName` returns `[:0]const u8`.** Every arm was already a
+  `@tagName` literal; the type was throwing the guarantee away.
 
 ### Fixed
 
+- `twig.h` and `c_abi.zig` told C consumers that `kind` reports
+  `"element"`/`"directive"`. It has reported `"container"` since 2.8.0's
+  four-kind collapse.
+- `twig.h` said "the root is the node whose parent == `TWIG_NO_NODE`" — singular
+  — on both `twig_document_nodes` and `twig_editor_nodes`. Several nodes can be
+  parentless; see `twig_document_definitions`.
+- `Kind.Container.name`'s doc comment claimed the name is never empty and that
+  djot's anonymous `:::` carries `"div"`. Djot leaves it empty, deliberately.
+- The C header test now prints both versions when they disagree, instead of only
+  that they did.
 - `twig.h` documented `TWIG_STATUS_INVALID_DESTINATION`, which has never been
   in the enum. `insert_link` / `insert_image` return
   `TWIG_STATUS_INVALID_ARGUMENT` in that position.
