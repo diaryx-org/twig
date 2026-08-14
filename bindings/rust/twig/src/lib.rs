@@ -126,6 +126,269 @@ impl From<Target> for ffi::TwigFormat {
     }
 }
 
+/// A node's kind, as the shared vocabulary publishes it.
+///
+/// A typed enum rather than the `String` this used to be, because the string
+/// made a whole class of upstream change invisible here. When twig collapsed
+/// its four generic container kinds (`div`, `span`, `directive`, `element`)
+/// into one `container`, every site in this crate that compared a kind name
+/// kept compiling and started being wrong at runtime. With this, each of those
+/// sites is a compile error pointing at the exact line.
+///
+/// `#[non_exhaustive]`, and with an [`Other`](Kind::Other) arm, for the two
+/// different ways the vocabulary can outrun a given build of this crate:
+/// `#[non_exhaustive]` makes ADDING a variant here a non-breaking change for
+/// callers, and `Other` carries a name the linked library published that this
+/// crate has no variant for at all. Match with a `_` arm.
+///
+/// ## What is one variant here and two in the core
+///
+/// The nine inline marks share a single `inline_mark` kind in twig's own AST,
+/// and the nine text leaves share a single `text_leaf`; both publish their
+/// MEMBER name (`"superscript"`, not `"inline_mark"`). This enum follows the
+/// published vocabulary, so they are variants here — the grouping is an
+/// implementation detail of the core, not something a consumer should have to
+/// know.
+///
+/// ## No `PartialEq<&str>`
+///
+/// Deliberately absent, though it would be one impl and would keep every
+/// `node.kind == Kind::Image` in existing code compiling. That is precisely the
+/// property this type exists to remove: a comparison against a string literal
+/// is exactly what survived the container rename and went silently wrong.
+/// Compare against a variant; reach for [`as_str`](Kind::as_str) only when you
+/// genuinely want the name (logging it, or forwarding it to something that
+/// speaks the wire vocabulary).
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub enum Kind {
+    // ── Document root ─────────────────────────────────────────────────────
+    Doc,
+    // ── Blocks ────────────────────────────────────────────────────────────
+    Para,
+    Heading,
+    ThematicBreak,
+    Section,
+    CodeBlock,
+    RawBlock,
+    Metadata,
+    BlockQuote,
+    BulletList,
+    OrderedList,
+    TaskList,
+    DefinitionList,
+    LineBlock,
+    Table,
+    // ── Structural children, and the document-level definitions ───────────
+    ListItem,
+    TaskListItem,
+    DefinitionListItem,
+    Term,
+    Definition,
+    Line,
+    Row,
+    Cell,
+    Column,
+    Caption,
+    Footnote,
+    Reference,
+    Citation,
+    Substitution,
+    // ── Inlines ───────────────────────────────────────────────────────────
+    Str,
+    SoftBreak,
+    HardBreak,
+    NonBreakingSpace,
+    RawInline,
+    SmartPunctuation,
+    Link,
+    Image,
+    // ── Inline marks — one `inline_mark` kind in the core, published apart
+    Emph,
+    Strong,
+    Mark,
+    Superscript,
+    Subscript,
+    Insert,
+    Delete,
+    DoubleQuoted,
+    SingleQuoted,
+    // ── Text leaves — one `text_leaf` kind in the core, published apart ───
+    Symb,
+    Verbatim,
+    InlineMath,
+    DisplayMath,
+    Url,
+    Email,
+    FootnoteReference,
+    CitationReference,
+    SubstitutionReference,
+    // ── Generic markup ────────────────────────────────────────────────────
+    Container,
+    ProcessingInstruction,
+    Comment,
+    Doctype,
+    Cdata,
+    /// A kind name the linked library published that this crate has no variant
+    /// for — a newer twig against an older binding.
+    ///
+    /// Deliberately not an error: a node whose kind this crate cannot name is
+    /// still a node with a span, children and attributes, and a renderer that
+    /// wants to pass it through unchanged should not be stopped from doing so.
+    Other(String),
+}
+
+impl Kind {
+    /// The name twig publishes for this kind — the exact string the C ABI's
+    /// `TwigFlatNode.kind` carries.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Kind::Doc => "doc",
+            Kind::Para => "para",
+            Kind::Heading => "heading",
+            Kind::ThematicBreak => "thematic_break",
+            Kind::Section => "section",
+            Kind::CodeBlock => "code_block",
+            Kind::RawBlock => "raw_block",
+            Kind::Metadata => "metadata",
+            Kind::BlockQuote => "block_quote",
+            Kind::BulletList => "bullet_list",
+            Kind::OrderedList => "ordered_list",
+            Kind::TaskList => "task_list",
+            Kind::DefinitionList => "definition_list",
+            Kind::LineBlock => "line_block",
+            Kind::Table => "table",
+            Kind::ListItem => "list_item",
+            Kind::TaskListItem => "task_list_item",
+            Kind::DefinitionListItem => "definition_list_item",
+            Kind::Term => "term",
+            Kind::Definition => "definition",
+            Kind::Line => "line",
+            Kind::Row => "row",
+            Kind::Cell => "cell",
+            Kind::Column => "column",
+            Kind::Caption => "caption",
+            Kind::Footnote => "footnote",
+            Kind::Reference => "reference",
+            Kind::Citation => "citation",
+            Kind::Substitution => "substitution",
+            Kind::Str => "str",
+            Kind::SoftBreak => "soft_break",
+            Kind::HardBreak => "hard_break",
+            Kind::NonBreakingSpace => "non_breaking_space",
+            Kind::RawInline => "raw_inline",
+            Kind::SmartPunctuation => "smart_punctuation",
+            Kind::Link => "link",
+            Kind::Image => "image",
+            Kind::Container => "container",
+            Kind::ProcessingInstruction => "processing_instruction",
+            Kind::Emph => "emph",
+            Kind::Strong => "strong",
+            Kind::Mark => "mark",
+            Kind::Superscript => "superscript",
+            Kind::Subscript => "subscript",
+            Kind::Insert => "insert",
+            Kind::Delete => "delete",
+            Kind::DoubleQuoted => "double_quoted",
+            Kind::SingleQuoted => "single_quoted",
+            Kind::Symb => "symb",
+            Kind::Verbatim => "verbatim",
+            Kind::InlineMath => "inline_math",
+            Kind::DisplayMath => "display_math",
+            Kind::Url => "url",
+            Kind::Email => "email",
+            Kind::FootnoteReference => "footnote_reference",
+            Kind::CitationReference => "citation_reference",
+            Kind::SubstitutionReference => "substitution_reference",
+            Kind::Comment => "comment",
+            Kind::Doctype => "doctype",
+            Kind::Cdata => "cdata",
+            Kind::Other(name) => name.as_str(),
+        }
+    }
+
+    /// Whether this is a kind the linked library named and this crate could
+    /// not — the [`Other`](Kind::Other) case, and the one worth logging when a
+    /// renderer meets a node it has no arm for.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Kind::Other(_))
+    }
+}
+
+impl From<&str> for Kind {
+    fn from(name: &str) -> Self {
+        match name {
+            "doc" => Kind::Doc,
+            "para" => Kind::Para,
+            "heading" => Kind::Heading,
+            "thematic_break" => Kind::ThematicBreak,
+            "section" => Kind::Section,
+            "code_block" => Kind::CodeBlock,
+            "raw_block" => Kind::RawBlock,
+            "metadata" => Kind::Metadata,
+            "block_quote" => Kind::BlockQuote,
+            "bullet_list" => Kind::BulletList,
+            "ordered_list" => Kind::OrderedList,
+            "task_list" => Kind::TaskList,
+            "definition_list" => Kind::DefinitionList,
+            "line_block" => Kind::LineBlock,
+            "table" => Kind::Table,
+            "list_item" => Kind::ListItem,
+            "task_list_item" => Kind::TaskListItem,
+            "definition_list_item" => Kind::DefinitionListItem,
+            "term" => Kind::Term,
+            "definition" => Kind::Definition,
+            "line" => Kind::Line,
+            "row" => Kind::Row,
+            "cell" => Kind::Cell,
+            "column" => Kind::Column,
+            "caption" => Kind::Caption,
+            "footnote" => Kind::Footnote,
+            "reference" => Kind::Reference,
+            "citation" => Kind::Citation,
+            "substitution" => Kind::Substitution,
+            "str" => Kind::Str,
+            "soft_break" => Kind::SoftBreak,
+            "hard_break" => Kind::HardBreak,
+            "non_breaking_space" => Kind::NonBreakingSpace,
+            "raw_inline" => Kind::RawInline,
+            "smart_punctuation" => Kind::SmartPunctuation,
+            "link" => Kind::Link,
+            "image" => Kind::Image,
+            "container" => Kind::Container,
+            "processing_instruction" => Kind::ProcessingInstruction,
+            "emph" => Kind::Emph,
+            "strong" => Kind::Strong,
+            "mark" => Kind::Mark,
+            "superscript" => Kind::Superscript,
+            "subscript" => Kind::Subscript,
+            "insert" => Kind::Insert,
+            "delete" => Kind::Delete,
+            "double_quoted" => Kind::DoubleQuoted,
+            "single_quoted" => Kind::SingleQuoted,
+            "symb" => Kind::Symb,
+            "verbatim" => Kind::Verbatim,
+            "inline_math" => Kind::InlineMath,
+            "display_math" => Kind::DisplayMath,
+            "url" => Kind::Url,
+            "email" => Kind::Email,
+            "footnote_reference" => Kind::FootnoteReference,
+            "citation_reference" => Kind::CitationReference,
+            "substitution_reference" => Kind::SubstitutionReference,
+            "comment" => Kind::Comment,
+            "doctype" => Kind::Doctype,
+            "cdata" => Kind::Cdata,
+            other => Kind::Other(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// One node returned by [`Document::query`]: its AST id, byte spans, and kind.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryMatch {
@@ -136,8 +399,9 @@ pub struct QueryMatch {
     /// The node's interior byte range (between its delimiters), or `None` for
     /// a leaf / a container with no known interior.
     pub content_span: Option<Range<usize>>,
-    /// The node-kind name (e.g. `"heading"`, `"code_block"`).
-    pub kind: String,
+    /// The node's kind. See [`Kind`] for why this is an enum and not the
+    /// name string the C ABI carries.
+    pub kind: Kind,
 }
 
 /// The byte-level effect of an [`Editor`] edit: `old` is the range of the
@@ -187,7 +451,7 @@ pub struct FlatNode {
     pub content_span: Option<Range<usize>>,
     /// A heading's level; `None` for every other kind.
     pub level: Option<u32>,
-    pub kind: String,
+    pub kind: Kind,
     pub text: Option<String>,
     pub destination: Option<String>,
     /// Whether a `row`/`cell` belongs to the table head; `None` for every other
@@ -548,7 +812,7 @@ impl Document {
             .map(|w| Warning {
                 fidelity: Fidelity::from_c(w.fidelity),
                 path: borrowed_bytes(w.path_ptr, w.path_len).unwrap_or_default(),
-                kind: borrowed_cstr(w.kind).unwrap_or_default(),
+                kind: Kind::from(borrowed_cstr(w.kind).unwrap_or_default().as_str()),
             })
             .collect())
     }
@@ -1694,7 +1958,7 @@ fn query_match_from_ffi(m: &ffi::TwigQueryMatch) -> Result<QueryMatch, Error> {
         } else {
             None
         },
-        kind: borrowed_cstr(m.kind)?,
+        kind: Kind::from(borrowed_cstr(m.kind)?.as_str()),
     })
 }
 
@@ -1719,7 +1983,7 @@ fn flat_node_from_ffi(n: &ffi::TwigFlatNode) -> Result<FlatNode, Error> {
             None
         },
         level: if n.level != 0 { Some(n.level) } else { None },
-        kind: borrowed_cstr(n.kind)?,
+        kind: Kind::from(borrowed_cstr(n.kind)?.as_str()),
         text: borrowed_bytes(n.text_ptr, n.text_len),
         destination: borrowed_bytes(n.destination_ptr, n.destination_len),
         head: match n.head {
@@ -2026,9 +2290,9 @@ pub struct Warning {
     /// exist yet — there is nothing in it to point at. Resolve it against the
     /// tree you already have.
     pub path: String,
-    /// The affected node's kind name, with family members reported as
-    /// themselves (`"superscript"`, not `"inline_mark"`).
-    pub kind: String,
+    /// The affected node's kind, with family members reported as themselves
+    /// ([`Kind::Superscript`], not an `inline_mark`).
+    pub kind: Kind,
 }
 
 /// How much of a node survives a conversion.
@@ -2598,7 +2862,7 @@ mod tests {
 
         assert_eq!(matches.len(), 2);
         for m in &matches {
-            assert_eq!(m.kind, "heading");
+            assert_eq!(m.kind, Kind::Heading);
             assert!(m.span.start < m.span.end);
         }
     }
@@ -2644,7 +2908,7 @@ mod tests {
 
         let kids = doc.children(None).expect("children");
         assert_eq!(kids.len(), 2);
-        assert_eq!(kids[0].kind, "heading");
+        assert_eq!(kids[0].kind, Kind::Heading);
 
         let sub = doc.subtree(NodeId(kids[0].node_id)).expect("subtree");
         assert_eq!(sub[0].id, NodeId(0));
@@ -2654,7 +2918,7 @@ mod tests {
         let hit = doc.node_at(2).expect("node_at").expect("a node at 2");
         let chain = doc.ancestors_at(2).expect("ancestors");
         assert_eq!(chain.last().expect("deepest").node_id, hit.node_id);
-        assert_eq!(chain[0].kind, "doc");
+        assert_eq!(chain[0].kind, Kind::Doc);
 
         assert_eq!(doc.subtree(NodeId(u32::MAX)), Err(Error::InvalidArgument));
     }
@@ -2667,7 +2931,7 @@ mod tests {
             let mut view = ed.document().expect("view");
             let kids = view.children(None).expect("children");
             assert_eq!(kids.len(), 2);
-            assert_eq!(kids[0].kind, "heading");
+            assert_eq!(kids[0].kind, Kind::Heading);
             assert_eq!(view.span(NodeId(kids[0].node_id)).expect("span"), 0..5);
             // The two the view can't serve.
             assert_eq!(view.render_html(), Err(Error::UnsupportedFormat));
@@ -2732,16 +2996,115 @@ mod tests {
         // `src` is the ordinary `destination`.
         let img = nodes
             .iter()
-            .find(|n| n.kind == "image")
+            .find(|n| n.kind == Kind::Image)
             .expect("an image node");
         assert!(img.name.is_none());
         assert_eq!(img.destination.as_deref(), Some("l.svg"));
 
         // A semantic node carries neither an element name nor attributes.
-        let picture_kids_str = nodes.iter().find(|n| n.kind == "str");
+        let picture_kids_str = nodes.iter().find(|n| n.kind == Kind::Str);
         if let Some(s) = picture_kids_str {
             assert!(s.name.is_none() && s.attrs.is_empty());
         }
+    }
+
+    #[test]
+    fn kind_round_trips_through_its_published_name() {
+        // `as_str` is the wire vocabulary and `from` is its inverse, so any
+        // variant whose spelling drifts from the C ABI's fails here rather
+        // than quietly becoming `Other`.
+        for k in [
+            Kind::Doc,
+            Kind::Para,
+            Kind::Heading,
+            Kind::Container,
+            Kind::TaskListItem,
+            Kind::Superscript,
+            Kind::FootnoteReference,
+            Kind::ProcessingInstruction,
+            Kind::Cdata,
+        ] {
+            assert_eq!(Kind::from(k.as_str()), k, "{k} did not round-trip");
+            assert!(!k.is_unknown());
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_name_is_carried_rather_than_lost() {
+        // A newer library against an older binding. The node is still a node,
+        // and a renderer that passes it through unchanged should be able to.
+        let k = Kind::from("some_future_kind");
+        assert!(k.is_unknown());
+        assert_eq!(k.as_str(), "some_future_kind");
+        assert_eq!(k, Kind::Other("some_future_kind".to_string()));
+    }
+
+    #[test]
+    fn every_kind_the_library_publishes_has_a_variant() {
+        // Walks documents covering every corner of the vocabulary this crate
+        // can reach from Rust and asserts nothing arrives as `Other`. If twig
+        // adds a kind, or renames one, this fails — which is the whole reason
+        // the enum is here instead of a `String`.
+        let cases: &[(&str, Format, MarkdownExtensions)] = &[
+            (
+                "# h\n\npara *emph* **strong** `code`\n\n- a\n- b\n\n1. c\n\n> q\n\n---\n\n```zig\nx\n```\n",
+                Format::Markdown,
+                MarkdownExtensions {
+                    directives: false,
+                    math: false,
+                    html_elements: false,
+                },
+            ),
+            (
+                "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n- [ ] task\n- [x] done\n\nfoot[^1]\n\n[^1]: note\n\n[l]: /u\n\n[x][l]\n",
+                Format::Markdown,
+                MarkdownExtensions::default(),
+            ),
+            (
+                ":::note\nbody\n:::\n\n:role[x]\n\n$a+b$\n",
+                Format::Markdown,
+                MarkdownExtensions {
+                    directives: true,
+                    math: true,
+                    html_elements: false,
+                },
+            ),
+            (
+                "a^b^ c~d~ {=e=} {+f+} {-g-} 'q' \"dq\"\n\n![i](/p)\n\n<https://e.com>\n",
+                Format::Djot,
+                MarkdownExtensions::default(),
+            ),
+            (
+                "<!-- c --><!DOCTYPE html><video controls><p>x</p></video>",
+                Format::Html,
+                MarkdownExtensions::default(),
+            ),
+        ];
+
+        let mut unknown: Vec<String> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        for (src, format, ext) in cases {
+            let mut ed = Editor::new_ext(src.as_bytes(), *format, *ext).expect("editor");
+            for n in ed.nodes().expect("nodes") {
+                if n.kind.is_unknown() {
+                    unknown.push(n.kind.as_str().to_string());
+                }
+                seen.push(n.kind.as_str().to_string());
+            }
+        }
+        unknown.sort();
+        unknown.dedup();
+        assert!(unknown.is_empty(), "kinds with no variant: {unknown:?}");
+
+        // And the sweep really swept: without this the assertion above passes
+        // just as happily on an empty walk.
+        seen.sort();
+        seen.dedup();
+        assert!(
+            seen.len() >= 30,
+            "only {} distinct kinds reached: {seen:?}",
+            seen.len()
+        );
     }
 
     #[test]
@@ -2759,7 +3122,7 @@ mod tests {
             vec![Warning {
                 fidelity: Fidelity::Degraded,
                 path: "0/1".to_string(),
-                kind: "superscript".to_string(),
+                kind: Kind::Superscript,
             }]
         );
 
@@ -2780,7 +3143,7 @@ mod tests {
         let warnings = doc.diagnostics(Target::Djot).expect("djot diagnostics");
         let comment = warnings
             .iter()
-            .find(|w| w.kind == "comment")
+            .find(|w| w.kind == Kind::Comment)
             .expect("a warning about the comment");
         assert_eq!(comment.fidelity, Fidelity::Dropped);
     }
@@ -2813,7 +3176,7 @@ mod tests {
                 .diagnostics(Target::Markdown)
                 .expect("diagnostics")
                 .iter()
-                .all(|w| w.kind != "table")
+                .all(|w| w.kind != Kind::Table)
         );
 
         let mut headless = Document::parse_str("<table><tr><td>a</td></tr></table>", Format::Html)
@@ -2822,7 +3185,7 @@ mod tests {
             .diagnostics(Target::Markdown)
             .expect("diagnostics")
             .into_iter()
-            .find(|w| w.kind == "table")
+            .find(|w| w.kind == Kind::Table)
             .expect("a warning about the table");
         assert_eq!(table_warning.fidelity, Fidelity::Degraded);
     }
@@ -2898,7 +3261,7 @@ mod tests {
 
         let forms: Vec<(Option<&str>, Option<DirectiveForm>)> = nodes
             .iter()
-            .filter(|n| n.kind == "container")
+            .filter(|n| n.kind == Kind::Container)
             .map(|n| (n.name.as_deref(), n.directive_form))
             .collect();
         assert_eq!(
@@ -2920,7 +3283,7 @@ mod tests {
             embed.attrs,
             vec![("src".to_string(), Some("demo.html".to_string()))]
         );
-        let para = nodes.iter().find(|n| n.kind == "para").expect("a para");
+        let para = nodes.iter().find(|n| n.kind == Kind::Para).expect("a para");
         assert!(para.directive_form.is_none() && para.name.is_none());
     }
 
@@ -3030,12 +3393,12 @@ mod tests {
         // Exactly one root (no parent), and it's the doc.
         let roots: Vec<_> = nodes.iter().filter(|n| n.parent.is_none()).collect();
         assert_eq!(roots.len(), 1);
-        assert_eq!(roots[0].kind, "doc");
+        assert_eq!(roots[0].kind, Kind::Doc);
 
         // The heading carries its level; the "Hi" text is reachable as a payload.
         let heading = nodes
             .iter()
-            .find(|n| n.kind == "heading")
+            .find(|n| n.kind == Kind::Heading)
             .expect("a heading");
         assert_eq!(heading.level, Some(1));
         assert!(nodes.iter().any(|n| n.text.as_deref() == Some("Hi")));
@@ -3070,7 +3433,7 @@ mod tests {
         let src = "# Title\n\nHello **world** and more.\n\n- one\n- two\n";
         let mut ed = Editor::new_str(src, Format::Markdown).expect("editor");
         let all = ed.nodes().expect("nodes");
-        let doc = all.iter().find(|n| n.kind == "doc").expect("doc");
+        let doc = all.iter().find(|n| n.kind == Kind::Doc).expect("doc");
 
         // child_spans(None) == the doc root's children, same ids/kinds/spans and
         // in the same order.
@@ -3096,26 +3459,31 @@ mod tests {
         // child_spans works below the top level too.
         let list = top
             .iter()
-            .find(|m| m.kind.ends_with("list"))
+            .find(|m| {
+                matches!(
+                    m.kind,
+                    Kind::BulletList | Kind::OrderedList | Kind::TaskList
+                )
+            })
             .expect("a list");
         let items = ed.child_spans(Some(NodeId(list.node_id))).expect("items");
         assert_eq!(items.len(), 2);
         assert!(
-            items.iter().all(|m| m.kind == "list_item"),
+            items.iter().all(|m| m.kind == Kind::ListItem),
             "items: {items:?}"
         );
 
         // subtree(para) is self-contained, local-indexed, and spans stay absolute.
         let para = top
             .iter()
-            .find(|m| m.kind == "para")
+            .find(|m| m.kind == Kind::Para)
             .expect("a para")
             .node_id;
         let sub = ed.subtree(NodeId(para)).expect("subtree");
         assert_eq!(sub[0].id, NodeId(0), "root is local id 0");
         assert_eq!(sub[0].parent, None, "root has no parent inside the subtree");
         assert_eq!(sub[0].next_sibling, None, "root's sibling is severed");
-        assert_eq!(sub[0].kind, "para");
+        assert_eq!(sub[0].kind, Kind::Para);
         for (i, n) in sub.iter().enumerate() {
             assert_eq!(n.id, NodeId(i as u32), "dense local ids");
             for link in [n.parent, n.first_child, n.next_sibling]
@@ -3135,7 +3503,7 @@ mod tests {
         );
 
         // Same multiset of node kinds as the paragraph's arena subtree.
-        fn arena_kinds(all: &[FlatNode], root: NodeId) -> Vec<String> {
+        fn arena_kinds(all: &[FlatNode], root: NodeId) -> Vec<Kind> {
             let mut out = Vec::new();
             let mut stack = vec![root];
             while let Some(id) = stack.pop() {
@@ -3150,9 +3518,12 @@ mod tests {
             out
         }
         let mut want_kinds = arena_kinds(&all, NodeId(para));
-        let mut got_kinds: Vec<String> = sub.iter().map(|n| n.kind.clone()).collect();
-        want_kinds.sort();
-        got_kinds.sort();
+        let mut got_kinds: Vec<Kind> = sub.iter().map(|n| n.kind.clone()).collect();
+        // Sorted by NAME: `Kind` is deliberately not `Ord` (there is no
+        // meaningful order over a vocabulary), and this only needs a canonical
+        // one to compare two multisets.
+        want_kinds.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        got_kinds.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         assert_eq!(got_kinds, want_kinds, "subtree kinds match the arena");
 
         // Out-of-range id is rejected.
@@ -3171,12 +3542,12 @@ mod tests {
         let mut ed = Editor::new_str(src, Format::Markdown).expect("editor");
         let nodes = ed.nodes().expect("nodes");
 
-        let rows: Vec<_> = nodes.iter().filter(|n| n.kind == "row").collect();
+        let rows: Vec<_> = nodes.iter().filter(|n| n.kind == Kind::Row).collect();
         assert_eq!(rows.len(), 2, "a header row and one body row");
         assert_eq!(rows[0].head, Some(true), "first row is the header");
         assert_eq!(rows[1].head, Some(false), "second row is a body row");
 
-        let cells: Vec<_> = nodes.iter().filter(|n| n.kind == "cell").collect();
+        let cells: Vec<_> = nodes.iter().filter(|n| n.kind == Kind::Cell).collect();
         assert_eq!(cells.len(), 4);
         // Alignment comes from the delimiter row and applies down the column.
         assert_eq!(cells[0].alignment, Some(Alignment::Left));
@@ -3192,7 +3563,10 @@ mod tests {
         let mut plain =
             Editor::new_str("| A |\n| --- |\n| b |\n", Format::Markdown).expect("editor");
         let pnodes = plain.nodes().expect("nodes");
-        let pcell = pnodes.iter().find(|n| n.kind == "cell").expect("a cell");
+        let pcell = pnodes
+            .iter()
+            .find(|n| n.kind == Kind::Cell)
+            .expect("a cell");
         assert_eq!(pcell.alignment, Some(Alignment::Default));
     }
 
@@ -3204,7 +3578,7 @@ mod tests {
             .nodes()
             .expect("nodes")
             .iter()
-            .filter(|n| n.kind == "cell")
+            .filter(|n| n.kind == Kind::Cell)
             .map(|n| n.id)
             .collect();
         assert_eq!(cells.len(), 2);
@@ -3219,7 +3593,7 @@ mod tests {
             .nodes()
             .expect("nodes")
             .iter()
-            .find(|n| n.kind == "cell")
+            .find(|n| n.kind == Kind::Cell)
             .expect("a cell")
             .id;
         assert_eq!(pipe.cell_extent(pipe_cell).expect("extent"), Some((1, 1)));
@@ -3274,7 +3648,7 @@ mod tests {
         // The ancestor chain is root-first and ends at the deepest (== node_at).
         let chain = ed.ancestors_at(2).expect("ancestors_at");
         assert!(!chain.is_empty());
-        assert_eq!(chain[0].kind, "doc");
+        assert_eq!(chain[0].kind, Kind::Doc);
         assert_eq!(chain.last().unwrap().node_id, m.node_id);
 
         // An out-of-range offset is an error; a gap covers nothing deeper than doc.
@@ -3447,10 +3821,10 @@ mod tests {
             let nodes = ed.nodes().expect("nodes");
             let url = nodes
                 .iter()
-                .find(|n| n.kind == "url")
+                .find(|n| n.kind == Kind::Url)
                 .expect("still an autolink");
             assert_eq!(url.text.as_deref(), Some("https://y.dev"));
-            assert!(!nodes.iter().any(|n| n.kind == "link"));
+            assert!(!nodes.iter().any(|n| n.kind == Kind::Link));
         }
     }
 
@@ -3534,10 +3908,14 @@ mod tests {
 
             // Source that looks right can still parse wrong: assert the reparse.
             let nodes = ed.nodes().expect("nodes");
-            assert!(!nodes.iter().any(|n| n.kind == "emph" || n.kind == "strong"));
+            assert!(
+                !nodes
+                    .iter()
+                    .any(|n| n.kind == Kind::Emph || n.kind == Kind::Strong)
+            );
             let text: String = nodes
                 .iter()
-                .filter(|n| n.kind == "str")
+                .filter(|n| n.kind == Kind::Str)
                 .filter_map(|n| n.text.clone())
                 .collect();
             assert_eq!(text, "*hi*z");
@@ -3559,7 +3937,7 @@ mod tests {
             !ed2.nodes()
                 .expect("nodes")
                 .iter()
-                .any(|n| n.kind == "heading")
+                .any(|n| n.kind == Kind::Heading)
         );
     }
 
@@ -3581,8 +3959,8 @@ mod tests {
         assert_eq!(ed.source_str().unwrap(), "| a<br> | b |\n| --- | --- |\n");
         // The break reads back as a semantic node, not raw HTML.
         let nodes = ed.nodes().expect("nodes");
-        assert!(nodes.iter().any(|n| n.kind == "hard_break"));
-        assert!(!nodes.iter().any(|n| n.kind == "raw_inline"));
+        assert!(nodes.iter().any(|n| n.kind == Kind::HardBreak));
+        assert!(!nodes.iter().any(|n| n.kind == Kind::RawInline));
     }
 
     #[test]
@@ -3610,8 +3988,8 @@ mod tests {
         md.insert_thematic_break(0).expect("rule");
         assert_eq!(md.source_str().unwrap(), "a\n\n---\n");
         let nodes = md.nodes().expect("nodes");
-        assert!(nodes.iter().any(|n| n.kind == "thematic_break"));
-        assert!(!nodes.iter().any(|n| n.kind == "heading"));
+        assert!(nodes.iter().any(|n| n.kind == Kind::ThematicBreak));
+        assert!(!nodes.iter().any(|n| n.kind == Kind::Heading));
 
         // Djot spells the same construct differently — the reason the spelling
         // is the library's and not the caller's.
@@ -3629,7 +4007,7 @@ mod tests {
         ed.toggle_code_block(0, 1, Some("zig")).expect("fence");
         assert_eq!(ed.source_str().unwrap(), "```zig\na\n```\n");
         let nodes = ed.nodes().expect("nodes");
-        assert!(nodes.iter().any(|n| n.kind == "code_block"));
+        assert!(nodes.iter().any(|n| n.kind == Kind::CodeBlock));
 
         ed.toggle_code_block(0, 0, None).expect("unfence");
         assert_eq!(ed.source_str().unwrap(), "a\n");
@@ -3691,7 +4069,7 @@ mod tests {
             ed.nodes()
                 .unwrap()
                 .iter()
-                .any(|n| n.kind == "task_list_item")
+                .any(|n| n.kind == Kind::TaskListItem)
         );
 
         ed.set_task_checked(6, true).expect("tick");
@@ -3723,8 +4101,8 @@ mod tests {
 
             // Half a footnote is not a footnote, so assert both nodes exist.
             let nodes = ed.nodes().expect("nodes");
-            assert!(nodes.iter().any(|n| n.kind == "footnote_reference"));
-            assert!(nodes.iter().any(|n| n.kind == "footnote"));
+            assert!(nodes.iter().any(|n| n.kind == Kind::FootnoteReference));
+            assert!(nodes.iter().any(|n| n.kind == Kind::Footnote));
 
             // One edit, so one undo takes both halves back.
             ed.undo().expect("undo");
@@ -3742,7 +4120,7 @@ mod tests {
             .nodes()
             .unwrap()
             .iter()
-            .filter(|n| n.kind == "footnote")
+            .filter(|n| n.kind == Kind::Footnote)
             .count();
         assert_eq!(defs, 1);
 
@@ -3957,7 +4335,7 @@ mod tests {
         .expect("parse");
         let images = ext.query("image").expect("query");
         assert_eq!(images.len(), 1);
-        assert_eq!(images[0].kind, "image");
+        assert_eq!(images[0].kind, Kind::Image);
     }
 
     #[test]
@@ -4020,7 +4398,7 @@ mod tests {
 
         let matches = b.query(doc, "heading").unwrap();
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].kind, "heading");
+        assert_eq!(matches[0].kind, Kind::Heading);
 
         let json = String::from_utf8(b.ast_json(doc).unwrap()).unwrap();
         assert!(json.contains("\"kind\": \"doc\""), "{json}");
