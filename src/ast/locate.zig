@@ -214,6 +214,158 @@ pub fn linePrefixText(doc: *const Document, offset: usize) ?[]const u8 {
     return Span.of(u8, s, doc.source);
 }
 
+/// How wide a tab is. CommonMark's column model, which djot shares: a tab
+/// advances to the next multiple of this, it does not contribute a fixed width.
+const tab_stop = 4;
+
+/// The COLUMN of `offset` on its own line — not `offset - line_start`, because a
+/// tab in a marker or an indent advances to a tab stop rather than by one.
+fn columnOf(src: []const u8, offset: usize) usize {
+    const at = @min(offset, src.len);
+    var i = lineStartAt(src, at);
+    var col: usize = 0;
+    while (i < at) : (i += 1) {
+        col = if (src[i] == '\t') col + (tab_stop - col % tab_stop) else col + 1;
+    }
+    return col;
+}
+
+/// True for a container that holds its children behind a PER-LINE PREFIX — the
+/// kinds a continuation line has to re-open, and exactly the kinds that report
+/// `content_span == span` for the same underlying reason (see
+/// `Document.node_content_spans`).
+///
+/// Hand-kept rather than derived from `contentModel`, for the reason
+/// `isBlockParent` is: "may hold blocks" does not imply "prefixes every line of
+/// them". A `cell` holds blocks and prefixes nothing.
+fn isMarkerPrefixed(kind: AST.Node.Kind) bool {
+    return switch (kind) {
+        .block_quote,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .definition,
+        .footnote,
+        => true,
+        else => false,
+    };
+}
+
+/// Whether a container's prefix is REPRODUCED on a continuation line or merely
+/// INDENTED past. A quote's `> ` must reappear on every line it holds; a list
+/// item's marker must NOT — repeating `- ` would open a second item, so what the
+/// continuation carries is the marker's WIDTH IN SPACES instead.
+fn repeatsVerbatim(kind: AST.Node.Kind) bool {
+    return kind == .block_quote;
+}
+
+/// What a CONTINUATION LINE at `offset` must open with to stay inside every
+/// container holding it — appended to `out`. Returns the prefix's width in
+/// COLUMNS, which is the other half of the answer (Tab's step, a caret's
+/// horizontal home, an outdent's width) and is not `out.items.len` once a tab is
+/// involved.
+///
+/// ── Why this is not `linePrefixSpan` ───────────────────────────────────────
+/// They answer opposite questions and neither can be derived from the other.
+/// `linePrefixSpan` reports the bytes ALREADY THERE on a line something opens —
+/// contiguous source, so it hands back a span. This one reports the bytes that
+/// WOULD HAVE TO BE WRITTEN on a line nothing opens, which is not source at all:
+/// a list item's continuation is spaces where the marker was, so there is
+/// nothing to point at and the answer has to be built.
+///
+/// That is why `linePrefixSpan` returns `null` on a continuation line rather
+/// than guessing — the guess an editor makes there (re-read the previous line's
+/// bytes and copy what looks like a marker) is what turns `- a` plus Enter into
+/// two items in a format where it should be one.
+///
+/// ── How it composes ────────────────────────────────────────────────────────
+/// Each marker-prefixed ancestor on the caret's chain contributes the COLUMNS
+/// ITS OWN MARKER OCCUPIES, on its own opening line — which may be a different
+/// line for each of them, and is the reason this walks the tree instead of
+/// reading one line's bytes:
+///
+///     > - a          quote `> ` (cols 0-2) + item `- ` (cols 2-4)  ->  ">   "
+///     - a            outer item (cols 0-2)
+///       - b          inner item (cols 2-4)                         ->  "    "
+///
+/// The widths compose because a nested container's marker STARTS where its
+/// parent's content does, so each contribution picks up where the last left off.
+/// A gap (a parent that recorded no marker) is padded with spaces rather than
+/// silently closed, so the columns still line up.
+///
+/// Appends nothing and returns 0 at the top level, which is the correct prefix
+/// there: none.
+pub fn continuationPrefix(
+    allocator: Allocator,
+    doc: *const Document,
+    offset: usize,
+    out: *std.ArrayList(u8),
+) Allocator.Error!usize {
+    if (doc.ast.nodes.len == 0) return 0;
+    const src = doc.source;
+    var col: usize = 0;
+    var cur = doc.ast.root;
+
+    while (true) {
+        if (isMarkerPrefixed(doc.ast.nodes[cur].kind)) {
+            if (doc.markerSpan(cur)) |m| {
+                const start_col = columnOf(src, m.start);
+                const end_col = columnOf(src, m.end);
+                // Pad any gap, then lay down this container's own columns. A
+                // marker already behind us (a malformed or unrecorded chain)
+                // contributes nothing rather than reaching backwards.
+                while (col < start_col) : (col += 1) try out.append(allocator, ' ');
+                if (end_col > col) {
+                    if (repeatsVerbatim(doc.ast.nodes[cur].kind)) {
+                        try out.appendSlice(allocator, src[m.start..m.end]);
+                    } else {
+                        try out.appendNTimes(allocator, ' ', end_col - col);
+                    }
+                    col = end_col;
+                }
+            }
+        }
+        cur = caretChildContaining(doc, cur, offset) orelse break;
+    }
+    return col;
+}
+
+/// What a BLANK line inside the containers at `offset` must carry — appended to
+/// `out`, returning its width in columns.
+///
+/// A quote's blank line still has to carry its `>` or the quote ENDS there; a
+/// list item's blank line must carry nothing, because a blank line between two
+/// of an item's blocks is what makes its whole list loose and re-indenting it
+/// changes nothing about that. So this is `continuationPrefix` with the trailing
+/// spaces cut back — which drops a list item's indent entirely while leaving a
+/// quote marker standing, exactly as `Syntax.ContainerSpelling.blank` states the
+/// rule for the toggle gestures.
+///
+/// The one subtlety is that a quote's blank form is `>` and not `> `: the space
+/// after the marker is content indentation, and a blank line has no content.
+/// Trimming trailing spaces produces that for free.
+pub fn blankLinePrefix(
+    allocator: Allocator,
+    doc: *const Document,
+    offset: usize,
+    out: *std.ArrayList(u8),
+) Allocator.Error!usize {
+    const base = out.items.len;
+    _ = try continuationPrefix(allocator, doc, offset, out);
+    const trimmed = std.mem.trimEnd(u8, out.items[base..], " \t");
+    out.items.len = base + trimmed.len;
+    return columnsIn(out.items[base..]);
+}
+
+/// The column width of an already-built prefix — `len` unless it holds a tab.
+fn columnsIn(prefix: []const u8) usize {
+    var col: usize = 0;
+    for (prefix) |c| {
+        col = if (c == '\t') col + (tab_stop - col % tab_stop) else col + 1;
+    }
+    return col;
+}
+
 /// The LINE-OWNING BLOCK holding `offset`: the child of the innermost
 /// block-parent container on the descent, or `null` when no node covers the
 /// offset at all (an empty document, or one whose root spans nothing).
@@ -564,6 +716,122 @@ test "linePrefixSpan: a heading's marker, and none on a continuation line" {
         }
     };
     try forBothFormats("## h\n\n> c\n> d\n", S.check);
+}
+
+/// `continuationPrefix` as an owned string, for the tests below.
+fn contPrefix(doc: *const Document, offset: usize) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(std.testing.allocator);
+    const cols = try continuationPrefix(std.testing.allocator, doc, offset, &out);
+    // Every prefix these tests build is space/`>`-only, so columns and bytes
+    // agree; a tab case asserts the divergence separately.
+    try std.testing.expectEqual(out.items.len, cols);
+    return out.toOwnedSlice(std.testing.allocator);
+}
+
+test "continuationPrefix: a quote repeats its marker, an item indents past it" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            const at = std.mem.indexOfScalar(u8, src, 'a').?;
+            const p = try contPrefix(doc, at);
+            defer std.testing.allocator.free(p);
+            // The quote's `> ` REPRODUCED (dropping it would end the quote) and
+            // the item's `- ` as WIDTH (repeating it would open a second item).
+            try std.testing.expectEqualStrings(">   ", p);
+        }
+    };
+    try forBothFormats("> - a\n", S.check);
+}
+
+test "continuationPrefix: nesting accumulates across different lines" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            const at = std.mem.indexOfScalar(u8, src, 'b').?;
+            const p = try contPrefix(doc, at);
+            defer std.testing.allocator.free(p);
+            // The outer item's marker is on line one and the inner item's on
+            // line two — two different lines, which is why this walks the tree
+            // rather than reading the caret's own line.
+            try std.testing.expectEqualStrings("    ", p);
+        }
+    };
+    try forBothFormats("- a\n\n  - b\n", S.check);
+}
+
+test "continuationPrefix: an ordered marker's own width, not a fixed indent" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            const at = std.mem.indexOfScalar(u8, src, 'x').?;
+            const p = try contPrefix(doc, at);
+            defer std.testing.allocator.free(p);
+            // `10. ` is four columns where `1. ` is three. A fixed indent is
+            // the assumption that makes Tab wrong on the tenth item.
+            try std.testing.expectEqualStrings("    ", p);
+        }
+    };
+    try forBothFormats("10. x\n", S.check);
+}
+
+test "continuationPrefix: a continuation line answers for the line it is on" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            // The caret is on line two, which OPENS nothing — the case
+            // `linePrefixSpan` declines. Each ancestor still answers from its
+            // own opening line, so the quote's marker is found on line one.
+            const at = std.mem.indexOfScalar(u8, src, 'd').?;
+            try std.testing.expect(linePrefixText(doc, at) == null);
+            const p = try contPrefix(doc, at);
+            defer std.testing.allocator.free(p);
+            try std.testing.expectEqualStrings("> ", p);
+        }
+    };
+    try forBothFormats("> c\n> d\n", S.check);
+}
+
+test "continuationPrefix: nothing at the top level" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            const p = try contPrefix(doc, src.len - 1);
+            defer std.testing.allocator.free(p);
+            try std.testing.expectEqualStrings("", p);
+        }
+    };
+    try forBothFormats("plain\n", S.check);
+}
+
+test "blankLinePrefix: a quote keeps its marker, an item keeps nothing" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(std.testing.allocator);
+            const at = std.mem.indexOfScalar(u8, src, 'a').?;
+            const cols = try blankLinePrefix(std.testing.allocator, doc, at, &out);
+            // `>` and not `> `: the space after the marker is content indent,
+            // and a blank line has no content. The item's indent goes entirely.
+            try std.testing.expectEqualStrings(">", out.items);
+            try std.testing.expectEqual(@as(usize, 1), cols);
+        }
+    };
+    try forBothFormats("> - a\n", S.check);
+}
+
+test "continuationPrefix: a tab in a marker advances to a tab stop" {
+    // Columns and bytes diverge here, which is why the width is returned rather
+    // than left to the caller to take as `prefix.len`.
+    const gpa = std.testing.allocator;
+    var md = try Markdown.parse(gpa, "-\tx\n", .{});
+    defer md.deinit();
+    const doc = md.document();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    const at = std.mem.indexOfScalar(u8, doc.source, 'x').?;
+    const cols = try continuationPrefix(gpa, &doc, at, &out);
+    // `-` then a tab to column 4, so the content sits at column 4 and a
+    // continuation line needs four columns of indent — not the two bytes a
+    // naive `marker.len` would report.
+    try std.testing.expectEqual(@as(usize, 4), cols);
+    try std.testing.expectEqual(@as(usize, 4), out.items.len);
 }
 
 test "an offset past every span resolves to nothing" {

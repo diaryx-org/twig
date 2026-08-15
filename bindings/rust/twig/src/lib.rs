@@ -519,10 +519,38 @@ pub struct FlatNode {
     /// nested construct sits behind (`>   1. [ ] ` is four nodes' markers plus
     /// the indent between them), call [`Document::line_prefix`].
     pub marker_span: Option<Range<usize>>,
+    /// A task list item's checkbox state; `None` for every other kind.
+    ///
+    /// The parser has always known this — it is what decides
+    /// [`Kind::TaskListItem`] over [`Kind::ListItem`] in the first place — and
+    /// until now nothing surfaced it, so a consumer rendering a clickable
+    /// checkbox re-derived the state by scanning the source for `[x]`. That scan
+    /// is fooled by a `[` in prose, and it asks the bytes a question the tree
+    /// had already answered. Twig would WRITE a checkbox
+    /// ([`Editor::set_task_checked`]) and not read one back.
+    ///
+    /// `None` is distinct from `Some(false)`: a consumer treating "not a task
+    /// item" as unchecked draws an empty box beside every paragraph.
+    pub checked: Option<bool>,
     /// The node's `{...}` / HTML attributes as `(key, value)` pairs in source
     /// order (empty when it has none). A bare attribute (HTML `disabled`, or a
     /// `<source media=…>` used as a flag) has a `None` value.
     pub attrs: Vec<(String, Option<String>)>,
+}
+
+/// A synthesized line prefix — what [`Document::continuation_prefix`] and
+/// [`Document::blank_line_prefix`] build.
+///
+/// `columns` is deliberately not `text.len()`: a tab in a marker advances to a
+/// tab stop, so `-\tx` yields a four-column prefix from a two-byte marker. An
+/// editor sizing a Tab step, a caret's horizontal home, or an outdent wants the
+/// column count; one writing the prefix into the document wants the bytes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LinePrefix {
+    /// The bytes to write at the head of the line.
+    pub text: String,
+    /// Their width in columns.
+    pub columns: usize,
 }
 
 /// An inline mark for [`Editor::wrap_range`] / [`Editor::toggle_inline`] — a
@@ -801,6 +829,76 @@ impl Document {
             ffi::TwigStatus::NOT_FOUND => Ok(None),
             _ => Err(Error::from_status(status).unwrap_err()),
         }
+    }
+
+    /// What a CONTINUATION LINE at `offset` must open with to stay inside every
+    /// container holding it.
+    ///
+    /// The other half of [`Document::line_prefix`], and not derivable from it.
+    /// That one reports the bytes ALREADY THERE on a line something opens, so it
+    /// hands back a range into the source. This one reports the bytes that WOULD
+    /// HAVE TO BE WRITTEN on a line nothing opens — a list item's continuation
+    /// is spaces where its marker was, which is not source at all, so it is
+    /// built rather than pointed at.
+    ///
+    /// A quote's `> ` is REPRODUCED (dropping it ends the quote); a list item's
+    /// marker becomes its WIDTH IN SPACES (repeating it would open a second
+    /// item). Each container on the caret's chain contributes the columns its
+    /// own marker occupies, on its own opening line — which may be a different
+    /// line for each of them, and is why this is a tree walk rather than a
+    /// re-read of one line:
+    ///
+    /// ```text
+    /// > - a      quote "> " + item "- " as width   ->  ">   "
+    /// - a
+    ///   - b      outer item + inner item           ->  "    "
+    /// ```
+    ///
+    /// Empty at the top level, which is the correct prefix there: none.
+    /// [`Error::InvalidArgument`] if `offset` exceeds the source length.
+    pub fn continuation_prefix(&mut self, offset: usize) -> Result<LinePrefix, Error> {
+        self.prefix_via(offset, ffi::twig_document_continuation_prefix)
+    }
+
+    /// What a BLANK line inside the containers at `offset` must carry.
+    ///
+    /// A quote's blank line still has to carry its `>` or the quote ENDS there;
+    /// a list item's must carry nothing, because a blank line between two of an
+    /// item's blocks is what makes its list loose and indenting it changes
+    /// nothing about that. So this is [`Document::continuation_prefix`] with its
+    /// trailing spaces cut back — which drops an item's indent entirely and
+    /// leaves a quote marker standing.
+    ///
+    /// The quote form is `>` and not `> `, because the space after the marker is
+    /// content indentation and a blank line has no content.
+    pub fn blank_line_prefix(&mut self, offset: usize) -> Result<LinePrefix, Error> {
+        self.prefix_via(offset, ffi::twig_document_blank_line_prefix)
+    }
+
+    /// Shared marshalling for the two prefix builders above.
+    fn prefix_via(
+        &mut self,
+        offset: usize,
+        f: unsafe extern "C" fn(
+            *mut ffi::TwigDocument,
+            usize,
+            *mut *const u8,
+            *mut usize,
+            *mut usize,
+        ) -> ffi::TwigStatus,
+    ) -> Result<LinePrefix, Error> {
+        let mut ptr: *const u8 = std::ptr::null();
+        let mut len = 0usize;
+        let mut columns = 0usize;
+        let status = unsafe { f(self.raw.as_ptr(), offset, &mut ptr, &mut len, &mut columns) };
+        Error::from_status(status)?;
+        let text = if ptr.is_null() || len == 0 {
+            String::new()
+        } else {
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+            String::from_utf8(bytes.to_vec()).map_err(|_| Error::Internal)?
+        };
+        Ok(LinePrefix { text, columns })
     }
 
     /// The grid extent of the cell at `node` — how many `(columns, rows)` it
@@ -2190,6 +2288,10 @@ fn flat_node_from_ffi(n: &ffi::TwigFlatNode) -> Result<FlatNode, Error> {
         } else {
             None
         },
+        checked: match n.checked {
+            ffi::TWIG_TASK_CHECKED_NONE => None,
+            v => Some(v != 0),
+        },
         attrs: borrowed_attrs(n.attrs_ptr, n.attrs_len),
     })
 }
@@ -3577,6 +3679,106 @@ mod tests {
                 chain.iter().any(|m| m.kind == Kind::ListItem),
                 "{format:?}: chain should reach the list item"
             );
+        });
+    }
+
+    #[test]
+    fn continuation_prefix_repeats_a_quote_and_indents_past_an_item() {
+        for_both_formats("> - a\n", |doc, format| {
+            // The bytes already on the line, and the bytes a continuation would
+            // need. They differ exactly where an editor gets it wrong by hand:
+            // the item's `- ` is PRESENT and must not be repeated, or the
+            // continuation opens a second item instead of continuing the first.
+            assert_eq!(doc.line_prefix(4).expect("prefix"), Some(0..4), "{format:?}");
+            let cont = doc.continuation_prefix(4).expect("continuation");
+            assert_eq!(cont.text, ">   ", "{format:?}");
+            assert_eq!(cont.columns, 4, "{format:?}");
+        });
+    }
+
+    #[test]
+    fn continuation_prefix_answers_on_a_line_that_opens_nothing() {
+        // The case `line_prefix` declines. Each ancestor answers from its own
+        // opening line, so the quote's marker is still found on line one.
+        for_both_formats("> c\n> d\n", |doc, format| {
+            assert_eq!(doc.line_prefix(6).expect("prefix"), None, "{format:?}");
+            assert_eq!(
+                doc.continuation_prefix(6).expect("continuation").text,
+                "> ",
+                "{format:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn continuation_prefix_takes_an_ordered_markers_own_width() {
+        // `10. ` is four columns where `1. ` is three. A fixed indent is the
+        // assumption that makes Tab wrong on the tenth item.
+        for_both_formats("10. x\n", |doc, format| {
+            assert_eq!(
+                doc.continuation_prefix(4).expect("continuation").columns,
+                4,
+                "{format:?}"
+            );
+        });
+        for_both_formats("1. x\n", |doc, format| {
+            assert_eq!(
+                doc.continuation_prefix(3).expect("continuation").columns,
+                3,
+                "{format:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_blank_line_keeps_a_quote_alive_and_drops_an_items_indent() {
+        for_both_formats("> - a\n", |doc, format| {
+            let blank = doc.blank_line_prefix(4).expect("blank");
+            // `>` and not `> `: the space after the marker is content indent,
+            // and a blank line has no content.
+            assert_eq!(blank.text, ">", "{format:?}");
+            assert_eq!(blank.columns, 1, "{format:?}");
+        });
+        // Inside a list alone there is nothing to keep alive, so a blank line
+        // carries nothing at all.
+        for_both_formats("- a\n", |doc, format| {
+            assert_eq!(doc.blank_line_prefix(3).expect("blank").text, "", "{format:?}");
+        });
+    }
+
+    #[test]
+    fn a_prefix_column_count_is_not_its_byte_length() {
+        // A tab in a marker advances to a tab stop, so the two diverge — which
+        // is why `columns` is carried rather than left to the caller to infer.
+        let mut doc = Document::parse("-	x
+".as_bytes(), Format::Markdown).expect("parse");
+        let cont = doc.continuation_prefix(2).expect("continuation");
+        assert_eq!(cont.columns, 4);
+    }
+
+    #[test]
+    fn task_items_report_their_checkbox_state() {
+        // Twig would WRITE a checkbox and not read one back, so a consumer
+        // rendering a clickable box re-derived the state by scanning for `[x]`.
+        // A capital `[X]` is checked too, which that scan misses.
+        for_both_formats("- [ ] a\n- [x] b\n- [X] c\n- d\n", |doc, format| {
+            let nodes = doc.nodes().expect("nodes");
+            let states: Vec<Option<bool>> = nodes
+                .iter()
+                .filter(|n| matches!(n.kind, Kind::TaskListItem | Kind::ListItem))
+                .map(|n| n.checked)
+                .collect();
+            assert_eq!(
+                states,
+                vec![Some(false), Some(true), Some(true), None],
+                "{format:?}"
+            );
+
+            // `None` is not `Some(false)`: a consumer treating "not a task
+            // item" as unchecked draws an empty box beside every paragraph.
+            for n in nodes.iter().filter(|n| n.kind == Kind::Para) {
+                assert_eq!(n.checked, None, "{format:?}");
+            }
         });
     }
 

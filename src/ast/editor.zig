@@ -1783,11 +1783,22 @@ fn buildRenumber(
         const line = src[line_start..line_end];
         while (next_item < item_lines.len and item_lines[next_item] < line_start) next_item += 1;
         const opens_item = next_item < item_lines.len and item_lines[next_item] == line_start;
-        const m = if (opens_item) listMarkerAt(line, 0) else null;
+        // Past any `>` markers first. A quoted list's items sit BEHIND a prefix,
+        // and scanning from column zero finds `>` where it wants a bullet or a
+        // digit — so every line of `> 1. a` failed the marker test, the whole
+        // region was copied verbatim, and the gesture reported success having
+        // changed nothing. `splitMarker` skips the same way for the same reason.
+        var from: usize = 0;
+        while (skipQuoteMarker(line, from)) |j| from = j;
+        const m = if (opens_item) listMarkerAt(line, from) else null;
         const numbered = if (m) |mm| isNumberedMarker(line[mm.start..mm.end]) else false;
         if (numbered) {
             const mm = m.?;
-            const indent = mm.start; // columns of leading whitespace
+            // Leading whitespace measured from AFTER the quote prefix, not from
+            // column zero: the prefix's own width is not this list's nesting
+            // depth, and counting it would put a quoted top-level item at a
+            // deeper level than an unquoted one.
+            const indent = mm.start - from;
             // Drop levels deeper than this item; then resume this level or open it.
             while (depth > 0 and cols[depth - 1] > indent) depth -= 1;
             var number: u32 = 1;

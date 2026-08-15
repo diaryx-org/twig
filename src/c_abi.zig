@@ -197,7 +197,26 @@ pub const TwigFlatNode = extern struct {
     /// the same reason `has_content_span` is: `(0, 0)` is a legitimate position
     /// in a document that opens with a marker at offset zero.
     has_marker_span: c_int,
+    /// A `task_list_item`'s checkbox state: 1 checked, 0 unchecked,
+    /// `TWIG_TASK_CHECKED_NONE` for every other kind.
+    ///
+    /// The parser has always known this — it is what decides `task_list_item`
+    /// over `list_item` in the first place — and nothing surfaced it, so a
+    /// consumer rendering a clickable checkbox re-derived the state by scanning
+    /// the source for `[x]`. That scan is fooled by a `[` in prose, and it asks
+    /// the bytes a question the tree had already answered. Twig would WRITE a
+    /// checkbox (`twig_editor_set_task_checked`) and not read one back.
+    ///
+    /// Sits in what was `has_marker_span`'s tail padding, so `sizeof` is
+    /// unchanged at 168 and every prior offset stays put.
+    checked: c_int,
 };
+
+/// `TwigFlatNode.checked` for a node that is not a `task_list_item`. Spelled out
+/// rather than folded into 0, because "unchecked" is a real state and a
+/// consumer treating "not a task item" as unchecked draws an empty box beside
+/// every paragraph in the document.
+pub const TWIG_TASK_CHECKED_NONE: c_int = -1;
 
 /// `TwigFlatNode.head` for a node that is neither a `row` nor a `cell`.
 pub const TWIG_HEAD_NONE: c_int = -1;
@@ -310,6 +329,12 @@ const DocumentHandle = struct {
     /// The last `twig_document_nodes_at` ancestor chain. Independent of
     /// `query_matches` so a hit-test doesn't invalidate a prior query.
     ancestor_matches: []TwigQueryMatch = &.{},
+    /// The last `twig_document_continuation_prefix` /
+    /// `_blank_line_prefix` result. A SYNTHESIZED string rather than a slice of
+    /// the source — a list item's continuation is spaces where its marker was,
+    /// so there is nothing in the document to point at — which is why this one
+    /// needs a buffer at all where `twig_document_line_prefix` returns a span.
+    line_prefix_buf: []u8 = &.{},
     /// The last `twig_document_nodes_at_caret` chain. Its own buffer rather
     /// than a share of `ancestor_matches`: a renderer hit-testing a mouse and
     /// an editor tracking a caret are two live readers, and making one call
@@ -353,6 +378,7 @@ const DocumentHandle = struct {
         if (self.subtree_attrs.len != 0) allocator.free(self.subtree_attrs);
         if (self.ancestor_matches.len != 0) allocator.free(self.ancestor_matches);
         if (self.caret_matches.len != 0) allocator.free(self.caret_matches);
+        if (self.line_prefix_buf.len != 0) allocator.free(self.line_prefix_buf);
         if (self.child_matches.len != 0) allocator.free(self.child_matches);
         if (self.definition_matches.len != 0) allocator.free(self.definition_matches);
         if (self.warnings.len != 0) allocator.free(self.warnings);
@@ -478,6 +504,11 @@ pub export fn twig_version_string() [*:0]const u8 {
 /// report the same range there, because no contiguous range is such a
 /// container's interior). Appended, so every prior offset is unchanged; the
 /// `@sizeOf` growth is what makes it a bump, as at 2 and 3.
+///
+/// `checked` landed in the same version rather than a seventh: it fits in
+/// `has_marker_span`'s tail padding, and no release ever carried a version 6
+/// without it, so numbering it separately would name a contract that never
+/// existed. Once 6 ships, this note freezes.
 pub const TWIG_ABI_VERSION: u32 = 6;
 
 pub export fn twig_abi_version() u32 {
@@ -543,6 +574,9 @@ comptime {
         // (144 → 168). See `TWIG_ABI_VERSION` note 6.
         assert(@offsetOf(TwigFlatNode, "marker_span") == 144);
         assert(@offsetOf(TwigFlatNode, "has_marker_span") == 160);
+        // In what was `has_marker_span`'s tail padding, like `container_origin`
+        // before it: `sizeof` stays 168 and no prior offset moves.
+        assert(@offsetOf(TwigFlatNode, "checked") == 164);
 
         assert(@sizeOf(TwigKeyVal) == 32);
         assert(@offsetOf(TwigKeyVal, "key") == 0);
@@ -1003,6 +1037,100 @@ pub export fn twig_document_line_prefix(
     const s = twig.locate.linePrefixSpan(&view, offset) orelse return .not_found;
     out.* = .{ .start = s.start, .end = s.end };
     return .ok;
+}
+
+/// Shared body of `twig_document_continuation_prefix` and
+/// `twig_document_blank_line_prefix`: build the prefix into the handle's buffer
+/// and hand back a borrowed view of it.
+fn linePrefixInto(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_ptr: ?*?[*]const u8,
+    out_len: ?*usize,
+    out_columns: ?*usize,
+    comptime blank: bool,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const view = handle.document();
+    if (offset > view.source.len) return .invalid_argument;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    const build = if (blank) twig.locate.blankLinePrefix else twig.locate.continuationPrefix;
+    const columns = build(allocator, &view, offset, &buf) catch return .out_of_memory;
+
+    if (handle.line_prefix_buf.len != 0) allocator.free(handle.line_prefix_buf);
+    handle.line_prefix_buf = buf.toOwnedSlice(allocator) catch return .out_of_memory;
+    ptr_out.* = if (handle.line_prefix_buf.len == 0) null else handle.line_prefix_buf.ptr;
+    len_out.* = handle.line_prefix_buf.len;
+    if (out_columns) |c| c.* = columns;
+    return .ok;
+}
+
+/// What a CONTINUATION LINE at byte `offset` must open with to stay inside every
+/// container holding it, plus that prefix's width in COLUMNS.
+///
+/// The other half of `twig_document_line_prefix`, and not derivable from it.
+/// That one reports the bytes ALREADY THERE on a line something opens, so it
+/// hands back a span into the source. This one reports the bytes that WOULD HAVE
+/// TO BE WRITTEN on a line nothing opens — a list item's continuation is spaces
+/// where its marker was, which is not source at all, so it is built rather than
+/// pointed at.
+///
+/// A quote's `> ` is REPRODUCED (dropping it ends the quote); a list item's
+/// marker becomes its WIDTH IN SPACES (repeating it would open a second item).
+/// Each container on the caret's chain contributes the columns its own marker
+/// occupies, on its own opening line — which may be a different line for each of
+/// them, and is why this is a tree walk rather than a re-read of one line:
+///
+///     > - a      quote "> " + item "- " as width   ->  ">   "
+///     - a
+///       - b      outer item + inner item           ->  "    "
+///
+/// `out_columns` may be NULL if the caller wants only the bytes. It is NOT
+/// `out_len`: a tab in a marker advances to a tab stop, so `-\tx` yields four
+/// columns from a two-byte marker, and an editor sizing a Tab step or a caret's
+/// horizontal home wants the column count.
+///
+/// The bytes are borrowed from `doc` and stay valid until the next
+/// `twig_document_continuation_prefix` / `twig_document_blank_line_prefix` call
+/// on the same handle, or until it is destroyed. `out_ptr` is NULL and
+/// `out_len`/`out_columns` are 0 at the top level, which is the correct prefix
+/// there: none. `invalid_argument` if `offset > source.len`.
+pub export fn twig_document_continuation_prefix(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_ptr: ?*?[*]const u8,
+    out_len: ?*usize,
+    out_columns: ?*usize,
+) TwigStatus {
+    return linePrefixInto(doc, offset, out_ptr, out_len, out_columns, false);
+}
+
+/// What a BLANK line inside the containers at byte `offset` must carry, plus its
+/// width in columns. Same borrow contract as
+/// `twig_document_continuation_prefix`.
+///
+/// A quote's blank line still has to carry its `>` or the quote ENDS there; a
+/// list item's must carry nothing, because a blank line between two of an item's
+/// blocks is what makes its list loose and indenting it changes nothing about
+/// that. So this is the continuation prefix with its trailing spaces cut back —
+/// which drops an item's indent entirely and leaves a quote marker standing.
+///
+/// The quote form is `>` and not `> `, because the space after the marker is
+/// content indentation and a blank line has no content.
+pub export fn twig_document_blank_line_prefix(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_ptr: ?*?[*]const u8,
+    out_len: ?*usize,
+    out_columns: ?*usize,
+) TwigStatus {
+    return linePrefixInto(doc, offset, out_ptr, out_len, out_columns, true);
 }
 
 /// The source span of the `{...}` attribute block attached to node `node_id` —
@@ -2323,6 +2451,17 @@ fn flatNodeOf(doc: *const twig.Document, node: *const twig.AST.Node, id: u32, pa
         .container_origin = containerOriginOf(doc, node),
         .marker_span = if (doc.markerSpan(node.id)) |ms| spanC(ms) else .{ .start = 0, .end = 0 },
         .has_marker_span = if (doc.markerSpan(node.id) != null) 1 else 0,
+        .checked = kindChecked(node),
+    };
+}
+
+/// A `task_list_item`'s checkbox state, or `TWIG_TASK_CHECKED_NONE` for every
+/// other kind. Read off the tree, where the parser recorded it — see
+/// `TwigFlatNode.checked` for why that matters.
+fn kindChecked(node: *const twig.AST.Node) c_int {
+    return switch (node.kind) {
+        .task_list_item => |t| @intFromBool(t.checked),
+        else => TWIG_TASK_CHECKED_NONE,
     };
 }
 

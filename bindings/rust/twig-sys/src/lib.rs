@@ -69,6 +69,8 @@ const _: () = {
     // (144 -> 168). See `TWIG_ABI_VERSION` note 6.
     assert!(offset_of!(TwigFlatNode, marker_span) == 144);
     assert!(offset_of!(TwigFlatNode, has_marker_span) == 160);
+    // In what was `has_marker_span`'s tail padding: `size_of` stays 168.
+    assert!(offset_of!(TwigFlatNode, checked) == 164);
 
     assert!(size_of::<TwigKeyVal>() == 32);
     assert!(offset_of!(TwigKeyVal, key) == 0);
@@ -232,7 +234,11 @@ pub struct TwigFlatNode {
     pub container_origin: c_int,
     pub marker_span: TwigSpan,
     pub has_marker_span: c_int,
+    pub checked: c_int,
 }
+
+/// `TwigFlatNode::checked` for a node that is not a `task_list_item`.
+pub const TWIG_TASK_CHECKED_NONE: c_int = -1;
 
 /// `TwigFlatNode::head` for a node that is neither a `row` nor a `cell`.
 pub const TWIG_HEAD_NONE: c_int = -1;
@@ -344,6 +350,20 @@ unsafe extern "C" {
         doc: *mut TwigDocument,
         offset: usize,
         out_span: *mut TwigSpan,
+    ) -> TwigStatus;
+    pub fn twig_document_continuation_prefix(
+        doc: *mut TwigDocument,
+        offset: usize,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+        out_columns: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_document_blank_line_prefix(
+        doc: *mut TwigDocument,
+        offset: usize,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+        out_columns: *mut usize,
     ) -> TwigStatus;
     pub fn twig_document_cell_colspan(
         doc: *mut TwigDocument,

@@ -57,6 +57,33 @@ behaviour was plainly wrong.
   marker. `NOT_FOUND` on a CONTINUATION line, where nothing opens — what such a
   line repeats is a different question, not answerable from marker spans.
 
+- **`continuation_prefix` / `blank_line_prefix`** — what a line that opens
+  NOTHING must carry: `twig_document_continuation_prefix` /
+  `_blank_line_prefix` in C, `Document::continuation_prefix` /
+  `blank_line_prefix` in Rust, `locate.continuationPrefix` /
+  `blankLinePrefix` in Zig.
+
+  The other half of `line_prefix`, and not derivable from it. That one reports
+  the bytes ALREADY THERE on a line something opens, so it hands back a span;
+  this one reports the bytes that would have to be WRITTEN on a line nothing
+  opens — a list item's continuation is spaces where its marker was, which is
+  not source at all. A quote's `> ` is reproduced (dropping it ends the quote);
+  an item's marker becomes its width in spaces (repeating it opens a second
+  item). Each container on the caret's chain contributes the columns its own
+  marker occupies on its OWN opening line, which is why this walks the tree
+  rather than re-reading one line.
+
+  Both report a width in COLUMNS alongside the bytes, because the two differ:
+  `-\tx` is a two-byte marker occupying four columns, and Tab's step, a caret's
+  horizontal home and an outdent's width all want the column count.
+
+- **`checked` on the flat node** — a task item's checkbox state, `None` /
+  `TWIG_TASK_CHECKED_NONE` for every other kind. The parser has always known it
+  (it is what decides `task_list_item` over `list_item`), and nothing surfaced
+  it, so a consumer rendering a clickable checkbox re-derived the state by
+  scanning for `[x]` — a scan a `[` in prose can fool. Twig would write a
+  checkbox and not read one back.
+
 - **Caret-flavoured hit-testing** — `twig_document_node_at_caret` /
   `_nodes_at_caret`, `Document::node_at_caret` / `ancestors_at_caret`,
   `locate.deepestContainingForCaret` / `caretChain` in Zig. The same descent
@@ -104,10 +131,18 @@ behaviour was plainly wrong.
   "Where does the content start" did not go away; it moved to `marker_span`,
   which answers it for one line — the only scale at which it has an answer.
 
+- **`renumberOrderedLists` now works inside a block quote.** It previously
+  reported success at every offset in `> 1. a\n> 2. b\n> 2. c` and changed
+  nothing: the marker scan started at column zero, found `>` where it wanted a
+  digit, and copied the whole region verbatim. The scan now skips the quote
+  prefix first, and measures nesting indent from after it — a quote's width is
+  not a list's depth, and counting it opened a phantom level whose siblings
+  never resumed.
+
 - **`TWIG_ABI_VERSION` is 6.** `TwigFlatNode` grew `marker_span` /
-  `has_marker_span` (144 → 168 bytes). Appended, so every prior field keeps its
-  offset; `@sizeOf` is what moved, and it is part of the layout a consumer
-  strides an array with.
+  `has_marker_span` (144 → 168 bytes) and `checked` (free, in the tail padding).
+  Every prior field keeps its offset; `@sizeOf` is what moved, and it is part of
+  the layout a consumer strides an array with.
 
 ## 3.0.0 — editor gestures, and telling consumers what a conversion costs
 

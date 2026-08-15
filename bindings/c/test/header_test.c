@@ -213,6 +213,15 @@ static void test_editor_document_shares_the_read_surface(void) {
     CHECK(twig_document_line_prefix(view, 2, &prefix) == TWIG_STATUS_OK);
     CHECK(prefix.start == 0 && prefix.end == 2);
 
+    // A heading holds no continuation lines, so there is nothing to repeat —
+    // the top-level answer, which is an empty prefix rather than an error.
+    const uint8_t *cont = NULL;
+    size_t cont_len = 0;
+    size_t cont_cols = 0;
+    CHECK(twig_document_continuation_prefix(view, 2, &cont, &cont_len, &cont_cols)
+          == TWIG_STATUS_OK);
+    CHECK(cont_len == 0 && cont_cols == 0);
+
     // The caret walk answers where the half-open one declines to: the offset at
     // the very end of the source is in no node by span, but a caret there is
     // somewhere, and the chain still ends at the node the scalar call returns.
@@ -401,8 +410,80 @@ static void test_definitions_are_reachable_only_through_their_own_call(void) {
     twig_document_destroy(doc);
 }
 
+static void test_line_prefixes_answer_two_different_questions(void) {
+    // The bytes already on the line vs. the bytes a continuation would need.
+    // They differ precisely where an editor gets it wrong by hand: the item's
+    // "- " is PRESENT on line one and must NOT be repeated on line two, or the
+    // continuation opens a second item instead of continuing the first.
+    const char *src = "> - a\n";
+    TwigDocument *doc = NULL;
+    CHECK(twig_parse((const uint8_t *)src, strlen(src), TWIG_FORMAT_MARKDOWN, &doc) ==
+          TWIG_STATUS_OK);
+
+    TwigSpan span = {0, 0};
+    CHECK(twig_document_line_prefix(doc, 4, &span) == TWIG_STATUS_OK);
+    CHECK(span.start == 0 && span.end == 4);
+    CHECK(memcmp(src + span.start, "> - ", 4) == 0);
+
+    const uint8_t *cont = NULL;
+    size_t cont_len = 0;
+    size_t cont_cols = 0;
+    CHECK(twig_document_continuation_prefix(doc, 4, &cont, &cont_len, &cont_cols) ==
+          TWIG_STATUS_OK);
+    // The quote reproduced, the item as width. Same column count as the line
+    // prefix above, deliberately — the content stays where it was.
+    CHECK(cont_len == 4 && cont_cols == 4);
+    if (cont != NULL) CHECK(memcmp(cont, ">   ", 4) == 0);
+
+    // A blank line inside the same containers keeps the quote alive and drops
+    // the item's indent, and the quote's blank form has no trailing space.
+    const uint8_t *blank = NULL;
+    size_t blank_len = 0;
+    size_t blank_cols = 0;
+    CHECK(twig_document_blank_line_prefix(doc, 4, &blank, &blank_len, &blank_cols) ==
+          TWIG_STATUS_OK);
+    CHECK(blank_len == 1 && blank_cols == 1);
+    if (blank != NULL) CHECK(blank[0] == '>');
+
+    twig_document_destroy(doc);
+}
+
+static void test_task_items_report_their_checkbox_state(void) {
+    // The state comes off the tree, where the parser recorded it. A capital
+    // `[X]` is checked too, which a consumer matching the literal `[x]` misses.
+    const char *src = "- [ ] a\n- [x] b\n- [X] c\n- d\n";
+    TwigDocument *doc = NULL;
+    CHECK(twig_parse((const uint8_t *)src, strlen(src), TWIG_FORMAT_MARKDOWN, &doc) ==
+          TWIG_STATUS_OK);
+
+    const TwigFlatNode *nodes = NULL;
+    size_t count = 0;
+    CHECK(twig_document_nodes(doc, &nodes, &count) == TWIG_STATUS_OK);
+
+    int seen_unchecked = 0, seen_checked = 0, seen_plain = 0, seen_other = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(nodes[i].kind, "task_list_item") == 0) {
+            if (nodes[i].checked == 1) seen_checked++;
+            if (nodes[i].checked == 0) seen_unchecked++;
+        } else if (strcmp(nodes[i].kind, "list_item") == 0) {
+            // A plain item is not a task item, so it reports NONE rather than
+            // "unchecked" — else a renderer draws a box beside it.
+            seen_plain++;
+            CHECK(nodes[i].checked == TWIG_TASK_CHECKED_NONE);
+        } else if (nodes[i].checked != TWIG_TASK_CHECKED_NONE) {
+            seen_other++;
+        }
+    }
+    CHECK(seen_checked == 2 && seen_unchecked == 1 && seen_plain == 1);
+    CHECK(seen_other == 0);
+
+    twig_document_destroy(doc);
+}
+
 int main(void) {
     test_abi_version_matches_header();
+    test_line_prefixes_answer_two_different_questions();
+    test_task_items_report_their_checkbox_state();
     test_definitions_are_reachable_only_through_their_own_call();
     test_diagnostics_report_what_a_conversion_loses();
     test_align_codes_match_runtime();

@@ -48,6 +48,10 @@ extern "C" {
 //    for a marker-prefixed container, which reports content_span == span
 //    because no contiguous range is such a container's interior. Appended, so
 //    every prior offset is unchanged and only sizeof moves — same as 2 and 3.
+//    `checked` landed in this same version rather than a seventh: it fits in
+//    has_marker_span's tail padding, and no release ever carried a version 6
+//    without it, so numbering it separately would name a contract that never
+//    existed. Once 6 ships, this note freezes.
 #define TWIG_ABI_VERSION 6
 
 // The TWIG_FORMAT_* codes span BOTH format axes, in one integer space:
@@ -190,6 +194,13 @@ typedef struct TwigKeyVal {
 //     directive_form. TWIG_CONTAINER_ORIGIN_NONE means nothing recorded it —
 //     the node is not a container, or no parser produced it.
 //
+// checked is a task_list_item's checkbox state: 1 checked, 0 unchecked,
+// TWIG_TASK_CHECKED_NONE for every other kind. The parser has always known this
+// — it is what decides task_list_item over list_item in the first place — and
+// nothing surfaced it, so a consumer rendering a clickable checkbox re-derived
+// the state by scanning the source for "[x]". That scan is fooled by a "[" in
+// prose, and it asks the bytes a question the tree had already answered.
+//
 // marker_span (valid only when has_marker_span is non-zero) is the node's own
 // MARKER — the leading bytes a rich view HIDES, on its opening line: a heading's
 // #s and the space after them, a list item's "- " / "1. ", a task item's marker
@@ -236,7 +247,14 @@ typedef struct TwigFlatNode {
     int container_origin;
     TwigSpan marker_span;
     int has_marker_span;
+    int checked;
 } TwigFlatNode;
+
+// TwigFlatNode.checked for a node that is not a task_list_item. Spelled out
+// rather than folded into 0, because "unchecked" is a real state and a consumer
+// treating "not a task item" as unchecked draws an empty box beside every
+// paragraph in the document.
+#define TWIG_TASK_CHECKED_NONE (-1)
 
 // TwigFlatNode.head for a node that is neither a row nor a cell.
 #define TWIG_HEAD_NONE (-1)
@@ -475,6 +493,64 @@ TwigStatus twig_document_line_prefix(
     TwigDocument *doc,
     size_t offset,
     TwigSpan *out_span
+);
+
+// What a CONTINUATION LINE at byte `offset` must open with to stay inside every
+// container holding it, plus that prefix's width in COLUMNS.
+//
+// The other half of twig_document_line_prefix, and not derivable from it. That
+// one reports the bytes ALREADY THERE on a line something opens, so it hands
+// back a span into the source. This one reports the bytes that WOULD HAVE TO BE
+// WRITTEN on a line nothing opens — a list item's continuation is spaces where
+// its marker was, which is not source at all, so it is built rather than
+// pointed at.
+//
+// A quote's "> " is REPRODUCED (dropping it ends the quote); a list item's
+// marker becomes its WIDTH IN SPACES (repeating it would open a second item).
+// Each container on the caret's chain contributes the columns its own marker
+// occupies, on its own opening line — which may be a different line for each of
+// them, and is why this is a tree walk rather than a re-read of one line:
+//
+//     > - a      quote "> " + item "- " as width   ->  ">   "
+//     - a
+//       - b      outer item + inner item           ->  "    "
+//
+// out_columns may be NULL if the caller wants only the bytes. It is NOT out_len:
+// a tab in a marker advances to a tab stop, so "-\tx" yields four columns from a
+// two-byte marker, and an editor sizing a Tab step or a caret's horizontal home
+// wants the column count.
+//
+// The bytes are borrowed from `doc` and stay valid until the next
+// twig_document_continuation_prefix / twig_document_blank_line_prefix call on
+// the same handle, or until it is destroyed. out_ptr is NULL and
+// out_len/out_columns are 0 at the top level, which is the correct prefix there:
+// none. TWIG_STATUS_INVALID_ARGUMENT if offset > source length. Additive in
+// ABI v6.
+TwigStatus twig_document_continuation_prefix(
+    TwigDocument *doc,
+    size_t offset,
+    const uint8_t **out_ptr,
+    size_t *out_len,
+    size_t *out_columns
+);
+
+// What a BLANK line inside the containers at byte `offset` must carry, plus its
+// width in columns. Same borrow contract as twig_document_continuation_prefix.
+//
+// A quote's blank line still has to carry its ">" or the quote ENDS there; a
+// list item's must carry nothing, because a blank line between two of an item's
+// blocks is what makes its list loose and indenting it changes nothing about
+// that. So this is the continuation prefix with its trailing spaces cut back —
+// which drops an item's indent entirely and leaves a quote marker standing.
+//
+// The quote form is ">" and not "> ", because the space after the marker is
+// content indentation and a blank line has no content. Additive in ABI v6.
+TwigStatus twig_document_blank_line_prefix(
+    TwigDocument *doc,
+    size_t offset,
+    const uint8_t **out_ptr,
+    size_t *out_len,
+    size_t *out_columns
 );
 
 // The source span of the `{...}` attribute block attached to node `node_id` —

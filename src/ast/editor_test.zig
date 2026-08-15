@@ -362,6 +362,35 @@ test "renumberOrderedLists: each nesting level restarts at 1" {
     try fx.expectSource("1. a\n   1. b\n   2. c\n2. d\n");
 }
 
+test "renumberOrderedLists: a quoted list renumbers behind its prefix" {
+    // The markers sit behind `> `, so a scan from column zero finds `>` where it
+    // wants a digit. Every line failed the test, the region was copied verbatim,
+    // and the gesture returned OK having changed nothing.
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("> 1. a\n> 2. b\n> 2. c\n", f);
+        defer fx.deinit();
+        try fx.ed.renumberOrderedLists(2);
+        try fx.expectSource("> 1. a\n> 2. b\n> 3. c\n");
+    }
+}
+
+test "renumberOrderedLists: a quote prefix is not nesting depth" {
+    // The `> ` is two columns wide, but it is the QUOTE's width, not the list's
+    // indentation — a quoted top-level item is still top-level, and counting the
+    // prefix would open a phantom level whose siblings never resume.
+    //
+    // Blank-separated because djot does not let a list marker interrupt a
+    // paragraph: without the blanks `>    7. b` is a continuation line of item
+    // `a` there and a nested item in Markdown, so the two formats would be
+    // renumbering different documents. That divergence has its own test below.
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("> 3. a\n>\n>    7. b\n>\n> 9. c\n", f);
+        defer fx.deinit();
+        try fx.ed.renumberOrderedLists(2);
+        try fx.expectSource("> 1. a\n>\n>    1. b\n>\n> 2. c\n");
+    }
+}
+
 test "renumberOrderedLists: djot's literal `2.` line is prose, not an item" {
     // Djot doesn't let a list marker interrupt a paragraph, so `   2. b` is a
     // continuation line of item `a` — the author's own text, four bytes of which
