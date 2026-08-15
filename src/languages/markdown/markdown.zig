@@ -98,6 +98,7 @@ pub const Document = struct {
     node_spans: []const Span = &.{},
     node_content_spans: []const ?Span = &.{},
     node_spelling: []const ?TwigDocument.Spelling = &.{},
+    node_marker_spans: []const ?Span = &.{},
     /// Indexed by `AST.Attrs.Id`, not by node id — see
     /// `TwigDocument.attrs_spans`.
     attrs_spans: []const ?Span = &.{},
@@ -149,6 +150,7 @@ pub const Document = struct {
         allocator.free(self.node_spans);
         allocator.free(self.node_content_spans);
         allocator.free(self.node_spelling);
+        allocator.free(self.node_marker_spans);
         allocator.free(self.attrs_spans);
         self.ast.deinit();
     }
@@ -163,6 +165,7 @@ pub const Document = struct {
             .node_spans = self.node_spans,
             .node_content_spans = self.node_content_spans,
             .node_spelling = self.node_spelling,
+            .node_marker_spans = self.node_marker_spans,
             .attrs_spans = self.attrs_spans,
         };
     }
@@ -196,6 +199,7 @@ pub fn parse(allocator: Allocator, source: []const u8, options: ParseOptions) Al
         .node_spans = result.node_spans,
         .node_content_spans = result.node_content_spans,
         .node_spelling = result.node_spelling,
+        .node_marker_spans = result.node_marker_spans,
         .attrs_spans = result.attrs_spans,
         .options = options,
         .link_references = result.link_references,

@@ -81,6 +81,139 @@ pub fn ancestorChain(
     }
 }
 
+// ── Caret hit-testing ──────────────────────────────────────────────────────
+// The same descent, under the containment rule an EDITING CARET needs rather
+// than the one a byte range needs. Kept as its own pair of entry points rather
+// than a flag on the ones above, because the two rules disagree and both are
+// right for their own caller.
+
+/// True if a CARET at `offset` sits in node span `s`, whose source is `src`.
+///
+/// Two differences from `spanContains`, and both exist because a caret is a
+/// position BETWEEN bytes while a span is a range OF bytes:
+///
+///  1. **End-inclusive.** A caret at a block's end is in that block — it is
+///     where you stand to type the rest of the paragraph. Half-open containment
+///     puts it outside, which is why an editor probing `ancestors_at` had to
+///     guess at contrived offsets (`content_start`, `caret - 1`, the marker's
+///     own byte) to find the block it was plainly inside of.
+///
+///  2. **A trailing line terminator is not part of the block.** This is what
+///     makes the two authorable formats agree. Djot ends a paragraph's span
+///     AFTER its newline and Markdown BEFORE it, so on `"a\n\nb\n"` the caret
+///     at offset 1 read as `para` in djot and as `doc` in Markdown, and the
+///     caret at end-of-source read as `para` in djot and `doc` in Markdown —
+///     the same caret, two answers, decided by which parser happened to
+///     produce the tree. Trimming the terminator normalises both ends: the
+///     caret after `a` is in `a`'s paragraph in both, and the caret on the
+///     blank line after it is in neither.
+///
+/// Note that end-inclusive does NOT make an inline mark sticky, which was the
+/// reason not to simply relax `spanContains` itself: `caretChildContaining`
+/// keeps the LAST matching child, so a caret on the boundary between an `emph`
+/// and the text after it resolves into the text, exactly as before.
+pub fn caretContains(src: []const u8, s: Span, offset: usize) bool {
+    if (s.start == 0 and s.end == 0) return false;
+    if (offset < s.start) return false;
+    var end = @min(s.end, src.len);
+    if (end > s.start and src[end - 1] == '\n') end -= 1;
+    if (end > s.start and src[end - 1] == '\r') end -= 1;
+    return offset <= end;
+}
+
+/// `childContaining` under `caretContains` — the LAST matching child again, so
+/// a caret on a boundary resolves into the later sibling.
+pub fn caretChildContaining(doc: *const Document, id: AST.Node.Id, offset: usize) ?AST.Node.Id {
+    var found: ?AST.Node.Id = null;
+    var it = doc.children(id);
+    while (it.next()) |child| {
+        if (caretContains(doc.source, doc.span(child.id), offset)) found = child.id;
+    }
+    return found;
+}
+
+/// The deepest node a CARET at `offset` is in — `deepestContaining`'s answer to
+/// the question an editor is actually asking. See `caretContains`.
+///
+/// Unlike `deepestContaining` this never returns `null` for a non-empty tree:
+/// the descent starts AT the root and stops where no child matches, so a caret
+/// in the gap between two blocks (or past the last one) reports the container
+/// that holds the gap rather than nothing at all. The root's own span is never
+/// tested, which is what lets this work for the parsers that leave it unset.
+pub fn deepestContainingForCaret(doc: *const Document, offset: usize) ?AST.Node.Id {
+    if (doc.ast.nodes.len == 0) return null;
+    var cur = doc.ast.root;
+    while (caretChildContaining(doc, cur, offset)) |child| cur = child;
+    return cur;
+}
+
+/// `ancestorChain` under caret containment — root first, deepest last. See
+/// `caretContains`.
+pub fn caretChain(
+    allocator: Allocator,
+    doc: *const Document,
+    offset: usize,
+    out: *std.ArrayList(AST.Node.Id),
+) Allocator.Error!void {
+    if (doc.ast.nodes.len == 0) return;
+    var cur = doc.ast.root;
+    try out.append(allocator, cur);
+    while (caretChildContaining(doc, cur, offset)) |child| {
+        cur = child;
+        try out.append(allocator, cur);
+    }
+}
+
+// ── Line prefixes ──────────────────────────────────────────────────────────
+
+/// Everything HIDDEN before the content on the line `offset` sits on: every
+/// marker a node OPENS that line with, and the indentation between them, as one
+/// span from the line start.
+///
+/// This is the assembled form of `Document.node_marker_spans`, which records
+/// each node's own marker alone. A nested construct's prefix is the union of
+/// its ancestors' — `>   1. [ ] ` is four nodes' markers plus the spaces
+/// between them — and the union is contiguous from the line start, so this
+/// walks the descent to `offset` and takes the LAST marker opening on that
+/// line. Reaching back to the line start rather than concatenating the spans is
+/// what picks up a nested item's INDENT, which is real hidden width that no
+/// node claims as its own marker.
+///
+/// `null` when nothing opens on this line — a CONTINUATION line, the second
+/// line of a wrapped paragraph or of a quote. That is deliberate and not an
+/// oversight: what a continuation line is prefixed with is a different question
+/// with a different answer (a quote repeats `> `, a list item repeats spaces),
+/// and answering it from marker spans alone would be a guess. A caller that
+/// wants it should ask for a continuation prefix, not read this and hope.
+pub fn linePrefixSpan(doc: *const Document, offset: usize) ?Span {
+    if (doc.ast.nodes.len == 0) return null;
+    const line_start = lineStartAt(doc.source, offset);
+    const line_end = lineEndAt(doc.source, offset);
+
+    var end: ?usize = null;
+    var cur = doc.ast.root;
+    while (true) {
+        if (doc.markerSpan(cur)) |m| {
+            // On THIS line: an ancestor whose marker opened an earlier line
+            // contributes its indent (via the reach back to `line_start`), not
+            // its marker.
+            if (m.start >= line_start and m.start < line_end) {
+                if (end == null or m.end > end.?) end = m.end;
+            }
+        }
+        cur = caretChildContaining(doc, cur, offset) orelse break;
+    }
+    const e = end orelse return null;
+    return Span.init(line_start, e);
+}
+
+/// The raw source bytes `linePrefixSpan` covers, or `null` when it has none —
+/// what a rich view hides at the head of this line.
+pub fn linePrefixText(doc: *const Document, offset: usize) ?[]const u8 {
+    const s = linePrefixSpan(doc, offset) orelse return null;
+    return Span.of(u8, s, doc.source);
+}
+
 /// The LINE-OWNING BLOCK holding `offset`: the child of the innermost
 /// block-parent container on the descent, or `null` when no node covers the
 /// offset at all (an empty document, or one whose root spans nothing).
@@ -278,6 +411,159 @@ test "deepestContaining descends to the innermost node and chains to it" {
     try std.testing.expectEqual(deep, chain.items[chain.items.len - 1]);
     try std.testing.expectEqual(ast.ast.root, chain.items[0]);
     try std.testing.expect(chain.items.len >= 2);
+}
+
+// ── Caret / prefix tests ───────────────────────────────────────────────────
+// Every one of these runs BOTH authorable formats over the same source and
+// asserts the same answer. That is the whole point of the two entry points: the
+// spans underneath genuinely differ (djot ends a block after its newline,
+// Markdown before it), and a consumer must not be able to tell which parser
+// produced the tree it is holding.
+
+const Markdown = @import("../languages/markdown/markdown.zig");
+const Djot = @import("../languages/djot/djot.zig");
+
+/// Parse `src` as both authorable formats and hand each `Document` to `check`.
+fn forBothFormats(src: []const u8, check: fn (doc: *const Document, src: []const u8) anyerror!void) !void {
+    const gpa = std.testing.allocator;
+
+    var md = try Markdown.parse(gpa, src, .{});
+    defer md.deinit();
+    const md_doc = md.document();
+    check(&md_doc, src) catch |e| {
+        std.debug.print("  (markdown)\n", .{});
+        return e;
+    };
+
+    var dj = try Djot.parse(gpa, src);
+    defer dj.deinit();
+    const dj_doc = dj.document();
+    check(&dj_doc, src) catch |e| {
+        std.debug.print("  (djot)\n", .{});
+        return e;
+    };
+}
+
+fn kindAt(doc: *const Document, offset: usize) ?AST.Node.Kind {
+    const id = deepestContainingForCaret(doc, offset) orelse return null;
+    return doc.ast.nodes[id].kind;
+}
+
+test "caret: a block's end is inside it, and a blank line between blocks is not" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            _ = src;
+            // "a\n\nb\n" — offsets: 0 'a', 1 '\n', 2 '\n' (the blank line),
+            // 3 'b', 4 '\n', 5 end-of-source.
+            //
+            // Half-open containment put 1 and 4 — the end of each paragraph,
+            // and the commonest caret position there is — outside every block
+            // in Markdown while djot reported the paragraph. Both now agree.
+            try std.testing.expect(kindAt(doc, 0).? == .str);
+            try std.testing.expect(kindAt(doc, 1).? == .str);
+            try std.testing.expect(kindAt(doc, 3).? == .str);
+            try std.testing.expect(kindAt(doc, 4).? == .str);
+            // The blank line separating them belongs to no block, and neither
+            // does the empty line after the final newline.
+            try std.testing.expect(kindAt(doc, 2).? == .doc);
+            try std.testing.expect(kindAt(doc, 5).? == .doc);
+        }
+    };
+    try forBothFormats("a\n\nb\n", S.check);
+}
+
+test "caret: the chain from a caret at a paragraph's end reaches the paragraph" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            var chain: std.ArrayList(AST.Node.Id) = .empty;
+            defer chain.deinit(std.testing.allocator);
+            try caretChain(std.testing.allocator, doc, src.len - 1, &chain);
+
+            var saw_para = false;
+            var saw_item = false;
+            for (chain.items) |id| {
+                switch (std.meta.activeTag(doc.ast.nodes[id].kind)) {
+                    .para => saw_para = true,
+                    .list_item => saw_item = true,
+                    else => {},
+                }
+            }
+            try std.testing.expect(saw_para);
+            try std.testing.expect(saw_item);
+        }
+    };
+    // The caret sits after `b`, at the end of the nested item — the position
+    // Enter and Backspace are pressed from.
+    try forBothFormats("- a\n  - b\n", S.check);
+}
+
+test "linePrefixSpan: a nested item's prefix includes the indent it sits behind" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            // Caret in `b`, on the inner item's line. That item's own marker is
+            // `- `, but the two spaces before it are hidden width too — they
+            // are the OUTER item's content indent, which no node records as a
+            // marker of its own. Reaching back to the line start is what picks
+            // them up.
+            const at = std.mem.indexOfScalar(u8, src, 'b').?;
+            try std.testing.expectEqualStrings("  - ", linePrefixText(doc, at).?);
+            // The outer item's own line is indent-free.
+            const a = std.mem.indexOfScalar(u8, src, 'a').?;
+            try std.testing.expectEqualStrings("- ", linePrefixText(doc, a).?);
+        }
+    };
+    // Blank-line separated on purpose: `- a\n  - b` is a NESTED LIST in
+    // Markdown and a paragraph holding the literal text `- b` in djot, because
+    // djot does not let a list marker interrupt a paragraph. Sharing a source
+    // whose STRUCTURE differs would be testing the parsers, not this walk — the
+    // divergence has its own test below.
+    try forBothFormats("- a\n\n  - b\n", S.check);
+}
+
+test "linePrefixSpan: no marker where the format read no item" {
+    // The same bytes, the two formats genuinely disagreeing. In Markdown line
+    // two opens a nested item and has a marker; in djot it is literal text
+    // inside item `a`'s paragraph, and there is nothing hidden on it at all.
+    //
+    // Reporting `  - ` for djot here is exactly the bug this table exists to
+    // stop: an editor that "outdents" that line restructures a document that
+    // never had a nested item in it.
+    const gpa = std.testing.allocator;
+    const src = "- a\n  - b\n";
+
+    var md = try Markdown.parse(gpa, src, .{});
+    defer md.deinit();
+    const md_doc = md.document();
+    try std.testing.expectEqualStrings("  - ", linePrefixText(&md_doc, src.len - 2).?);
+
+    var dj = try Djot.parse(gpa, src);
+    defer dj.deinit();
+    const dj_doc = dj.document();
+    try std.testing.expect(linePrefixText(&dj_doc, src.len - 2) == null);
+}
+
+test "linePrefixSpan: every marker on the line, from quote to checkbox" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            const at = std.mem.indexOfScalar(u8, src, 'x').?;
+            try std.testing.expectEqualStrings("> - [ ] ", linePrefixText(doc, at).?);
+        }
+    };
+    try forBothFormats("> - [ ] x\n", S.check);
+}
+
+test "linePrefixSpan: a heading's marker, and none on a continuation line" {
+    const S = struct {
+        fn check(doc: *const Document, src: []const u8) anyerror!void {
+            try std.testing.expectEqualStrings("## ", linePrefixText(doc, 4).?);
+            // Line three continues the quote but OPENS nothing, so there is no
+            // marker to report. What a continuation line repeats is a separate
+            // question — see `linePrefixSpan`'s doc comment.
+            const at = std.mem.indexOfScalar(u8, src, 'd').?;
+            try std.testing.expect(linePrefixText(doc, at) == null);
+        }
+    };
+    try forBothFormats("## h\n\n> c\n> d\n", S.check);
 }
 
 test "an offset past every span resolves to nothing" {

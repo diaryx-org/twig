@@ -101,6 +101,36 @@ node_content_spans: []const ?Span,
 /// the table exists.
 node_spelling: []const ?Spelling = &.{},
 
+/// Indexed by node id: the byte range of the node's own MARKER — the leading
+/// bytes a rich view HIDES, on the node's opening line. A heading's `#`s and
+/// the space after them, a list item's `- ` / `1. `, a task item's marker plus
+/// its `[x] ` box, a block quote's `> `.
+///
+/// ── Why this is not derivable from the other two tables ────────────────────
+/// It looks like it should be `[span.start, content_span.start)`, and for a
+/// heading it happens to be. For a marker-prefixed CONTAINER it is not: those
+/// carry `content_span == span` (see `node_content_spans`, and djot's
+/// `markerPrefixedContentSpan`) precisely because no contiguous range is their
+/// interior, so that subtraction yields an empty span rather than the marker.
+///
+/// Before this table the answer was recoverable only by a per-format rule —
+/// from the item's inner `para` in Markdown, from the item itself in djot —
+/// which is exactly the "which parser produced this?" reasoning a consumer of
+/// a shared AST should never have to do.
+///
+/// ── What it addresses, and what it doesn't ─────────────────────────────────
+/// ONE LINE: the node's own opening line, and only that node's own marker. A
+/// caret sitting on a CONTINUATION line is behind a different prefix, and a
+/// nested construct's full prefix is the union of its ancestors' markers —
+/// `ast/locate.zig`'s `linePrefixSpan` is the walk that assembles it.
+///
+/// `null` = this node has no leading marker, or no parser recorded one: every
+/// inline, a paragraph, a SETEXT heading (whose `---` sits under the block, not
+/// before it), a synthesized node. Like `node_spelling` and unlike `node_spans`
+/// this table may be SHORTER than `ast.nodes`, including empty; read it through
+/// `markerSpan()`, which treats a missing slot as `null`.
+node_marker_spans: []const ?Span = &.{},
+
 /// Indexed by `AST.Attrs.Id` (NOT by node id — see `AST.attrs`, the side-table
 /// this parallels): the byte range of the `{...}` / `:key: value` block the
 /// attributes were written as.
@@ -194,6 +224,7 @@ pub fn deinit(self: *Document) void {
     allocator.free(self.node_spans);
     allocator.free(self.node_content_spans);
     allocator.free(self.node_spelling);
+    allocator.free(self.node_marker_spans);
     allocator.free(self.attrs_spans);
 }
 
@@ -214,6 +245,22 @@ pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
 pub fn spelling(self: *const Document, id: AST.Node.Id) ?Spelling {
     if (id >= self.node_spelling.len) return null;
     return self.node_spelling[id];
+}
+
+/// The span of `id`'s own leading marker, or `null` when it has none — the
+/// same short-table tolerance `spelling()` has. See `node_marker_spans`, and
+/// `ast/locate.zig`'s `linePrefixSpan` for the whole prefix a nested node sits
+/// behind.
+pub fn markerSpan(self: *const Document, id: AST.Node.Id) ?Span {
+    if (id >= self.node_marker_spans.len) return null;
+    return self.node_marker_spans[id];
+}
+
+/// The raw source bytes of `id`'s own leading marker, or `null` when it has
+/// none — what a rich view hides and a caret steps over.
+pub fn markerText(self: *const Document, id: AST.Node.Id) ?[]const u8 {
+    const m = self.markerSpan(id) orelse return null;
+    return Span.of(u8, m, self.source);
 }
 
 /// Whether the `container` at `id` was written as a tag or as a directive, or
@@ -288,6 +335,15 @@ pub fn spansEql(self: Document, other: Document) bool {
     for (0..n) |i| {
         const a = if (i < self.attrs_spans.len) self.attrs_spans[i] else null;
         const b = if (i < other.attrs_spans.len) other.attrs_spans[i] else null;
+        if ((a == null) != (b == null)) return false;
+        if (a) |x| if (!x.eql(b.?)) return false;
+    }
+    // Also a possibly-short table (see `node_marker_spans`), so read through
+    // the accessor rather than indexing — same reason as above.
+    const m = @max(self.node_marker_spans.len, other.node_marker_spans.len);
+    for (0..m) |i| {
+        const a = self.markerSpan(@intCast(i));
+        const b = other.markerSpan(@intCast(i));
         if ((a == null) != (b == null)) return false;
         if (a) |x| if (!x.eql(b.?)) return false;
     }

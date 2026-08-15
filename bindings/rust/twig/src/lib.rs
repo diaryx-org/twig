@@ -500,6 +500,25 @@ pub struct FlatNode {
     /// [`directive_form`](Self::directive_form) (`Container`), field for field,
     /// so none of the three can tell you which one you have.
     pub origin: Option<ContainerOrigin>,
+    /// The node's own MARKER — the leading bytes a rich view HIDES, on its
+    /// opening line: a heading's `#`s and the space after them, a list item's
+    /// `- ` / `1. `, a task item's marker plus its `[x] ` box, a block quote's
+    /// `> `. `None` for a node with no leading marker (every inline, a
+    /// paragraph, a SETEXT heading whose `---` sits *under* the block).
+    ///
+    /// **Not derivable from [`span`](Self::span) and
+    /// [`content_span`](Self::content_span).** For a heading it happens to be
+    /// `span.start..content_span.start`; for a marker-prefixed container it is
+    /// not, because those report `content_span == span` — a prefix repeating on
+    /// every line has no contiguous interior to point at. Before this field the
+    /// answer was recoverable only by a per-format rule (from the item's inner
+    /// paragraph in Markdown, from the item itself in Djot), which is the
+    /// "which parser produced this?" reasoning a shared AST exists to remove.
+    ///
+    /// Covers ONE LINE, and this node's own marker alone. For the whole prefix a
+    /// nested construct sits behind (`>   1. [ ] ` is four nodes' markers plus
+    /// the indent between them), call [`Document::line_prefix`].
+    pub marker_span: Option<Range<usize>>,
     /// The node's `{...}` / HTML attributes as `(key, value)` pairs in source
     /// order (empty when it has none). A bare attribute (HTML `disabled`, or a
     /// `<source media=…>` used as a flag) has a `None` value.
@@ -743,6 +762,47 @@ impl Document {
         }
     }
 
+    /// The span of `node`'s own leading MARKER — the leading bytes a rich view
+    /// HIDES on its opening line — or `None` when it has none. See
+    /// [`FlatNode::marker_span`], which is the same answer inside a snapshot.
+    pub fn marker_span(&mut self, node: NodeId) -> Result<Option<Range<usize>>, Error> {
+        let mut span = ffi::TwigSpan { start: 0, end: 0 };
+        let status =
+            unsafe { ffi::twig_document_node_marker_span(self.raw.as_ptr(), node.0, &mut span) };
+        match status.0 {
+            ffi::TwigStatus::OK => Ok(Some(span.start..span.end)),
+            ffi::TwigStatus::NOT_FOUND => Ok(None),
+            _ => Err(Error::from_status(status).unwrap_err()),
+        }
+    }
+
+    /// Everything HIDDEN before the content on the line byte `offset` sits on:
+    /// every marker a node OPENS that line with, and the indentation between
+    /// them, as one range running from the line start.
+    ///
+    /// This is the assembled form of [`FlatNode::marker_span`], which records
+    /// each node's own marker alone. `>   1. [ ] ` is four nodes' markers plus
+    /// the spaces between them, and the union is contiguous from the line start
+    /// — so a caller gets one range to hide, or one width for a caret to step
+    /// over, rather than a chain to walk and stitch together itself.
+    ///
+    /// `None` when nothing opens on this line — a CONTINUATION line, the second
+    /// line of a wrapped paragraph or of a block quote. That is a real answer
+    /// rather than a gap: what a continuation line repeats is a different
+    /// question (a quote re-emits `> `, a list item re-emits spaces) and is not
+    /// answerable from marker spans. [`Error::InvalidArgument`] if `offset`
+    /// exceeds the source length.
+    pub fn line_prefix(&mut self, offset: usize) -> Result<Option<Range<usize>>, Error> {
+        let mut span = ffi::TwigSpan { start: 0, end: 0 };
+        let status =
+            unsafe { ffi::twig_document_line_prefix(self.raw.as_ptr(), offset, &mut span) };
+        match status.0 {
+            ffi::TwigStatus::OK => Ok(Some(span.start..span.end)),
+            ffi::TwigStatus::NOT_FOUND => Ok(None),
+            _ => Err(Error::from_status(status).unwrap_err()),
+        }
+    }
+
     /// The grid extent of the cell at `node` — how many `(columns, rows)` it
     /// occupies — or `None` when the node is not a cell. Both are at least 1,
     /// and `(1, 1)` is the ordinary one-square cell; anything larger is a merged
@@ -881,6 +941,58 @@ impl Document {
         let mut ptr: *const ffi::TwigQueryMatch = std::ptr::null();
         let mut len = 0usize;
         let status = unsafe { ffi::twig_document_nodes_at(raw, offset, &mut ptr, &mut len) };
+        match status.0 {
+            ffi::TwigStatus::OK => {}
+            ffi::TwigStatus::NOT_FOUND => return Ok(Vec::new()),
+            _ => return Err(Error::from_status(status).unwrap_err()),
+        }
+        if len == 0 || ptr.is_null() {
+            return Ok(Vec::new());
+        }
+        let raw_matches = unsafe { std::slice::from_raw_parts(ptr, len) };
+        raw_matches.iter().map(query_match_from_ffi).collect()
+    }
+
+    /// [`Document::node_at`] under CARET containment — the same descent, under
+    /// the rule an editing caret needs rather than the one a byte range needs.
+    ///
+    /// Two differences, both because a caret is a position BETWEEN bytes while a
+    /// span is a range OF bytes:
+    ///
+    /// 1. **A block's end is inside it.** A caret after the last character of a
+    ///    paragraph is *in* that paragraph — it is where you stand to type the
+    ///    rest of it. Half-open containment puts it outside, which is why a
+    ///    consumer probing [`Document::ancestors_at`] ends up guessing at
+    ///    contrived offsets (the content start, `caret - 1`, a marker byte) to
+    ///    find the block it was plainly inside of.
+    ///
+    /// 2. **A trailing newline is not part of the block**, which is what makes
+    ///    the two authorable formats AGREE. Djot ends a paragraph's span after
+    ///    its newline and Markdown before it, so on `"a\n\nb\n"` the caret at
+    ///    offset 1 read as `para` through Djot and `doc` through Markdown — the
+    ///    same caret, two answers, decided by which parser produced the tree.
+    ///
+    /// Never `Ok(None)` for a non-empty document: a caret in the gap between two
+    /// blocks reports the container holding the gap (usually the root) rather
+    /// than nothing at all.
+    pub fn node_at_caret(&mut self, offset: usize) -> Result<Option<QueryMatch>, Error> {
+        let mut m = empty_ffi_match();
+        let status = unsafe { ffi::twig_document_node_at_caret(self.raw.as_ptr(), offset, &mut m) };
+        match status.0 {
+            ffi::TwigStatus::OK => Ok(Some(query_match_from_ffi(&m)?)),
+            ffi::TwigStatus::NOT_FOUND => Ok(None),
+            _ => Err(Error::from_status(status).unwrap_err()),
+        }
+    }
+
+    /// [`Document::ancestors_at`] under caret containment — root-first down to
+    /// the node [`Document::node_at_caret`] returns. See that method for the
+    /// containment rule and why it differs.
+    pub fn ancestors_at_caret(&mut self, offset: usize) -> Result<Vec<QueryMatch>, Error> {
+        let raw = self.raw.as_ptr();
+        let mut ptr: *const ffi::TwigQueryMatch = std::ptr::null();
+        let mut len = 0usize;
+        let status = unsafe { ffi::twig_document_nodes_at_caret(raw, offset, &mut ptr, &mut len) };
         match status.0 {
             ffi::TwigStatus::OK => {}
             ffi::TwigStatus::NOT_FOUND => return Ok(Vec::new()),
@@ -2073,6 +2185,11 @@ fn flat_node_from_ffi(n: &ffi::TwigFlatNode) -> Result<FlatNode, Error> {
         name: borrowed_bytes(n.name_ptr, n.name_len),
         directive_form: DirectiveForm::from_c(n.directive_form),
         origin: ContainerOrigin::from_c(n.container_origin),
+        marker_span: if n.has_marker_span != 0 {
+            Some(n.marker_span.start..n.marker_span.end)
+        } else {
+            None
+        },
         attrs: borrowed_attrs(n.attrs_ptr, n.attrs_len),
     })
 }
@@ -3354,6 +3471,127 @@ mod tests {
         // And decidable now.
         assert_eq!(tag.origin, Some(ContainerOrigin::Element));
         assert_eq!(directive.origin, Some(ContainerOrigin::Directive));
+    }
+
+    /// Parse `src` as both authorable formats and run `check` over each — the
+    /// shape every test below wants, because the point of these two APIs is
+    /// that a consumer cannot tell which parser produced the tree.
+    fn for_both_formats(src: &str, check: impl Fn(&mut Document, Format)) {
+        for format in [Format::Markdown, Format::Djot] {
+            let mut doc = Document::parse(src.as_bytes(), format).expect("parse");
+            check(&mut doc, format);
+        }
+    }
+
+    #[test]
+    fn marker_span_is_what_a_rich_view_hides() {
+        for_both_formats("> - [x] done\n", |doc, format| {
+            let nodes = doc.nodes().expect("nodes");
+            let quote = nodes
+                .iter()
+                .find(|n| n.kind == Kind::BlockQuote)
+                .expect("a block quote");
+            let item = nodes
+                .iter()
+                .find(|n| n.kind == Kind::TaskListItem)
+                .expect("a task item");
+
+            // The quote's `> ` and the item's `- [x] ` — the item's marker
+            // takes its checkbox with it, because the rendered view draws a
+            // checkbox in PLACE of those bytes rather than beside them.
+            assert_eq!(quote.marker_span, Some(0..2), "{format:?}");
+            assert_eq!(item.marker_span, Some(2..8), "{format:?}");
+
+            // Not derivable from the other two spans: a marker-prefixed
+            // container reports its whole extent as its interior, so the
+            // subtraction a caller might reach for yields nothing.
+            assert_eq!(quote.content_span, Some(quote.span.clone()), "{format:?}");
+
+            // A paragraph has no marker of its own; only its ancestors do.
+            let para = nodes
+                .iter()
+                .find(|n| n.kind == Kind::Para)
+                .expect("a paragraph");
+            assert_eq!(para.marker_span, None, "{format:?}");
+        });
+    }
+
+    #[test]
+    fn line_prefix_assembles_every_marker_on_the_line() {
+        for_both_formats("> - [x] done\n", |doc, format| {
+            // Four nodes' worth of hidden width as one range, which is what a
+            // caret stepping over it needs — not a chain to stitch together.
+            assert_eq!(doc.line_prefix(9).expect("prefix"), Some(0..8), "{format:?}");
+        });
+    }
+
+    #[test]
+    fn line_prefix_is_none_on_a_continuation_line() {
+        // Line two continues the quote but OPENS nothing. `None` is the honest
+        // answer: what a continuation line repeats is a different question with
+        // a different answer, and guessing it from marker spans is how an
+        // editor ends up restructuring a document that never had the shape it
+        // inferred.
+        for_both_formats("> c\n> d\n", |doc, format| {
+            assert_eq!(doc.line_prefix(2).expect("prefix"), Some(0..2), "{format:?}");
+            assert_eq!(doc.line_prefix(6).expect("prefix"), None, "{format:?}");
+        });
+    }
+
+    #[test]
+    fn a_caret_at_a_blocks_end_is_in_that_block_in_both_formats() {
+        // The divergence this API exists for. Djot ends a paragraph's span
+        // AFTER its newline and Markdown BEFORE it, so under half-open
+        // containment offset 1 — the caret you get by pressing End on line one,
+        // the commonest caret position there is — resolved to the paragraph
+        // through Djot and to the root through Markdown.
+        for_both_formats("a\n\nb\n", |doc, format| {
+            for offset in [0usize, 1, 3, 4] {
+                let hit = doc
+                    .node_at_caret(offset)
+                    .expect("caret hit")
+                    .expect("some node");
+                assert_eq!(hit.kind, Kind::Str, "{format:?} at {offset}");
+            }
+            // The blank line between the two blocks belongs to neither, and
+            // neither does the empty line after the final newline.
+            for offset in [2usize, 5] {
+                let hit = doc
+                    .node_at_caret(offset)
+                    .expect("caret hit")
+                    .expect("some node");
+                assert_eq!(hit.kind, Kind::Doc, "{format:?} at {offset}");
+            }
+        });
+    }
+
+    #[test]
+    fn the_caret_chain_ends_at_the_node_the_scalar_call_returns() {
+        for_both_formats("- a\n", |doc, format| {
+            let hit = doc.node_at_caret(3).expect("hit").expect("some node");
+            let chain = doc.ancestors_at_caret(3).expect("chain");
+            assert_eq!(chain.last().map(|m| m.node_id), Some(hit.node_id), "{format:?}");
+            // And the chain passes through the item, which is what a gesture
+            // scoped to "the block I'm in" needs at a caret sitting at its end.
+            assert!(
+                chain.iter().any(|m| m.kind == Kind::ListItem),
+                "{format:?}: chain should reach the list item"
+            );
+        });
+    }
+
+    #[test]
+    fn an_editor_reaches_the_caret_reads_through_its_document_view() {
+        // The path an editing host actually takes. These reads are questions
+        // about a TREE, not about an editing session, so they live on the
+        // document surface and an editor borrows it — no `twig_editor_*` alias
+        // to keep in step. See DESIGN.md, "The reads are not editor-specific."
+        let mut ed = Editor::new("- a\n".as_bytes(), Format::Markdown).expect("editor");
+        let mut view = ed.document().expect("document view");
+
+        assert_eq!(view.line_prefix(3).expect("prefix"), Some(0..2));
+        let hit = view.node_at_caret(3).expect("hit").expect("some node");
+        assert_eq!(hit.kind, Kind::Str);
     }
 
     #[test]

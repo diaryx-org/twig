@@ -32,7 +32,82 @@ behaviour was plainly wrong.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- **`marker_span` — the bytes a rich view hides.** A node's own leading marker:
+  a heading's `#`s and the space after them, a list item's `- ` / `1. `, a task
+  item's marker plus its `[x] ` box, a block quote's `> `. `TwigFlatNode
+  .marker_span` / `.has_marker_span` in C, `Node.marker_span:
+  Option<Range<usize>>` in Rust, `twig_document_node_marker_span` /
+  `Document::marker_span` as accessors, and `Document.node_marker_spans` in Zig.
+
+  It is not derivable from `span` and `content_span`. For a heading it happens
+  to be `[span.start, content_span.start)`; for a marker-prefixed container it
+  is not, because those report `content_span == span` — a prefix that repeats on
+  every line has no contiguous interior to point at. The answer used to be
+  recoverable only by a per-format rule (from the item's inner paragraph in
+  Markdown, from the item itself in djot), which is the "which parser produced
+  this?" reasoning a shared AST exists to remove.
+
+- **`twig_document_line_prefix` / `Document::line_prefix`** — everything hidden
+  before the content on the line an offset sits on, as one span from the line
+  start. The assembled form of `marker_span`: `>   1. [ ] ` is four nodes'
+  markers plus the indent between them, and reaching back to the line start is
+  what picks up a nested item's indentation, which no node claims as its own
+  marker. `NOT_FOUND` on a CONTINUATION line, where nothing opens — what such a
+  line repeats is a different question, not answerable from marker spans.
+
+- **Caret-flavoured hit-testing** — `twig_document_node_at_caret` /
+  `_nodes_at_caret`, `Document::node_at_caret` / `ancestors_at_caret`,
+  `locate.deepestContainingForCaret` / `caretChain` in Zig. The same descent
+  under the containment rule an editing caret needs: a block's END is inside it,
+  and a trailing newline is not part of the block.
+
+  The second half is what makes the two authorable formats agree. Djot ends a
+  paragraph's span AFTER its newline and Markdown BEFORE it, so on `"a\n\nb\n"`
+  a caret at offset 1 — the position pressing End on line one gives you — read
+  as `para` through djot and `doc` through Markdown. Same caret, two answers,
+  decided by which parser happened to produce the tree.
+
+  `spanContains` and `twig_document_node_at` are unchanged: half-open
+  containment is right for a byte range, and making it end-inclusive would make
+  an inline mark sticky at the offset where you type to escape it.
+
+  These are document reads, not editor reads, so there is no `twig_editor_*`
+  alias — an editor reaches them through `twig_editor_document` /
+  `Editor::document()`. See DESIGN.md, "The reads are not editor-specific."
+
+### Behavioural changes
+
+- **A djot `block_quote` / `list_item` / `task_list_item` /
+  `definition_list_item` / `definition` / `footnote` now reports
+  `content_span == span`**, where it previously reported the extent of its
+  children. Markdown already reported the whole extent, so this is the two
+  parsers agreeing rather than diverging.
+
+  The old value was wrong, not merely different. `content_span` is defined as
+  *the region an editor may splice*, and these containers hold their children
+  behind a per-line prefix — `> ` on every line of a quote, the marker's width
+  of indent on every line of an item. A range from the first child to the last
+  peels that prefix off the FIRST line only and leaves it on every other, so the
+  bytes it addressed were not a valid interior. `twig_editor_unwrap` spliced
+  them in, which turned
+
+      > a          into      a
+      > b                    > b
+
+  — one quote becoming a paragraph and a quote, a node count that went UP on an
+  operation that removes a wrapper. `twig_editor_replace_content` had the same
+  defect for the same reason. Both are now no-ops on such a container, matching
+  Markdown's long-standing (and documented) behaviour.
+
+  "Where does the content start" did not go away; it moved to `marker_span`,
+  which answers it for one line — the only scale at which it has an answer.
+
+- **`TWIG_ABI_VERSION` is 6.** `TwigFlatNode` grew `marker_span` /
+  `has_marker_span` (144 → 168 bytes). Appended, so every prior field keeps its
+  offset; `@sizeOf` is what moved, and it is part of the layout a consumer
+  strides an array with.
 
 ## 3.0.0 — editor gestures, and telling consumers what a conversion costs
 

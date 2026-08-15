@@ -111,6 +111,7 @@ pub const BlockResult = struct {
     node_spans: []const Span = &.{},
     node_content_spans: []const ?Span = &.{},
     node_spelling: []const ?TwigDocument.Spelling = &.{},
+    node_marker_spans: []const ?Span = &.{},
     /// Indexed by `AST.Attrs.Id`, not by node id — see
     /// `TwigDocument.attrs_spans`.
     attrs_spans: []const ?Span = &.{},
@@ -133,6 +134,7 @@ pub const BlockResult = struct {
         allocator.free(self.node_spans);
         allocator.free(self.node_content_spans);
         allocator.free(self.node_spelling);
+        allocator.free(self.node_marker_spans);
         allocator.free(self.attrs_spans);
         self.ast.deinit();
     }
@@ -307,7 +309,11 @@ fn isThematicBreak(s: []const u8) bool {
     return count >= 3;
 }
 
-const AtxHeading = struct { level: u32, content: []const u8 };
+/// `marker_len` is how far into `s` the content starts — the `#` run plus the
+/// spaces after it, which is the range a rich view hides. It is the LEADING
+/// marker only: a closing `#` run (`# a #`) is trimmed out of `content` but is
+/// not part of what precedes the content, so it stays out of this.
+const AtxHeading = struct { level: u32, content: []const u8, marker_len: usize };
 
 fn tryAtxHeading(s: []const u8) ?AtxHeading {
     var i: usize = 0;
@@ -324,7 +330,7 @@ fn tryAtxHeading(s: []const u8) ?AtxHeading {
         end = hash_start;
         while (end > content_start and (s[end - 1] == ' ' or s[end - 1] == '\t')) end -= 1;
     }
-    return .{ .level = @intCast(i), .content = s[content_start..end] };
+    return .{ .level = @intCast(i), .content = s[content_start..end], .marker_len = content_start };
 }
 
 /// A setext underline: a line consisting solely of `=` characters (level 1)
@@ -776,6 +782,17 @@ const Container = struct {
     // too -- see "footnote definitions" below).
     content_col: usize = 0,
 
+    /// .block_quote / .list_item: the byte range of this container's OWN
+    /// marker on its opening line -- the `> `, the `- `/`1. ` plus any `[x] `
+    /// box. Recorded where the container is PUSHED, because that is the only
+    /// place the parser still knows which column the marker sat at: a nested
+    /// Markdown container's span starts at column zero like its parent's, so
+    /// scanning from the finished node's span start would find the OUTERMOST
+    /// marker for every depth. `end == 0` means "not recorded" -- see
+    /// `Document.node_marker_spans`, whose `null` this becomes.
+    marker_start: usize = 0,
+    marker_end: usize = 0,
+
     // .footnote_def: the (not-yet-normalized) label text, a borrowed slice
     // of `Parser.source` (stable for the whole parse) -- normalized into an
     // owned copy only once, in `finishFootnoteDef`, right before it becomes
@@ -1066,6 +1083,7 @@ pub const Parser = struct {
             .node_spans = doc.node_spans,
             .node_content_spans = doc.node_content_spans,
             .node_spelling = doc.node_spelling,
+            .node_marker_spans = doc.node_marker_spans,
             .attrs_spans = doc.attrs_spans,
             .link_references = refs,
             .footnotes = fns,
@@ -1324,6 +1342,8 @@ pub const Parser = struct {
         const syntactic = Span.init(self.lineStart(c.start_line), self.lineEnd(@min(c.end_line, line_idx)));
         self.builder.setSpan(id, containerSpanExtended(&self.builder, id, syntactic));
         setContentSpanFromChildren(&self.builder, id);
+        if (c.marker_end > c.marker_start)
+            self.builder.setMarkerSpan(id, Span.init(c.marker_start, c.marker_end));
         try self.appendToTop(id);
     }
 
@@ -2107,7 +2127,13 @@ pub const Parser = struct {
                     try self.maybeCloseTopList(idx, null);
                     self.markListsLoose();
                     try self.pushContainer(.block_quote, idx);
+                    // `Cursor.pos` is an offset into `line`, not into the
+                    // source, so both ends are rebased onto the line's start.
+                    const line_at = self.lineStart(idx);
+                    const bq_marker_start = line_at + cur.pos + indent_bytes;
                     cur = matchBlockQuote(line, cur).?;
+                    self.top().marker_start = bq_marker_start;
+                    self.top().marker_end = line_at + cur.pos;
                     interrupting = false;
                     pushed_any = true;
                     continue;
@@ -2135,7 +2161,13 @@ pub const Parser = struct {
                     // `Leaf`/segment-list bookkeeping needed.
                     const heading_text = std.mem.trim(u8, h.content, " \t");
                     const seg = self.singleSegment(heading_text);
-                    try self.emitTextBlock(.{ .heading = .{ .level = h.level } }, heading_text, &seg, idx, idx);
+                    const hid = try self.addDeferredTextNode(.{ .heading = .{ .level = h.level } }, heading_text, &seg, idx, idx);
+                    // The `#` run and the spaces after it. A SETEXT heading
+                    // deliberately records none: its `---` sits UNDER the
+                    // block, so there is nothing before the content to hide.
+                    const h_start = self.lineStart(idx) + cur.pos + indent_bytes;
+                    self.builder.setMarkerSpan(hid, Span.init(h_start, h_start + h.marker_len));
+                    try self.appendToTop(hid);
                     return true;
                 }
 
@@ -2182,6 +2214,9 @@ pub const Parser = struct {
                         } else {
                             self.markListsLoose();
                         }
+                        // Rebased onto the line start: `Cursor.pos` is a
+                        // position within `line`, not within the source.
+                        const item_marker_start = self.lineStart(idx) + cur.pos + indent_bytes;
                         const marker_col = cur.col + indent_bytes;
                         const after_marker_col = marker_col + mk.marker_len;
                         var content_col: usize = undefined;
@@ -2218,6 +2253,11 @@ pub const Parser = struct {
                                 cur = .{ .pos = cur.pos + consumed, .col = cur.col + consumed };
                             }
                         }
+                        // After the task box, so a task item's marker covers
+                        // `- [x] ` and not just `- `: the box is part of what
+                        // the rendered view draws a checkbox in place of.
+                        self.top().marker_start = item_marker_start;
+                        self.top().marker_end = self.lineStart(idx) + cur.pos;
                         interrupting = false;
                         pushed_any = true;
                         continue;

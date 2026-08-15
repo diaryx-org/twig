@@ -41,6 +41,8 @@ spans: std.ArrayList(Span) = .empty,
 content_spans: std.ArrayList(?Span) = .empty,
 /// Parallel to `nodes` — see `Document.node_spelling`.
 spellings: std.ArrayList(?Document.Spelling) = .empty,
+/// Parallel to `nodes` — see `Document.node_marker_spans`.
+marker_spans: std.ArrayList(?Span) = .empty,
 
 pub fn init(allocator: Allocator) Builder {
     return .{ .allocator = allocator };
@@ -53,6 +55,7 @@ pub fn deinit(self: *Builder) void {
     self.spans.deinit(self.allocator);
     self.content_spans.deinit(self.allocator);
     self.spellings.deinit(self.allocator);
+    self.marker_spans.deinit(self.allocator);
     for (self.attrs.items) |a| {
         self.allocator.free(a.entries);
     }
@@ -76,6 +79,7 @@ pub fn addNode(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Id {
     try self.spans.append(self.allocator, Span.init(0, 0));
     try self.content_spans.append(self.allocator, null);
     try self.spellings.append(self.allocator, null);
+    try self.marker_spans.append(self.allocator, null);
     return id;
 }
 
@@ -120,6 +124,14 @@ pub fn setContentSpan(self: *Builder, id: Node.Id, span: Span) void {
 /// contract. Left `null` when never called, which serializes canonically.
 pub fn setSpelling(self: *Builder, id: Node.Id, sp: Document.Spelling) void {
     self.spellings.items[id] = sp;
+}
+
+/// Record the span of `id`'s own leading marker — see
+/// `Document.node_marker_spans` for the contract. Left `null` when never
+/// called, which is always correct (the node has no marker, or this parser
+/// doesn't track one), just less useful to an editor.
+pub fn setMarkerSpan(self: *Builder, id: Node.Id, span: Span) void {
+    self.marker_spans.items[id] = span;
 }
 
 /// Attach `attrs` to `id` (copying its strings into owned storage),
@@ -194,6 +206,8 @@ pub fn graftDocument(self: *Builder, src: *const Document, offset: usize) Alloca
         self.spans.items[id] = .{ .start = s.start + offset, .end = s.end + offset };
         if (src.node_content_spans[node.id]) |cs|
             self.content_spans.items[id] = .{ .start = cs.start + offset, .end = cs.end + offset };
+        if (src.markerSpan(node.id)) |ms|
+            self.marker_spans.items[id] = .{ .start = ms.start + offset, .end = ms.end + offset };
         // Spelling is position-free, so it copies unshifted.
         self.spellings.items[id] = src.spelling(node.id);
         // `setAttrs` copies the entries' strings; it touches only `attrs`, so
@@ -228,6 +242,7 @@ pub fn finish(self: *Builder, root: Node.Id) Allocator.Error!AST {
     self.spans.clearAndFree(self.allocator);
     self.content_spans.clearAndFree(self.allocator);
     self.spellings.clearAndFree(self.allocator);
+    self.marker_spans.clearAndFree(self.allocator);
     // Positions, so they go the way of `spans` — an `AST` from `finish` knows
     // nothing about where its attributes were written.
     self.attrs_spans.clearAndFree(self.allocator);
@@ -255,6 +270,9 @@ pub fn finishDocument(self: *Builder, source: []const u8, root: Node.Id) Allocat
     const spellings = try self.spellings.toOwnedSlice(self.allocator);
     errdefer self.allocator.free(spellings);
     self.spellings = .empty;
+    const marker_spans = try self.marker_spans.toOwnedSlice(self.allocator);
+    errdefer self.allocator.free(marker_spans);
+    self.marker_spans = .empty;
     const attrs_spans = try self.attrs_spans.toOwnedSlice(self.allocator);
     errdefer self.allocator.free(attrs_spans);
     self.attrs_spans = .empty;
@@ -266,6 +284,7 @@ pub fn finishDocument(self: *Builder, source: []const u8, root: Node.Id) Allocat
         .node_spans = spans,
         .node_content_spans = content_spans,
         .node_spelling = spellings,
+        .node_marker_spans = marker_spans,
         .attrs_spans = attrs_spans,
     };
 }
@@ -300,6 +319,7 @@ pub fn viewDocument(self: *const Builder, source: []const u8, root: Node.Id) Doc
         .node_spans = self.spans.items,
         .node_content_spans = self.content_spans.items,
         .node_spelling = self.spellings.items,
+        .node_marker_spans = self.marker_spans.items,
         .attrs_spans = self.attrs_spans.items,
     };
 }

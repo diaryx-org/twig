@@ -170,6 +170,33 @@ pub const TwigFlatNode = extern struct {
     /// prior offset are unchanged — see `TWIG_ABI_VERSION`'s note 5 for why it
     /// is still a bump.
     container_origin: c_int,
+    /// The node's own MARKER — the leading bytes a rich view HIDES, on its
+    /// opening line. A heading's `#`s and the space after them, a list item's
+    /// `- ` / `1. `, a task item's marker plus its `[x] ` box, a quote's `> `.
+    /// Meaningful only when `has_marker_span` is non-zero.
+    ///
+    /// NOT derivable from `span` and `content_span`. For a heading it happens
+    /// to be `[span.start, content_span.start)`; for a marker-prefixed
+    /// container it is not, because those report `content_span == span`
+    /// (no contiguous range is their interior when the prefix repeats on every
+    /// line). Before this field the answer could only be recovered by a
+    /// per-format rule — from the item's inner paragraph in Markdown, from the
+    /// item itself in djot — which is the "which parser produced this?"
+    /// reasoning a shared AST exists to remove.
+    ///
+    /// ONE LINE, and this node's own marker only. A nested construct's whole
+    /// prefix (`>   1. [ ] `) is the union of its ancestors' markers plus the
+    /// indent between them — `twig_document_line_prefix` is the assembled
+    /// answer.
+    ///
+    /// Zero for every node with no leading marker: an inline, a paragraph, a
+    /// SETEXT heading (whose `---` sits UNDER the block rather than before it),
+    /// a synthesized node.
+    marker_span: TwigSpan,
+    /// Whether `marker_span` holds a real range. Separate from a zero span for
+    /// the same reason `has_content_span` is: `(0, 0)` is a legitimate position
+    /// in a document that opens with a marker at offset zero.
+    has_marker_span: c_int,
 };
 
 /// `TwigFlatNode.head` for a node that is neither a `row` nor a `cell`.
@@ -283,6 +310,12 @@ const DocumentHandle = struct {
     /// The last `twig_document_nodes_at` ancestor chain. Independent of
     /// `query_matches` so a hit-test doesn't invalidate a prior query.
     ancestor_matches: []TwigQueryMatch = &.{},
+    /// The last `twig_document_nodes_at_caret` chain. Its own buffer rather
+    /// than a share of `ancestor_matches`: a renderer hit-testing a mouse and
+    /// an editor tracking a caret are two live readers, and making one call
+    /// invalidate the other's slice would be a use-after-free a consumer could
+    /// not see coming.
+    caret_matches: []TwigQueryMatch = &.{},
     /// The last `twig_document_definitions` result — the parentless definition
     /// roots. Independent of `query_matches` for the same reason
     /// `ancestor_matches` is.
@@ -319,6 +352,7 @@ const DocumentHandle = struct {
         if (self.subtree_nodes.len != 0) allocator.free(self.subtree_nodes);
         if (self.subtree_attrs.len != 0) allocator.free(self.subtree_attrs);
         if (self.ancestor_matches.len != 0) allocator.free(self.ancestor_matches);
+        if (self.caret_matches.len != 0) allocator.free(self.caret_matches);
         if (self.child_matches.len != 0) allocator.free(self.child_matches);
         if (self.definition_matches.len != 0) allocator.free(self.definition_matches);
         if (self.warnings.len != 0) allocator.free(self.warnings);
@@ -438,7 +472,13 @@ pub export fn twig_version_string() [*:0]const u8 {
 /// library is bit-for-bit correct and needs no rebuild. The bump is for the
 /// other direction — a version-5 consumer against an older library would read
 /// uninitialized padding, and `twig_abi_version` is the only way to catch it.
-pub const TWIG_ABI_VERSION: u32 = 5;
+/// 6: `TwigFlatNode` grew `marker_span`/`has_marker_span` (144 → 168 bytes) —
+/// the leading bytes a rich view hides for this node, which `span` and
+/// `content_span` together cannot express for a marker-prefixed container (both
+/// report the same range there, because no contiguous range is such a
+/// container's interior). Appended, so every prior offset is unchanged; the
+/// `@sizeOf` growth is what makes it a bump, as at 2 and 3.
+pub const TWIG_ABI_VERSION: u32 = 6;
 
 pub export fn twig_abi_version() u32 {
     return TWIG_ABI_VERSION;
@@ -474,7 +514,7 @@ comptime {
         assert(@offsetOf(TwigChange, "old") == 0);
         assert(@offsetOf(TwigChange, "new") == 16);
 
-        assert(@sizeOf(TwigFlatNode) == 144);
+        assert(@sizeOf(TwigFlatNode) == 168);
         assert(@offsetOf(TwigFlatNode, "id") == 0);
         assert(@offsetOf(TwigFlatNode, "parent") == 4);
         assert(@offsetOf(TwigFlatNode, "first_child") == 8);
@@ -495,9 +535,14 @@ comptime {
         assert(@offsetOf(TwigFlatNode, "attrs_ptr") == 120);
         assert(@offsetOf(TwigFlatNode, "attrs_len") == 128);
         assert(@offsetOf(TwigFlatNode, "directive_form") == 136);
-        // In what used to be tail padding: the struct is still 144 bytes and
-        // every offset above is untouched. See `TWIG_ABI_VERSION` note 5.
+        // In what used to be tail padding: `container_origin` cost no size at
+        // all, and every offset above is untouched. See `TWIG_ABI_VERSION`
+        // note 5.
         assert(@offsetOf(TwigFlatNode, "container_origin") == 140);
+        // Appended, so everything above keeps its offset; only `@sizeOf` moves
+        // (144 → 168). See `TWIG_ABI_VERSION` note 6.
+        assert(@offsetOf(TwigFlatNode, "marker_span") == 144);
+        assert(@offsetOf(TwigFlatNode, "has_marker_span") == 160);
 
         assert(@sizeOf(TwigKeyVal) == 32);
         assert(@offsetOf(TwigKeyVal, "key") == 0);
@@ -911,6 +956,55 @@ pub export fn twig_document_node_content_span(
     return .ok;
 }
 
+/// The span of node `node_id`'s own leading MARKER — the accessor form of
+/// `TwigFlatNode.marker_span`/`has_marker_span`, usable with any node id
+/// without taking a whole snapshot. `not_found` when the node has no marker
+/// (see the field's doc comment for which nodes those are), `invalid_argument`
+/// for an out-of-range id.
+pub export fn twig_document_node_marker_span(
+    doc: ?*TwigDocument,
+    node_id: u32,
+    out_span: ?*TwigSpan,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const out = out_span orelse return .invalid_argument;
+    const handle = asHandle(raw);
+    const d = handle.document();
+    if (node_id >= d.ast.nodes.len) return .invalid_argument;
+    const ms = d.markerSpan(node_id) orelse return .not_found;
+    out.* = .{ .start = ms.start, .end = ms.end };
+    return .ok;
+}
+
+/// Everything HIDDEN before the content on the line byte `offset` sits on: every
+/// marker a node OPENS that line with, and the indentation between them, as one
+/// span running from the line start.
+///
+/// The assembled form of `TwigFlatNode.marker_span`, which records each node's
+/// own marker alone. `>   1. [ ] ` is four nodes' markers plus the spaces
+/// between them, and the union is contiguous from the line start — so a caller
+/// gets one range to hide, or one width for a caret to step over, rather than a
+/// chain to walk and stitch itself.
+///
+/// `not_found` when nothing opens on this line — a CONTINUATION line, the
+/// second line of a wrapped paragraph or of a block quote. That is a real
+/// answer rather than a gap: what a continuation line repeats is a different
+/// question (a quote re-emits `> `, a list item re-emits spaces) and it is not
+/// answerable from marker spans. `invalid_argument` if `offset > source.len`.
+pub export fn twig_document_line_prefix(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_span: ?*TwigSpan,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const out = out_span orelse return .invalid_argument;
+    const view = asHandle(raw).document();
+    if (offset > view.source.len) return .invalid_argument;
+    const s = twig.locate.linePrefixSpan(&view, offset) orelse return .not_found;
+    out.* = .{ .start = s.start, .end = s.end };
+    return .ok;
+}
+
 /// The source span of the `{...}` attribute block attached to node `node_id` —
 /// the range a lossless serializer re-emits instead of the flattened
 /// `TwigFlatNode.attrs` projection (a multi-line option block, or a nested or
@@ -1247,6 +1341,86 @@ pub export fn twig_document_nodes_at(
     handle.ancestor_matches = chain.toOwnedSlice(allocator) catch return .out_of_memory;
     ptr_out.* = handle.ancestor_matches.ptr;
     len_out.* = handle.ancestor_matches.len;
+    return .ok;
+}
+
+/// `twig_document_node_at` under CARET containment — the same descent, under
+/// the rule an editing caret needs rather than the one a byte range needs.
+///
+/// Two differences, both because a caret is a position BETWEEN bytes while a
+/// span is a range OF bytes:
+///
+///  1. A block's END is inside it. A caret sitting after the last character of
+///     a paragraph is in that paragraph — it is where you stand to type the
+///     rest of it. Half-open containment puts it outside, which is why a
+///     consumer probing `twig_document_nodes_at` ended up guessing at
+///     contrived offsets (the content start, `caret - 1`, a marker byte) to
+///     find the block it was plainly inside of.
+///
+///  2. A trailing newline is not part of the block, which is what makes the two
+///     authorable formats AGREE. Djot ends a paragraph's span after its newline
+///     and Markdown before it, so on `"a\n\nb\n"` the caret at offset 1 read as
+///     `para` through djot and `doc` through Markdown — the same caret, two
+///     answers, decided by which parser happened to produce the tree.
+///
+/// Never returns `not_found` for a non-empty document: a caret in the gap
+/// between two blocks reports the container holding the gap (usually the root)
+/// rather than nothing at all. `invalid_argument` if `offset > source.len`.
+pub export fn twig_document_node_at_caret(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_match: ?*TwigQueryMatch,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const slot = out_match orelse return .invalid_argument;
+    const view = asHandle(raw).document();
+    if (offset > view.source.len) return .invalid_argument;
+
+    const found = twig.locate.deepestContainingForCaret(&view, offset) orelse return .not_found;
+    slot.* = flatMatch(&view, found);
+    return .ok;
+}
+
+/// `twig_document_nodes_at` under caret containment — root-first down to the
+/// node `twig_document_node_at_caret` returns. Same borrow contract as
+/// `twig_document_nodes_at` (an independent buffer on the handle, replaced on
+/// the next call). See `twig_document_node_at_caret` for the containment rule.
+pub export fn twig_document_nodes_at_caret(
+    doc: ?*TwigDocument,
+    offset: usize,
+    out_ptr: ?*?[*]const TwigQueryMatch,
+    out_len: ?*usize,
+) TwigStatus {
+    const raw = doc orelse return .invalid_argument;
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+    const allocator = activeAllocator();
+    const handle = asHandle(raw);
+    const view = handle.document();
+    if (offset > view.source.len) return .invalid_argument;
+
+    if (view.ast.nodes.len == 0) {
+        if (handle.caret_matches.len != 0) allocator.free(handle.caret_matches);
+        handle.caret_matches = &.{};
+        ptr_out.* = null;
+        len_out.* = 0;
+        return .not_found;
+    }
+
+    var chain: std.ArrayList(TwigQueryMatch) = .empty;
+    defer chain.deinit(allocator);
+
+    var cur = view.ast.root;
+    chain.append(allocator, flatMatch(&view, cur)) catch return .out_of_memory;
+    while (twig.locate.caretChildContaining(&view, cur, offset)) |child| {
+        cur = child;
+        chain.append(allocator, flatMatch(&view, cur)) catch return .out_of_memory;
+    }
+
+    if (handle.caret_matches.len != 0) allocator.free(handle.caret_matches);
+    handle.caret_matches = chain.toOwnedSlice(allocator) catch return .out_of_memory;
+    ptr_out.* = handle.caret_matches.ptr;
+    len_out.* = handle.caret_matches.len;
     return .ok;
 }
 
@@ -2147,6 +2321,8 @@ fn flatNodeOf(doc: *const twig.Document, node: *const twig.AST.Node, id: u32, pa
         .attrs_len = 0,
         .directive_form = kindDirectiveForm(node),
         .container_origin = containerOriginOf(doc, node),
+        .marker_span = if (doc.markerSpan(node.id)) |ms| spanC(ms) else .{ .start = 0, .end = 0 },
+        .has_marker_span = if (doc.markerSpan(node.id) != null) 1 else 0,
     };
 }
 

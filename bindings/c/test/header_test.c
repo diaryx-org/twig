@@ -199,6 +199,32 @@ static void test_editor_document_shares_the_read_surface(void) {
     CHECK(chain_len >= 2);
     CHECK(chain[chain_len - 1].node_id == hit.node_id);
 
+    // The heading's marker is the `# ` a rich view hides, reachable both from
+    // the accessor and from the flat snapshot.
+    TwigSpan marker = {0, 0};
+    CHECK(twig_document_node_marker_span(view, heading, &marker) == TWIG_STATUS_OK);
+    CHECK(marker.start == 0 && marker.end == 2);
+    CHECK(flat[heading].has_marker_span != 0);
+    CHECK(flat[heading].marker_span.start == 0 && flat[heading].marker_span.end == 2);
+
+    // On this line the whole hidden prefix IS that marker; a paragraph's line
+    // has none at all.
+    TwigSpan prefix = {0, 0};
+    CHECK(twig_document_line_prefix(view, 2, &prefix) == TWIG_STATUS_OK);
+    CHECK(prefix.start == 0 && prefix.end == 2);
+
+    // The caret walk answers where the half-open one declines to: the offset at
+    // the very end of the source is in no node by span, but a caret there is
+    // somewhere, and the chain still ends at the node the scalar call returns.
+    TwigQueryMatch caret_hit;
+    CHECK(twig_document_node_at_caret(view, 2, &caret_hit) == TWIG_STATUS_OK);
+    const TwigQueryMatch *caret_chain = NULL;
+    size_t caret_chain_len = 0;
+    CHECK(twig_document_nodes_at_caret(view, 2, &caret_chain, &caret_chain_len)
+          == TWIG_STATUS_OK);
+    CHECK(caret_chain_len >= 2);
+    CHECK(caret_chain[caret_chain_len - 1].node_id == caret_hit.node_id);
+
     // The view follows the editor: after an edit the same handle re-reads it.
     static const char replacement[] = "# one and a half";
     CHECK(twig_editor_replace(editor, (const uint8_t *)"0", 1,

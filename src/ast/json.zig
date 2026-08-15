@@ -73,6 +73,14 @@ fn writeNode(w: *Stringify, doc: *const Document, id: Node.Id) Writer.Error!void
         try w.endArray();
     }
 
+    if (doc.markerSpan(id)) |ms| {
+        try w.objectField("marker_span");
+        try w.beginArray();
+        try w.write(ms.start);
+        try w.write(ms.end);
+        try w.endArray();
+    }
+
     try writeKindPayload(w, node.kind);
 
     const attrs = doc.ast.attrsOf(id);

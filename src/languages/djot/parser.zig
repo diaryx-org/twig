@@ -319,6 +319,9 @@ pub const TreeBuilder = struct {
     /// Parallel to `nodes` — node `id`'s recorded spelling. See
     /// `Document.node_spelling`.
     spellings: std.ArrayList(?TwigDocument.Spelling) = .empty,
+    /// Parallel to `nodes` — the span of node `id`'s own leading marker. See
+    /// `Document.node_marker_spans`.
+    marker_spans: std.ArrayList(?Span) = .empty,
     owned_strings: std.ArrayList([]const u8) = .empty,
     attrs_table: std.ArrayList(AST.Attrs) = .empty,
     containers: std.ArrayList(TreeContainer) = .empty,
@@ -365,6 +368,7 @@ pub const TreeBuilder = struct {
         try self.spans.append(self.allocator, span);
         try self.content_spans.append(self.allocator, null);
         try self.spellings.append(self.allocator, null);
+        try self.marker_spans.append(self.allocator, null);
         return id;
     }
 
@@ -463,6 +467,106 @@ pub const TreeBuilder = struct {
         return Span.init(self.spans.items[first].start, self.spans.items[last].end);
     }
 
+    /// The `content_span` of a MARKER-PREFIXED container — a block quote, a
+    /// list item, a footnote — which is its own whole extent, markers included.
+    ///
+    /// Deliberately NOT `contentSpanFromChildren`, and the difference is
+    /// correctness rather than taste. `content_span` is defined as *the region
+    /// an editor may splice* (see `Document.node_content_spans`), and these
+    /// containers hold their children behind a PER-LINE prefix: `> ` on every
+    /// line of a quote, the marker's width of indent on every line of an item.
+    /// A range reaching from the first child to the last peels that prefix off
+    /// the FIRST line only and leaves it on every other, so the bytes it
+    /// addresses are not a valid interior. Splicing them out is exactly what
+    /// made `Splicer.unwrapNode` turn
+    ///
+    ///     > a          into      a
+    ///     > b                    > b
+    ///
+    /// — one quote becoming a paragraph and a quote, a node count that went UP
+    /// on an operation that removes a wrapper.
+    ///
+    /// No contiguous range IS the interior here, so the honest answer is the
+    /// whole node: an unwrap degrades to a no-op instead of a corruption. It is
+    /// also what Markdown already reports, because its quoted blocks start at
+    /// column zero and `contentSpanFromChildren` there returns the whole extent
+    /// anyway — so this is the two parsers agreeing on a field that consumers
+    /// read without knowing which one produced it, rather than diverging on it.
+    ///
+    /// "Where does the content start" is a real question and it did not go
+    /// away; it moved to `marker_span`, which answers it for ONE LINE — the only
+    /// scale at which it has an answer.
+    fn markerPrefixedContentSpan(span: Span) ?Span {
+        return span;
+    }
+
+    /// Record the span of node `id`'s own leading marker — see
+    /// `Document.node_marker_spans`. A zero-width or reversed range is dropped
+    /// rather than recorded: `null` ("no marker") is the field's honest value
+    /// for a node whose scan found nothing, and a `(n, n)` span would read as a
+    /// marker that exists and hides no bytes.
+    fn setMarkerSpan(self: *TreeBuilder, id: Node.Id, start: usize, end: usize) void {
+        if (end > start) self.marker_spans.items[id] = Span.init(start, end);
+    }
+
+    /// Past the run of `\n`-free spaces and tabs at `i` — a marker owns the
+    /// whitespace that separates it from the content it introduces, because
+    /// that whitespace is what a rich view hides along with the marker itself.
+    fn pastSpaces(self: *const TreeBuilder, i: usize) usize {
+        var j = i;
+        while (j < self.source.len and (self.source[j] == ' ' or self.source[j] == '\t')) j += 1;
+        return j;
+    }
+
+    /// The end of an ATX heading's marker at `start`: the `#` run and the
+    /// spaces after it. Equal to `start` when there is no `#` there, which is
+    /// how a heading with no leading marker records none.
+    fn atxMarkerEnd(self: *const TreeBuilder, start: usize) usize {
+        var j = start;
+        while (j < self.source.len and self.source[j] == '#') j += 1;
+        if (j == start) return start;
+        return self.pastSpaces(j);
+    }
+
+    /// The end of a block quote's `>` marker at `start`, including the one
+    /// optional space after it.
+    fn quoteMarkerEnd(self: *const TreeBuilder, start: usize) usize {
+        if (start >= self.source.len or self.source[start] != '>') return start;
+        return self.pastSpaces(start + 1);
+    }
+
+    /// The end of a list item's marker at `start` — a bullet or an ordered
+    /// `N.` / `N)` / `(N)`, plus the spaces after it, plus a task item's `[x]`
+    /// box and ITS spaces. The box is part of the marker because it is part of
+    /// what the rendered view replaces: a checkbox is drawn in place of those
+    /// bytes, not beside them.
+    ///
+    /// `start` is the item node's own span start, which djot puts at the
+    /// bullet — so the item's INDENT is deliberately not included here. The
+    /// indent belongs to whatever encloses the item, and `locate.linePrefixSpan`
+    /// picks it up by reaching back to the line start rather than by any node
+    /// claiming to own it.
+    fn listMarkerEnd(self: *const TreeBuilder, start: usize, is_task: bool) usize {
+        const src = self.source;
+        var j = start;
+        if (j >= src.len) return start;
+        if (src[j] == '-' or src[j] == '+' or src[j] == '*') {
+            j += 1;
+        } else {
+            if (src[j] == '(') j += 1;
+            const digits_from = j;
+            while (j < src.len and src[j] >= '0' and src[j] <= '9') j += 1;
+            if (j == digits_from) return start;
+            if (j >= src.len or (src[j] != '.' and src[j] != ')')) return start;
+            j += 1;
+        }
+        j = self.pastSpaces(j);
+        if (!is_task) return j;
+        // `[`, one state byte, `]` — the box is fixed-width in both formats.
+        if (j + 2 >= src.len or src[j] != '[' or src[j + 2] != ']') return j;
+        return self.pastSpaces(j + 3);
+    }
+
     /// The `content_span` of a framed *leaf* (inline `verbatim`/math, `<...>`
     /// url/email autolink): the raw source interior `[content_start, close)`,
     /// where `content_start` was recorded just past the opening delimiter and
@@ -528,6 +632,7 @@ pub const TreeBuilder = struct {
             .node_spans = try self.spans.toOwnedSlice(self.allocator),
             .node_content_spans = try self.content_spans.toOwnedSlice(self.allocator),
             .node_spelling = try self.spellings.toOwnedSlice(self.allocator),
+            .node_marker_spans = try self.marker_spans.toOwnedSlice(self.allocator),
         };
 
         // Drop the delimiter runs the inline pass built and abandoned, so the
@@ -547,6 +652,7 @@ pub const TreeBuilder = struct {
             .node_spans = compacted.node_spans,
             .node_content_spans = compacted.node_content_spans,
             .node_spelling = compacted.node_spelling,
+            .node_marker_spans = compacted.node_marker_spans,
             // Empty for now: this parser accumulates attributes in
             // `PendingAttrs`, which MERGES consecutive `{...}` blocks into one
             // `Attrs`, so a single range does not always describe the result.
@@ -927,9 +1033,11 @@ pub const TreeBuilder = struct {
             .block_quote_close => {
                 var c = self.popContainer();
                 defer c.deinit(self.allocator);
-                const id = try self.addNode(.block_quote, Span.init(c.start, ev.end + 1));
+                const s = Span.init(c.start, ev.end + 1);
+                const id = try self.addNode(.block_quote, s);
                 self.nodes.items[id].first_child = c.first_child;
-                self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
+                self.setContentSpan(id, markerPrefixedContentSpan(s));
+                self.setMarkerSpan(id, s.start, self.quoteMarkerEnd(s.start));
                 try self.commitAttrs(id, &c.attrs);
                 self.addChildToTip(id);
             },
@@ -1220,6 +1328,7 @@ pub const TreeBuilder = struct {
         const id = try self.addNode(.{ .heading = .{ .level = level } }, Span.init(c.start, ev.end + 1));
         self.nodes.items[id].first_child = c.first_child;
         self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
+        self.setMarkerSpan(id, c.start, self.atxMarkerEnd(c.start));
         try self.commitAttrs(id, &c.attrs);
         self.addChildToTip(id);
         c.deinit(self.allocator);
@@ -1274,23 +1383,25 @@ pub const TreeBuilder = struct {
             self.setContentSpan(term_id, self.contentSpanFromChildren(term_children));
             const def_id = try self.addNode(.definition, s);
             self.nodes.items[def_id].first_child = def_first;
-            self.setContentSpan(def_id, self.contentSpanFromChildren(def_first));
+            self.setContentSpan(def_id, markerPrefixedContentSpan(s));
             self.nodes.items[term_id].next_sibling = def_id;
             const item_id = try self.addNode(.definition_list_item, s);
             self.nodes.items[item_id].first_child = term_id;
-            self.setContentSpan(item_id, self.contentSpanFromChildren(term_id));
+            self.setContentSpan(item_id, markerPrefixedContentSpan(s));
             try self.commitAttrs(item_id, &c.attrs);
             self.addChildToTip(item_id);
         } else if (c.data.checkbox) |checked| {
             const id = try self.addNode(.{ .task_list_item = .{ .checked = checked } }, s);
             self.nodes.items[id].first_child = c.first_child;
-            self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
+            self.setContentSpan(id, markerPrefixedContentSpan(s));
+            self.setMarkerSpan(id, s.start, self.listMarkerEnd(s.start, true));
             try self.commitAttrs(id, &c.attrs);
             self.addChildToTip(id);
         } else {
             const id = try self.addNode(.list_item, s);
             self.nodes.items[id].first_child = c.first_child;
-            self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
+            self.setContentSpan(id, markerPrefixedContentSpan(s));
+            self.setMarkerSpan(id, s.start, self.listMarkerEnd(s.start, false));
             try self.commitAttrs(id, &c.attrs);
             self.addChildToTip(id);
         }
@@ -1383,9 +1494,10 @@ pub const TreeBuilder = struct {
         const label = c.data.label orelse return;
         const lab = try normalizeLabel(self.allocator, label);
         defer self.allocator.free(lab);
-        const id = try self.addNode(.{ .footnote = .{ .label = lab } }, Span.init(c.start, ev.end + 1));
+        const s = Span.init(c.start, ev.end + 1);
+        const id = try self.addNode(.{ .footnote = .{ .label = lab } }, s);
         self.nodes.items[id].first_child = c.first_child;
-        self.setContentSpan(id, self.contentSpanFromChildren(c.first_child));
+        self.setContentSpan(id, markerPrefixedContentSpan(s));
         try self.commitAttrs(id, &c.attrs);
         const owned_lab = try self.own(lab);
         if (!self.footnotes.contains(owned_lab)) try self.footnotes.put(self.allocator, owned_lab, id);
@@ -1563,6 +1675,36 @@ test "content_span: div's interior covers its child paragraph" {
     // paragraph), matching the XML parser's tag-interior convention.
     const para_id = ast.nodes[div_id].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(cs.eql(doc.span(para_id)));
+}
+
+test "content_span: a marker-prefixed container is its own whole extent" {
+    // A quote's `> ` sits on EVERY line, so no contiguous range is its
+    // interior. Reporting the child extent peeled the marker off line one and
+    // left it on line two, and `Splicer.unwrapNode` spliced that in — turning
+    // one quote into a paragraph plus a quote. See `markerPrefixedContentSpan`.
+    const src = "> a\n> b\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+
+    const bq = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(doc.ast.nodes[bq].kind == .block_quote);
+    const cs = doc.contentSpan(bq) orelse return error.TestExpectedNonNull;
+    try testing.expect(cs.eql(doc.span(bq)));
+    // Not the child extent, which is what the bug reported.
+    const para = doc.ast.nodes[bq].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(!cs.eql(doc.span(para)));
+}
+
+test "content_span: a list item is its own whole extent, marker included" {
+    const src = "- a\n  b\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+
+    const list = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
+    const item = doc.ast.nodes[list].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(doc.ast.nodes[item].kind == .list_item);
+    const cs = doc.contentSpan(item) orelse return error.TestExpectedNonNull;
+    try testing.expect(cs.eql(doc.span(item)));
 }
 
 test "content_span: inline emphasis covers its text" {

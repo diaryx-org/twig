@@ -99,6 +99,8 @@ pub fn run(
     errdefer content_spans.deinit(allocator);
     var spellings = try std.ArrayList(?Document.Spelling).initCapacity(allocator, n);
     errdefer spellings.deinit(allocator);
+    var marker_spans = try std.ArrayList(?Span).initCapacity(allocator, n);
+    errdefer marker_spans.deinit(allocator);
 
     // Two scratch buffers, allocated once and reused for every node visited.
     var stack: std.ArrayList(Node.Id) = .empty;
@@ -113,10 +115,10 @@ pub fn run(
     defer allocator.free(sorted_extra);
     std.mem.sort(Node.Id, sorted_extra, {}, std.sort.asc(Node.Id));
 
-    try visit(allocator, old, old.root, map, &nodes, &spans, &content_spans, &spellings, &stack, &kids, doc);
+    try visit(allocator, old, old.root, map, &nodes, &spans, &content_spans, &spellings, &marker_spans, &stack, &kids, doc);
     for (sorted_extra) |r| {
         if (r >= n or map[r] != null) continue;
-        try visit(allocator, old, r, map, &nodes, &spans, &content_spans, &spellings, &stack, &kids, doc);
+        try visit(allocator, old, r, map, &nodes, &spans, &content_spans, &spellings, &marker_spans, &stack, &kids, doc);
     }
 
     // Second pass: every child/sibling link still points into the OLD id space.
@@ -135,6 +137,7 @@ pub fn run(
     allocator.free(doc.node_spans);
     allocator.free(doc.node_content_spans);
     allocator.free(doc.node_spelling);
+    allocator.free(doc.node_marker_spans);
 
     return .{
         .doc = .{
@@ -143,6 +146,7 @@ pub fn run(
             .node_spans = try spans.toOwnedSlice(allocator),
             .node_content_spans = try content_spans.toOwnedSlice(allocator),
             .node_spelling = try spellings.toOwnedSlice(allocator),
+            .node_marker_spans = try marker_spans.toOwnedSlice(allocator),
             // Keyed by `Attrs.Id`, not by node id, and the attrs table is not
             // renumbered here (see this function's doc) — so unlike every
             // table above, this one needs no rebuild and is simply carried
@@ -164,6 +168,7 @@ fn visit(
     spans: *std.ArrayList(Span),
     content_spans: *std.ArrayList(?Span),
     spellings: *std.ArrayList(?Document.Spelling),
+    marker_spans: *std.ArrayList(?Span),
     stack: *std.ArrayList(Node.Id),
     kids: *std.ArrayList(Node.Id),
     doc: Document,
@@ -184,6 +189,7 @@ fn visit(
         try spans.append(allocator, doc.node_spans[id]);
         try content_spans.append(allocator, doc.node_content_spans[id]);
         try spellings.append(allocator, doc.spelling(id));
+        try marker_spans.append(allocator, doc.markerSpan(id));
 
         // Children must go onto the stack in REVERSE so they pop in document
         // order, and the sibling chain is singly linked — so they are gathered

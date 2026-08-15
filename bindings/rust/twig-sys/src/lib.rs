@@ -13,7 +13,7 @@ use std::os::raw::{c_char, c_int};
 /// The C ABI contract version this binding is written against; see
 /// `twig_abi_version`. Must match the value baked into the linked library
 /// (asserted at runtime by the `abi_version_matches` test in `lib.rs`).
-pub const TWIG_ABI_VERSION: u32 = 5;
+pub const TWIG_ABI_VERSION: u32 = 6;
 
 // Freeze the canonical 64-bit layout of every `#[repr(C)]` mirror below so it
 // can never silently drift from the Zig `extern struct` it shadows. These are
@@ -41,7 +41,7 @@ const _: () = {
     assert!(offset_of!(TwigChange, old_span) == 0);
     assert!(offset_of!(TwigChange, new_span) == 16);
 
-    assert!(size_of::<TwigFlatNode>() == 144);
+    assert!(size_of::<TwigFlatNode>() == 168);
     assert!(offset_of!(TwigFlatNode, id) == 0);
     assert!(offset_of!(TwigFlatNode, parent) == 4);
     assert!(offset_of!(TwigFlatNode, first_child) == 8);
@@ -65,6 +65,10 @@ const _: () = {
     // In what was `directive_form`'s tail padding: `size_of` is still 144 and
     // every offset above is unchanged. See the ABI note 5 in twig.h.
     assert!(offset_of!(TwigFlatNode, container_origin) == 140);
+    // Appended, so every offset above keeps its place; only `size_of` moves
+    // (144 -> 168). See `TWIG_ABI_VERSION` note 6.
+    assert!(offset_of!(TwigFlatNode, marker_span) == 144);
+    assert!(offset_of!(TwigFlatNode, has_marker_span) == 160);
 
     assert!(size_of::<TwigKeyVal>() == 32);
     assert!(offset_of!(TwigKeyVal, key) == 0);
@@ -226,6 +230,8 @@ pub struct TwigFlatNode {
     pub attrs_len: usize,
     pub directive_form: c_int,
     pub container_origin: c_int,
+    pub marker_span: TwigSpan,
+    pub has_marker_span: c_int,
 }
 
 /// `TwigFlatNode::head` for a node that is neither a `row` nor a `cell`.
@@ -329,6 +335,16 @@ unsafe extern "C" {
         node_id: u32,
         out_span: *mut TwigSpan,
     ) -> TwigStatus;
+    pub fn twig_document_node_marker_span(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_span: *mut TwigSpan,
+    ) -> TwigStatus;
+    pub fn twig_document_line_prefix(
+        doc: *mut TwigDocument,
+        offset: usize,
+        out_span: *mut TwigSpan,
+    ) -> TwigStatus;
     pub fn twig_document_cell_colspan(
         doc: *mut TwigDocument,
         node_id: u32,
@@ -373,6 +389,17 @@ unsafe extern "C" {
         out_match: *mut TwigQueryMatch,
     ) -> TwigStatus;
     pub fn twig_document_nodes_at(
+        doc: *mut TwigDocument,
+        offset: usize,
+        out_ptr: *mut *const TwigQueryMatch,
+        out_len: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_document_node_at_caret(
+        doc: *mut TwigDocument,
+        offset: usize,
+        out_match: *mut TwigQueryMatch,
+    ) -> TwigStatus;
+    pub fn twig_document_nodes_at_caret(
         doc: *mut TwigDocument,
         offset: usize,
         out_ptr: *mut *const TwigQueryMatch,

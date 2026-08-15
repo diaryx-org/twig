@@ -42,7 +42,13 @@ extern "C" {
 //    needs no rebuild. The bump is for the other direction — a version-5
 //    consumer against an older library reads uninitialized padding, and
 //    twig_abi_version() is the only way to catch that.
-#define TWIG_ABI_VERSION 5
+// 6: TwigFlatNode grew marker_span/has_marker_span (144 -> 168 bytes) — the
+//    leading bytes a rich view HIDES for this node (a heading's #s, an item's
+//    "- ", a quote's "> "). span and content_span together cannot express it
+//    for a marker-prefixed container, which reports content_span == span
+//    because no contiguous range is such a container's interior. Appended, so
+//    every prior offset is unchanged and only sizeof moves — same as 2 and 3.
+#define TWIG_ABI_VERSION 6
 
 // The TWIG_FORMAT_* codes span BOTH format axes, in one integer space:
 //   - what a document can be PARSED as   (twig_parse, twig_editor_create)
@@ -184,6 +190,23 @@ typedef struct TwigKeyVal {
 //     directive_form. TWIG_CONTAINER_ORIGIN_NONE means nothing recorded it —
 //     the node is not a container, or no parser produced it.
 //
+// marker_span (valid only when has_marker_span is non-zero) is the node's own
+// MARKER — the leading bytes a rich view HIDES, on its opening line: a heading's
+// #s and the space after them, a list item's "- " / "1. ", a task item's marker
+// plus its "[x] " box, a block quote's "> ".
+//
+// It is NOT derivable from span and content_span. For a heading it happens to
+// equal [span.start, content_span.start); for a marker-prefixed container it
+// does not, because those report content_span == span — a prefix that repeats on
+// every line has no contiguous interior to point at. Before this field the
+// answer was recoverable only by a per-format rule (from the item's inner
+// paragraph in Markdown, from the item itself in djot), which is exactly the
+// "which parser produced this?" reasoning a shared AST exists to remove.
+//
+// It covers ONE LINE and this node's own marker alone. For the whole prefix a
+// nested construct sits behind (">   1. [ ] " is four nodes' markers plus the
+// indent between them), call twig_document_line_prefix.
+//
 // attrs is the node's (key, value) attributes in source order (attrs_len of
 // them), or NULL/0 for a node with none. Both borrow the node's payload with the
 // same lifetime as text_ptr/destination_ptr (invalid after the next successful
@@ -211,6 +234,8 @@ typedef struct TwigFlatNode {
     size_t attrs_len;
     int directive_form;
     int container_origin;
+    TwigSpan marker_span;
+    int has_marker_span;
 } TwigFlatNode;
 
 // TwigFlatNode.head for a node that is neither a row nor a cell.
@@ -419,6 +444,39 @@ TwigStatus twig_document_node_content_span(
     TwigSpan *out_span
 );
 
+// The span of node `node_id`'s own leading MARKER — the accessor form of
+// TwigFlatNode.marker_span/has_marker_span, usable with any node id without
+// taking a whole snapshot. TWIG_STATUS_NOT_FOUND when the node has no marker
+// (see the struct field's comment for which those are),
+// TWIG_STATUS_INVALID_ARGUMENT for an out-of-range id. Additive in ABI v6.
+TwigStatus twig_document_node_marker_span(
+    TwigDocument *doc,
+    uint32_t node_id,
+    TwigSpan *out_span
+);
+
+// Everything HIDDEN before the content on the line byte `offset` sits on: every
+// marker a node OPENS that line with, and the indentation between them, as one
+// span running from the line start.
+//
+// This is the assembled form of TwigFlatNode.marker_span, which records each
+// node's own marker alone. ">   1. [ ] " is four nodes' markers plus the spaces
+// between them, and the union is contiguous from the line start — so a caller
+// gets one range to hide, or one width for a caret to step over, rather than a
+// chain to walk and stitch together itself.
+//
+// TWIG_STATUS_NOT_FOUND when nothing opens on this line — a CONTINUATION line,
+// the second line of a wrapped paragraph or of a block quote. That is a real
+// answer, not a gap: what a continuation line repeats is a different question
+// (a quote re-emits "> ", a list item re-emits spaces) and is not answerable
+// from marker spans. TWIG_STATUS_INVALID_ARGUMENT if offset > source length.
+// Additive in ABI v6.
+TwigStatus twig_document_line_prefix(
+    TwigDocument *doc,
+    size_t offset,
+    TwigSpan *out_span
+);
+
 // The source span of the `{...}` attribute block attached to node `node_id` —
 // the range a lossless serializer re-emits instead of the flattened
 // TwigFlatNode.attrs projection (a multi-line option block, or a nested or
@@ -560,6 +618,46 @@ TwigStatus twig_document_node_at(
 // independent buffer. Returns TWIG_STATUS_NOT_FOUND (and a zero-length result)
 // if nothing covers the offset.
 TwigStatus twig_document_nodes_at(
+    TwigDocument *doc,
+    size_t offset,
+    const TwigQueryMatch **out_ptr,
+    size_t *out_len
+);
+
+// twig_document_node_at under CARET containment — the same descent, under the
+// rule an editing caret needs rather than the one a byte range needs.
+//
+// Two differences, both because a caret is a position BETWEEN bytes while a span
+// is a range OF bytes:
+//
+//   1. A block's END is inside it. A caret after the last character of a
+//      paragraph is IN that paragraph — it is where you stand to type the rest
+//      of it. Half-open containment puts it outside, which is why a consumer
+//      probing twig_document_nodes_at ended up guessing at contrived offsets
+//      (the content start, caret - 1, a marker byte) to find the block it was
+//      plainly inside of.
+//
+//   2. A trailing newline is not part of the block, which is what makes the two
+//      authorable formats AGREE. Djot ends a paragraph's span after its newline
+//      and Markdown before it, so on "a\n\nb\n" the caret at offset 1 read as
+//      "para" through djot and "doc" through Markdown — the same caret, two
+//      answers, decided by which parser produced the tree.
+//
+// Never returns TWIG_STATUS_NOT_FOUND for a non-empty document: a caret in the
+// gap between two blocks reports the container holding the gap (usually the
+// root) rather than nothing at all. Additive in ABI v6.
+TwigStatus twig_document_node_at_caret(
+    TwigDocument *doc,
+    size_t offset,
+    TwigQueryMatch *out_match
+);
+
+// twig_document_nodes_at under caret containment — root-first down to the node
+// twig_document_node_at_caret returns. Same borrow contract as
+// twig_document_nodes_at, on its own independent buffer (a renderer hit-testing
+// a mouse and an editor tracking a caret are two live readers; neither call
+// invalidates the other's slice). Additive in ABI v6.
+TwigStatus twig_document_nodes_at_caret(
     TwigDocument *doc,
     size_t offset,
     const TwigQueryMatch **out_ptr,
