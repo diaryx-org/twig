@@ -140,6 +140,14 @@ pub const Parser = struct {
     last_matched_container: isize = -1,
     finished_line: bool = false,
 
+    /// One past the last byte of the most recent line that carried content.
+    /// A block-level container closes on the line that *stopped* it, so by
+    /// then `pos` is already sitting on somebody else's line — a span built
+    /// from it swallows the blank lines that merely separate the two blocks
+    /// plus the first byte of the next one. Closers that have no syntax of
+    /// their own to end at (no fence, no delimiter) end here instead.
+    content_end: usize = 0,
+
     /// `subject` need not end with `\n`; if it doesn't, a copy is made with
     /// one appended (matching djot.js's constructor).
     pub fn init(allocator: Allocator, subject: []const u8) Allocator.Error!Parser {
@@ -215,6 +223,22 @@ pub const Parser = struct {
 
     fn byteAt(self: *const Parser, pos: usize) u8 {
         return if (pos < self.subject.len) self.subject[pos] else 0;
+    }
+
+    /// Nothing but spaces and tabs between `startline` and the newline.
+    fn lineIsBlank(self: *const Parser) bool {
+        var i = self.startline;
+        while (i < self.starteol) : (i += 1) {
+            if (!isSpaceOrTab(self.subject[i])) return false;
+        }
+        return true;
+    }
+
+    /// The `end` a block-level closer should report: the last byte of the
+    /// content its container owns. `addMatch` ends are inclusive and the tree
+    /// builder adds the 1 back, so this is `content_end - 1`.
+    fn contentEndMatch(self: *const Parser) usize {
+        return self.content_end -| 1;
     }
 
     // ── generic container push/close machinery ─────────────────────────
@@ -375,7 +399,14 @@ pub const Parser = struct {
                 }
             }
 
+            // A blank line at block level is a separator and belongs to
+            // neither side of it. Every other line — including a blank line
+            // inside a code block, where it is body text — extends the
+            // content the open containers own.
+            const line_has_content = !self.lineIsBlank() or
+                (self.tip() != null and self.tip().?.content == .text);
             self.pos = (if (self.endeol > 0 or self.pos == 0) self.endeol else self.pos) + 1;
+            if (line_has_content) self.content_end = @min(self.pos, self.subject.len);
         }
 
         self.last_matched_container = -1;
@@ -517,7 +548,8 @@ pub const Parser = struct {
 
     fn closeBlockQuote(self: *Parser, c: *Container) Allocator.Error!void {
         _ = c;
-        try self.addMatch(self.pos, self.pos, .block_quote_close);
+        const ep = self.contentEndMatch();
+        try self.addMatch(ep, ep, .block_quote_close);
     }
 
     // ── heading ──────────────────────────────────────────────────────────
@@ -583,7 +615,8 @@ pub const Parser = struct {
 
     fn closeCaption(self: *Parser, c: *Container) Allocator.Error!void {
         try self.getInlineMatchesFor(c);
-        try self.addMatch(self.pos -| 1, self.pos -| 1, .caption_close);
+        const ep = self.contentEndMatch();
+        try self.addMatch(ep, ep, .caption_close);
     }
 
     // ── footnote ─────────────────────────────────────────────────────────
@@ -630,7 +663,8 @@ pub const Parser = struct {
 
     fn closeFootnote(self: *Parser, c: *Container) Allocator.Error!void {
         _ = c;
-        try self.addMatch(self.pos, self.pos, .footnote_close);
+        const ep = self.contentEndMatch();
+        try self.addMatch(ep, ep, .footnote_close);
     }
 
     // ── reference_definition ────────────────────────────────────────────
@@ -707,7 +741,8 @@ pub const Parser = struct {
 
     fn closeReferenceDefinition(self: *Parser, c: *Container) Allocator.Error!void {
         _ = c;
-        try self.addMatch(self.pos, self.pos, .reference_definition_close);
+        const ep = self.contentEndMatch();
+        try self.addMatch(ep, ep, .reference_definition_close);
     }
 
     // ── thematic_break ───────────────────────────────────────────────────
@@ -939,7 +974,8 @@ pub const Parser = struct {
 
     fn closeList(self: *Parser, c: *Container) Allocator.Error!void {
         _ = c;
-        try self.addMatch(self.pos, self.pos, .list_close);
+        const ep = self.contentEndMatch();
+        try self.addMatch(ep, ep, .list_close);
     }
 
     fn continueListItem(self: *Parser, idx: usize) bool {
@@ -966,7 +1002,8 @@ pub const Parser = struct {
 
     fn closeListItem(self: *Parser, c: *Container) Allocator.Error!void {
         _ = c;
-        try self.addMatch(self.pos -| 1, self.pos -| 1, .list_item_close);
+        const ep = self.contentEndMatch();
+        try self.addMatch(ep, ep, .list_item_close);
     }
 
     // ── table ────────────────────────────────────────────────────────────
@@ -1010,7 +1047,8 @@ pub const Parser = struct {
 
     fn closeTable(self: *Parser, c: *Container) Allocator.Error!void {
         _ = c;
-        try self.addMatch(self.pos, self.pos, .table_close);
+        const ep = self.contentEndMatch();
+        try self.addMatch(ep, ep, .table_close);
     }
 
     /// `(:?)--*(:?)([ \t]*\|[ \t]*)` starting at `p`.
@@ -1289,8 +1327,10 @@ pub const Parser = struct {
     }
 
     fn closeFencedDiv(self: *Parser, c: *Container) Allocator.Error!void {
-        const sp = if (c.extra.end_fence) |f| f.start else self.pos;
-        const ep = if (c.extra.end_fence) |f| f.end else self.pos;
+        // Unterminated: the div ends at its last content line, not wherever
+        // the scan had reached when the enclosing container ran out.
+        const sp = if (c.extra.end_fence) |f| f.start else self.contentEndMatch();
+        const ep = if (c.extra.end_fence) |f| f.end else self.contentEndMatch();
         try self.addMatch(sp, ep, .div_close);
     }
 
@@ -1372,8 +1412,9 @@ pub const Parser = struct {
     }
 
     fn closeCodeBlock(self: *Parser, c: *Container) Allocator.Error!void {
-        const sp = if (c.extra.end_fence) |f| f.start else self.pos;
-        const ep = if (c.extra.end_fence) |f| f.end else self.pos;
+        // Unterminated: same as `closeFencedDiv` — stop at the last body line.
+        const sp = if (c.extra.end_fence) |f| f.start else self.contentEndMatch();
+        const ep = if (c.extra.end_fence) |f| f.end else self.contentEndMatch();
         try self.addMatch(sp, ep, .code_block_close);
     }
 };

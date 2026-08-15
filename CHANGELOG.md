@@ -36,6 +36,24 @@ behaviour was plainly wrong.
 
 ### Behavioural changes
 
+- **A djot block's span stops at its own last line.** A block-level container
+  closes on the line that *stopped* it, and the span was taken from wherever
+  the scan had reached by then — so it ran past the blank lines separating the
+  block from its neighbour and into that neighbour's first byte. Reading a
+  footnote definition's source back gave `"a note.\n\n["`; deleting a list
+  followed by `[link]: /url` left `link]: /url` behind.
+
+  Affects `footnote` and `reference` definitions, `block_quote`, `bullet_list`
+  / `ordered_list` and `list_item`, `table`, `caption`, and an unterminated
+  fenced div or code block. Spans now end after the block's own last line;
+  blank lines *inside* a block (between a footnote's two paragraphs, say) are
+  still interior and still included. No HTML output changes.
+
+  One consequence for anyone diffing against djot.js: its `sourcepos` ends a
+  list item on the *next* line's indentation (`1:2:1-2:1:5` for ` - a\n - b`),
+  which Twig no longer reproduces — a span is what an edit splices, and that
+  byte belongs to the next item's line.
+
 ## 3.0.0 — editor gestures, and telling consumers what a conversion costs
 
 Major because the Rust binding's `kind` changes type. Twig has shipped

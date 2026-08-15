@@ -1790,7 +1790,13 @@ test "span: a bullet list and its items carry byte-accurate spans (sourcepos par
     const item1 = ast.nodes[list].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[item1].kind == .list_item);
     try testing.expectEqual(@as(usize, 1), doc.span(item1).start);
-    try testing.expectEqual(@as(usize, 6), doc.span(item1).end);
+    // The one place Twig deliberately parts company with djot.js's sourcepos:
+    // it ends this item at `2:1:5`, the SECOND line's leading space, because
+    // its `-list_item` event is emitted wherever the scan had reached. That
+    // byte belongs to item two's line, and a span is what an edit splices —
+    // ending here would make deleting item one eat item two's indentation.
+    try testing.expectEqual(@as(usize, 5), doc.span(item1).end);
+    try testing.expectEqualStrings("- a\n", src[doc.span(item1).start..doc.span(item1).end]);
 
     const item2 = ast.nodes[item1].next_sibling orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[item2].kind == .list_item);
@@ -1802,6 +1808,99 @@ test "span: a bullet list and its items carry byte-accurate spans (sourcepos par
     const str1 = ast.nodes[para1].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[str1].kind == .str);
     try testing.expectEqualStrings("a", src[doc.span(str1).start..doc.span(str1).end]);
+}
+
+// ── a block's span stops at its own last line ───────────────────────────
+// A block-level container closes on the line that STOPPED it, so a span taken
+// from the scan position runs past the blank lines separating it from the next
+// block and into that block's first byte. `block.zig`'s `content_end` is the
+// answer to "where did this container's own content end"; these tests slice
+// the source with the resulting span and check the bytes, which is the only
+// way this class of bug shows up (the HTML is identical either way).
+
+test "span: a footnote definition stops at its own last line" {
+    // Regression: the span ran to `a note.\n\n[`, so reading a footnote's
+    // source back handed you the start of the block after it.
+    const src = "Text[^fn]\n\n[^fn]: a note.\n\n[link]: /url\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+
+    const note = doc.footnotes.get("fn") orelse return error.TestExpectedNonNull;
+    const sp = doc.span(note);
+    try testing.expectEqualStrings("[^fn]: a note.\n", src[sp.start..sp.end]);
+}
+
+test "span: a footnote definition keeps the blank line BETWEEN its paragraphs" {
+    // The separator rule cuts trailing blank lines only — a blank line with
+    // more of the footnote after it is interior, and stays in the span.
+    const src = "[^fn]: one\n\n    two\n\nafter\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+
+    const note = doc.footnotes.get("fn") orelse return error.TestExpectedNonNull;
+    const sp = doc.span(note);
+    try testing.expectEqualStrings("[^fn]: one\n\n    two\n", src[sp.start..sp.end]);
+}
+
+test "span: a reference definition stops before the next definition" {
+    const src = "[a]: /u\n\n[b]: /v\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+
+    const first = doc.references.get("a") orelse return error.TestExpectedNonNull;
+    const sp = doc.span(first);
+    try testing.expectEqualStrings("[a]: /u\n", src[sp.start..sp.end]);
+}
+
+test "span: a block quote does not swallow the blank line that ends it" {
+    const src = "> quote\n\n[link]: /url\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const bq = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[bq].kind == .block_quote);
+    const sp = doc.span(bq);
+    try testing.expectEqualStrings("> quote\n", src[sp.start..sp.end]);
+}
+
+test "span: a list and its last item both stop at the item's last line" {
+    const src = "- item\n\n[link]: /url\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const list = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[list].kind == .bullet_list);
+    try testing.expectEqualStrings("- item\n", src[doc.span(list).start..doc.span(list).end]);
+
+    const item = ast.nodes[list].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[item].kind == .list_item);
+    try testing.expectEqualStrings("- item\n", src[doc.span(item).start..doc.span(item).end]);
+}
+
+test "span: a table stops at its last row" {
+    const src = "| a |\n| b |\n\nafter\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const table = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[table].kind == .table);
+    const sp = doc.span(table);
+    try testing.expectEqualStrings("| a |\n| b |\n", src[sp.start..sp.end]);
+}
+
+test "span: trailing blank lines at end of input belong to no block" {
+    const src = "> q\n\n\n\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const bq = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[bq].kind == .block_quote);
+    const sp = doc.span(bq);
+    try testing.expectEqualStrings("> q\n", src[sp.start..sp.end]);
 }
 
 // ── content_span on framed *leaves* ─────────────────────────────────────
