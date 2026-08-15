@@ -68,7 +68,12 @@
         };
 
         devShells.default = pkgs.mkShell {
-          nativeBuildInputs = [ zig ];
+          # git-cliff drives scripts/changelog.sh, which regenerates the
+          # generated region of CHANGELOG.md's Unreleased section.
+          nativeBuildInputs = [
+            zig
+            pkgs.git-cliff
+          ];
         };
       });
 }

@@ -30,9 +30,28 @@ without editing a line of their own code would observe a difference, it goes in
 this section** — even when the change is a bug fix, and even when the previous
 behaviour was plainly wrong.
 
+## How the Unreleased section is written
+
+`scripts/changelog.sh --write` regenerates the marked region below from the
+commits since the last tag, using `cliff.toml`. That region is a scaffold: one
+bullet per commit, grouped Breaking / Added / Fixed / Changed. Edits inside the
+markers are overwritten on the next run.
+
+Curated prose goes **below the end marker**, where regeneration cannot reach
+it. That is where **Behavioural changes** is written, because the rule above —
+would an unedited caller observe a difference — is a judgment about the change
+and not something a commit subject records. Cutting a release means promoting
+the scaffold's bullets into written entries and dropping what is left.
+
 ## Unreleased
 
-### Added
+<!-- git-cliff:begin — generated; edits here are overwritten -->
+
+### Fixed
+
+- **djot** — a block's span stops at its own last line ([`f511641`](https://github.com/diaryx-org/twig/commit/f5116414802de43c18f85e1a5126c05e42a7d9ea))
+
+<!-- git-cliff:end -->
 
 ### Behavioural changes
 

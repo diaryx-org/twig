@@ -36,7 +36,11 @@ jobs:
     name: publish crates
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 because git-cliff walks the tag history to work out
+      # which commits belong to this release; a shallow clone has no tags.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Install Zig ${{ env.ZIG_VERSION }}
         uses: mlugg/setup-zig@v2
@@ -147,8 +151,21 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Release notes from the same cliff.toml that writes CHANGELOG.md's
+      # Unreleased region, so the two group commits identically. This replaces
+      # GitHub's generate_release_notes, which grouped by PR author rather than
+      # by change type and ignored the `add(scope):` convention entirely.
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current --strip all
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md

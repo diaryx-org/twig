@@ -1,0 +1,73 @@
+# git-cliff configuration for Twig.
+#
+# Two consumers, one config:
+#   * `scripts/changelog.sh --write` regenerates the marked region inside
+#     CHANGELOG.md's `## Unreleased` section.
+#   * `.github/workflows/release.yml` renders the tagged version's commits into
+#     the GitHub release body.
+#
+# What this config does NOT do: write the **Behavioural changes** section.
+# That section's rule — "would a caller who upgrades without editing a line of
+# their own code observe a difference" — is a judgment about the change, not a
+# fact recoverable from a commit subject. A `fix:` can be behavioural and an
+# `add:` can be silently behavioural; only the author knows. The generated
+# region is a scaffold for triage, and the curated prose lives below it.
+
+[changelog]
+header = ""
+footer = ""
+trim = true
+
+# One `### Group` per bucket, commits as bullets. Scope is surfaced because
+# Twig's subjects lean on it (`add(editor)`, `fix(djot)`) to say which surface
+# moved. The short hash makes a bullet traceable back to the diff during triage.
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}** — {% endif %}{{ commit.message }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/diaryx-org/twig/commit/{{ commit.id }}))
+{%- endfor %}
+{% endfor %}"""
+
+[git]
+conventional_commits = true
+# Twig's history predates any convention and still carries `Update twig.md`
+# style subjects. Keeping unconventional commits in (rather than dropping them)
+# is what lets the catch-all parser below surface them for triage instead of
+# silently losing them.
+filter_unconventional = false
+filter_commits = false
+protect_breaking_commits = true
+split_commits = false
+sort_commits = "oldest"
+tag_pattern = "v[0-9]*"
+
+commit_preprocessors = [
+  # Trailing period on a subject reads wrong once it is a bullet.
+  { pattern = '\.\s*$', replace = "" },
+  # A bare `<div>` in a subject is HTML once the bullet is rendered, and the
+  # word disappears. Backtick anything angle-bracketed that isn't already.
+  { pattern = '(?P<pre>[^`])<(?P<tag>[a-zA-Z/][^<>\s]*)>', replace = "${pre}`<${tag}>`" },
+]
+
+# First match wins, so the `!` breaking rule has to precede the type rules.
+# Twig spells additions `add(scope):` rather than `feat(scope):`; both are
+# accepted so older commits and any muscle memory land in the same bucket.
+commit_parsers = [
+  { message = '^chore\(release\)', skip = true },
+  { message = '^chore: (release|bump)', skip = true },
+  { message = '^[a-zA-Z]+(\(.+\))?!:', group = "<0>Breaking" },
+  { message = '^(add|feat)', group = "<1>Added" },
+  { message = '^fix', group = "<2>Fixed" },
+  { message = '^(refactor|perf)', group = "<3>Changed" },
+  { message = '^docs', skip = true },
+  { message = '^(chore|test|ci|build|style)', skip = true },
+  { message = '^(merge|Merge)', skip = true },
+  # Anything left is off-convention. It gets a visible bucket rather than a
+  # silent drop, so the author decides where it belongs.
+  { message = '.*', group = "<9>Uncategorised — triage before release" },
+]
+
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = true
