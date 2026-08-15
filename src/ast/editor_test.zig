@@ -362,6 +362,35 @@ test "renumberOrderedLists: each nesting level restarts at 1" {
     try fx.expectSource("1. a\n   1. b\n   2. c\n2. d\n");
 }
 
+test "renumberOrderedLists: djot's literal `2.` line is prose, not an item" {
+    // Djot doesn't let a list marker interrupt a paragraph, so `   2. b` is a
+    // continuation line of item `a` — the author's own text, four bytes of which
+    // happen to spell a marker. Markdown reads the same bytes as a nested item.
+    var fx = try Fixture.init("1. a\n   2. b\n2. c\n", .djot);
+    defer fx.deinit();
+    var items: usize = 0;
+    for (fx.ed.astView().nodes) |n| {
+        if (std.meta.activeTag(n.kind) == .list_item) items += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), items); // 2, not markdown's 3
+    try fx.ed.renumberOrderedLists(0);
+    try fx.expectSource("1. a\n   2. b\n2. c\n");
+
+    var md = try Fixture.init("1. a\n   2. b\n2. c\n", .markdown);
+    defer md.deinit();
+    try md.ed.renumberOrderedLists(0);
+    try md.expectSource("1. a\n   1. b\n2. c\n");
+}
+
+test "renumberOrderedLists: a numbered line inside a code block is left alone" {
+    // The same question the djot case asks, with an unambiguous answer: these
+    // digits are the program's, and the tree is the only thing that says so.
+    var fx = try Fixture.init("1. a\n\n   ```\n   7. not an item\n   ```\n\n5. b\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.renumberOrderedLists(0);
+    try fx.expectSource("1. a\n\n   ```\n   7. not an item\n   ```\n\n2. b\n");
+}
+
 test "renumberOrderedLists: leaves bullets and already-sequential lists alone" {
     var fx = try Fixture.init("- a\n- b\n", .markdown);
     defer fx.deinit();

@@ -1506,6 +1506,13 @@ impl Editor {
     /// numbering is already sequential this is a no-op that still returns `Ok` —
     /// the source is left byte-for-byte unchanged. The `Change` is not returned
     /// because a no-op has none; re-read [`Editor::source_str`] for the result.
+    ///
+    /// Only lines the PARSER reads as items are touched, so this never rewrites a
+    /// digit the author wrote as prose. That is not a corner case across formats:
+    /// Djot doesn't let a list marker interrupt a paragraph, so in
+    /// `1. a\n   2. b` the second line is text inside item `a`, while Markdown
+    /// reads it as a nested item — the same bytes, renumbered in one format and
+    /// left alone in the other.
     pub fn renumber_ordered_lists(&mut self, offset: usize) -> Result<(), Error> {
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_renumber_ordered_lists(ed, offset, out)
@@ -4398,6 +4405,20 @@ mod tests {
         let mut ed = Editor::new_str("1. a\n2. x\n2. b\n3. c\n", Format::Markdown).expect("editor");
         ed.renumber_ordered_lists(0).expect("renumber ok");
         assert_eq!(ed.source_str().unwrap(), "1. a\n2. x\n3. b\n4. c\n");
+    }
+
+    #[test]
+    fn editor_renumber_ordered_lists_leaves_djot_prose_alone() {
+        // Djot reads `   2. b` as text inside item `a`; Markdown reads the same
+        // bytes as a nested item. The author's digit survives in the one case.
+        let src = "1. a\n   2. b\n2. c\n";
+        let mut dj = Editor::new_str(src, Format::Djot).expect("editor");
+        dj.renumber_ordered_lists(0).expect("renumber ok");
+        assert_eq!(dj.source_str().unwrap(), src);
+
+        let mut md = Editor::new_str(src, Format::Markdown).expect("editor");
+        md.renumber_ordered_lists(0).expect("renumber ok");
+        assert_eq!(md.source_str().unwrap(), "1. a\n   1. b\n2. c\n");
     }
 
     #[test]

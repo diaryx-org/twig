@@ -333,11 +333,20 @@ pub const Editor = struct {
     /// leaves the source numbers stale (`1. 2. 2. 3.`). A no-op that returns
     /// `error.NoBlock` when `offset` is not inside an ordered list.
     ///
-    /// Numbering tracks the marker's INDENTATION, not the AST: one left-to-right
-    /// pass with a small stack of (indent column → next number), so a sub-list
-    /// restarts and its parent resumes where it left off. Only the numeric run of
-    /// a `N.` / `N)` marker is rewritten; its delimiter, spacing, indentation, and
-    /// every non-item (bullet, continuation, blank) line are copied byte-for-byte.
+    /// Which lines ARE items comes from the tree; only their LEVEL comes from
+    /// indentation. The level is one left-to-right pass with a small stack of
+    /// (indent column → next number), so a sub-list restarts and its parent
+    /// resumes where it left off — indentation, because a nested list's depth is
+    /// what the marker's column says it is, in both formats and at any width.
+    /// But whether a `N.`-looking line is an item at all is a question only the
+    /// parser can answer: Djot does not let a list marker interrupt a paragraph,
+    /// so in `1. a\n   2. b` the second line is not a nested item but literal
+    /// text inside item `a`'s paragraph — and a purely textual pass rewrote the
+    /// author's own digit there. Markdown reads the same bytes as a sub-list.
+    ///
+    /// Only the numeric run of a `N.` / `N)` marker is rewritten; its delimiter,
+    /// spacing, indentation, and every other (bullet, prose, continuation, blank)
+    /// line are copied byte-for-byte.
     pub fn renumberOrderedLists(self: *Editor, offset: usize) Error!void {
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
@@ -362,9 +371,25 @@ pub const Editor = struct {
         const region_start = locate.lineStartAt(src, self.splicer.doc.span(list).start);
         const region_end = locate.lineEndAt(src, self.splicer.doc.span(list).end -| 1);
 
+        // The line each item in the region OPENS on, ascending. An item's span
+        // may start at its marker (Markdown) or at its text (Djot), but either
+        // way it starts on the marker's own line, so the line start identifies it.
+        var item_lines: std.ArrayList(usize) = .empty;
+        defer item_lines.deinit(allocator);
+        for (ast.nodes, 0..) |n, i| {
+            switch (std.meta.activeTag(n.kind)) {
+                .list_item, .task_list_item => {},
+                else => continue,
+            }
+            const start = self.splicer.doc.span(@intCast(i)).start;
+            if (start < region_start or start >= region_end) continue;
+            try item_lines.append(allocator, locate.lineStartAt(src, start));
+        }
+        std.mem.sort(usize, item_lines.items, {}, std.sort.asc(usize));
+
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
-        try buildRenumber(allocator, src, region_start, region_end, &out);
+        try buildRenumber(allocator, src, region_start, region_end, item_lines.items, &out);
 
         // Identical bytes: don't spend an edit (and an undo step) on a no-op.
         if (std.mem.eql(u8, out.items, src[region_start..region_end])) return;
@@ -1738,6 +1763,7 @@ fn buildRenumber(
     src: []const u8,
     region_start: usize,
     region_end: usize,
+    item_lines: []const usize,
     out: *std.ArrayList(u8),
 ) !void {
     // A small stack of (indent column, next number), one entry per open nesting
@@ -1747,11 +1773,17 @@ fn buildRenumber(
     var nums: [32]u32 = undefined;
     var depth: usize = 0;
 
+    // `item_lines` ascends and so does the walk, so one cursor answers "does an
+    // item open here" for every line without a search.
+    var next_item: usize = 0;
+
     var line_start = region_start;
     while (line_start < region_end) {
         const line_end = locate.lineEndAt(src, line_start);
         const line = src[line_start..line_end];
-        const m = listMarkerAt(line, 0);
+        while (next_item < item_lines.len and item_lines[next_item] < line_start) next_item += 1;
+        const opens_item = next_item < item_lines.len and item_lines[next_item] == line_start;
+        const m = if (opens_item) listMarkerAt(line, 0) else null;
         const numbered = if (m) |mm| isNumberedMarker(line[mm.start..mm.end]) else false;
         if (numbered) {
             const mm = m.?;
@@ -1782,8 +1814,9 @@ fn buildRenumber(
             while (k < line.len and line[k] >= '0' and line[k] <= '9') k += 1;
             try out.appendSlice(allocator, line[k..]);
         } else {
-            // A bullet item, a continuation line, or a blank line: verbatim. A
-            // bullet doesn't disturb the ordered counters at other columns.
+            // A bullet item, a blank line, or prose — including prose that LOOKS
+            // like a marker but opens no item: verbatim. A bullet doesn't disturb
+            // the ordered counters at other columns, and neither does prose.
             try out.appendSlice(allocator, line);
         }
         line_start = line_end;

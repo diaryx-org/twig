@@ -1039,6 +1039,12 @@ TwigStatus twig_editor_toggle_block_container(
 // TWIG_STATUS_OK; out_change then reports the most recent prior edit (or is left
 // untouched when there is none), so OK is not proof the source moved. Fills
 // out_change on success if non-NULL.
+//
+// Only lines the PARSER reads as items are touched, so this never rewrites a
+// digit the author wrote as prose. That is not a corner case across formats:
+// Djot doesn't let a list marker interrupt a paragraph, so in "1. a\n   2. b"
+// the second line is text inside item `a`, while Markdown reads it as a nested
+// item — the same bytes, renumbered in one format and left alone in the other.
 TwigStatus twig_editor_renumber_ordered_lists(
     TwigEditor *editor,
     size_t offset,

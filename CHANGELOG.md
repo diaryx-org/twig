@@ -165,6 +165,16 @@ someone who had worked around it.
   header-less table and a table with a header get different answers. Any code
   reading `fidelity` directly should read `nodeFidelity`.
 
+- **`renumberOrderedLists` no longer rewrites a digit the author wrote as
+  prose.** It was a purely textual line pass, so any line that *looked* like
+  `N. ` was renumbered. Which lines are items is now taken from the tree; only
+  their nesting level still comes from the marker's column. The visible case is
+  djot, where a list marker cannot interrupt a paragraph: in `1. a\n   2. b` the
+  second line is text inside item `a`, and the gesture used to rewrite the `2.`
+  in it. Markdown reads the same bytes as a nested item and still renumbers
+  them. A numbered line inside an indented code block is likewise left alone in
+  both formats.
+
 ### Breaking
 
 - **`TWIG_ABI_VERSION` 4 → 5.** `TwigFlatNode` gained `container_origin` in what
