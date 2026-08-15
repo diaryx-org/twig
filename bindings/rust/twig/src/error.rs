@@ -2,7 +2,10 @@ use std::fmt;
 
 use crate::ffi;
 
+/// Error is non_exhaustive so future additions
+/// are not major semver bumps
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
     InvalidArgument,
     ParseError,
