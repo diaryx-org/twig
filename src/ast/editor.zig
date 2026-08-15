@@ -211,13 +211,21 @@ pub const Editor = struct {
     /// Convert the block at `offset` to `kind` (a `level`-N heading, or a
     /// paragraph) by rewriting its leading marker while keeping its inline
     /// content verbatim — the block half of the toolbar (H1 / Body).
+    ///
+    /// ON A BLANK LINE this OPENS the block instead of converting one, so
+    /// "H2, then type" works from an empty line the way it works from a full
+    /// one. There is no node there to rewrite — no format spells an empty
+    /// paragraph, which is the same gap `splitBlock` documents — so a caller
+    /// that could only convert an existing block had to spell `#` itself, and
+    /// spell it per format. See `openBlockOnBlankLine`.
     pub fn setBlock(self: *Editor, offset: usize, kind: BlockKind, level: u32) Error!void {
         const marker = self.syntax.heading_marker orelse return error.UnsupportedFormat;
         if (kind == .heading and (level < 1 or level > 6)) return error.InvalidLevel;
 
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
-        const block = locate.innermostBlock(&self.splicer.doc, offset) orelse return error.NoBlock;
+        const block = locate.innermostBlock(&self.splicer.doc, offset) orelse
+            return self.openBlockOnBlankLine(offset, kind, level, marker);
         const cs = self.splicer.doc.contentSpan(block) orelse return error.NotEditable;
         const content = src[cs.start..cs.end];
 
@@ -242,6 +250,96 @@ pub const Editor = struct {
         @memcpy(buf[prefix_len..], content);
 
         return self.commitSplice(block_span.start, end, buf);
+    }
+
+    /// `setBlock` where there is no block to convert: the caret sits on a BLANK
+    /// LINE, so the marker is OPENED rather than rewritten.
+    ///
+    /// The line's own quote markers are kept and the heading marker written
+    /// after them, so an H2 asked for on a quote's blank line lands inside the
+    /// quote rather than ending it. They are re-emitted with a SPACE after the
+    /// last `>` even when the blank line carries none, because a blank quoted
+    /// line is spelled `>` and `>#` is not a quoted heading in both formats:
+    /// Markdown reads it as one, djot reads the whole line as a paragraph. The
+    /// space is what makes one spelling work in both, the same argument
+    /// `Syntax.thematic_break` makes for blank-separating a rule.
+    ///
+    /// It is BLANK-SEPARATED from whatever precedes it, and that is load-bearing
+    /// rather than cosmetic: djot does not let a heading interrupt a paragraph,
+    /// so a `## ` written on the line directly under one is read there as the
+    /// paragraph's own text — the document gains no heading and the marker shows
+    /// up as literal `##`. Markdown reads the same bytes as a heading. Emitting
+    /// the blank when the line above is non-blank is what makes one spelling
+    /// work in both, the same argument `insertThematicBreak` makes for a rule
+    /// and `Syntax.thematic_break` records for `---`.
+    ///
+    /// The blank carries the line's quote markers, minus the space after them —
+    /// a quote's blank line is spelled `>` — so a heading opened on a quote's
+    /// blank line stays inside the quote instead of ending it.
+    ///
+    /// `error.NotEditable` when the blank line is INTERIOR to a block rather
+    /// than between blocks — a blank line in a fenced code block, or in a table.
+    /// `locate.isBlockParent` is the hinge: a line owned by a container (the
+    /// document, a quote, a list item) is a gap between that container's
+    /// children and a block may open there, while a line owned by anything else
+    /// is inside a leaf whose bytes mean something already. Writing `## ` into a
+    /// code body would add no heading and corrupt the listing.
+    ///
+    /// `.paragraph` is a NO-OP rather than an error: a blank line already holds
+    /// no block marker, so the state the caller asked for is the state it is in.
+    fn openBlockOnBlankLine(
+        self: *Editor,
+        offset: usize,
+        kind: BlockKind,
+        level: u32,
+        marker: u8,
+    ) Error!void {
+        const src = self.sourceBytes();
+        const doc = &self.splicer.doc;
+        const line_start = locate.lineStartAt(src, offset);
+        const body = locate.lineBody(src[line_start..locate.lineEndAt(src, offset)]);
+
+        // Past the line's own quote markers; what remains must be blank, or this
+        // is a line with content that simply isn't a `para`/`heading` — a fence
+        // line, a table row — and there is nothing here to open.
+        var i: usize = 0;
+        while (skipQuoteMarker(body, i)) |j| i = j;
+        if (!locate.isBlankLine(body[i..])) return error.NotEditable;
+
+        // Interior to a leaf (a code block's body, a table) rather than between
+        // a container's children. `innermostBlock` reports `null` for both, and
+        // only this tells them apart.
+        if (locate.lineOwningBlock(doc, offset)) |lb| {
+            if (!locate.isBlockParent(doc.ast.nodes[lb.block].kind)) return error.NotEditable;
+        }
+
+        if (kind == .paragraph) return;
+
+        const allocator = self.splicer.allocator;
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        // The line's quote markers, re-emitted with the space djot needs after
+        // the last `>` even when the blank line carries none.
+        const prefix = body[0..i];
+        const needs_space = i > 0 and body[i - 1] == '>';
+
+        // A blank line above, when the previous line has content — see above for
+        // why that is correctness rather than tidiness. Inside a quote the blank
+        // carries the marker WITHOUT its trailing space, which is how a quote
+        // spells a blank line.
+        if (precedingLineHasContent(src, line_start)) {
+            try out.appendSlice(allocator, std.mem.trimEnd(u8, prefix, " "));
+            try out.append(allocator, '\n');
+        }
+
+        try out.appendSlice(allocator, prefix);
+        if (needs_space) try out.append(allocator, ' ');
+        try out.appendNTimes(allocator, marker, level);
+        try out.append(allocator, ' ');
+
+        // The whole line body, so a blank line's trailing spaces go with it.
+        return self.commitSplice(line_start, line_start + body.len, out.items);
     }
 
     // ── Block containers (quote / lists) ───────────────────────────────────
@@ -1527,6 +1625,21 @@ fn splitTarget(doc: *const Document, offset: usize) ?locate.LineBlock {
 
 /// Advance past one `>` quote marker — its optional indent, the `>`, and the one
 /// optional space after it — or `null` if `line[i..]` doesn't start one.
+/// Whether the line ENDING at `line_start` carries content — anything past its
+/// own quote markers. `false` at the start of the source, where there is no
+/// preceding line to run into.
+///
+/// What `openBlockOnBlankLine` consults to decide whether it must mint a blank
+/// separator: a marker written flush under a paragraph line is that paragraph's
+/// text in djot, not a heading.
+fn precedingLineHasContent(src: []const u8, line_start: usize) bool {
+    if (line_start == 0) return false;
+    const prev = locate.lineBody(src[locate.lineStartAt(src, line_start - 1)..line_start]);
+    var i: usize = 0;
+    while (skipQuoteMarker(prev, i)) |j| i = j;
+    return !locate.isBlankLine(prev[i..]);
+}
+
 fn skipQuoteMarker(line: []const u8, i: usize) ?usize {
     var j = i;
     var indent: usize = 0;

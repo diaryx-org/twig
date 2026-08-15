@@ -2632,7 +2632,12 @@ pub export fn twig_editor_toggle_inline(
 }
 
 /// Convert the block at `offset` to `block_kind` (a `level`-N heading, or a
-/// paragraph) — the block half of the toolbar (H1 / Body). See
+/// paragraph) — the block half of the toolbar (H1 / Body).
+///
+/// On a BLANK LINE this OPENS the block instead of converting one, so "H2, then
+/// type" works from an empty line the way it works from a full one. The marker
+/// is blank-separated from whatever precedes it and carries the line's quote
+/// markers, both for correctness rather than tidiness — see
 /// `twig.Editor.setBlock`.
 pub export fn twig_editor_set_block(
     ed: ?*TwigEditor,

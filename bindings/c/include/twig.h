@@ -1154,9 +1154,22 @@ TwigStatus twig_editor_toggle_inline(
 // Convert the innermost heading/paragraph covering byte `offset` to `block_kind`
 // (a `level`-N heading, or a paragraph), rewriting its leading marker while
 // keeping its inline content. Djot and Markdown only (both spell headings `#`…),
-// else TWIG_STATUS_UNSUPPORTED_FORMAT. TWIG_STATUS_NOT_FOUND if no heading/para
-// covers `offset`; TWIG_STATUS_INVALID_ARGUMENT for a heading `level` outside 1–6
-// or an `offset` past the source. Fills out_change on success if non-NULL.
+// else TWIG_STATUS_UNSUPPORTED_FORMAT. TWIG_STATUS_INVALID_ARGUMENT for a
+// heading `level` outside 1–6 or an `offset` past the source. Fills out_change
+// on success if non-NULL.
+//
+// On a BLANK LINE it OPENS the block instead of converting one, so "H2, then
+// type" works from an empty line the way it works from a full one — there is no
+// node there to rewrite, since no format spells an empty paragraph. The marker
+// is blank-separated from whatever precedes it (djot does not let a heading
+// interrupt a paragraph, so a marker flush under one is read as that
+// paragraph's text) and carries the line's quote markers, so a heading opened on
+// a quote's blank line stays inside the quote. TWIG_BLOCK_PARAGRAPH there is a
+// no-op: a blank line already holds no marker.
+//
+// TWIG_STATUS_NOT_EDITABLE when the blank line is INTERIOR to a block rather
+// than between blocks — inside a fenced code block, or a table — where writing a
+// marker would add no heading and corrupt what is there.
 TwigStatus twig_editor_set_block(
     TwigEditor *editor,
     size_t offset,

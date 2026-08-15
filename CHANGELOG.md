@@ -131,6 +131,25 @@ behaviour was plainly wrong.
   "Where does the content start" did not go away; it moved to `marker_span`,
   which answers it for one line — the only scale at which it has an answer.
 
+- **`set_block` on a BLANK LINE now opens a heading instead of returning
+  `NOT_FOUND`.** There is no node there to convert — no format spells an empty
+  paragraph — so a caller wanting "H2, then type" from an empty line had to
+  spell `#` itself, and spell it per format.
+
+  The marker is blank-separated from whatever precedes it, which is correctness
+  rather than tidiness: djot does not let a heading interrupt a paragraph, so a
+  `## ` written on the line directly under one is read there as that paragraph's
+  own text — the document gains no heading and `##` shows up literally, while
+  Markdown reads the same bytes as a heading. It also carries the line's quote
+  markers, re-emitted with the space after the last `>` that a blank quoted line
+  does not have, because `>#` is a quoted heading in Markdown and a paragraph in
+  djot. Both are the argument `insertThematicBreak` already makes for a rule.
+
+  `NOT_EDITABLE` when the blank line is interior to a block rather than between
+  blocks — inside a fenced code block or a table — where a marker would add no
+  heading and corrupt what is there. `BlockKind::Paragraph` on a blank line is a
+  no-op: the state asked for is the state it is in.
+
 - **`renumberOrderedLists` now works inside a block quote.** It previously
   reported success at every offset in `> 1. a\n> 2. b\n> 2. c` and changed
   nothing: the marker scan started at column zero, found `>` where it wanted a

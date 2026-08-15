@@ -1662,9 +1662,21 @@ impl Editor {
     /// Convert the innermost heading/paragraph covering byte `offset` to `kind`,
     /// rewriting its leading marker while keeping its inline content (the
     /// toolbar's H1…H6 / Body switch). Djot and Markdown only, else
-    /// [`Error::UnsupportedFormat`]; [`Error::NotFound`] if no heading/paragraph
-    /// covers `offset`; [`Error::InvalidArgument`] for a heading level outside
-    /// 1–6.
+    /// [`Error::UnsupportedFormat`]; [`Error::InvalidArgument`] for a heading
+    /// level outside 1–6.
+    ///
+    /// On a BLANK LINE this OPENS the block rather than converting one, so
+    /// "H2, then type" works from an empty line the way it works from a full
+    /// one — there is no node there to rewrite, since no format spells an empty
+    /// paragraph. The marker is blank-separated from whatever precedes it (Djot
+    /// does not let a heading interrupt a paragraph, so a marker flush under one
+    /// is read as that paragraph's text) and carries the line's quote markers,
+    /// so a heading opened on a quote's blank line stays inside the quote.
+    /// [`BlockKind::Paragraph`] there is a no-op: a blank line already holds no
+    /// marker.
+    ///
+    /// [`Error::NotEditable`] when the blank line is INTERIOR to a block rather
+    /// than between blocks — inside a fenced code block, or a table.
     pub fn set_block(&mut self, offset: usize, kind: BlockKind) -> Result<Change, Error> {
         let (block_kind, level) = kind.to_c();
         self.change_op(|ed, out| unsafe {
@@ -3754,6 +3766,43 @@ mod tests {
 ".as_bytes(), Format::Markdown).expect("parse");
         let cont = doc.continuation_prefix(2).expect("continuation");
         assert_eq!(cont.columns, 4);
+    }
+
+    #[test]
+    fn set_block_opens_a_heading_on_a_blank_line() {
+        for format in [Format::Markdown, Format::Djot] {
+            let mut ed = Editor::new("a\n\n".as_bytes(), format).expect("editor");
+            ed.set_block(3, BlockKind::Heading(2)).expect("set_block");
+            assert_eq!(ed.source().expect("source"), b"a\n\n## ", "{format:?}");
+            // The reparse is the assertion that matters, not the bytes: Djot
+            // does not let a heading interrupt a paragraph, so a marker written
+            // without the separating blank would come back as literal text.
+            let nodes = ed.nodes().expect("nodes");
+            assert!(
+                nodes.iter().any(|n| n.kind == Kind::Heading),
+                "{format:?}: should have parsed a heading"
+            );
+        }
+    }
+
+    #[test]
+    fn set_block_refuses_a_blank_line_inside_a_code_block() {
+        // `innermostBlock` reports nothing here exactly as it does between
+        // blocks; only the line's owner tells them apart. Writing `# ` in would
+        // add no heading and corrupt the listing.
+        for format in [Format::Markdown, Format::Djot] {
+            let src = "```\nx\n\ny\n```\n";
+            let mut ed = Editor::new(src.as_bytes(), format).expect("editor");
+            let blank = src.find("\n\n").expect("a blank line") + 1;
+            assert!(
+                matches!(
+                    ed.set_block(blank, BlockKind::Heading(1)),
+                    Err(Error::NotEditable)
+                ),
+                "{format:?}"
+            );
+            assert_eq!(ed.source().expect("source"), src.as_bytes(), "{format:?}");
+        }
     }
 
     #[test]

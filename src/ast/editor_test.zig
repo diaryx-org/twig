@@ -362,6 +362,85 @@ test "renumberOrderedLists: each nesting level restarts at 1" {
     try fx.expectSource("1. a\n   1. b\n   2. c\n2. d\n");
 }
 
+test "setBlock: opens a heading on a blank line" {
+    // No node to convert — no format spells an empty paragraph — so the marker
+    // is opened rather than rewritten. Without this a caller had to spell `#`
+    // itself, and spell it per format. The caret is on the empty line left by
+    // pressing Enter twice, which is where the gesture is actually reached from.
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("a\n\n", f);
+        defer fx.deinit();
+        try fx.ed.setBlock(3, .heading, 2);
+        try fx.expectSource("a\n\n## ");
+        try testing.expect(fx.find(.{ .tag = .heading }) != null);
+    }
+}
+
+test "setBlock: a marker never lands flush under a paragraph" {
+    // Djot does not let a heading interrupt a paragraph, so `## ` written on the
+    // line directly under one is read there as that paragraph's own text — the
+    // document gains no heading and `##` shows up literally. Markdown reads the
+    // same bytes as a heading. The minted blank is what makes one spelling work
+    // in both, and the REPARSE is what proves it rather than the bytes.
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("a\n\n", f);
+        defer fx.deinit();
+        // The caret is on the separator line itself, so writing the marker
+        // where it sits would consume the separator.
+        try fx.ed.setBlock(2, .heading, 2);
+        try fx.expectSource("a\n\n## \n");
+        try testing.expect(fx.find(.{ .tag = .heading }) != null);
+        try testing.expect(fx.find(.{ .tag = .para }) != null);
+    }
+}
+
+test "setBlock: opens a heading in an empty document" {
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("", f);
+        defer fx.deinit();
+        try fx.ed.setBlock(0, .heading, 1);
+        try fx.expectSource("# ");
+    }
+}
+
+test "setBlock: a quote's blank line keeps the quote, with the space djot needs" {
+    // The blank line is spelled `>`, and `>#` is NOT a quoted heading in both
+    // formats — Markdown reads one, djot reads the whole line as a paragraph.
+    // Re-emitting the marker with a space is what makes one spelling work in
+    // both, and the reparse is what proves it.
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("> a\n>\n", f);
+        defer fx.deinit();
+        try fx.ed.setBlock(4, .heading, 1);
+        try fx.expectSource("> a\n>\n> # \n");
+        try testing.expect(fx.find(.{ .tag = .heading }) != null);
+        try testing.expect(fx.find(.{ .tag = .block_quote }) != null);
+    }
+}
+
+test "setBlock: a blank line inside a code block is refused" {
+    // `innermostBlock` reports `null` here exactly as it does between blocks,
+    // and only the line's OWNER tells them apart. Writing `# ` in would add no
+    // heading and corrupt the listing.
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("```\nx\n\ny\n```\n", f);
+        defer fx.deinit();
+        const blank = std.mem.indexOf(u8, fx.ed.sourceBytes(), "\n\n").? + 1;
+        try testing.expectError(error.NotEditable, fx.ed.setBlock(blank, .heading, 1));
+        try fx.expectSource("```\nx\n\ny\n```\n");
+    }
+}
+
+test "setBlock: paragraph on a blank line is a no-op, not an error" {
+    // The state asked for is the state it is in: a blank line holds no marker.
+    for ([_]format.Format{ .markdown, .djot }) |f| {
+        var fx = try Fixture.init("a\n\n", f);
+        defer fx.deinit();
+        try fx.ed.setBlock(2, .paragraph, 0);
+        try fx.expectSource("a\n\n");
+    }
+}
+
 test "renumberOrderedLists: a quoted list renumbers behind its prefix" {
     // The markers sit behind `> `, so a scan from column zero finds `>` where it
     // wants a digit. Every line failed the test, the region was copied verbatim,
