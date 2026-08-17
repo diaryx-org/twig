@@ -48,16 +48,35 @@ const gfm_spec_json = @embedFile("../languages/markdown/testdata/gfm-spec-0.29-e
 const rst_corpus_json = @embedFile("../languages/rst/testdata/docutils-rst-corpus.json");
 
 /// The vendored djot suite, mirroring `languages/djot/conformance.zig`'s list.
+/// Only the bytes matter here — this test reports violations by source format,
+/// not by fixture file — so these are the contents, embedded like the
+/// CommonMark and docutils corpora above.
 const djot_testfiles = [_][]const u8{
-    "attributes.test",       "block_quote.test",        "code_blocks.test",
-    "definition_lists.test", "symb.test",               "emphasis.test",
-    "escapes.test",          "fenced_divs.test",        "footnotes.test",
-    "headings.test",         "insert_delete_mark.test", "links_and_images.test",
-    "lists.test",            "math.test",               "para.test",
-    "raw.test",              "regression.test",         "smart.test",
-    "spans.test",            "sourcepos.test",          "super_subscript.test",
-    "tables.test",           "task_lists.test",         "thematic_breaks.test",
-    "verbatim.test",
+    @embedFile("../languages/djot/testdata/attributes.test"),
+    @embedFile("../languages/djot/testdata/block_quote.test"),
+    @embedFile("../languages/djot/testdata/code_blocks.test"),
+    @embedFile("../languages/djot/testdata/definition_lists.test"),
+    @embedFile("../languages/djot/testdata/symb.test"),
+    @embedFile("../languages/djot/testdata/emphasis.test"),
+    @embedFile("../languages/djot/testdata/escapes.test"),
+    @embedFile("../languages/djot/testdata/fenced_divs.test"),
+    @embedFile("../languages/djot/testdata/footnotes.test"),
+    @embedFile("../languages/djot/testdata/headings.test"),
+    @embedFile("../languages/djot/testdata/insert_delete_mark.test"),
+    @embedFile("../languages/djot/testdata/links_and_images.test"),
+    @embedFile("../languages/djot/testdata/lists.test"),
+    @embedFile("../languages/djot/testdata/math.test"),
+    @embedFile("../languages/djot/testdata/para.test"),
+    @embedFile("../languages/djot/testdata/raw.test"),
+    @embedFile("../languages/djot/testdata/regression.test"),
+    @embedFile("../languages/djot/testdata/smart.test"),
+    @embedFile("../languages/djot/testdata/spans.test"),
+    @embedFile("../languages/djot/testdata/sourcepos.test"),
+    @embedFile("../languages/djot/testdata/super_subscript.test"),
+    @embedFile("../languages/djot/testdata/tables.test"),
+    @embedFile("../languages/djot/testdata/task_lists.test"),
+    @embedFile("../languages/djot/testdata/thematic_breaks.test"),
+    @embedFile("../languages/djot/testdata/verbatim.test"),
 };
 
 const Violation = struct {
@@ -167,19 +186,11 @@ test "every corpus document respects the AST containment rules" {
         }
     }
 
-    // ── Djot: each framed case's INPUT half, read from cwd exactly as
-    //    `languages/djot/conformance.zig` reads the same files.
+    // ── Djot: each framed case's INPUT half, from the same vendored files
+    //    `languages/djot/conformance.zig` runs.
     checker.source = "djot";
     {
-        var threaded = std.Io.Threaded.init(allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-        for (djot_testfiles) |name| {
-            const path = try std.fmt.allocPrint(allocator, "testdata/djot/{s}", .{name});
-            defer allocator.free(path);
-            const text = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4 << 20));
-            defer allocator.free(text);
-
+        for (djot_testfiles) |text| {
             // A case opens with a backtick fence; its input ends at a lone `.`
             // or `!`. Feeding whole files instead would invent trees no real
             // document has.

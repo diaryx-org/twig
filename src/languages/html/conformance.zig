@@ -18,32 +18,38 @@ const Allocator = std.mem.Allocator;
 const djot = @import("../djot/djot.zig");
 const html = @import("html.zig");
 
-const testfiles = [_][]const u8{
-    "attributes.test",
-    "block_quote.test",
-    "code_blocks.test",
-    "definition_lists.test",
-    "symb.test",
-    "emphasis.test",
-    "escapes.test",
-    "fenced_divs.test",
-    "footnotes.test",
-    "headings.test",
-    "insert_delete_mark.test",
-    "links_and_images.test",
-    "lists.test",
-    "math.test",
-    "para.test",
-    "raw.test",
-    "regression.test",
-    "smart.test",
-    "spans.test",
-    "sourcepos.test",
-    "super_subscript.test",
-    "tables.test",
-    "task_lists.test",
-    "thematic_breaks.test",
-    "verbatim.test",
+/// Mirrors `djot/conformance.zig`'s `TestFile`: the fixtures are embedded at
+/// compile time, so this suite is indifferent to the working directory too.
+/// The files live next to the djot parser that vendored them; this module
+/// only reads them.
+const TestFile = struct { name: []const u8, content: []const u8 };
+
+const testfiles = [_]TestFile{
+    .{ .name = "attributes.test", .content = @embedFile("../djot/testdata/attributes.test") },
+    .{ .name = "block_quote.test", .content = @embedFile("../djot/testdata/block_quote.test") },
+    .{ .name = "code_blocks.test", .content = @embedFile("../djot/testdata/code_blocks.test") },
+    .{ .name = "definition_lists.test", .content = @embedFile("../djot/testdata/definition_lists.test") },
+    .{ .name = "symb.test", .content = @embedFile("../djot/testdata/symb.test") },
+    .{ .name = "emphasis.test", .content = @embedFile("../djot/testdata/emphasis.test") },
+    .{ .name = "escapes.test", .content = @embedFile("../djot/testdata/escapes.test") },
+    .{ .name = "fenced_divs.test", .content = @embedFile("../djot/testdata/fenced_divs.test") },
+    .{ .name = "footnotes.test", .content = @embedFile("../djot/testdata/footnotes.test") },
+    .{ .name = "headings.test", .content = @embedFile("../djot/testdata/headings.test") },
+    .{ .name = "insert_delete_mark.test", .content = @embedFile("../djot/testdata/insert_delete_mark.test") },
+    .{ .name = "links_and_images.test", .content = @embedFile("../djot/testdata/links_and_images.test") },
+    .{ .name = "lists.test", .content = @embedFile("../djot/testdata/lists.test") },
+    .{ .name = "math.test", .content = @embedFile("../djot/testdata/math.test") },
+    .{ .name = "para.test", .content = @embedFile("../djot/testdata/para.test") },
+    .{ .name = "raw.test", .content = @embedFile("../djot/testdata/raw.test") },
+    .{ .name = "regression.test", .content = @embedFile("../djot/testdata/regression.test") },
+    .{ .name = "smart.test", .content = @embedFile("../djot/testdata/smart.test") },
+    .{ .name = "spans.test", .content = @embedFile("../djot/testdata/spans.test") },
+    .{ .name = "sourcepos.test", .content = @embedFile("../djot/testdata/sourcepos.test") },
+    .{ .name = "super_subscript.test", .content = @embedFile("../djot/testdata/super_subscript.test") },
+    .{ .name = "tables.test", .content = @embedFile("../djot/testdata/tables.test") },
+    .{ .name = "task_lists.test", .content = @embedFile("../djot/testdata/task_lists.test") },
+    .{ .name = "thematic_breaks.test", .content = @embedFile("../djot/testdata/thematic_breaks.test") },
+    .{ .name = "verbatim.test", .content = @embedFile("../djot/testdata/verbatim.test") },
 };
 
 const TestCase = struct {
@@ -151,17 +157,8 @@ pub const Failure = struct {
 /// tables) rather than `djot/html.zig`. Structurally identical to
 /// `djot/conformance.zig`'s `run`.
 pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !Summary {
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
     var summary: Summary = .{};
-    for (testfiles) |name| {
-        const path = try std.fmt.allocPrint(allocator, "testdata/djot/{s}", .{name});
-        defer allocator.free(path);
-        const content = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4 * 1024 * 1024));
-        defer allocator.free(content);
-
+    for (testfiles) |file| {
         var cases = std.ArrayList(TestCase).empty;
         defer {
             for (cases.items) |c| {
@@ -170,7 +167,7 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
             }
             cases.deinit(allocator);
         }
-        try parseTests(allocator, content, &cases);
+        try parseTests(allocator, file.content, &cases);
 
         for (cases.items) |c| {
             summary.total += 1;
@@ -184,7 +181,7 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
                 summary.failed += 1;
                 if (failures.items.len < max_failures) {
                     try failures.append(allocator, .{
-                        .file = try allocator.dupe(u8, name),
+                        .file = try allocator.dupe(u8, file.name),
                         .line = c.line,
                         .input = try allocator.dupe(u8, c.input),
                         .expected = try allocator.dupe(u8, c.expected),
@@ -212,7 +209,7 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
                 summary.failed += 1;
                 if (failures.items.len < max_failures) {
                     try failures.append(allocator, .{
-                        .file = try allocator.dupe(u8, name),
+                        .file = try allocator.dupe(u8, file.name),
                         .line = c.line,
                         .input = try allocator.dupe(u8, c.input),
                         .expected = try allocator.dupe(u8, c.expected),

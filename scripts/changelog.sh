@@ -18,8 +18,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-changelog="$repo_root/CHANGELOG.md"
-config="$repo_root/cliff.toml"
+changelog="$repo_root/docs/CHANGELOG.md"
+config="$repo_root/.config/cliff.toml"
 
 BEGIN_MARKER='<!-- git-cliff:begin — generated; edits here are overwritten -->'
 END_MARKER='<!-- git-cliff:end -->'

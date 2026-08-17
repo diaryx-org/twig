@@ -1,5 +1,5 @@
 ---
-part_of: '[Twig](/twig.md)'
+part_of: '[Twig](/README.md)'
 ---
 # Twig — the AST kind vocabulary
 
@@ -11,7 +11,7 @@ The source comments in `ast.zig` say what each kind **is**. This file says why
 it is that and not something else. If a comment there points at a section
 heading below, this is where the argument lives.
 
-Like [DESIGN.md](/DESIGN.md), this file is deliberately self-contained: Twig is
+Like [DESIGN.md](/docs/DESIGN.md), this file is deliberately self-contained: Twig is
 published independently, so everything a reader needs travels with the repo.
 
 ---
@@ -46,7 +46,7 @@ parse. No static group can hold it.
 encodes at most one classification, and there are at least three worth having.
 
 **The grouping test fails.** The three families that *are* nested
-(§ [When a family gets nested](#when-a-family-gets-nested)) share one
+(§ [When a family gets nested](/#when-a-family-gets-nested)) share one
 property: every generic consumer treats their members identically, and only
 the printers tell them apart. Blocks are the opposite — `html/serializer.zig`
 switches 35 kinds apart in a single switch, `rst/doctree.zig` 46. Consumers

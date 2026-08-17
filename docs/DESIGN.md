@@ -1,5 +1,5 @@
 ---
-part_of: '[Twig](/twig.md)'
+part_of: '[Twig](/README.md)'
 ---
 # Twig — design notes
 
@@ -16,7 +16,7 @@ One topic has its own file. The rationale behind the shared AST's kind
 vocabulary — why it is one flat union rather than a nesting, what the three
 classifiers (`level`, `contentModel`, `structuralChildren`) are for, and why
 each kind exists rather than a cheaper alternative — lives in
-[AST-KINDS.md](/AST-KINDS.md). `src/ast/ast.zig`'s comments say what a kind
+[AST-KINDS.md](/docs/AST-KINDS.md). `src/ast/ast.zig`'s comments say what a kind
 *is* and point there for why.
 
 ---

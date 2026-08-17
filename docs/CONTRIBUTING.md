@@ -1,5 +1,5 @@
 ---
-part_of: '[Twig](/twig.md)'
+part_of: '[Twig](/README.md)'
 ---
 # Twig — notes for an agent
 
@@ -7,7 +7,7 @@ Conventions that are enforced by tooling, or that a reviewer will send a change
 back for, and that are not discoverable from the code you are editing. Read this
 before writing a commit.
 
-Nothing here is a substitute for [DESIGN.md](/DESIGN.md), which is where the
+Nothing here is a substitute for [DESIGN.md](/docs/DESIGN.md), which is where the
 vocabulary Twig's source comments use is defined.
 
 ## A behavioural change is recorded on its commit
@@ -44,7 +44,7 @@ to happen, what happens now — not for a reviewer reading the diff; the body
 above it is for that.
 
 The full rules, including what is still written by hand, are in
-[CHANGELOG.md](/CHANGELOG.md)'s own header sections.
+[CHANGELOG.md](/docs/CHANGELOG.md)'s own header sections.
 
 ## Do not hand-edit the generated region
 

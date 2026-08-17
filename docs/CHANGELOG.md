@@ -1,5 +1,5 @@
 ---
-part_of: '[Twig](/twig.md)'
+part_of: '[Twig](/README.md)'
 ---
 # Twig — changelog
 

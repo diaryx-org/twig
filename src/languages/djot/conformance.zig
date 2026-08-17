@@ -1,5 +1,5 @@
-//! Runs the vendored djot.js conformance corpus (`testdata/djot/*.test`,
-//! copied verbatim from `djot.js/test/*.test`) against `parse` + `html`.
+//! Runs the vendored djot.js conformance corpus (`testdata/*.test`, copied
+//! verbatim from `djot.js/test/*.test`) against `parse` + `html`.
 //!
 //! Fixture format (reverse-engineered from djot.js's own test runner,
 //! `src/functional.spec.ts`, since there's no spec document for it): each
@@ -32,32 +32,39 @@ const Allocator = std.mem.Allocator;
 const djot = @import("djot.zig");
 const html = @import("html.zig");
 
-const testfiles = [_][]const u8{
-    "attributes.test",
-    "block_quote.test",
-    "code_blocks.test",
-    "definition_lists.test",
-    "symb.test",
-    "emphasis.test",
-    "escapes.test",
-    "fenced_divs.test",
-    "footnotes.test",
-    "headings.test",
-    "insert_delete_mark.test",
-    "links_and_images.test",
-    "lists.test",
-    "math.test",
-    "para.test",
-    "raw.test",
-    "regression.test",
-    "smart.test",
-    "spans.test",
-    "sourcepos.test",
-    "super_subscript.test",
-    "tables.test",
-    "task_lists.test",
-    "thematic_breaks.test",
-    "verbatim.test",
+/// One vendored fixture file: `name` for failure reports, `content` embedded
+/// at compile time. Embedded rather than read from disk so the corpus travels
+/// with the module and the suite doesn't care what directory it runs from —
+/// the same way `markdown/conformance.zig` and `rst/conformance.zig` carry
+/// theirs.
+const TestFile = struct { name: []const u8, content: []const u8 };
+
+const testfiles = [_]TestFile{
+    .{ .name = "attributes.test", .content = @embedFile("testdata/attributes.test") },
+    .{ .name = "block_quote.test", .content = @embedFile("testdata/block_quote.test") },
+    .{ .name = "code_blocks.test", .content = @embedFile("testdata/code_blocks.test") },
+    .{ .name = "definition_lists.test", .content = @embedFile("testdata/definition_lists.test") },
+    .{ .name = "symb.test", .content = @embedFile("testdata/symb.test") },
+    .{ .name = "emphasis.test", .content = @embedFile("testdata/emphasis.test") },
+    .{ .name = "escapes.test", .content = @embedFile("testdata/escapes.test") },
+    .{ .name = "fenced_divs.test", .content = @embedFile("testdata/fenced_divs.test") },
+    .{ .name = "footnotes.test", .content = @embedFile("testdata/footnotes.test") },
+    .{ .name = "headings.test", .content = @embedFile("testdata/headings.test") },
+    .{ .name = "insert_delete_mark.test", .content = @embedFile("testdata/insert_delete_mark.test") },
+    .{ .name = "links_and_images.test", .content = @embedFile("testdata/links_and_images.test") },
+    .{ .name = "lists.test", .content = @embedFile("testdata/lists.test") },
+    .{ .name = "math.test", .content = @embedFile("testdata/math.test") },
+    .{ .name = "para.test", .content = @embedFile("testdata/para.test") },
+    .{ .name = "raw.test", .content = @embedFile("testdata/raw.test") },
+    .{ .name = "regression.test", .content = @embedFile("testdata/regression.test") },
+    .{ .name = "smart.test", .content = @embedFile("testdata/smart.test") },
+    .{ .name = "spans.test", .content = @embedFile("testdata/spans.test") },
+    .{ .name = "sourcepos.test", .content = @embedFile("testdata/sourcepos.test") },
+    .{ .name = "super_subscript.test", .content = @embedFile("testdata/super_subscript.test") },
+    .{ .name = "tables.test", .content = @embedFile("testdata/tables.test") },
+    .{ .name = "task_lists.test", .content = @embedFile("testdata/task_lists.test") },
+    .{ .name = "thematic_breaks.test", .content = @embedFile("testdata/thematic_breaks.test") },
+    .{ .name = "verbatim.test", .content = @embedFile("testdata/verbatim.test") },
 };
 
 const TestCase = struct {
@@ -167,22 +174,10 @@ pub const Failure = struct {
 };
 
 /// Run every fixture in every vendored file, collecting a summary and (up
-/// to `max_failures`) detailed failure records. Paths are resolved relative
-/// to the process's current directory, matching fig's `testdata/`
-/// convention of vendoring conformance corpora at the repo root and reading
-/// them relative to wherever `zig build test` is invoked from.
+/// to `max_failures`) detailed failure records.
 pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !Summary {
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
     var summary: Summary = .{};
-    for (testfiles) |name| {
-        const path = try std.fmt.allocPrint(allocator, "testdata/djot/{s}", .{name});
-        defer allocator.free(path);
-        const content = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(4 * 1024 * 1024));
-        defer allocator.free(content);
-
+    for (testfiles) |file| {
         var cases = std.ArrayList(TestCase).empty;
         defer {
             for (cases.items) |c| {
@@ -191,7 +186,7 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
             }
             cases.deinit(allocator);
         }
-        try parseTests(allocator, content, &cases);
+        try parseTests(allocator, file.content, &cases);
 
         for (cases.items) |c| {
             summary.total += 1;
@@ -203,7 +198,7 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
                 summary.failed += 1;
                 if (failures.items.len < max_failures) {
                     try failures.append(allocator, .{
-                        .file = try allocator.dupe(u8, name),
+                        .file = try allocator.dupe(u8, file.name),
                         .line = c.line,
                         .input = try allocator.dupe(u8, c.input),
                         .expected = try allocator.dupe(u8, c.expected),
@@ -221,7 +216,7 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
                 summary.failed += 1;
                 if (failures.items.len < max_failures) {
                     try failures.append(allocator, .{
-                        .file = try allocator.dupe(u8, name),
+                        .file = try allocator.dupe(u8, file.name),
                         .line = c.line,
                         .input = try allocator.dupe(u8, c.input),
                         .expected = try allocator.dupe(u8, c.expected),

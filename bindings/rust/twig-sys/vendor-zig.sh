@@ -11,9 +11,11 @@
 # `cargo publish --allow-dirty`, so every published crate carries a fresh copy.
 #
 # Only what `zig build install-c-lib` needs is vendored: the build scripts, the
-# whole `src/` tree, and the hand-written C header. Test-only fixtures (the
-# CommonMark conformance corpus) are skipped — they are `@embedFile`'d solely
-# from `test {}` blocks, which the C-library build never compiles.
+# whole `src/` tree, and the hand-written C header. Every language's
+# `testdata/` is dropped — those are conformance corpora (CommonMark, docutils,
+# the AsciiDoc TCK, djot.js) `@embedFile`'d solely from `test {}` blocks, which
+# the C-library build never compiles. Together they are ~900 KB of the crate,
+# so this is most of the published tarball, not a rounding error.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +31,7 @@ rm -rf "$dest"
 mkdir -p "$dest/bindings/c/include"
 cp "$root/build.zig" "$root/build.zig.zon" "$dest/"
 cp -R "$root/src" "$dest/src"
-rm -rf "$dest/src/languages/markdown/testdata"
+rm -rf "$dest"/src/languages/*/testdata
 cp "$root/bindings/c/include/twig.h" "$dest/bindings/c/include/twig.h"
 
 echo "vendor-zig: synced Zig source into $dest"
