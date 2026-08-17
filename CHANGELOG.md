@@ -30,93 +30,102 @@ without editing a line of their own code would observe a difference, it goes in
 this section** — even when the change is a bug fix, and even when the previous
 behaviour was plainly wrong.
 
+## Where a behavioural change is written down
+
+On the commit that causes it, as a `Behavioural-change:` trailer. `cliff.toml`
+collects them into the section above.
+
+```
+fix(markdown): a block quote's span covers its own trailing marker lines
+
+<the body: why, and how it works>
+
+Behavioural-change: A Markdown `block_quote`'s span now covers its own
+  trailing marker lines. `"> a\n>\n> \n"` reported `0..3` and now reports
+  `0..8`. `content_span` is unchanged.
+```
+
+One trailer per observable difference; a commit may carry several, and most
+commits carry none. Continuation lines are indented two spaces and fold into
+one paragraph. Write the value for a consumer deciding whether to upgrade —
+what used to happen, what happens now — not for a reviewer reading the diff.
+That is what the body above it is for.
+
+This used to be handwritten prose kept below the generated region, on the
+argument that the judgment "would an unedited caller observe a difference" is
+not a fact recoverable from a commit subject. That much is still true, and it
+is why the trailer exists rather than some heuristic over `fix:` versus
+`add:` — only the author knows. What was wrong was the conclusion: the
+judgment has to be *made* at the commit, but it does not have to be *stored*
+somewhere else. Writing it twice meant it could drift from the change it
+describes, or be forgotten between landing the commit and cutting the release,
+which is exactly when it is least likely to be reconstructed.
+
 ## How the Unreleased section is written
 
 `scripts/changelog.sh --write` regenerates the marked region below from the
-commits since the last tag, using `cliff.toml`. That region is a scaffold: one
-bullet per commit, grouped Breaking / Added / Fixed / Changed. Edits inside the
-markers are overwritten on the next run.
+commits since the last tag, using `cliff.toml`: one bullet per commit, grouped
+Breaking / Added / Fixed / Changed, then the **Behavioural changes** section
+gathered from the trailers. Edits inside the markers are overwritten on the
+next run.
 
-Curated prose goes **below the end marker**, where regeneration cannot reach
-it. That is where **Behavioural changes** is written, because the rule above —
-would an unedited caller observe a difference — is a judgment about the change
-and not something a commit subject records. Cutting a release means promoting
-the scaffold's bullets into written entries and dropping what is left.
+What is left to write by hand is a release **intro** — a paragraph or two for a
+release that wants a narrative rather than a list, like 3.0.0's account of why
+it is a major. Most releases want none, and an intro that only restates the
+bullets below it should be cut. It goes below the end marker, where
+regeneration cannot reach it. Cutting a release means renaming `## Unreleased`
+to the version and leaving the generated region in place.
 
 ## Unreleased
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
-None, for now!
-<!-- git-cliff:end -->
 
 ### Added
 
-- **`Editor.toggleBlockContainer` opens an empty container on a blank line**,
-  the way `setBlock` has always opened `# ` there. `> `, `- ` and `1. ` are
-  written on the caret's line, blank-separated from whatever precedes it and
-  keeping any enclosing quote's markers, so "bullet, then type" works from an
-  empty line — which is how a list most often starts.
+- **editor** — a blank line is a place a container can open ([`40966b8`](https://github.com/diaryx-org/twig/commit/40966b819606396a26b5f929fcd6551e4e4a3a79))
 
-  The blank line above is load-bearing in both formats, not cosmetic: an empty
-  list item cannot interrupt a paragraph, so a marker written flush under one
-  is read as that paragraph's own text and the document gains no list at all.
+### Fixed
 
-  It toggles, both ways: pressing the same button again takes the empty marker
-  back off, and pressing the other list button converts it — what the non-empty
-  path already did for a real list, at the one size it could not reach. An
-  empty nested quote drops its innermost `>` and leaves the outer line spelled
-  `>`, not `> ` with a stranded space.
+- **markdown** — a block quote's span covers its own trailing marker lines ([`9707eb1`](https://github.com/diaryx-org/twig/commit/9707eb1e59f742b3462f9f987a0558f94dc7d30a))
+- **markdown** — two spans that did not match what their block holds ([`5127041`](https://github.com/diaryx-org/twig/commit/512704191bc8c1eba158ac28723aa9c0a86daebc))
+
+### Changed
+
+- refactor(ci): make homebrew workflow depend on shared diaryx-org
+homebrew workflow ([`44843ea`](https://github.com/diaryx-org/twig/commit/44843ea159fea80183b538c7b0e3e11bb9dfca7c))
 
 ### Behavioural changes
 
-- **`Editor.toggleBlockContainer` on a blank line no longer fails.** It used to
-  answer `error.NoBlock` (`TWIG_STATUS_NOT_FOUND`) for a range covering no
-  block; it now opens an empty container there, per the entry above. A caller
-  that treated `NOT_FOUND` as "nothing to do here" gets an edit instead.
+- A Markdown `block_quote`'s span now covers its own trailing
+  marker lines. `"> a\n>\n> \n"` reported `0..3` and now reports `0..8` -- the
+  lines spelled with the quote's own `>` used to belong to no node at all.
+  `content_span` is unchanged and still stops at the last child (`0..3`), so the
+  two report the marker lines and the blocks separately. Nested quotes each
+  cover every line they match. djot already behaved this way. No HTML output
+  changes.
 
-  The asymmetry this closes was visible in any toolbar built on the two calls:
-  the H1 button worked on an empty line and the Quote / Bulleted / Numbered
-  buttons beside it were silent no-ops. A caret INSIDE a leaf is unaffected —
-  a blank line in a fenced code block still resolves to the code block, and
-  the gesture wraps the whole fence as before.
+- `Editor.toggleBlockContainer` on a blank line no longer
+  fails. It used to answer `error.NoBlock` (`TWIG_STATUS_NOT_FOUND`) for a range
+  covering no block; it now opens an empty container there, and the same button
+  again takes it back off. A caller that treated `NOT_FOUND` as "nothing to do
+  here" gets an edit instead. A caret INSIDE a leaf is unaffected -- a blank line
+  in a fenced code block still resolves to the code block, and the gesture wraps
+  the whole fence as before.
 
-- **A Markdown indented `code_block`'s span stops at its last content line.**
-  A blank line is a *tentative* content line for indented code, so the scanner
-  advances the block's end onto it and trims back whichever ones turn out to be
-  trailing. That trim reached the block's `text` but not its extent, so
-  `"    code\n\n\n\nafter\n"` reported `0..10` for a block whose text was
-  `"code\n"` — `source[content_span]` and `text` disagreed about where the
-  block ended, and the span covered blank lines separating it from the next
-  block. Both now end at `0..8`. A blank line *between* two indented lines is
-  body text and still included. The overrun propagated outward through
+- A Markdown indented `code_block`'s span stops at its last
+  content line. `"    code\n\n\n\nafter\n"` reported `0..10` for a block whose
+  text was `"code\n"`, so `source[content_span]` and `text` disagreed about
+  where the block ended; both now end at `0..8`. A blank line BETWEEN two
+  indented lines is body text and still included. The overrun propagated through
   `containerSpanExtended`, so an enclosing list item was too long too.
 
-- **A Markdown `definition_list`'s span starts at its first term.** It was
-  taken from the `:` line the parse was standing on rather than the term line
-  above it, so `"Term\n: def"` reported the list as `5..10` while its own first
-  child ran `0..10` — a container that did not contain its children. Deleting a
-  one-item definition list left `Term` behind. `content_span` was always right
-  (it is derived from the children), so only the syntactic span moves.
+- A Markdown `definition_list`'s span starts at its first term
+  rather than the `:` line below it, so the list contains its own first child.
+  `"Term\n: def"` reported the list as `5..10` around an item of `0..10`; it is
+  now `0..10`. Deleting a one-item definition list used to leave `Term` behind.
+  `content_span` was always right, so only the syntactic span moves.
 
-- **A Markdown `block_quote`'s span covers its own trailing marker lines.**
-  `"> a\n>\n> \n"` reported `block_quote 0..3` — the last two lines, spelled
-  with the quote's own `>`, belonged to no node at all. That is what pressing
-  Enter at the end of a quote produces, so it was the common path: a consumer
-  walking the tree could not tell "inside the quote, under none of its blocks"
-  from "past the quote", and drew the line the caret had just moved onto as
-  plain prose. Deleting the quote left `>\n> \n` behind as orphaned markers.
-
-  The span now ends after the last line carrying the marker (`0..8` here);
-  `content_span` is unchanged and still stops at the last child (`0..3`), so
-  the two report the marker lines and the blocks separately. Nested quotes each
-  cover every line they match. djot already behaved this way — this is Markdown
-  catching up, and it is the behaviour `Editor.toggleBlockContainer` was
-  already written against ("its span can reach past the last covered block").
-
-  Quotes only. A list item matches a blank line to stay open across its own
-  interior blanks, so extending on a match there would drag every trailing
-  blank into the item — the overrun `content_end` was added to stop in 3.1.0.
-  No HTML output changes.
+<!-- git-cliff:end -->
 
 ## 3.1.0
 

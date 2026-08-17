@@ -6,11 +6,15 @@
 #   scripts/changelog.sh --write    splice it into CHANGELOG.md
 #   scripts/changelog.sh --check    exit 1 if CHANGELOG.md is out of date
 #
-# Only the bytes between the BEGIN and END markers are touched. Curated prose —
-# including the **Behavioural changes** section, which no commit subject can
-# tell you about — belongs BELOW the END marker, where regeneration cannot
-# reach it. Everything above `## Unreleased` and every released section below
-# is likewise left byte-for-byte alone.
+# Only the bytes between the BEGIN and END markers are touched. That region now
+# carries the **Behavioural changes** section too, collected from
+# `Behavioural-change:` trailers on the commits themselves — so the thing a
+# consumer most needs is generated rather than remembered. Write the trailer on
+# the commit that causes the change; see cliff.toml for the shape.
+#
+# What still belongs BELOW the END marker: a release INTRO, when a release wants
+# a narrative rather than a list. Everything above `## Unreleased` and every
+# released section below is likewise left byte-for-byte alone.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

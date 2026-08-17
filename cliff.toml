@@ -6,12 +6,27 @@
 #   * `.github/workflows/release.yml` renders the tagged version's commits into
 #     the GitHub release body.
 #
-# What this config does NOT do: write the **Behavioural changes** section.
-# That section's rule — "would a caller who upgrades without editing a line of
-# their own code observe a difference" — is a judgment about the change, not a
-# fact recoverable from a commit subject. A `fix:` can be behavioural and an
-# `add:` can be silently behavioural; only the author knows. The generated
-# region is a scaffold for triage, and the curated prose lives below it.
+# The **Behavioural changes** section is generated too, from `Behavioural-change:`
+# trailers rather than from subjects. The rule that section answers — "would a
+# caller who upgrades without editing a line of their own code observe a
+# difference" — is a judgment about the change, and no subject can carry it: a
+# `fix:` can be behavioural and an `add:` can be silently behavioural. But the
+# judgment is not unrecoverable, only unrecoverable from the SUBJECT. Asking the
+# author to write it as a trailer keeps it where it has to be made — at the
+# commit, by the person holding the context — while ending the duplication that
+# came of writing it a second time by hand, where it could drift from the change
+# or be forgotten entirely.
+#
+# One trailer per observable difference; a commit may carry several. Write the
+# value as prose a consumer can act on: what used to happen, what happens now.
+# Continuation lines are indented two spaces and fold into one paragraph.
+#
+#     Behavioural-change: `Editor.foo` on an empty range no longer fails. It
+#       used to answer `error.NoBlock`; it now opens a container there.
+#
+# Still handwritten, and deliberately: a release INTRO, for a release that needs
+# a narrative rather than a list (3.0.0's "why this is a major"). That goes
+# below the end marker, where regeneration cannot reach it.
 
 [changelog]
 header = ""
@@ -21,13 +36,37 @@ trim = true
 # One `### Group` per bucket, commits as bullets. Scope is surfaced because
 # Twig's subjects lean on it (`add(editor)`, `fix(djot)`) to say which surface
 # moved. The short hash makes a bullet traceable back to the diff during triage.
+#
+# Then one **Behavioural changes** section for the whole release, collected from
+# every `Behavioural-change:` trailer in commit order. It comes last because it
+# is what a consumer upgrading reads first-and-only: the groups above say what
+# moved, this says what will break under them. Gathered into a list before
+# rendering so the heading appears only when there is something under it — a
+# release with no observable difference should not advertise an empty section.
 body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | striptags | trim }}
 {% for commit in commits %}
 - {% if commit.scope %}**{{ commit.scope }}** — {% endif %}{{ commit.message }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/diaryx-org/twig/commit/{{ commit.id }}))
 {%- endfor %}
-{% endfor %}"""
+{% endfor %}
+{%- set_global notes = [] -%}
+{%- for commit in commits -%}
+{#- `default`, because a commit whose subject git-conventional cannot parse
+    (a wrapped one, say) carries no `footers` key at all rather than an empty
+    one, and an unguarded access aborts the whole render. -#}
+{%- for f in commit.footers | default(value=[]) -%}
+{%- if f.token == "Behavioural-change" -%}
+{%- set_global notes = notes | concat(with=f.value) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- endfor -%}
+{% if notes | length > 0 %}
+### Behavioural changes
+{% for n in notes %}
+- {{ n | trim }}
+{% endfor %}
+{%- endif %}"""
 
 [git]
 conventional_commits = true
@@ -43,8 +82,13 @@ sort_commits = "oldest"
 tag_pattern = "v[0-9]*"
 
 commit_preprocessors = [
-  # Trailing period on a subject reads wrong once it is a bullet.
-  { pattern = '\.\s*$', replace = "" },
+  # Trailing period on a SUBJECT reads wrong once it is a bullet. Anchored to
+  # the first line, because a preprocessor sees the whole message: the older
+  # `\.\s*$` matched end-of-STRING, so on any multi-line commit it left the
+  # subject alone and quietly ate the last period of the body — which, now that
+  # `Behavioural-change:` trailers live down there, was truncating the last
+  # sentence a consumer reads.
+  { pattern = '^(?P<subject>[^\n]*?)[ \t]*\.[ \t]*(?P<rest>\n|$)', replace = "${subject}${rest}" },
   # A bare `<div>` in a subject is HTML once the bullet is rendered, and the
   # word disappears. Backtick anything angle-bracketed that isn't already.
   { pattern = '(?P<pre>[^`])<(?P<tag>[a-zA-Z/][^<>\s]*)>', replace = "${pre}`<${tag}>`" },
