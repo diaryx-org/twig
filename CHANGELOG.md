@@ -47,6 +47,11 @@ the scaffold's bullets into written entries and dropping what is left.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+### Added
+
+- **html** — a Syntax table, and HTML stops being parse-only ([`c5c33a0`](https://github.com/diaryx-org/twig/commit/c5c33a0c00cecbec334701bebec001fa3a4df43b))
+- **editor** — a per-gesture capability query, so a toolbar can gray out ([`e59d376`](https://github.com/diaryx-org/twig/commit/e59d3764016a78db239296853035d357879abe96))
+
 ### Fixed
 
 - **djot** — a block's span stops at its own last line ([`f511641`](https://github.com/diaryx-org/twig/commit/f5116414802de43c18f85e1a5126c05e42a7d9ea))
