@@ -624,6 +624,143 @@ impl BlockContainerKind {
     }
 }
 
+/// One authoring gesture, named with whatever kind it takes — the question
+/// [`Format::supports`] answers.
+///
+/// Twig's formats are **ragged**: Djot spells all eight inline marks and
+/// Markdown three, HTML spells marks and nothing block-level, XML and AsciiDoc
+/// spell nothing. Every [`Editor`] method already reports that as
+/// [`Error::UnsupportedFormat`] — but only once called, which is too late for a
+/// UI that wants to *disable* the button rather than let it fail.
+///
+/// A variant carries a kind exactly where the [`Editor`] method takes one, so
+/// the query is spelled with the same value as the call:
+///
+/// ```no_run
+/// # use twig::{Format, Gesture, InlineKind};
+/// if Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Mark)) {
+///     // never runs: `==mark==` is emit-only in Markdown.
+/// }
+/// ```
+///
+/// Only the gestures with a **format-level** gate appear. Three are absent for
+/// two different reasons:
+///
+/// - [`Editor::split_block`] consults the format only for the block it lands in
+///   (a fence inside a code block, a heading marker inside a heading, nothing at
+///   all in a paragraph). Its answer is a property of the caret, so no
+///   format-only query could be honest about it.
+/// - [`Editor::renumber_ordered_lists`] and the table ops read no format
+///   spelling at all — they rewrite structure already in the source and refuse
+///   on position, never on format.
+///
+/// `#[non_exhaustive]` for the reason [`Format`] is: the gesture list grows with
+/// the editor surface, and a caller matching on this should not need a rebuild.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Gesture {
+    WrapRange(InlineKind),
+    ToggleInline(InlineKind),
+    SetBlock,
+    ToggleBlockContainer(BlockContainerKind),
+    InsertThematicBreak,
+    ToggleCodeBlock,
+    SetCodeLanguage,
+    ToggleTaskItem,
+    SetTaskChecked,
+    ToggleTaskChecked,
+    InsertLink,
+    InsertImage,
+    InsertFootnote,
+    InsertLiteral,
+    InsertLineBreak,
+}
+
+impl Gesture {
+    /// `(gesture_code, kind_code)` for the C ABI. The kind rides in the
+    /// gesture's own space — an inline code for the two inline gestures, a
+    /// container code for the container one, and 0 where the gesture takes
+    /// none, which the C side *requires* rather than ignores.
+    fn to_c(self) -> (c_int, c_int) {
+        match self {
+            Gesture::WrapRange(k) => (0, k.to_c()),
+            Gesture::ToggleInline(k) => (1, k.to_c()),
+            Gesture::SetBlock => (2, 0),
+            Gesture::ToggleBlockContainer(k) => (3, k.to_c()),
+            Gesture::InsertThematicBreak => (4, 0),
+            Gesture::ToggleCodeBlock => (5, 0),
+            Gesture::SetCodeLanguage => (6, 0),
+            Gesture::ToggleTaskItem => (7, 0),
+            Gesture::SetTaskChecked => (8, 0),
+            Gesture::ToggleTaskChecked => (9, 0),
+            Gesture::InsertLink => (10, 0),
+            Gesture::InsertImage => (11, 0),
+            Gesture::InsertFootnote => (12, 0),
+            Gesture::InsertLiteral => (13, 0),
+            Gesture::InsertLineBreak => (14, 0),
+        }
+    }
+}
+
+impl Format {
+    /// Whether this format can spell `gesture` — the toolbar's gray-out
+    /// question, answered **without a document**, so a caller can build its UI
+    /// before it has one. Pure and cheap: ask at startup and cache.
+    ///
+    /// `true` means the gesture will not fail with
+    /// [`Error::UnsupportedFormat`]. It is **not** a promise the call succeeds —
+    /// the caret still decides, so a supported gesture can still report
+    /// [`Error::NotFound`], [`Error::NotEditable`] or [`Error::EditConflict`] at
+    /// the position it is actually run. Gray out on `false`; do not read `true`
+    /// as "this will work here".
+    ///
+    /// Returns a plain `bool` rather than a `Result` because the two ways the C
+    /// query can fail — an unknown format code, a kind from the wrong
+    /// vocabulary — are both unrepresentable here: [`Format`] and [`Gesture`]
+    /// are enums, and a `Gesture` carries a kind only where one applies.
+    ///
+    /// Distinct from BOTH neighbouring questions:
+    ///
+    /// - [`Format::is_authorable`] is "is there a door in", true for
+    ///   [`Format::Html`] on its inline marks alone.
+    /// - [`Warning::fidelity`] is "what survives a *conversion* to this target",
+    ///   which is a different table with genuinely different answers — Djot
+    ///   round-trips a smart-quote container faithfully while no editor gesture
+    ///   may author one. Use that for a save-as warning, this for a button.
+    pub fn supports(self, gesture: Gesture) -> bool {
+        let (g, k) = gesture.to_c();
+        let mut supported: c_int = 0;
+        let status = unsafe {
+            ffi::twig_format_supports(ffi::TwigFormat::from(self) as c_int, g, k, &mut supported)
+        };
+        debug_assert!(
+            Error::from_status(status).is_ok(),
+            "twig_format_supports rejected a combination the Rust types make unrepresentable",
+        );
+        supported == 1
+    }
+
+    /// Whether this format can be authored into **at all** — `false` for a
+    /// parse-only format ([`Format::Xml`], [`Format::Asciidoc`]), where every
+    /// gesture refuses and an editor should offer no toolbar. The
+    /// open-read-only question.
+    ///
+    /// `true` is a **weaker** claim than it looks, and driving per-button state
+    /// from it is the mistake this doc exists to prevent: [`Format::Html`]
+    /// answers `true` — it spells the inline marks — while
+    /// [`Gesture::SetBlock`], the container, code-block, task and footnote
+    /// gestures and [`Gesture::InsertLiteral`] are all still unsupported there.
+    /// Use [`Format::supports`] per button.
+    pub fn is_authorable(self) -> bool {
+        let mut authorable: c_int = 0;
+        let status = unsafe {
+            ffi::twig_format_is_authorable(ffi::TwigFormat::from(self) as c_int, &mut authorable)
+        };
+        debug_assert!(Error::from_status(status).is_ok(), "unknown format code");
+        authorable == 1
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Version {
     pub major: u8,
@@ -5126,6 +5263,134 @@ mod tests {
         let mut len = 0usize;
         let status =
             unsafe { ffi::twig_builder_render_html(b.raw.as_ptr(), 4242, &mut ptr, &mut len) };
+        assert_eq!(Error::from_status(status), Err(Error::InvalidArgument));
+    }
+
+    // ── Format capability ───────────────────────────────────────────────────
+
+    /// Every gesture with a format-level gate, both kind vocabularies in full.
+    fn all_gestures() -> Vec<Gesture> {
+        let inline = [
+            InlineKind::Strong,
+            InlineKind::Emph,
+            InlineKind::Verbatim,
+            InlineKind::Mark,
+            InlineKind::Superscript,
+            InlineKind::Subscript,
+            InlineKind::Insert,
+            InlineKind::Delete,
+        ];
+        let mut all: Vec<Gesture> = Vec::new();
+        for k in inline {
+            all.push(Gesture::WrapRange(k));
+            all.push(Gesture::ToggleInline(k));
+        }
+        for k in [
+            BlockContainerKind::BlockQuote,
+            BlockContainerKind::BulletList,
+            BlockContainerKind::OrderedList,
+        ] {
+            all.push(Gesture::ToggleBlockContainer(k));
+        }
+        all.extend([
+            Gesture::SetBlock,
+            Gesture::InsertThematicBreak,
+            Gesture::ToggleCodeBlock,
+            Gesture::SetCodeLanguage,
+            Gesture::ToggleTaskItem,
+            Gesture::SetTaskChecked,
+            Gesture::ToggleTaskChecked,
+            Gesture::InsertLink,
+            Gesture::InsertImage,
+            Gesture::InsertFootnote,
+            Gesture::InsertLiteral,
+            Gesture::InsertLineBreak,
+        ]);
+        all
+    }
+
+    #[test]
+    fn supports_answers_per_gesture_where_authorable_cannot() {
+        // HTML is why the per-gesture query exists. `is_authorable` is true for
+        // it — it spells the inline marks — while a toolbar built on that
+        // predicate would show a heading button, a quote button and a
+        // code-block button that all fail.
+        assert!(Format::Html.is_authorable());
+        assert!(Format::Html.supports(Gesture::ToggleInline(InlineKind::Strong)));
+        assert!(!Format::Html.supports(Gesture::SetBlock));
+        assert!(!Format::Html.supports(Gesture::ToggleBlockContainer(
+            BlockContainerKind::BlockQuote
+        )));
+        assert!(!Format::Html.supports(Gesture::ToggleCodeBlock));
+        assert!(!Format::Html.supports(Gesture::InsertLiteral));
+
+        // A format that spells nothing answers false everywhere, so the coarse
+        // predicate agrees there — it only misleads in the middle of the range.
+        for fmt in [Format::Xml, Format::Asciidoc] {
+            assert!(!fmt.is_authorable());
+            for g in all_gestures() {
+                assert!(!fmt.supports(g), "{fmt:?} claims to spell {g:?}");
+            }
+        }
+
+        // And the two authorable formats differ from each other, which is the
+        // other half of why one boolean can't serve.
+        assert!(Format::Djot.supports(Gesture::ToggleInline(InlineKind::Mark)));
+        assert!(!Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Mark)));
+        assert!(Format::Markdown.supports(Gesture::InsertLineBreak));
+        assert!(!Format::Djot.supports(Gesture::InsertLineBreak));
+    }
+
+    #[test]
+    fn supports_agrees_with_what_the_editor_then_does() {
+        // The pin at this layer: for the gestures whose refusal an `Editor`
+        // can be made to demonstrate, the query's answer is the call's answer.
+        // Zig covers the full (format x gesture) sweep; what's checked here is
+        // that the Rust decode reaches the same question.
+        for fmt in [Format::Djot, Format::Markdown, Format::Html] {
+            let mut ed = Editor::new_str("ab\n", fmt).expect("editor");
+            let claimed = fmt.supports(Gesture::ToggleInline(InlineKind::Mark));
+            let observed = ed.toggle_inline(0, 2, InlineKind::Mark);
+            assert_eq!(
+                claimed,
+                !matches!(observed, Err(Error::UnsupportedFormat)),
+                "{fmt:?}: supports said {claimed}, gesture said {observed:?}",
+            );
+
+            let mut ed = Editor::new_str("ab\n", fmt).expect("editor");
+            let claimed = fmt.supports(Gesture::SetBlock);
+            let observed = ed.set_block(0, BlockKind::Heading(1));
+            assert_eq!(
+                claimed,
+                !matches!(observed, Err(Error::UnsupportedFormat)),
+                "{fmt:?}: supports said {claimed}, gesture said {observed:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn supports_rides_the_gestures_own_kind_space() {
+        // The same integer means different things per gesture on the wire (1 is
+        // `emph` inline and `bullet_list` container). The Rust types make that
+        // unrepresentable, which is why `supports` returns a bare bool — but
+        // the raw call underneath still has to be handed the right pair.
+        let (g, k) = Gesture::ToggleBlockContainer(BlockContainerKind::BulletList).to_c();
+        assert_eq!((g, k), (3, 1));
+        let (g, k) = Gesture::ToggleInline(InlineKind::Emph).to_c();
+        assert_eq!((g, k), (1, 1));
+        // A kindless gesture sends 0, which the C side requires rather than
+        // ignores.
+        assert_eq!(Gesture::InsertLink.to_c(), (10, 0));
+
+        // And the C side does reject the combinations Rust can't build.
+        let mut out: c_int = 0;
+        let status = unsafe {
+            ffi::twig_format_supports(ffi::TwigFormat::Markdown as c_int, 10, 3, &mut out)
+        };
+        assert_eq!(Error::from_status(status), Err(Error::InvalidArgument));
+        let status = unsafe {
+            ffi::twig_format_supports(ffi::TwigFormat::Markdown as c_int, 9999, 0, &mut out)
+        };
         assert_eq!(Error::from_status(status), Err(Error::InvalidArgument));
     }
 }

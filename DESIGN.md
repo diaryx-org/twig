@@ -154,6 +154,36 @@ persistence) fill in around these — see the individual `twig_editor_*` doc
 comments in `c_abi.zig`. The tier numbers are only a priority label; they
 don't imply anything beyond "what got built in what order."
 
+**A toolbar needs the answer before the call.** Twig's formats are ragged —
+djot spells all eight inline marks, Markdown three, HTML spells marks and
+nothing block-level, XML and AsciiDoc nothing — and every gesture already
+reports that, as `TWIG_STATUS_UNSUPPORTED_FORMAT`. But that arrives *after* the
+call, which is too late to gray a button out rather than let it fail. So
+`twig_format_supports(format, gesture, kind)` asks the same question earlier:
+a pure function of the format code, no handle and no document, since an editor
+building its toolbar has a format and not yet a tree. It is a second reading of
+the very `Syntax` fields the gestures gate on, and a test pins it against every
+gesture's real refusal in every format, so it cannot drift into promising a
+button that would be refused. `twig_format_is_authorable` is the coarser
+open-read-only question beside it — deliberately *not* the per-button one, for
+the reason its doc comment gives: HTML answers yes on its inline marks alone.
+
+That query is one of three neighbouring questions this codebase keeps
+separate on purpose, because conflating them gives wrong answers in both
+directions:
+
+| Question | Where it lives | What it is for |
+|----------|----------------|----------------|
+| May an editor gesture *mint* this spelling? | `Syntax`'s per-gesture fields, read by `Editor.supports` | Toolbar enable/disable |
+| Is there any door into this format at all? | `Syntax.authorable()` | Open read-only, hide the toolbar |
+| What survives a *conversion* to this target? | `diagnostics.zig`'s measured `fidelity` table | Save-as / convert warnings |
+
+The first two are asserted from the spelling tables; the third is **measured** —
+a test builds a document around every kind, serializes it, and reparses with the
+target's own parser. They genuinely disagree: a smart-quote container is
+`authorable = false` in both djot and Markdown, yet round-trips djot faithfully
+and Markdown not at all.
+
 **The reads are not editor-specific.** P1–P3 above (plus `_child_spans` and
 `_subtree`) answer questions about a *tree*, not about an editing session, so
 they live on `TwigDocument` as `twig_document_nodes` / `_children` / `_subtree`

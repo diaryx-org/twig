@@ -916,6 +916,100 @@ typedef enum TwigBlockContainerKind {
     TWIG_CONTAINER_ORDERED_LIST = 2,
 } TwigBlockContainerKind;
 
+// ── Format capability (the toolbar's gray-out question) ───────────────────────
+// Twig's formats are RAGGED: Djot spells all eight inline marks and Markdown
+// three, HTML spells marks and nothing block-level, XML and AsciiDoc spell
+// nothing. Every gesture below already reports that, as
+// TWIG_STATUS_UNSUPPORTED_FORMAT — but only once called, which is too late for a
+// UI that wants to DISABLE the button instead of letting it fail. An editor
+// building its toolbar has a format and no document yet.
+//
+// twig_format_supports is that same answer, asked earlier. It is a pure function
+// of the format code — no handle, no document, no allocation — so ask once at
+// startup and cache. A Zig test pins it against every gesture's real refusal in
+// every format, so it cannot drift into claiming a button works when the call
+// would refuse.
+
+// The gestures twig_format_supports answers for. One entry per gesture with a
+// FORMAT-level gate; the names match the twig_editor_* function they ask about.
+// (The integer values are the wire contract — do not renumber.)
+//
+// Three gestures are deliberately absent, for two different reasons:
+//
+//   - twig_editor_split_block consults the format only for the block it lands
+//     in (a fence inside a code block, a heading marker inside a heading,
+//     nothing at all in a paragraph). Its answer is a property of the caret, so
+//     no format-only query could be honest about it.
+//   - twig_editor_renumber_ordered_lists and the seven twig_editor_table_edit
+//     ops read no format spelling at all — they rewrite structure already in the
+//     source and refuse on position (TWIG_STATUS_NOT_FOUND), never on format.
+//     There is nothing here for them to report.
+typedef enum TwigGesture {
+    TWIG_GESTURE_WRAP_RANGE = 0,
+    TWIG_GESTURE_TOGGLE_INLINE = 1,
+    TWIG_GESTURE_SET_BLOCK = 2,
+    TWIG_GESTURE_TOGGLE_BLOCK_CONTAINER = 3,
+    TWIG_GESTURE_INSERT_THEMATIC_BREAK = 4,
+    TWIG_GESTURE_TOGGLE_CODE_BLOCK = 5,
+    TWIG_GESTURE_SET_CODE_LANGUAGE = 6,
+    TWIG_GESTURE_TOGGLE_TASK_ITEM = 7,
+    TWIG_GESTURE_SET_TASK_CHECKED = 8,
+    TWIG_GESTURE_TOGGLE_TASK_CHECKED = 9,
+    TWIG_GESTURE_INSERT_LINK = 10,
+    TWIG_GESTURE_INSERT_IMAGE = 11,
+    TWIG_GESTURE_INSERT_FOOTNOTE = 12,
+    TWIG_GESTURE_INSERT_LITERAL = 13,
+    TWIG_GESTURE_INSERT_LINE_BREAK = 14,
+} TwigGesture;
+
+// Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
+// through out_supported.
+//
+// `kind` is read in THAT GESTURE'S OWN kind space, so the constant is the same
+// one the twig_editor_* call takes:
+//
+//   - TWIG_GESTURE_WRAP_RANGE / _TOGGLE_INLINE      a TwigInlineKind
+//   - TWIG_GESTURE_TOGGLE_BLOCK_CONTAINER           a TwigBlockContainerKind
+//   - every other gesture                           must be 0
+//
+// A stray non-zero `kind` on a kindless gesture is TWIG_STATUS_INVALID_ARGUMENT
+// rather than ignored: a caller that forgot to reset the argument gets told,
+// instead of a confident answer to a question it did not ask. Same status for a
+// `kind` or `gesture` naming nothing, or a NULL out_supported;
+// TWIG_STATUS_UNSUPPORTED_FORMAT for an unknown format code.
+//
+// A 1 means the gesture will not fail with TWIG_STATUS_UNSUPPORTED_FORMAT. It is
+// NOT a promise the call succeeds — the caret still decides, and NOT_FOUND /
+// INVALID_ARGUMENT / the rollback contract all remain in play. Gray out on 0;
+// do not read a 1 as "this will work here".
+//
+// Note this is a strictly different question from the per-node `fidelity` field
+// on TwigWarning, which reports what survives a CONVERSION to a target. The two
+// genuinely disagree — Djot round-trips a smart-quote container faithfully while
+// no editor gesture may author one. Use fidelity for a save-as warning and this
+// for an enabled/disabled button.
+TwigStatus twig_format_supports(
+    int format,
+    int gesture,
+    int kind,
+    int *out_supported
+);
+
+// Whether `format` can be authored into AT ALL — writes 1 or 0 through
+// out_authorable. TWIG_STATUS_UNSUPPORTED_FORMAT for an unknown format code,
+// TWIG_STATUS_INVALID_ARGUMENT for a NULL out_authorable.
+//
+// This answers the open-read-only question and only that one: 0 for a parse-only
+// format (XML, AsciiDoc), where every gesture refuses and an editor should offer
+// no toolbar at all.
+//
+// A 1 is a WEAKER claim than it looks, and driving per-button state from it is
+// the mistake this comment exists to prevent. HTML answers 1 — it spells the
+// inline marks — while TWIG_GESTURE_SET_BLOCK, the container, code-block, task
+// and footnote gestures and TWIG_GESTURE_INSERT_LITERAL are all still
+// unsupported there. Use twig_format_supports per button.
+TwigStatus twig_format_is_authorable(int format, int *out_authorable);
+
 // ── Offset-addressed editing & read-back ──────────────────────────────────────
 // The rich-text-editor surface: a caret speaks byte offsets, not locator
 // strings. edit_range is the raw splice a keystroke maps onto; node_at /

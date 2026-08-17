@@ -41,6 +41,12 @@ static int failures = 0;
 #define PIN_CAT_(a, b) a##b
 #define PIN_CAT(a, b) PIN_CAT_(a, b)
 #define PIN(expr) typedef char PIN_CAT(pin_, __LINE__)[(expr) ? 1 : -1]
+// The TWIG_GESTURE_* codes are equally ABI — a caller may cache a capability
+// table keyed on them. Pin the ends of the space and the two kind-taking ones.
+PIN(TWIG_GESTURE_WRAP_RANGE == 0);
+PIN(TWIG_GESTURE_TOGGLE_INLINE == 1);
+PIN(TWIG_GESTURE_TOGGLE_BLOCK_CONTAINER == 3);
+PIN(TWIG_GESTURE_INSERT_LINE_BREAK == 14);
 PIN(TWIG_ALIGN_NONE == -1);
 PIN(TWIG_ALIGN_DEFAULT == 0);
 PIN(TWIG_ALIGN_LEFT == 1);
@@ -480,6 +486,75 @@ static void test_task_items_report_their_checkbox_state(void) {
     twig_document_destroy(doc);
 }
 
+// The capability queries a toolbar grays out on. The point of testing them from
+// C is not the answers — Zig pins those against every gesture's real refusal —
+// but that the header's prototypes link, its TWIG_GESTURE_* codes are the ones
+// the library decodes, and the answer agrees with what the gesture then does.
+static void test_format_capability_matches_the_gestures(void) {
+    int supported = -1;
+
+    // XML spells nothing: no door in, and every gesture refuses.
+    CHECK(twig_format_is_authorable(TWIG_FORMAT_XML, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+
+    // HTML is the case the per-gesture query exists for. `authorable` says yes —
+    // it spells the inline marks — while a heading button over it would fail.
+    CHECK(twig_format_is_authorable(TWIG_FORMAT_HTML, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_TOGGLE_INLINE,
+                               TWIG_INLINE_STRONG, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_SET_BLOCK, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+
+    // And the answer is the one the gesture gives. `==mark==` is emit-only in
+    // Markdown: the serializer writes it on conversion, a toggle must not mint
+    // it, and the query has to say so BEFORE the button is drawn.
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, TWIG_GESTURE_TOGGLE_INLINE,
+                               TWIG_INLINE_MARK, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    CHECK(twig_format_supports(TWIG_FORMAT_DJOT, TWIG_GESTURE_TOGGLE_INLINE,
+                               TWIG_INLINE_MARK, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+
+    const char *src = "ab\n";
+    TwigEditor *md = NULL;
+    CHECK(twig_editor_create((const uint8_t *)src, strlen(src),
+                             TWIG_FORMAT_MARKDOWN, &md) == TWIG_STATUS_OK);
+    CHECK(twig_editor_toggle_inline(md, 0, 2, TWIG_INLINE_MARK, NULL) ==
+          TWIG_STATUS_UNSUPPORTED_FORMAT);
+    twig_editor_destroy(md);
+
+    TwigEditor *dj = NULL;
+    CHECK(twig_editor_create((const uint8_t *)src, strlen(src),
+                             TWIG_FORMAT_DJOT, &dj) == TWIG_STATUS_OK);
+    CHECK(twig_editor_toggle_inline(dj, 0, 2, TWIG_INLINE_MARK, NULL) ==
+          TWIG_STATUS_OK);
+    twig_editor_destroy(dj);
+
+    // `kind` is read in the gesture's own space: 1 is EMPH to an inline gesture
+    // and BULLET_LIST to the container one. A kindless gesture rejects a stray
+    // kind rather than answering a question the caller didn't ask.
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN,
+                               TWIG_GESTURE_TOGGLE_BLOCK_CONTAINER,
+                               TWIG_CONTAINER_BULLET_LIST, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN,
+                               TWIG_GESTURE_TOGGLE_BLOCK_CONTAINER, 7,
+                               &supported) == TWIG_STATUS_INVALID_ARGUMENT);
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, TWIG_GESTURE_INSERT_LINK, 3,
+                               &supported) == TWIG_STATUS_INVALID_ARGUMENT);
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, 9999, 0, &supported) ==
+          TWIG_STATUS_INVALID_ARGUMENT);
+    CHECK(twig_format_supports(9999, 0, 0, &supported) ==
+          TWIG_STATUS_UNSUPPORTED_FORMAT);
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, 0, 0, NULL) ==
+          TWIG_STATUS_INVALID_ARGUMENT);
+    CHECK(twig_format_is_authorable(TWIG_FORMAT_MARKDOWN, NULL) ==
+          TWIG_STATUS_INVALID_ARGUMENT);
+}
+
 int main(void) {
     test_abi_version_matches_header();
     test_line_prefixes_answer_two_different_questions();
@@ -490,6 +565,7 @@ int main(void) {
     test_cell_extent_accessors();
     test_editor_document_shares_the_read_surface();
     test_new_block_gestures_link_and_edit();
+    test_format_capability_matches_the_gestures();
     if (failures != 0) {
         fprintf(stderr, "c header test: %d check(s) failed\n", failures);
         return 1;

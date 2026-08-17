@@ -2079,4 +2079,145 @@ test "insertFootnote: a parse-only format spells none" {
     }
 }
 
+// ── Capability ──────────────────────────────────────────────────────────────
+// `Editor.supports` reports, without a document, whether a gesture will refuse
+// on FORMAT. It is a second reading of the same `Syntax` fields the gestures
+// gate on, so the thing worth testing is not what it returns but that it cannot
+// drift from them — the same measured-not-asserted discipline
+// `diagnostics.zig`'s fidelity table uses, for the same reason: a hand-written
+// capability table is wrong the moment a gesture's gate moves.
 
+/// A minimal document each format actually parses. The gestures below are run
+/// against it only to reach their gate — every one of them checks the `Syntax`
+/// table before it reads a single byte of source (that ordering is deliberate
+/// and documented per gesture), so the content only has to parse, not to be a
+/// place the gesture would succeed.
+fn minimalSource(fmt: format.Format) []const u8 {
+    return switch (fmt) {
+        .xml, .html => "<r>ab</r>",
+        else => "ab\n",
+    };
+}
+
+/// Every `Gesture`, with both kind vocabularies enumerated in full — so a new
+/// `InlineKind` or `ContainerKind` widens the sweep with no edit here.
+const all_gestures = blk: {
+    var list: []const Editor.Gesture = &.{};
+    for (std.enums.values(Editor.InlineKind)) |k| {
+        list = list ++ &[_]Editor.Gesture{ .{ .wrap_range = k }, .{ .toggle_inline = k } };
+    }
+    for (std.enums.values(Editor.ContainerKind)) |k| {
+        list = list ++ &[_]Editor.Gesture{.{ .toggle_block_container = k }};
+    }
+    break :blk list ++ &[_]Editor.Gesture{
+        .set_block,
+        .insert_thematic_break,
+        .toggle_code_block,
+        .set_code_language,
+        .toggle_task_item,
+        .set_task_checked,
+        .toggle_task_checked,
+        .insert_link,
+        .insert_image,
+        .insert_footnote,
+        .insert_literal,
+        .insert_line_break,
+    };
+};
+
+comptime {
+    // A `Gesture` variant added without a row above would silently go untested,
+    // which is the one failure this whole test exists to prevent.
+    @setEvalBranchQuota(10_000);
+    for (std.meta.fields(Editor.Gesture)) |f| {
+        var seen = false;
+        for (all_gestures) |g| {
+            if (std.mem.eql(u8, @tagName(g), f.name)) seen = true;
+        }
+        if (!seen) @compileError("all_gestures is missing Gesture." ++ f.name);
+    }
+}
+
+/// Call the gesture `g` names, with arguments valid enough to reach its gate.
+/// The `switch` is exhaustive, so a renamed or removed variant is a compile
+/// error rather than a silently skipped row.
+fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
+    const whole = Span.init(0, ed.sourceBytes().len);
+    return switch (g) {
+        .wrap_range => |k| ed.wrapRange(whole, k),
+        .toggle_inline => |k| ed.toggleInline(whole, k),
+        .set_block => ed.setBlock(0, .heading, 1),
+        .toggle_block_container => |k| ed.toggleBlockContainer(whole, k),
+        .insert_thematic_break => ed.insertThematicBreak(0),
+        .toggle_code_block => ed.toggleCodeBlock(whole, null),
+        .set_code_language => ed.setCodeLanguage(0, null),
+        .toggle_task_item => ed.toggleTaskItem(0),
+        .set_task_checked => ed.setTaskChecked(0, true),
+        .toggle_task_checked => ed.toggleTaskChecked(0),
+        .insert_link => ed.insertLink(whole, "https://example.com"),
+        .insert_image => ed.insertImage(whole, "https://example.com/a.png"),
+        .insert_footnote => ed.insertFootnote(0, "n"),
+        .insert_literal => ed.insertLiteral(0, "x"),
+        .insert_line_break => ed.insertLineBreak(0),
+    };
+}
+
+test "supports matches what every gesture's gate actually does" {
+    // The pin. For every (format, gesture) pair: run the real gesture and
+    // assert it reports `UnsupportedFormat` EXACTLY when `supports` says false.
+    // Any other error (`NoBlock` where the caret isn't in a list, `NotEditable`,
+    // `EditConflict`) is a position answer, not a format one, and counts as
+    // supported — which is precisely the distinction `supports` documents.
+    inline for (std.meta.fields(format.Format)) |f| {
+        const fmt: format.Format = @enumFromInt(f.value);
+        const syntax = format.syntaxFor(fmt);
+        for (all_gestures) |g| {
+            var fx = try Fixture.init(minimalSource(fmt), fmt);
+            defer fx.deinit();
+
+            const claimed = Editor.supports(syntax, g);
+            const observed = if (runGesture(&fx.ed, g)) |_| true else |err| switch (err) {
+                error.UnsupportedFormat => false,
+                else => true,
+            };
+            if (claimed != observed) {
+                std.debug.print(
+                    "\nsupports({s}, .{s}) claims {}, but the gesture reports {s}\n",
+                    .{ @tagName(fmt), @tagName(g), claimed, if (observed) "supported" else "UnsupportedFormat" },
+                );
+                return error.CapabilityDrift;
+            }
+        }
+    }
+}
+
+test "supports is the per-gesture answer authorable() cannot give" {
+    // HTML is the case that motivates the whole query: `authorable()` is true
+    // for it (see `format.zig`), yet a toolbar enabled on that predicate would
+    // show a heading button, a quote button and a code-block button that all
+    // fail. Per gesture, the answer is ragged — and this is what a caller needs.
+    const html = format.syntaxFor(.html);
+    try testing.expect(html.authorable());
+    try testing.expect(Editor.supports(html, .{ .toggle_inline = .strong }));
+    try testing.expect(!Editor.supports(html, .set_block));
+    try testing.expect(!Editor.supports(html, .{ .toggle_block_container = .block_quote }));
+    try testing.expect(!Editor.supports(html, .toggle_code_block));
+    try testing.expect(!Editor.supports(html, .insert_literal));
+
+    // A format that spells nothing answers false to every gesture, so
+    // `authorable()` and `supports` agree there — the coarse predicate is only
+    // ever misleading in the middle of the range.
+    for (all_gestures) |g| {
+        try testing.expect(!Editor.supports(format.syntaxFor(.xml), g));
+        try testing.expect(!Editor.supports(format.syntaxFor(.asciidoc), g));
+    }
+
+    // And the two authorable formats differ from each other, which is the other
+    // half of why one boolean can't serve: djot spells all eight inline marks,
+    // Markdown three. `==mark==` is emit-only there (`Delims.authorable`), so
+    // the query refuses it exactly as `toggleInline` does.
+    try testing.expect(Editor.supports(format.syntaxFor(.djot), .{ .toggle_inline = .mark }));
+    try testing.expect(!Editor.supports(format.syntaxFor(.markdown), .{ .toggle_inline = .mark }));
+    try testing.expect(Editor.supports(format.syntaxFor(.markdown), .insert_line_break));
+    try testing.expect(!Editor.supports(format.syntaxFor(.djot), .insert_line_break));
+}

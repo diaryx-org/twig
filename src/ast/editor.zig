@@ -180,6 +180,98 @@ pub const Editor = struct {
         };
     }
 
+    // ── Capability ─────────────────────────────────────────────────────────
+
+    /// One gesture, named with whatever kind it takes — the question
+    /// `supports` answers, in the same vocabulary the gesture itself is called
+    /// with. A payload here exists exactly where the gesture has a `kind`
+    /// parameter, so a caller that can spell the call can spell the query.
+    ///
+    /// Only the gestures with a FORMAT-level gate appear. The omissions are
+    /// deliberate, and each is a different reason:
+    ///
+    ///   * `splitBlock` consults the table only for the block it lands in — a
+    ///     code fence inside a code block, a heading marker inside a heading,
+    ///     nothing at all in a paragraph. Its answer is a property of the
+    ///     caret, not the format, so no format-only query can be honest about
+    ///     it.
+    ///   * `renumberOrderedLists` and the seven table gestures read no `Syntax`
+    ///     field at all: they rewrite structure that is already in the source,
+    ///     and refuse on position (`NoBlock`/`NotEditable`) rather than on
+    ///     spelling. There is nothing for a capability query to report.
+    ///
+    /// Both groups return `error.UnsupportedFormat` from NO branch, which is
+    /// what `test "every gesture's gate matches what supports claims"` relies
+    /// on to enumerate this union exhaustively.
+    pub const Gesture = union(enum) {
+        wrap_range: InlineKind,
+        toggle_inline: InlineKind,
+        set_block,
+        toggle_block_container: ContainerKind,
+        insert_thematic_break,
+        toggle_code_block,
+        set_code_language,
+        toggle_task_item,
+        set_task_checked,
+        toggle_task_checked,
+        insert_link,
+        insert_image,
+        insert_footnote,
+        insert_literal,
+        insert_line_break,
+    };
+
+    /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
+    /// asked WITHOUT a document, so a caller can build its UI before it has one.
+    ///
+    /// This is the format half of the answer and only that half. `true` means
+    /// the gesture will not fail with `error.UnsupportedFormat`; it says
+    /// nothing about the caret, so a supported gesture can still report
+    /// `NoBlock`, `NotEditable` or `EditConflict` at the position it is
+    /// actually run. Gray out on `false`; do not assume `true` means the call
+    /// will succeed.
+    ///
+    /// Distinct from BOTH neighbouring questions, which are easy to reach for
+    /// and wrong here:
+    ///
+    ///   * `Syntax.authorable()` is "is there a door in" — true for HTML on its
+    ///     inline marks alone, while every block gesture over it is still
+    ///     unsupported. A toolbar enabled on that predicate is mostly buttons
+    ///     that fail.
+    ///   * `diagnostics.zig`'s `fidelity` is "what survives a CONVERSION to this
+    ///     target", which is a different table with genuinely different answers
+    ///     (a smart-quote container is unauthorable in djot yet round-trips
+    ///     there perfectly). Use that one for a save-as warning, this one for
+    ///     an enabled/disabled button.
+    ///
+    /// Static — it takes the table rather than an editor — because the whole
+    /// point is to answer before an `Editor` exists. `format.zig`'s `syntaxFor`
+    /// gets you the table from a `Format`.
+    pub fn supports(syntax: *const Syntax, gesture: Gesture) bool {
+        return switch (gesture) {
+            // The two inline gestures share one gate, and it is
+            // `authorableDelimsFor` rather than `delimsFor`: a spelling the
+            // serializer may emit but a gesture must not mint (Markdown's
+            // `==mark==`) is unsupported HERE while still being written on
+            // conversion. That asymmetry is `Delims.authorable`'s reason to
+            // exist, so the query has to ask the same way the gesture does.
+            .wrap_range, .toggle_inline => |k| syntax.authorableDelimsFor(kindRef(k)) != null,
+            .set_block => syntax.heading_marker != null,
+            .toggle_block_container => |k| syntax.container_spelling.get(k) != null,
+            .insert_thematic_break => syntax.thematic_break != null,
+            .toggle_code_block, .set_code_language => syntax.code_fence != null,
+            .toggle_task_item, .set_task_checked, .toggle_task_checked => syntax.task_marker != null,
+            .insert_link => syntax.link_text_escapes != null,
+            // Both halves, as `insertImage` checks them. `assertCoherent` pins
+            // them null-together, so this can't disagree with `.insert_link` —
+            // it is written out anyway so the query reads as the gesture does.
+            .insert_image => syntax.link_text_escapes != null and syntax.link_dest_escapes != null,
+            .insert_footnote => syntax.footnote != null,
+            .insert_literal => syntax.text_escapes != null,
+            .insert_line_break => syntax.cell_line_break != null,
+        };
+    }
+
     // ── Inline marks ───────────────────────────────────────────────────────
 
     /// Wrap `[start, end)` in `kind`'s delimiters — the unconditional half of

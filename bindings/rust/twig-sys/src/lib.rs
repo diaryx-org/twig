@@ -609,6 +609,19 @@ unsafe extern "C" {
         offset: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    /// Whether `format` can spell `gesture` — the toolbar's gray-out question,
+    /// asked without a document. `kind` is read in that gesture's own kind
+    /// space (a `TWIG_GESTURE_*` doc comment in `twig.h` lists which), and must
+    /// be 0 for a gesture that takes none.
+    pub fn twig_format_supports(
+        format: c_int,
+        gesture: c_int,
+        kind: c_int,
+        out_supported: *mut c_int,
+    ) -> TwigStatus;
+    /// Whether `format` can be authored into at all — 0 for a parse-only
+    /// format. A weaker claim than it looks; see `twig_format_supports`.
+    pub fn twig_format_is_authorable(format: c_int, out_authorable: *mut c_int) -> TwigStatus;
     pub fn twig_editor_table_edit(
         editor: *mut TwigEditor,
         offset: usize,

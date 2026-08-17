@@ -2713,6 +2713,134 @@ pub export fn twig_editor_toggle_block_container(
     return .ok;
 }
 
+// ── Format capability (the toolbar's gray-out question) ──────────────────────
+// Every gesture above answers `unsupported_format` for a format whose `Syntax`
+// table has a `null` where it needed a spelling. That answer arrives AFTER the
+// call, which is one call too late for a UI that wants to disable the button
+// rather than let it fail: an editor building its toolbar has a format and no
+// document yet. These two queries are that answer, moved earlier.
+//
+// They are pure functions of the format code — no handle, no allocation, no
+// document — so a caller can ask at startup and cache. `twig.Editor.supports`
+// is the implementation, and a Zig test pins it against every gesture's real
+// gate across every format, so this cannot drift into claiming a button works
+// when the call would refuse.
+
+/// The gestures `twig_format_supports` answers for (C ABI enum; values are the
+/// wire contract, mirrored by `TwigGesture` in `twig.h`).
+///
+/// One entry per gesture with a FORMAT-level gate. `twig_editor_split_block`,
+/// `twig_editor_renumber_ordered_lists` and the table ops are absent on
+/// purpose — see `twig.Editor.Gesture` for why each is unanswerable or
+/// vacuous here.
+const TwigGesture = enum(c_int) {
+    wrap_range = 0,
+    toggle_inline = 1,
+    set_block = 2,
+    toggle_block_container = 3,
+    insert_thematic_break = 4,
+    toggle_code_block = 5,
+    set_code_language = 6,
+    toggle_task_item = 7,
+    set_task_checked = 8,
+    toggle_task_checked = 9,
+    insert_link = 10,
+    insert_image = 11,
+    insert_footnote = 12,
+    insert_literal = 13,
+    insert_line_break = 14,
+};
+
+/// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
+fn gestureFromInt(v: c_int) ?TwigGesture {
+    return switch (v) {
+        0 => .wrap_range,
+        1 => .toggle_inline,
+        2 => .set_block,
+        3 => .toggle_block_container,
+        4 => .insert_thematic_break,
+        5 => .toggle_code_block,
+        6 => .set_code_language,
+        7 => .toggle_task_item,
+        8 => .set_task_checked,
+        9 => .toggle_task_checked,
+        10 => .insert_link,
+        11 => .insert_image,
+        12 => .insert_footnote,
+        13 => .insert_literal,
+        14 => .insert_line_break,
+        else => null,
+    };
+}
+
+/// Build the `twig.Editor.Gesture` a `(gesture, kind)` pair names, or `null`
+/// when `kind` does not name a member of the vocabulary THAT gesture takes.
+///
+/// `kind` is read in the gesture's own kind space — a `TwigInlineKind` for the
+/// two inline gestures, a `TwigBlockContainerKind` for the container one — so a
+/// caller that can spell the `twig_editor_*` call can spell the query with the
+/// same constant. A gesture that takes no kind requires `kind == 0`; anything
+/// else is rejected rather than ignored, so a caller passing a stale inline
+/// kind to `TWIG_GESTURE_INSERT_LINK` learns about it instead of getting a
+/// confident answer to a question it did not ask.
+fn gestureOf(gesture: TwigGesture, kind: c_int) ?twig.Editor.Gesture {
+    return switch (gesture) {
+        .wrap_range, .toggle_inline => {
+            const ik = inlineKindFromInt(kind) orelse return null;
+            const k = inlineKindOf(ik);
+            return if (gesture == .wrap_range) .{ .wrap_range = k } else .{ .toggle_inline = k };
+        },
+        .toggle_block_container => .{
+            .toggle_block_container = containerKindOf(blockContainerKindFromInt(kind) orelse return null),
+        },
+        inline else => |g| if (kind != 0) null else @unionInit(twig.Editor.Gesture, @tagName(g), {}),
+    };
+}
+
+/// Whether `format` can spell `gesture` — write 1 or 0 through `out_supported`.
+///
+/// `kind` is the gesture's own kind code (a `TWIG_INLINE_*` for the two inline
+/// gestures, a `TWIG_CONTAINER_*` for `TWIG_GESTURE_TOGGLE_BLOCK_CONTAINER`)
+/// and must be 0 for every other gesture. `invalid_argument` for a `kind` that
+/// names nothing in that gesture's space, or a null `out_supported`;
+/// `unsupported_format` for a format code this build does not know.
+///
+/// A 1 means the gesture will not fail with `TWIG_STATUS_UNSUPPORTED_FORMAT`.
+/// It is NOT a promise the call succeeds — the caret still decides, and
+/// `not_found`/`invalid_argument` remain possible. Gray out on 0.
+pub export fn twig_format_supports(
+    format: c_int,
+    gesture: c_int,
+    kind: c_int,
+    out_supported: ?*c_int,
+) TwigStatus {
+    const slot = out_supported orelse return .invalid_argument;
+    const fmt = intToFormat(format) orelse return .unsupported_format;
+    const g = gestureFromInt(gesture) orelse return .invalid_argument;
+    const decoded = gestureOf(g, kind) orelse return .invalid_argument;
+
+    slot.* = @intFromBool(twig.Editor.supports(twig.format.syntaxFor(fmt), decoded));
+    return .ok;
+}
+
+/// Whether `format` can be authored into AT ALL — write 1 or 0 through
+/// `out_authorable`. `unsupported_format` for an unknown format code,
+/// `invalid_argument` for a null `out_authorable`.
+///
+/// The open-read-only question, and only that one: 0 for a parse-only format
+/// (XML, AsciiDoc), where every gesture refuses and an editor should not offer
+/// a toolbar at all. A 1 is a WEAKER claim than it looks — HTML answers 1 on
+/// its inline marks while every block gesture over it is still unsupported —
+/// so do not drive per-button state from this. `twig_format_supports` is that
+/// question.
+pub export fn twig_format_is_authorable(format: c_int, out_authorable: ?*c_int) TwigStatus {
+    const slot = out_authorable orelse return .invalid_argument;
+    const fmt = intToFormat(format) orelse return .unsupported_format;
+
+    slot.* = @intFromBool(twig.format.syntaxFor(fmt).authorable());
+    return .ok;
+}
+
 /// Renumber the ordered list at `offset` so its markers run `1, 2, 3, …` — see
 /// `twig.Editor.renumberOrderedLists`. `not_found` when `offset` is not inside an
 /// ordered list. When the numbering is already sequential this is a no-op that
@@ -5041,4 +5169,136 @@ test "twig_builder: invalid kind codes and out-of-range ids are rejected" {
         TwigStatus.invalid_argument,
         twig_builder_render_html(bld, 4242, &ptr, &len),
     );
+}
+
+test "twig_format_supports: the wire answer agrees with the gesture's own refusal" {
+    // The claim that matters at this boundary is not what the query returns —
+    // `editor_test.zig` pins that against every real gate — but that the wire
+    // decode reaches the SAME question. So: ask, then run the gesture on a live
+    // editor and check the two agree.
+    var supported: c_int = -1;
+    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc }) |fmt| {
+        const code = @intFromEnum(fmt);
+        // Only has to PARSE — every gesture consults the syntax table before it
+        // reads a byte of source, so this never has to be somewhere the gesture
+        // would succeed. XML is the one format that rejects bare text.
+        const src: []const u8 = if (fmt == .xml) "<r>ab</r>" else "ab\n";
+
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+            code,
+            @intFromEnum(TwigGesture.toggle_inline),
+            @intFromEnum(TwigInlineKind.mark),
+            &supported,
+        ));
+        var ed: ?*TwigEditor = null;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_editor_create(src.ptr, src.len, code, &ed),
+        );
+        defer twig_editor_destroy(ed);
+        const got = twig_editor_toggle_inline(ed, 0, 2, @intFromEnum(TwigInlineKind.mark), null);
+        try std.testing.expectEqual(supported == 1, got != .unsupported_format);
+    }
+
+    // Markdown spells `==mark==` on CONVERSION but must not mint it from a
+    // toggle (`Delims.authorable`), while djot authors it freely — the
+    // asymmetry a caller would get wrong by reading a serializer.
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        @intFromEnum(TwigFormat.markdown),
+        @intFromEnum(TwigGesture.toggle_inline),
+        @intFromEnum(TwigInlineKind.mark),
+        &supported,
+    ));
+    try std.testing.expectEqual(@as(c_int, 0), supported);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        @intFromEnum(TwigFormat.djot),
+        @intFromEnum(TwigGesture.toggle_inline),
+        @intFromEnum(TwigInlineKind.mark),
+        &supported,
+    ));
+    try std.testing.expectEqual(@as(c_int, 1), supported);
+}
+
+test "twig_format_supports: a kind is read in the gesture's own space, or rejected" {
+    var out: c_int = -1;
+    const md = @intFromEnum(TwigFormat.markdown);
+
+    // `1` is `emph` to an inline gesture and `bullet_list` to the container
+    // one — the same integer, two vocabularies, exactly as the `twig_editor_*`
+    // calls already read it.
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        md,
+        @intFromEnum(TwigGesture.toggle_block_container),
+        @intFromEnum(TwigBlockContainerKind.bullet_list),
+        &out,
+    ));
+    try std.testing.expectEqual(@as(c_int, 1), out);
+
+    // A container code an inline gesture can't name, and vice versa: 7 is
+    // `delete` inline and nothing at all to the container gesture.
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        md,
+        @intFromEnum(TwigGesture.toggle_inline),
+        7,
+        &out,
+    ));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(
+        md,
+        @intFromEnum(TwigGesture.toggle_block_container),
+        7,
+        &out,
+    ));
+
+    // A kindless gesture REJECTS a stray kind rather than ignoring it — a
+    // caller that forgot to reset the argument gets told, not answered.
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        md,
+        @intFromEnum(TwigGesture.insert_link),
+        0,
+        &out,
+    ));
+    try std.testing.expectEqual(@as(c_int, 1), out);
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(
+        md,
+        @intFromEnum(TwigGesture.insert_link),
+        3,
+        &out,
+    ));
+
+    // Unknown gesture code, unknown format code, NULL out-param.
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(md, 9999, 0, &out));
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_supports(9999, 0, 0, &out));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(md, 0, 0, null));
+}
+
+test "twig_format_is_authorable: the read-only question, and its weakness" {
+    var out: c_int = -1;
+    for ([_]TwigFormat{ .djot, .markdown, .html }) |fmt| {
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_format_is_authorable(@intFromEnum(fmt), &out),
+        );
+        try std.testing.expectEqual(@as(c_int, 1), out);
+    }
+    for ([_]TwigFormat{ .xml, .asciidoc }) |fmt| {
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_format_is_authorable(@intFromEnum(fmt), &out),
+        );
+        try std.testing.expectEqual(@as(c_int, 0), out);
+    }
+
+    // HTML's 1 above is the trap the per-gesture query exists for: authorable,
+    // and yet a heading button over it would fail.
+    var supported: c_int = -1;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        @intFromEnum(TwigFormat.html),
+        @intFromEnum(TwigGesture.set_block),
+        0,
+        &supported,
+    ));
+    try std.testing.expectEqual(@as(c_int, 0), supported);
+
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_is_authorable(9999, &out));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_is_authorable(0, null));
 }
