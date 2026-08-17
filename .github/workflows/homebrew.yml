@@ -1,26 +1,14 @@
 name: Homebrew
-# Release the `twig` CLI to Homebrew. Mirrors fig's homebrew.yml (twig is a
-# sister project, also built with Zig). Four jobs:
-# 1. build separate macOS binaries (arm64, x86_64) and
-# 2. separate Linux binaries (x86_64, aarch64), both with the pinned Zig
-#    toolchain, and attach them to this repo's GitHub Release, then
-# 3. render the formula (inlined below, in the `bump-formula` job) with the
-#    release's version + checksums, and push it to the tap repo.
-# 4. build a wasm32-wasi binary and attach it to the same Release. Not part of
-#    the Homebrew formula (brew doesn't run wasm) — just a portable download
-#    for any WASI runtime (wasmtime, wasmer, ...), so it doesn't block or feed
-#    `bump-formula`.
+# Release the `twig` CLI to Homebrew. The build/attach/render/push mechanics are
+# shared with fig and moid and live in diaryx-org/.github; only what makes twig
+# different is below.
 #
-# Per-arch (not universal/lipo'd) binaries: smaller downloads per user, and it
-# keeps macOS and Linux symmetric — both platforms resolve arch the same way in
-# the formula (`on_arm`/`on_intel` nested inside `on_macos`/`on_linux`).
+# twig's build.zig exposes just the standard target/optimize options — there is
+# no `-Dstrip` flag (fig has one), so `zig-flags` is left at its default.
 #
-# A prebuilt binary (not a source `depends_on "zig"` formula) is deliberate:
-# Homebrew-core's zig tracks stable releases and won't reliably have the version
-# twig needs.
-#
-# Unlike fig, twig's build.zig only exposes the standard target/optimize
-# options — there is no `-Dstrip` flag, so it is omitted here.
+# `wasi: true` attaches a wasm32-wasi build to the same Release. It is not part
+# of the Homebrew formula (brew doesn't run wasm) — just a portable download for
+# any WASI runtime (wasmtime, wasmer, ...).
 #
 # Runs on the same `v*.*.*` tag as release.yml (the crates.io publish); both use
 # softprops/action-gh-release, which upserts the same Release, so attaching
@@ -28,156 +16,20 @@ name: Homebrew
 #
 # Prerequisite before the first tagged release succeeds: install the diaryx-bot
 # GitHub App on diaryx-org/homebrew-tap (Contents:write) and add its App ID +
-# private key as the TAP_APP_ID / TAP_APP_KEY secrets on this repo. The
-# bump-formula job mints a short-lived token from these.
+# private key as the TAP_APP_ID / TAP_APP_KEY secrets on this repo.
 on:
   push: { tags: [v*.*.*] }
-  workflow_dispatch: null
+  workflow_dispatch:
 permissions:
-  contents: write # the binary jobs attach assets to the GitHub Release
-env:
-  ZIG_VERSION: "0.16.0"
+  contents: write # caps what the called workflow may request
 jobs:
-  macos-binaries:
-    name: Build + attach macOS binaries
-    runs-on: macos-latest
-    if: github.ref_type == 'tag'
-    steps:
-    - uses: actions/checkout@v7
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - name: Build macOS arm64
-      run: |
-        zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos --prefix zig-out/macos-arm64
-        tar -czf twig-macos-arm64.tar.gz -C zig-out/macos-arm64/bin twig
-    - name: Build macOS x86_64
-      run: |
-        zig build -Doptimize=ReleaseFast -Dtarget=x86_64-macos --prefix zig-out/macos-x64
-        tar -czf twig-macos-x86_64.tar.gz -C zig-out/macos-x64/bin twig
-    - name: Attach to the GitHub Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ github.ref_name }}
-        files: |
-          twig-macos-arm64.tar.gz
-          twig-macos-x86_64.tar.gz
-  linux-binaries:
-    name: Build + attach Linux binaries
-    runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
-    steps:
-    - uses: actions/checkout@v7
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - name: Build Linux x86_64
-      run: |
-        zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux --prefix zig-out/linux-x64
-        tar -czf twig-linux-x86_64.tar.gz -C zig-out/linux-x64/bin twig
-    - name: Build Linux aarch64
-      run: |
-        zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux --prefix zig-out/linux-arm64
-        tar -czf twig-linux-aarch64.tar.gz -C zig-out/linux-arm64/bin twig
-    - name: Attach to the GitHub Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ github.ref_name }}
-        files: |
-          twig-linux-x86_64.tar.gz
-          twig-linux-aarch64.tar.gz
-  wasi-binary:
-    name: Build + attach WASI binary
-    runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
-    steps:
-    - uses: actions/checkout@v7
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-    - name: Build wasm32-wasi
-      run: |
-        zig build -Doptimize=ReleaseFast -Dtarget=wasm32-wasi --prefix zig-out/wasi
-        cp zig-out/wasi/bin/twig.wasm twig-wasi.wasm
-    - name: Attach to the GitHub Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ github.ref_name }}
-        files: twig-wasi.wasm
-  bump-formula:
-    name: Bump tap formula
-    runs-on: ubuntu-latest
-    needs: [macos-binaries, linux-binaries]
-    if: github.ref_type == 'tag'
-    steps:
-    - name: Compute checksums and render the Homebrew formula
-      run: |
-        version="${GITHUB_REF_NAME#v}"
-        base="https://github.com/diaryx-org/twig/releases/download/${GITHUB_REF_NAME}"
-        mac_arm64_sha=$(curl -sL "$base/twig-macos-arm64.tar.gz" | sha256sum | cut -d' ' -f1)
-        mac_x64_sha=$(curl -sL "$base/twig-macos-x86_64.tar.gz" | sha256sum | cut -d' ' -f1)
-        linux_x64_sha=$(curl -sL "$base/twig-linux-x86_64.tar.gz" | sha256sum | cut -d' ' -f1)
-        linux_arm64_sha=$(curl -sL "$base/twig-linux-aarch64.tar.gz" | sha256sum | cut -d' ' -f1)
-        cat > /tmp/twig.rb <<RUBY
-        class Twig < Formula
-          desc "Parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, and XML documents"
-          homepage "https://github.com/diaryx-org/twig"
-          version "$version"
-          license "MIT OR Apache-2.0"
-
-          on_macos do
-            on_arm do
-              url "https://github.com/diaryx-org/twig/releases/download/v$version/twig-macos-arm64.tar.gz"
-              sha256 "$mac_arm64_sha"
-            end
-            on_intel do
-              url "https://github.com/diaryx-org/twig/releases/download/v$version/twig-macos-x86_64.tar.gz"
-              sha256 "$mac_x64_sha"
-            end
-          end
-
-          on_linux do
-            on_arm do
-              url "https://github.com/diaryx-org/twig/releases/download/v$version/twig-linux-aarch64.tar.gz"
-              sha256 "$linux_arm64_sha"
-            end
-            on_intel do
-              url "https://github.com/diaryx-org/twig/releases/download/v$version/twig-linux-x86_64.tar.gz"
-              sha256 "$linux_x64_sha"
-            end
-          end
-
-          def install
-            bin.install "twig"
-          end
-
-          test do
-            assert_match version.to_s, shell_output("#{bin}/twig --version")
-          end
-        end
-        RUBY
-    # Mint a short-lived installation token from the diaryx-bot GitHub App
-    # (scoped to Contents:write on diaryx-org/homebrew-tap only). Replaces the
-    # old HOMEBREW_TAP_TOKEN PAT, which was tied to a personal account and broke
-    # when the repos moved into the org. The token lasts ~1h and is confined to
-    # this job; only the App's private key (TAP_APP_KEY) is stored long-term.
-    - name: Mint a tap token from the GitHub App
-      id: tap_token
-      uses: actions/create-github-app-token@v2
-      with:
-        app-id: ${{ secrets.TAP_APP_ID }}
-        private-key: ${{ secrets.TAP_APP_KEY }}
-        owner: diaryx-org
-        repositories: homebrew-tap
-    - name: Push to the tap
-      env: { COMMITTER_TOKEN: '${{ steps.tap_token.outputs.token }}' }
-      run: |
-        git clone "https://x-access-token:${COMMITTER_TOKEN}@github.com/diaryx-org/homebrew-tap" tap
-        cp /tmp/twig.rb tap/Formula/twig.rb
-        cd tap
-        git config user.name "diaryx-bot[bot]"
-        git config user.email "306900725+diaryx-bot[bot]@users.noreply.github.com"
-        git add Formula/twig.rb
-        if git diff --cached --quiet; then
-          echo "Formula unchanged — skipping commit"
-        else
-          git commit -m "twig ${GITHUB_REF_NAME#v}"
-          git push
-        fi
+  homebrew:
+    uses: diaryx-org/.github/.github/workflows/reusable-homebrew.yml@main
+    with:
+      name: twig
+      desc: "Parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, and XML documents"
+      language: zig
+      wasi: true
+    secrets:
+      TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
+      TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}
