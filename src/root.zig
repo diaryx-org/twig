@@ -162,6 +162,7 @@ test {
     _ = @import("format.zig");
     _ = @import("languages/djot/syntax.zig");
     _ = @import("languages/markdown/syntax.zig");
+    _ = @import("languages/html/syntax.zig");
     _ = Select;
     _ = Filter;
     _ = ast_json;

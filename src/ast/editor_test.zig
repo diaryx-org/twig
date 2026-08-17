@@ -202,6 +202,72 @@ test "toggleInline: a parse-only format spells no inline mark at all" {
     try testing.expectError(error.UnsupportedFormat, fx.ed.wrapRange(Span.init(3, 5), .emph));
 }
 
+test "toggleInline: html spells a mark as a tag pair" {
+    // A `Delims` is a tag pair, so the same gesture that writes `**` writes
+    // `<strong>` — no HTML-specific code path anywhere. The assertion is on the
+    // reparsed KIND, not just the bytes: it is what proves the toggle reverses.
+    var fx = try Fixture.init("<p>a word b</p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.toggleInline(Span.init(5, 9), .strong);
+    try fx.expectSource("<p>a <strong>word</strong> b</p>\n");
+    try testing.expect(fx.find(.{ .mark = .strong }) != null);
+
+    // Off again, selecting the interior the reparse now reports.
+    try fx.ed.toggleInline(Span.init(13, 17), .strong);
+    try fx.expectSource("<p>a word b</p>\n");
+    try testing.expect(fx.find(.{ .mark = .strong }) == null);
+}
+
+test "toggleInline: html toggles an ALIAS tag off, and normalizes on the way back" {
+    // `<b>` parses as `strong` but is not what the table spells. Stripping still
+    // works, because `Splicer.toggleInline` recovers the interior from the
+    // parser's `content_span` rather than by matching the table's bytes — so an
+    // alias needs no entry. The visible consequence is the normalization: what
+    // comes back is `<strong>`, not the `<b>` that was there.
+    var fx = try Fixture.init("<p><b>word</b></p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.toggleInline(Span.init(6, 10), .strong);
+    try fx.expectSource("<p>word</p>\n");
+    try fx.ed.toggleInline(Span.init(3, 7), .strong);
+    try fx.expectSource("<p><strong>word</strong></p>\n");
+}
+
+test "toggleInline: html spells every kind the toolbar vocabulary names" {
+    // `verbatim` is the text leaf in the vocabulary; `<code>` upgrades only when
+    // the element holds one text child, which is what a wrap produces.
+    var fx = try Fixture.init("<p>a x b</p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.toggleInline(Span.init(5, 6), .verbatim);
+    try fx.expectSource("<p>a <code>x</code> b</p>\n");
+    try testing.expect(fx.find(.{ .text_leaf = .verbatim }) != null);
+
+    // Unlike Markdown — which refuses five of the eight — HTML spells all of
+    // them, so no toolbar button is dark. (The two quote containers it cannot
+    // spell are not in this vocabulary: the parser produces them, no gesture
+    // does. See `html/syntax.zig`.)
+    inline for (std.meta.fields(Editor.InlineKind)) |f| {
+        var one = try Fixture.init("<p>a x b</p>\n", .html);
+        defer one.deinit();
+        try one.ed.wrapRange(Span.init(5, 6), @enumFromInt(f.value));
+    }
+}
+
+test "toggleInline: html's raggedness stops at the block level" {
+    // The gestures whose spelling has the wrong SHAPE for its field (heading is a
+    // wrapping pair, a quote wraps rather than prefixing lines, a fence measures
+    // nothing) and the ones whose escaping mechanism is entities, not
+    // backslashes. All refused through the one uniform path, none of them with a
+    // hand-written HTML arm.
+    var fx = try Fixture.init("<p>ab</p>\n", .html);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.setBlock(4, .heading, 1));
+    try testing.expectError(error.UnsupportedFormat, toggleContainer(&fx, 3, 5, .block_quote));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.toggleCodeBlock(Span.init(3, 5), null));
+    try testing.expectError(error.UnsupportedFormat, insertLiteral(&fx, 4, "x"));
+    try testing.expectError(error.UnsupportedFormat, insertLink(&fx, 3, 5, "http://x.dev"));
+    try fx.expectSource("<p>ab</p>\n");
+}
+
 test "wrapRange always adds, even over an existing mark" {
     var fx = try Fixture.init("a *word* b\n", .djot);
     defer fx.deinit();
@@ -617,10 +683,21 @@ test "insertLineBreak: a format with no in-cell break spelling is refused (djot)
     try testing.expectError(error.UnsupportedFormat, fx.ed.insertLineBreak(3));
 }
 
-test "insertLineBreak: a parse-only format spells no in-cell break (html)" {
+test "insertLineBreak: html spells the in-cell break natively" {
+    // `<br>` is not borrowed here the way it is in a GFM cell — it is simply how
+    // HTML spells a break, and the parser reads it straight back.
     var fx = try Fixture.init("<table><tr><td>a</td></tr></table>\n", .html);
     defer fx.deinit();
-    try testing.expectError(error.UnsupportedFormat, fx.ed.insertLineBreak(15));
+    // Caret just after the cell's `a`, which sits at 15.
+    try fx.ed.insertLineBreak(16);
+    try fx.expectSource("<table><tr><td>a<br></td></tr></table>\n");
+    try testing.expect(fx.find(.{ .tag = .hard_break }) != null);
+}
+
+test "insertLineBreak: off-cell is NoBlock even where the format spells one" {
+    var fx = try Fixture.init("<p>ab</p>\n", .html);
+    defer fx.deinit();
+    try testing.expectError(error.NoBlock, fx.ed.insertLineBreak(4));
 }
 
 test "toggle_block_container: a range covering no block is NoBlock" {
@@ -1318,11 +1395,21 @@ test "thematic_break: an empty document is a legitimate place for one" {
 }
 
 test "thematic_break: a parse-only format spells none" {
-    for ([_]format.Format{ .xml, .html }) |fmt| {
-        var fx = try Fixture.init("<r>ab</r>", fmt);
-        defer fx.deinit();
-        try testing.expectError(error.UnsupportedFormat, fx.ed.insertThematicBreak(3));
-    }
+    var fx = try Fixture.init("<r>ab</r>", .xml);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.insertThematicBreak(3));
+}
+
+test "thematic_break: html spells it `<hr>`, after the caret's block" {
+    var fx = try Fixture.init("<p>ab</p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(4);
+    // The blank line is the shared gesture's unconditional separation — needed
+    // in Markdown, where `---` after a paragraph line is a setext underline
+    // instead of a rule. In HTML it is inert whitespace between two blocks, so
+    // the one spelling stays safe for every format.
+    try fx.expectSource("<p>ab</p>\n\n<hr>\n");
+    try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
 }
 
 // ── split block ──────────────────────────────────────────────────────────────

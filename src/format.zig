@@ -396,8 +396,16 @@ pub const registry = [_]Entry{
         .parseToAst = parseToAstHtml,
         .renderHtml = renderHtmlGeneric,
         .serializeCanonical = serializeCanonicalHtml,
-        // No `syntax`: HTML is parse-and-render only. Authoring gestures spell
-        // djot/Markdown's lightweight markup, which HTML doesn't have.
+        // A PARTIAL `syntax`, and the row that proves `Syntax`'s raggedness is
+        // real rather than a two-formats-and-the-rest split. HTML has none of
+        // the lightweight markup this table was built for, but a tag pair IS a
+        // `Delims`: it spells seven of the nine inline marks, `<code>`, `<hr>`
+        // and `<br>`, and its parser reads every one of them back. Its heading,
+        // quote, list and fence spellings have the wrong SHAPE for the fields
+        // that hold them, and its escaping is entities rather than backslashes —
+        // so those stay `null` and their gestures stay unsupported. See
+        // `languages/html/syntax.zig` for which and why.
+        .syntax = &@import("languages/html/syntax.zig").table,
     },
     .{
         .id = .asciidoc,
@@ -644,14 +652,22 @@ test "every syntax table in the registry is coherent" {
     for (&registry) |*e| e.syntax.assertCoherent();
 }
 
-test "exactly djot and markdown are authorable" {
+test "which formats can be authored into at all" {
     try std.testing.expect(syntaxFor(.djot).authorable());
     try std.testing.expect(syntaxFor(.markdown).authorable());
-    // XML, HTML and AsciiDoc parse and render but cannot be authored into: they
-    // carry the table that spells nothing, so every gesture over them is
-    // refused.
+    // HTML joins them PARTIALLY: it spells inline marks, `<code>`, `<hr>` and
+    // `<br>` and nothing block-level, so `authorable()` is true while
+    // `setBlock`, `toggleBlockContainer`, `toggleCodeBlock`, the task and
+    // footnote gestures and `insertLiteral` all still report unsupported. The
+    // predicate is "can ANY gesture be spelled", not "can every one" — see
+    // `diagnostics.zig` for the per-kind fidelity question, which is a different
+    // one again.
+    try std.testing.expect(syntaxFor(.html).authorable());
+    try std.testing.expect(syntaxFor(.html).heading_marker == null);
+    try std.testing.expect(syntaxFor(.html).text_escapes == null);
+    // XML and AsciiDoc still carry the table that spells nothing, so every
+    // gesture over them is refused.
     try std.testing.expect(!syntaxFor(.xml).authorable());
-    try std.testing.expect(!syntaxFor(.html).authorable());
     try std.testing.expect(!syntaxFor(.asciidoc).authorable());
 }
 

@@ -1405,11 +1405,12 @@ pub const Editor = struct {
     /// single source line, so this is the one break the cell can hold; the
     /// spliced `<br>` reparses as a `hard_break` in cell context (see
     /// `markdown/inline.zig`), so the caller reads back a semantic node, not raw
-    /// HTML.
+    /// HTML. In HTML itself `<br>` is not borrowed at all — it is simply the
+    /// break, and the cell restriction here understates what the format allows.
     ///
     /// Errors:
     /// - `UnsupportedFormat` — the format has no in-cell break spelling (djot,
-    ///   HTML, XML). Checked first: it is a property of the format, not the caret.
+    ///   XML). Checked first: it is a property of the format, not the caret.
     /// - `NoBlock` — `offset` is not inside a table cell. Only the in-cell
     ///   gesture is spelled today; a general (non-cell) hard break is future work.
     /// - `EditConflict` — the splice would no longer parse as the same table; the
