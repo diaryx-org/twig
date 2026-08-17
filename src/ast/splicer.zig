@@ -810,6 +810,18 @@ test "insertBefore / insertAfter / deleteNode" {
     try testing.expectEqualStrings("<r><y/><x/><b/></r>", ed.sourceBytes());
 }
 
+test "deleteNode on a quote takes its own trailing marker lines with it" {
+    // Regression: a quote's span used to stop at its last BLOCK, so the `>` and
+    // `> ` lines Enter leaves at its end belonged to no node and survived the
+    // delete as orphaned markers -- corruption, not a display wart. See
+    // markdown `block.zig`'s `extendQuotesTo`.
+    var ed = try Splicer.init(testing.allocator, "> a\n>\n> \n\nafter\n", &test_ctx, parseMarkdown);
+    defer ed.deinit();
+
+    try ed.deleteNodeSmart(&.{0});
+    try testing.expectEqualStrings("after\n", ed.sourceBytes());
+}
+
 test "unwrapNode keeps a container's children, drops the wrapper" {
     var ed = try Splicer.init(testing.allocator, "<r><box><b/><c/></box></r>", &test_ctx, parseXml);
     defer ed.deinit();

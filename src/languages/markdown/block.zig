@@ -1250,6 +1250,36 @@ pub const Parser = struct {
         return Span.init(syntactic.start, @max(syntactic.end, b.spans.items[last].end));
     }
 
+    /// Extend every still-matched block quote's `end_line` to `idx` — the line
+    /// it just matched, meaning that line carries its `>`.
+    ///
+    /// The one lazy container whose own lines can reach PAST its last child.
+    /// `containerSpanExtended` derives a lazy container's end from that child,
+    /// which is right for a list item (its lines are its blocks) and wrong for a
+    /// quote: `> a\n>\n> \n` ends with two lines that hold no block but are
+    /// unmistakably the quote's — they are spelled with its marker, and they are
+    /// what pressing Enter at the end of a quote produces. Leaving them out put
+    /// real source bytes inside no node at all, so a consumer walking the tree
+    /// could not tell "in the quote, under none of its blocks" from "past the
+    /// quote" and drew the line the caret had just moved onto as plain prose.
+    /// djot has always spanned them (its closer ends at `content_end`, and a
+    /// marker line is content); this is Markdown catching up.
+    ///
+    /// Quotes only. `matchListItem` matches a BLANK line to keep an item open
+    /// across its own interior blanks, so extending on a match would drag every
+    /// trailing blank line into the item — the overrun djot's `content_end` was
+    /// added to stop. `matchBlockQuote` demands a literal `>`, so a line that
+    /// matches it is one the quote genuinely owns.
+    ///
+    /// `content_span` is unaffected: `setContentSpanFromChildren` still stops at
+    /// the last child, so the pair reports the marker lines and the blocks
+    /// separately.
+    fn extendQuotesTo(self: *Parser, matched_index: usize, idx: usize) void {
+        for (self.stack.items[1..matched_index]) |*c| {
+            if (c.kind == .block_quote) c.end_line = idx;
+        }
+    }
+
     fn top(self: *Parser) *Container {
         return &self.stack.items[self.stack.items.len - 1];
     }
@@ -1603,6 +1633,7 @@ pub const Parser = struct {
         if (idx >= self.stop_at_line) return;
         const m = self.matchContainers(line);
         const cur = m.cur;
+        self.extendQuotesTo(m.matched_index, idx);
 
         if (m.matched_index < self.stack.items.len) {
             const remainder0 = line[cur.pos..];
@@ -4226,4 +4257,83 @@ test "span: a block quote's span covers all its lines" {
     try testing.expect(r.ast.nodes[bq].kind == .block_quote);
     const sp = r.span(bq);
     try testing.expectEqualStrings("> line one\n> line two", src[sp.start..sp.end]);
+}
+
+// ── a quote's own trailing marker lines ─────────────────────────────────
+// The one lazy container whose span outruns its last child -- see
+// `extendQuotesTo`. These lines hold no block but carry the quote's marker, so
+// they are the quote's; leaving them out left real source bytes inside no node
+// and made a renderer draw the line after Enter as plain prose.
+
+test "span: a block quote covers its own trailing marker lines" {
+    // What pressing Enter at the end of a quote produces: a `>` line and a
+    // `> ` line, neither holding a block.
+    const src = "> a\n>\n> \n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const bq = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[bq].kind == .block_quote);
+    const sp = r.span(bq);
+    try testing.expectEqualStrings("> a\n>\n> ", src[sp.start..sp.end]);
+
+    // `content_span` still stops at the last block, so the two are readable
+    // apart: the marker lines are in the quote, under none of its children.
+    const cs = r.contentSpan(bq) orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("> a", src[cs.start..cs.end]);
+}
+
+test "span: a quote's marker lines stop at the blank that ends the quote" {
+    // The complement: a trailing `> ` line is the quote's, the blank line after
+    // it is nobody's, and the paragraph past that is its own.
+    const src = "> a\n> \n\nafter\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const bq = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[bq].kind == .block_quote);
+    const sp = r.span(bq);
+    try testing.expectEqualStrings("> a\n> ", src[sp.start..sp.end]);
+}
+
+test "span: nested quotes both cover the trailing marker lines they match" {
+    const src = "> > a\n> >\n> > \n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const outer = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[outer].kind == .block_quote);
+    try testing.expectEqualStrings("> > a\n> >\n> > ", src[r.span(outer).start..r.span(outer).end]);
+
+    // Both markers are on every line, so the inner quote matches them all too.
+    const inner = r.ast.nodes[outer].first_child.?;
+    try testing.expect(r.ast.nodes[inner].kind == .block_quote);
+    try testing.expectEqualStrings("> > a\n> >\n> > ", src[r.span(inner).start..r.span(inner).end]);
+}
+
+test "span: a lazy continuation line does not extend the quote past its paragraph" {
+    // `b` carries no `>`, so it never matches the quote -- the span comes from
+    // the paragraph that swallowed it lazily, exactly as before.
+    const src = "> a\nb\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const bq = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[bq].kind == .block_quote);
+    const sp = r.span(bq);
+    try testing.expectEqualStrings("> a\nb", src[sp.start..sp.end]);
+}
+
+test "span: a list item is NOT extended by the blank lines it matches" {
+    // `matchListItem` matches a blank line to keep an item open across its own
+    // interior blanks -- which is why `extendQuotesTo` is quotes only. A list
+    // followed by a blank still stops at its own last line.
+    const src = "- item\n\n[link]: /url\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const list = r.ast.nodes[r.ast.root].first_child.?;
+    const item = r.ast.nodes[list].first_child.?;
+    try testing.expect(r.ast.nodes[item].kind == .list_item);
+    try testing.expectEqualStrings("- item", src[r.span(item).start..r.span(item).end]);
 }

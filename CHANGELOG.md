@@ -49,6 +49,28 @@ the scaffold's bullets into written entries and dropping what is left.
 None, for now!
 <!-- git-cliff:end -->
 
+### Behavioural changes
+
+- **A Markdown `block_quote`'s span covers its own trailing marker lines.**
+  `"> a\n>\n> \n"` reported `block_quote 0..3` — the last two lines, spelled
+  with the quote's own `>`, belonged to no node at all. That is what pressing
+  Enter at the end of a quote produces, so it was the common path: a consumer
+  walking the tree could not tell "inside the quote, under none of its blocks"
+  from "past the quote", and drew the line the caret had just moved onto as
+  plain prose. Deleting the quote left `>\n> \n` behind as orphaned markers.
+
+  The span now ends after the last line carrying the marker (`0..8` here);
+  `content_span` is unchanged and still stops at the last child (`0..3`), so
+  the two report the marker lines and the blocks separately. Nested quotes each
+  cover every line they match. djot already behaved this way — this is Markdown
+  catching up, and it is the behaviour `Editor.toggleBlockContainer` was
+  already written against ("its span can reach past the last covered block").
+
+  Quotes only. A list item matches a blank line to stay open across its own
+  interior blanks, so extending on a match there would drag every trailing
+  blank into the item — the overrun `content_end` was added to stop in 3.1.0.
+  No HTML output changes.
+
 ## 3.1.0
 
 ### Added
