@@ -46,6 +46,10 @@ the scaffold's bullets into written entries and dropping what is left.
 ## Unreleased
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
+None, for now!
+<!-- git-cliff:end -->
+
+## 3.1.0
 
 ### Added
 
@@ -55,8 +59,6 @@ the scaffold's bullets into written entries and dropping what is left.
 ### Fixed
 
 - **djot** — a block's span stops at its own last line ([`f511641`](https://github.com/diaryx-org/twig/commit/f5116414802de43c18f85e1a5126c05e42a7d9ea))
-
-<!-- git-cliff:end -->
 
 ### Behavioural changes
 
@@ -77,6 +79,7 @@ the scaffold's bullets into written entries and dropping what is left.
   list item on the *next* line's indentation (`1:2:1-2:1:5` for ` - a\n - b`),
   which Twig no longer reproduces — a span is what an edit splices, and that
   byte belongs to the next item's line.
+
 
 ## 3.0.0 — editor gestures, and telling consumers what a conversion costs
 
