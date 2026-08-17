@@ -1470,11 +1470,17 @@ pub const Parser = struct {
         lf.text.items.len = text.len;
         if (lf.text.items.len > 0 and lf.text.items[lf.text.items.len - 1] != '\n') try lf.text.append(self.allocator, '\n');
         const id = try self.builder.addLeaf(.{ .code_block = .{ .lang = null, .text = lf.text.items } });
-        const span = Span.init(self.lineStart(lf.start_line), self.lineEnd(lf.end_line));
+        // The SAME trim, applied to the span. `handleBlankLine` advances
+        // `end_line` onto every blank it buffers, because a blank inside the
+        // block really is body text and only the trailing run is not; whichever
+        // ones turn out to be trailing have to come back off both the text and
+        // the extent, or the span reaches lines the block no longer holds and
+        // an edit deleting it eats the separator before the next block.
+        const end_line = @max(lf.start_line, lf.end_line -| lf.trailing_blanks);
+        const span = Span.init(self.lineStart(lf.start_line), self.lineEnd(end_line));
         self.builder.setSpan(id, span);
         // Indented code has no fences to strip, so its interior IS the whole
-        // block; `content_span` equals `span` (trailing blanks are already
-        // excluded above via `end_line`). This keeps every `code_block`
+        // block and `content_span` equals `span`. This keeps every `code_block`
         // uniformly carrying a `content_span` — see `ast.zig`'s doc comment.
         self.builder.setContentSpan(id, span);
         try self.appendToTop(id);
@@ -2764,6 +2770,12 @@ pub const Parser = struct {
         const term_segs = try rebaseSegments(self.allocator, lf.text_segs.items, lf.text.items, trimmed_term);
         defer self.allocator.free(term_segs);
         var term_start_line = lf.start_line;
+        // The FIRST term's line, kept because `term_start_line` moves on to each
+        // later term and the list has to start where its first item does. `idx`
+        // — the `:` line this was called on — is one line too far: it would put
+        // the list's own start BELOW the term it opens with, so the list did not
+        // contain its first child and deleting a one-item list orphaned `Term`.
+        const list_start_line = lf.start_line;
         // Free the paragraph leaf's own buffer FIRST (while `lf` -- a
         // pointer into `self.leaf`'s payload -- is still valid), THEN null
         // out `self.leaf` itself; doing it in the other order would zero
@@ -2887,7 +2899,7 @@ pub const Parser = struct {
         }
 
         const list_id = try self.builder.addContainer(.definition_list, item_ids.items);
-        self.builder.setSpan(list_id, Span.init(self.lineStart(idx), self.lineEnd(last_idx)));
+        self.builder.setSpan(list_id, Span.init(self.lineStart(list_start_line), self.lineEnd(last_idx)));
         setContentSpanFromChildren(&self.builder, list_id);
         try self.appendToTop(list_id);
         self.skip_until_line = last_idx + 1;
@@ -3436,6 +3448,50 @@ test "content_span: indented code interior is the whole block (indent included)"
     try testing.expectEqualStrings("abc\n", r.ast.nodes[cb].kind.code_block.text);
 }
 
+test "span: indented code stops at its last content line, not the blanks after it" {
+    // Regression: a blank line is a TENTATIVE content line for indented code
+    // (`handleBlankLine` advances `end_line` onto it), and `finishIndentedCode`
+    // trimmed the ones that turned out to be trailing from the TEXT but not from
+    // the extent — so the span reached lines the block does not hold, and
+    // `source[content_span]` disagreed with `text` about where the block ends.
+    const src = "    code\n\n\n\nafter\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const cb = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[cb].kind == .code_block);
+    try testing.expectEqualStrings("    code", Span.of(u8, r.span(cb), src));
+    try testing.expectEqualStrings("    code", Span.of(u8, r.contentSpan(cb).?, src));
+    try testing.expectEqualStrings("code\n", r.ast.nodes[cb].kind.code_block.text);
+}
+
+test "span: an indented code block keeps a blank line INSIDE it" {
+    // The complement: only the TRAILING run comes off. A blank between two
+    // indented lines is body text, in the span and in the text alike.
+    const src = "    a\n\n    b\n\nafter\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const cb = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[cb].kind == .code_block);
+    try testing.expectEqualStrings("    a\n\n    b", Span.of(u8, r.span(cb), src));
+    try testing.expectEqualStrings("a\n\nb\n", r.ast.nodes[cb].kind.code_block.text);
+}
+
+test "span: an indented code block inside a list item does not stretch the item" {
+    // A leaf's overrun propagates: `containerSpanExtended` takes the item's end
+    // from its last child, so the blanks the code block wrongly held became the
+    // item's too.
+    const src = "- a\n\n      code\n\nafter\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+
+    const list = r.ast.nodes[r.ast.root].first_child.?;
+    const item = r.ast.nodes[list].first_child.?;
+    try testing.expect(r.ast.nodes[item].kind == .list_item);
+    try testing.expectEqualStrings("- a\n\n      code", Span.of(u8, r.span(item), src));
+}
+
 test "tight bullet list with two items" {
     var r = try parse(testing.allocator, "- a\n- b\n", .{});
     defer r.deinit(testing.allocator);
@@ -3849,6 +3905,35 @@ test "definition list: two adjacent term groups merge into one definition_list" 
     const term2 = r.ast.nodes[item2].first_child.?;
     const term2_text = r.ast.nodes[term2].first_child.?;
     try testing.expectEqualStrings("Term B", r.ast.nodes[term2_text].kind.str);
+}
+
+test "span: a definition_list contains its own first term" {
+    // Regression: the list took its start from the `:` line the parse was
+    // standing on rather than the TERM line above it, so the list began BELOW
+    // its own first child — `Term` was in the item and outside the list, and
+    // deleting a one-item definition list left it orphaned.
+    const src = "Term\n: def\n\nafter\n";
+    var r = try parse(testing.allocator, src, .{ .definition_lists = true });
+    defer r.deinit(testing.allocator);
+
+    const dl = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[dl].kind == .definition_list);
+    try testing.expectEqualStrings("Term\n: def", Span.of(u8, r.span(dl), src));
+
+    // The invariant that was broken: a container's span contains its children'.
+    const item = r.ast.nodes[dl].first_child.?;
+    try testing.expect(r.span(dl).start <= r.span(item).start);
+    try testing.expect(r.span(dl).end >= r.span(item).end);
+}
+
+test "span: a multi-term definition_list still runs first term to last definition" {
+    const src = "A\n: one\n\nB\n: two\n\nafter\n";
+    var r = try parse(testing.allocator, src, .{ .definition_lists = true });
+    defer r.deinit(testing.allocator);
+
+    const dl = r.ast.nodes[r.ast.root].first_child.?;
+    try testing.expect(r.ast.nodes[dl].kind == .definition_list);
+    try testing.expectEqualStrings("A\n: one\n\nB\n: two", Span.of(u8, r.span(dl), src));
 }
 
 test "definition list: renders as <dl><dt>...<dd>... via the shared HTML printer" {

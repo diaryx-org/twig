@@ -80,6 +80,24 @@ None, for now!
   a blank line in a fenced code block still resolves to the code block, and
   the gesture wraps the whole fence as before.
 
+- **A Markdown indented `code_block`'s span stops at its last content line.**
+  A blank line is a *tentative* content line for indented code, so the scanner
+  advances the block's end onto it and trims back whichever ones turn out to be
+  trailing. That trim reached the block's `text` but not its extent, so
+  `"    code\n\n\n\nafter\n"` reported `0..10` for a block whose text was
+  `"code\n"` — `source[content_span]` and `text` disagreed about where the
+  block ended, and the span covered blank lines separating it from the next
+  block. Both now end at `0..8`. A blank line *between* two indented lines is
+  body text and still included. The overrun propagated outward through
+  `containerSpanExtended`, so an enclosing list item was too long too.
+
+- **A Markdown `definition_list`'s span starts at its first term.** It was
+  taken from the `:` line the parse was standing on rather than the term line
+  above it, so `"Term\n: def"` reported the list as `5..10` while its own first
+  child ran `0..10` — a container that did not contain its children. Deleting a
+  one-item definition list left `Term` behind. `content_span` was always right
+  (it is derived from the children), so only the syntactic span moves.
+
 - **A Markdown `block_quote`'s span covers its own trailing marker lines.**
   `"> a\n>\n> \n"` reported `block_quote 0..3` — the last two lines, spelled
   with the quote's own `>`, belonged to no node at all. That is what pressing
