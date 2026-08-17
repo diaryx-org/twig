@@ -700,11 +700,131 @@ test "insertLineBreak: off-cell is NoBlock even where the format spells one" {
     try testing.expectError(error.NoBlock, fx.ed.insertLineBreak(4));
 }
 
-test "toggle_block_container: a range covering no block is NoBlock" {
-    var fx = try Fixture.init("a\n\nb\n", .djot);
-    defer fx.deinit();
-    // Offset 2 is the blank line between the paragraphs: no block owns it.
-    try testing.expectError(error.NoBlock, toggleContainer(&fx, 2, 2, .block_quote));
+// ── opening a container on a blank line ────────────────────────────────────
+// `setBlock` has always opened `# ` where there is no block to convert; these
+// are the same gesture for the three container buttons beside it, which used to
+// answer `error.NoBlock` there and do nothing. See `openContainerOnBlankLine`.
+
+test "toggle_block_container: a blank line OPENS an empty container" {
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        // Offset 2 is the blank line between the paragraphs: no block owns it.
+        var q = try Fixture.init("a\n\nb\n", fmt);
+        defer q.deinit();
+        try toggleContainer(&q, 2, 2, .block_quote);
+        try q.expectSource("a\n\n> \nb\n");
+
+        var b = try Fixture.init("a\n\nb\n", fmt);
+        defer b.deinit();
+        try toggleContainer(&b, 2, 2, .bullet_list);
+        try b.expectSource("a\n\n- \nb\n");
+
+        var o = try Fixture.init("a\n\nb\n", fmt);
+        defer o.deinit();
+        try toggleContainer(&o, 2, 2, .ordered_list);
+        try o.expectSource("a\n\n1. \nb\n");
+    }
+}
+
+test "toggle_block_container: an opened container reparses as one" {
+    // Source that merely looks right isn't enough — an empty list item cannot
+    // interrupt a paragraph, so a marker written flush under one is read as
+    // that paragraph's own text and the document gains no list at all. This is
+    // what the blank line above the marker is for.
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        var fx = try Fixture.init("a\n\nb\n", fmt);
+        defer fx.deinit();
+        try toggleContainer(&fx, 2, 2, .bullet_list);
+        try testing.expect(fx.find(.{ .tag = .bullet_list }) != null);
+        // And the paragraph below stays its own block rather than being adopted
+        // as the empty item's lazy continuation.
+        try testing.expect(fx.find(.{ .tag = .para }) != null);
+    }
+}
+
+test "toggle_block_container: a bullet opened on a quote's blank line stays in the quote" {
+    // The line's own `>` is kept and the marker written after it, with the
+    // space djot needs after the last `>` even though the blank line carries
+    // none — `openBlockOnBlankLine`'s rule, for the same reason.
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        var fx = try Fixture.init("> a\n>\n", fmt);
+        defer fx.deinit();
+        try toggleContainer(&fx, 4, 4, .bullet_list);
+        try fx.expectSource("> a\n>\n> - \n");
+        try testing.expect(fx.find(.{ .tag = .block_quote }) != null);
+        try testing.expect(fx.find(.{ .tag = .bullet_list }) != null);
+    }
+}
+
+test "toggle_block_container: no blank line is added when one is already above" {
+    // `a\n\n\n\nb\n` — the caret's blank line already has a blank above it, so
+    // the marker is written in place rather than pushed down another line.
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        var fx = try Fixture.init("a\n\n\n\nb\n", fmt);
+        defer fx.deinit();
+        try toggleContainer(&fx, 3, 3, .bullet_list);
+        try fx.expectSource("a\n\n- \n\nb\n");
+    }
+}
+
+test "toggle_block_container: the same button twice takes the empty container back off" {
+    // A toggle has to go both ways. Quote pressed twice used to nest `> > ` and
+    // Bulleted pressed twice failed outright, leaving a button that could not be
+    // un-pressed until the author typed something into it.
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        var q = try Fixture.init("a\n\nb\n", fmt);
+        defer q.deinit();
+        try toggleContainer(&q, 2, 2, .block_quote);
+        try q.expectSource("a\n\n> \nb\n");
+        try toggleContainer(&q, 5, 5, .block_quote);
+        try q.expectSource("a\n\n\nb\n");
+
+        var b = try Fixture.init("a\n\nb\n", fmt);
+        defer b.deinit();
+        try toggleContainer(&b, 2, 2, .bullet_list);
+        try b.expectSource("a\n\n- \nb\n");
+        try toggleContainer(&b, 5, 5, .bullet_list);
+        try b.expectSource("a\n\n\nb\n");
+    }
+}
+
+test "toggle_block_container: the OTHER list button converts an empty marker" {
+    // What the non-empty path already does for a real list, at the one size it
+    // could not reach.
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        var fx = try Fixture.init("a\n\nb\n", fmt);
+        defer fx.deinit();
+        try toggleContainer(&fx, 2, 2, .bullet_list);
+        try toggleContainer(&fx, 5, 5, .ordered_list);
+        try fx.expectSource("a\n\n1. \nb\n");
+        try toggleContainer(&fx, 6, 6, .bullet_list);
+        try fx.expectSource("a\n\n- \nb\n");
+    }
+}
+
+test "toggle_block_container: un-quoting an empty nested quote leaves the outer one" {
+    // The innermost marker comes off, and the line it leaves behind is spelled
+    // `>` — a quote's own blank line — not `> ` with a stranded space.
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        var fx = try Fixture.init("> a\n> > \n", fmt);
+        defer fx.deinit();
+        try toggleContainer(&fx, 8, 8, .block_quote);
+        try fx.expectSource("> a\n>\n");
+    }
+}
+
+test "toggle_block_container: a blank line inside a code block wraps the block, not the line" {
+    // The other half of "a blank line opens a container": this blank is the
+    // listing's own body, and `coveredBlocks` resolves it to the code block
+    // rather than to nothing — so the gesture wraps the whole fence and never
+    // reaches `openContainerOnBlankLine`. Writing a marker into the blank
+    // instead would add no list and corrupt the code.
+    for ([_]format.Format{ .djot, .markdown }) |fmt| {
+        var fx = try Fixture.init("```\na\n\nb\n```\n", fmt);
+        defer fx.deinit();
+        try toggleContainer(&fx, 6, 6, .bullet_list);
+        try fx.expectSource("- ```\n  a\n\n  b\n  ```\n");
+        try testing.expect(fx.find(.{ .tag = .code_block }) != null);
+    }
 }
 
 test "toggle_block_container: a `>` inside a code block is not a quote" {

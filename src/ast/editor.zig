@@ -449,6 +449,9 @@ pub const Editor = struct {
     /// makes a partial selection inside a quote nest (`> >`) instead of dragging
     /// the container's uncovered siblings out with it. Toggling a list kind
     /// while inside the other list kind converts in place rather than nesting.
+    ///
+    /// ON A BLANK LINE this OPENS an empty container instead of wrapping one,
+    /// `setBlock`'s rule for the same position — see `openContainerOnBlankLine`.
     pub fn toggleBlockContainer(self: *Editor, span: Span, kind: ContainerKind) Error!void {
         try self.checkRange(span.start, span.end);
         const sp = self.syntax.container_spelling.get(kind) orelse return error.UnsupportedFormat;
@@ -459,7 +462,9 @@ pub const Editor = struct {
 
         const blocks = coveredBlocks(allocator, &self.splicer.doc, span.start, span.end) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return error.NoBlock,
+            // Nothing to wrap: the caret is on a BLANK LINE, where the gesture
+            // opens an empty container rather than failing.
+            else => return self.openContainerOnBlankLine(span.start, kind, sp),
         };
         defer allocator.free(blocks.chain);
 
@@ -515,6 +520,120 @@ pub const Editor = struct {
 
         try buildContainerAdd(allocator, src, &self.splicer.doc, blocks, region_start, region_end, sp, &out);
         return self.commitSplice(region_start, region_end, out.items);
+    }
+
+    /// `toggleBlockContainer` where there is no block to wrap: the caret sits on
+    /// a BLANK LINE, so the container's marker is OPENED on it and the author
+    /// types into it — "bullet, then type", which is how a list most often
+    /// starts.
+    ///
+    /// The twin of `openBlockOnBlankLine`, and it has to be: `setBlock` opening
+    /// `# ` on a blank line while the quote and list gestures answered
+    /// `error.NoBlock` meant a toolbar's H1 button worked on an empty line and
+    /// its Quote / Bulleted / Numbered buttons were silent no-ops beside it.
+    /// Everything that function reasons about applies unchanged here, so the
+    /// shape is deliberately the same one:
+    ///
+    /// The line's own quote markers are kept and the container's marker written
+    /// after them, so a bullet asked for on a quote's blank line lands inside
+    /// the quote rather than ending it — re-emitted with a space after the last
+    /// `>` even when the blank line carries none, since a blank quoted line is
+    /// spelled `>` and `>-` is not a quoted bullet.
+    ///
+    /// It is BLANK-SEPARATED from whatever precedes it, and here that is
+    /// load-bearing in BOTH formats rather than djot alone: an empty list item
+    /// cannot interrupt a paragraph, so `- ` written on the line directly under
+    /// one is read as that paragraph's own text and the document gains no list
+    /// at all. (`> ` can interrupt, so a quote would survive without the blank —
+    /// it gets one anyway, because a rule that holds for one of three buttons is
+    /// a rule nobody can remember.)
+    ///
+    /// One thing `openBlockOnBlankLine` needs and this does NOT: a guard against
+    /// the blank line being INTERIOR to a leaf (a fenced code block's body, a
+    /// table). That function is reached whenever `locate.innermostBlock` finds
+    /// nothing, and that is a narrow question — `para`/`heading`, all `setBlock`
+    /// rewrites markers for — so a code block's interior lands there and has to
+    /// be turned away. This is reached only when `coveredBlocks` finds nothing,
+    /// and that is a broad one: a caret anywhere inside a code block resolves to
+    /// the code block, which the gesture then wraps whole (`- ```…` over every
+    /// line, listing intact). By the time control arrives here the offset is in
+    /// no leaf at all, so there is nothing left to refuse.
+    ///
+    /// It TOGGLES, which is the whole gesture's name and not a bonus: a line
+    /// already holding an empty container of `kind` and nothing else has that
+    /// marker taken back off, because the press that made it has to un-make it.
+    /// Without this, Quote pressed twice on a blank line nested `> > ` and
+    /// Bulleted pressed twice failed outright — a button that cannot be
+    /// un-pressed until the author types something into it. An empty marker of
+    /// the OTHER list kind is CONVERTED, matching what the non-empty path does
+    /// for a real list.
+    ///
+    /// `error.NotEditable` when the line is neither blank nor exactly one empty
+    /// marker — content in no block, which no container edit fits.
+    fn openContainerOnBlankLine(self: *Editor, offset: usize, kind: ContainerKind, sp: ContainerSpelling) Error!void {
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const line_start = locate.lineStartAt(src, offset);
+        const body = locate.lineBody(src[line_start..locate.lineEndAt(src, offset)]);
+
+        // The line's quote markers, and where the INNERMOST one began — the one
+        // a Quote press takes back off.
+        var quotes_end: usize = 0;
+        var last_quote: usize = 0;
+        while (skipQuoteMarker(body, quotes_end)) |j| {
+            last_quote = quotes_end;
+            quotes_end = j;
+        }
+
+        const marker = listMarkerAt(body, quotes_end);
+        const empty_list = if (marker) |m| locate.isBlankLine(body[m.end..]) else false;
+        const blank = locate.isBlankLine(body[quotes_end..]);
+        if (!blank and !empty_list) return error.NotEditable;
+
+        // `keep` is the prefix that survives the edit, `write` what follows it.
+        // An empty `write` is the toggle-off direction.
+        var keep: usize = if (empty_list) marker.?.start else quotes_end;
+        var num_buf: [24]u8 = undefined;
+        const write: []const u8 = if (kind == .block_quote) blk: {
+            // A quote's own marker is what `skipQuoteMarker` has already eaten,
+            // so "an empty quote" is a line that is blank once they are all
+            // gone. Drop the innermost rather than nesting a second.
+            if (blank and quotes_end > 0) {
+                keep = last_quote;
+                break :blk "";
+            }
+            break :blk sp.marker;
+        } else if (empty_list and isOrderedMarker(body[marker.?.start]) == sp.numbered)
+            ""
+        else
+            listMarker(sp, 1, &num_buf);
+
+        const allocator = self.splicer.allocator;
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        // A blank line above, when the previous line has content — see above for
+        // why that is correctness rather than tidiness. Only when OPENING on a
+        // blank line: rewriting a marker that is already there needs no
+        // separation it does not already have, and adding one would make an
+        // enclosing list loose.
+        if (write.len > 0 and blank and precedingLineHasContent(src, line_start)) {
+            try out.appendSlice(allocator, std.mem.trimEnd(u8, body[0..keep], " "));
+            try out.append(allocator, '\n');
+        }
+
+        try out.appendSlice(allocator, body[0..keep]);
+        // The space djot needs after the last `>` even when the blank line
+        // carries none: `>-` is not a quoted bullet in either format.
+        if (write.len > 0 and keep > 0 and body[keep - 1] == '>') try out.append(allocator, ' ');
+        try out.appendSlice(allocator, write);
+
+        // Toggling off can leave the prefix's own trailing space stranded on an
+        // otherwise empty line; a quote's blank line is spelled `>`.
+        const tidy = if (write.len == 0) std.mem.trimEnd(u8, out.items, " ") else out.items;
+
+        // The whole line body, so a blank line's trailing spaces go with it.
+        return self.commitSplice(line_start, line_start + body.len, tidy);
     }
 
     /// Renumber the ordered list at `offset` so its markers run `1, 2, 3, …`,
@@ -1733,6 +1852,26 @@ fn precedingLineHasContent(src: []const u8, line_start: usize) bool {
     return !locate.isBlankLine(prev[i..]);
 }
 
+/// The marker that opens `sp`'s `ordinal`-th item — `sp.marker` for a fixed
+/// spelling, the ordinal itself for a numbered one, which is why `buf` is the
+/// caller's (the returned slice borrows it).
+///
+/// Shared by `buildContainerAdd`, which writes one per covered block, and
+/// `openContainerOnBlankLine`, which writes exactly one: `1. ` and `- ` have to
+/// be spelled the same by both, and two `{d}. ` format strings is one too many.
+fn listMarker(sp: ContainerSpelling, ordinal: u32, buf: *[24]u8) []const u8 {
+    if (!sp.numbered) return sp.marker;
+    return std.fmt.bufPrint(buf, "{d}. ", .{ordinal}) catch unreachable;
+}
+
+/// Whether the byte opening a list marker (`listMarkerAt`'s `start`) opens an
+/// ORDERED one — a digit, or the `(` of `(1)`. The complement is a `-`/`*`/`+`
+/// bullet. Lets `openContainerOnBlankLine` tell "the same button again" from
+/// "the other list button" against `ContainerSpelling.numbered`.
+fn isOrderedMarker(c: u8) bool {
+    return c == '(' or (c >= '0' and c <= '9');
+}
+
 fn skipQuoteMarker(line: []const u8, i: usize) ?usize {
     var j = i;
     var indent: usize = 0;
@@ -1834,10 +1973,7 @@ fn buildContainerAdd(
 
         if (blockStartsOnLine(doc, blocks, line_start, line_end)) {
             var num_buf: [24]u8 = undefined;
-            const marker = if (sp.numbered)
-                std.fmt.bufPrint(&num_buf, "{d}. ", .{ordinal}) catch unreachable
-            else
-                sp.marker;
+            const marker = listMarker(sp, ordinal, &num_buf);
             if (sp.numbered) cont = container_indent[0..@min(marker.len, container_indent.len)];
             try out.appendSlice(allocator, marker);
             try out.appendSlice(allocator, line);

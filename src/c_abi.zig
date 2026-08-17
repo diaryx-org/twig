@@ -4987,10 +4987,15 @@ test "toolbar: every Editor error maps to its own status" {
         TwigStatus.invalid_argument,
         twig_editor_set_block(dj.ed, 0, @intFromEnum(TwigBlockKind.heading), 9, null),
     );
-    // NoBlock -> not_found. (Offset 2 in `a\n\nb\n` is the blank separator.)
+    // NoBlock -> not_found. Renumbering asks for an ordered list and this
+    // document has none. (The blank line between two paragraphs used to serve
+    // here, until `toggleBlockContainer` learned to OPEN a container there.)
     var blank = try EditorFixture.initFmt("a\n\nb\n", .djot);
     defer blank.deinit();
-    try std.testing.expectEqual(TwigStatus.not_found, toggleContainer(&blank, 2, 2, .block_quote));
+    try std.testing.expectEqual(
+        TwigStatus.not_found,
+        twig_editor_renumber_ordered_lists(blank.ed, 0, null),
+    );
 
     // UnsupportedFormat -> unsupported_format: XML spells none of these.
     var xml = try EditorFixture.init("<a>hi</a>");

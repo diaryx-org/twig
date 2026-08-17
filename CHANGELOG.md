@@ -49,7 +49,36 @@ the scaffold's bullets into written entries and dropping what is left.
 None, for now!
 <!-- git-cliff:end -->
 
+### Added
+
+- **`Editor.toggleBlockContainer` opens an empty container on a blank line**,
+  the way `setBlock` has always opened `# ` there. `> `, `- ` and `1. ` are
+  written on the caret's line, blank-separated from whatever precedes it and
+  keeping any enclosing quote's markers, so "bullet, then type" works from an
+  empty line — which is how a list most often starts.
+
+  The blank line above is load-bearing in both formats, not cosmetic: an empty
+  list item cannot interrupt a paragraph, so a marker written flush under one
+  is read as that paragraph's own text and the document gains no list at all.
+
+  It toggles, both ways: pressing the same button again takes the empty marker
+  back off, and pressing the other list button converts it — what the non-empty
+  path already did for a real list, at the one size it could not reach. An
+  empty nested quote drops its innermost `>` and leaves the outer line spelled
+  `>`, not `> ` with a stranded space.
+
 ### Behavioural changes
+
+- **`Editor.toggleBlockContainer` on a blank line no longer fails.** It used to
+  answer `error.NoBlock` (`TWIG_STATUS_NOT_FOUND`) for a range covering no
+  block; it now opens an empty container there, per the entry above. A caller
+  that treated `NOT_FOUND` as "nothing to do here" gets an edit instead.
+
+  The asymmetry this closes was visible in any toolbar built on the two calls:
+  the H1 button worked on an empty line and the Quote / Bulleted / Numbered
+  buttons beside it were silent no-ops. A caret INSIDE a leaf is unaffected —
+  a blank line in a fenced code block still resolves to the code block, and
+  the gesture wraps the whole fence as before.
 
 - **A Markdown `block_quote`'s span covers its own trailing marker lines.**
   `"> a\n>\n> \n"` reported `block_quote 0..3` — the last two lines, spelled
