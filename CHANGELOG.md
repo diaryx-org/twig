@@ -76,7 +76,7 @@ bullets below it should be cut. It goes below the end marker, where
 regeneration cannot reach it. Cutting a release means renaming `## Unreleased`
 to the version and leaving the generated region in place.
 
-## Unreleased
+## 3.2.0
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
