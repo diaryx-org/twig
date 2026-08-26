@@ -90,6 +90,7 @@ a later `--write` cannot reach back into a released section. See
 
 - **djot** — record where a `{...}` attribute block was written ([`a2ff0b7`](https://github.com/diaryx-org/twig/commit/a2ff0b73c430d2bc78dcbb75c09e7e85a232dc90))
 - **rust** — bind twig_document_attrs_span ([`c76924b`](https://github.com/diaryx-org/twig/commit/c76924b217dbc0aa2af898225b4f4c88847cc9f7))
+- **build** — `zig build release`, the whole release as one command ([`13e552c`](https://github.com/diaryx-org/twig/commit/13e552c78680101865f2f1a0d0db545af867293b))
 
 ### Fixed
 
