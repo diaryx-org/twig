@@ -543,8 +543,33 @@ pub const Splicer = struct {
         try self.deleteNodeSmartById(try self.doc.ast.getIdByPath(path));
     }
     pub fn deleteNodeSmartById(self: *Splicer, id: Node.Id) !void {
-        const span = try self.nodeSpan(id);
+        const span = self.spanWithLeadingAttrs(id, try self.nodeSpan(id));
         try self.replaceAtSpan(tidyDeletionSpan(self.source.items, span), "");
+    }
+
+    /// `span`, widened to take in an attribute block the node's attributes
+    /// were written in BEFORE it — djot's `{.vis}` on its own line above the
+    /// block it attaches to.
+    ///
+    /// Such a line is inside no node's span (the block's own span starts after
+    /// it), so removing the block alone leaves it standing. That is not merely
+    /// untidy: an orphan attribute line attaches to whatever block follows it,
+    /// so deleting a paragraph marked `{.vis}` MOVES that marking onto the
+    /// next paragraph — which is the opposite of what the delete meant, and
+    /// silent.
+    ///
+    /// Unchanged when the attributes are written INSIDE the node
+    /// (`:name[x]{.k}`, `[x]{.k}`, an HTML attribute list), when there is no
+    /// recorded range at all, or when anything but whitespace sits between the
+    /// block and the node — all of which mean the block is not this node's
+    /// leading line to take.
+    fn spanWithLeadingAttrs(self: *Splicer, id: Node.Id, span: Span) Span {
+        const as = self.doc.attrsSpan(id) orelse return span;
+        if (as.end > span.start) return span;
+        for (self.source.items[as.end..span.start]) |c| {
+            if (c != ' ' and c != '\t' and c != '\r' and c != '\n') return span;
+        }
+        return Span.init(as.start, span.end);
     }
 
     /// Unwrap the node: replace its whole span with the source text of its
@@ -566,7 +591,9 @@ pub const Splicer = struct {
         try self.unwrapNodeById(try self.doc.ast.getIdByPath(path));
     }
     pub fn unwrapNodeById(self: *Splicer, id: Node.Id) !void {
-        const span = try self.nodeSpan(id);
+        // The wrapper's own attribute line goes with the wrapper: what is
+        // being kept is the interior, which the attributes were never about.
+        const span = self.spanWithLeadingAttrs(id, try self.nodeSpan(id));
         const cs = self.doc.contentSpan(id) orelse return self.deleteNodeSmartById(id);
         // `interior` aliases `self.source`; `replaceAtSpan` copies it into the
         // new buffer before retiring the old source, so this is safe.
@@ -744,6 +771,18 @@ fn parseMarkdown(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Do
     return doc.document();
 }
 
+/// Third test vehicle: Djot, the one format that writes a block's attributes
+/// on their OWN line above it — the shape `spanWithLeadingAttrs` exists for.
+fn parseDjot(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Document {
+    _ = ctx;
+    const Djot = @import("../languages/djot/djot.zig");
+    var doc = try Djot.parse(a, s);
+    doc.references.deinit(a);
+    doc.auto_references.deinit(a);
+    doc.footnotes.deinit(a);
+    return doc.document();
+}
+
 /// A throwaway context for the tests below, which use `parseXml` (which
 /// ignores its `ctx`). Any stable pointer works; this is the conventional one.
 const test_ctx: u8 = 0;
@@ -820,6 +859,53 @@ test "deleteNode on a quote takes its own trailing marker lines with it" {
 
     try ed.deleteNodeSmart(&.{0});
     try testing.expectEqualStrings("after\n", ed.sourceBytes());
+}
+
+test "deleteNodeSmart takes the block's own attribute line with it" {
+    // Regression: `{.vis}` sits on its own line and is inside NO node's span,
+    // so deleting the paragraph left it standing — where it attached to the
+    // paragraph BELOW, moving a marking onto content that was never marked.
+    var ed = try Splicer.init(
+        testing.allocator,
+        "public\n\n{.vis}\nheld back\n\nmore public\n",
+        &test_ctx,
+        parseDjot,
+    );
+    defer ed.deinit();
+
+    try ed.deleteNodeSmart(&.{1});
+    try testing.expectEqualStrings("public\n\nmore public\n", ed.sourceBytes());
+}
+
+test "deleteNodeSmart leaves an unrelated attribute line alone" {
+    // The widening only reaches a block written directly above the node. A
+    // paragraph with no attributes of its own takes nothing extra.
+    var ed = try Splicer.init(
+        testing.allocator,
+        "{.k}\nkept\n\ngoing\n",
+        &test_ctx,
+        parseDjot,
+    );
+    defer ed.deinit();
+
+    try ed.deleteNodeSmart(&.{1});
+    try testing.expectEqualStrings("{.k}\nkept\n", ed.sourceBytes());
+}
+
+test "unwrapNode drops the wrapper's attribute line, keeps the interior" {
+    var ed = try Splicer.init(
+        testing.allocator,
+        "{.vis}\n:::\ninside\n:::\n",
+        &test_ctx,
+        parseDjot,
+    );
+    defer ed.deinit();
+
+    try ed.unwrapNode(&.{0});
+    // The div's own trailing newline is left where it was — unwrap does not
+    // tidy the wrapper's surrounding whitespace, and the attribute line is
+    // removed on the same terms as the fences above and below it.
+    try testing.expectEqualStrings("inside\n\n", ed.sourceBytes());
 }
 
 test "unwrapNode keeps a container's children, drops the wrapper" {
