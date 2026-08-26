@@ -499,7 +499,8 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                 // bracketed inline label, optional attribute shorthand. The
                 // label (if present) is parsed as inline content and becomes
                 // the directive node's children.
-                const td: ?TextDirective = if (sc.options.directives) try scanTextDirective(b.allocator, text, i) else null;
+                const nestable = sc.directive_depth < max_directive_nesting;
+                const td: ?TextDirective = if (sc.options.directives and nestable) try scanTextDirective(b.allocator, text, i) else null;
                 if (td) |d| {
                     try sc.flushBuf(i);
                     const id = try buildTextDirective(sc, d);
@@ -677,6 +678,14 @@ pub const Scanner = struct {
     /// as before — the promotion is scoped to the one position that needs it.
     /// Set per-block by `block.zig`'s `resolvePendingInline`.
     in_cell: bool = false,
+    /// How many text directives enclose this scan: 0 for a block's own inline
+    /// content, one more for each `:name[...]` label parsed within it. A
+    /// directive's label is parsed by a NESTED scanner (`buildTextDirective`),
+    /// so this is the recursion depth, and `max_directive_nesting` is where a
+    /// `:` stops being read as a directive at all and stays literal. Fixed for
+    /// a scanner's life, like `options` -- `reset` deliberately leaves it be,
+    /// since a reused scanner is always the outermost one.
+    directive_depth: u8 = 0,
     /// Maps `text` offsets back to absolute source offsets -- see
     /// `Segment`'s doc comment. Empty (the default) means "no mapping is
     /// available at all", which every span-setting call below already
@@ -1521,7 +1530,52 @@ pub fn scanBracketLabel(text: []const u8, start: usize) ?RawLabel {
     return .{ .content = text[content_start..i], .end = i + 1 };
 }
 
+/// `text[start] == '['`. Scans a DIRECTIVE label up to the `]` that matches
+/// it, allowing BALANCED nested brackets -- unlike a link label
+/// (`scanBracketLabel`), which the spec forbids them in.
+///
+/// A directive's label is inline CONTENT, so it may hold a link, an image, or
+/// another directive, all of which are spelled with brackets. Refusing them
+/// does not merely lose the nesting: `:vis[a :vis[b]{.x} c]{.y}` scans no
+/// label at all, so the outer directive degrades to a bare `:vis` with no
+/// children and no attributes while the text it scoped is left beside it as
+/// prose. A consumer that filters on directives then drops an empty node and
+/// publishes the content it was told to hold back.
+///
+/// Returns `null` if unterminated -- a `[` that never closes at depth zero --
+/// or if the label exceeds the same 999-character cap a link label has.
+pub fn scanDirectiveLabel(text: []const u8, start: usize) ?RawLabel {
+    var i = start + 1;
+    const content_start = i;
+    var depth: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
+        if (c == '\\' and i + 1 < text.len) {
+            i += 1;
+            continue;
+        }
+        if (c == '[') {
+            depth += 1;
+        } else if (c == ']') {
+            if (depth == 0) break;
+            depth -= 1;
+        }
+    }
+    if (i >= text.len or text[i] != ']') return null;
+    if (i - content_start > 999) return null;
+    return .{ .content = text[content_start..i], .end = i + 1 };
+}
+
 // ── Phase 3: text directives (`self.options.directives`) ───────────────
+
+/// How deep text directives may nest before a `:` stops being read as one.
+///
+/// A label is parsed by a nested scanner, so nesting is recursion, and the
+/// input is untrusted: `:a[:a[:a[` repeated is one stack frame per level. The
+/// cap is far above anything an author writes and far below anything that
+/// threatens the stack. Past it the colon is literal text, which leaves the
+/// marker VISIBLE rather than quietly dropping it.
+const max_directive_nesting: u8 = 32;
 
 /// The parsed pieces of a text directive `:name[label]{attrs}`. `name`/`label`
 /// slice into the scan's `text`; `attrs` (if any) is freshly allocated and
@@ -1552,10 +1606,18 @@ fn scanTextDirective(allocator: Allocator, text: []const u8, at: usize) Allocato
     var i = name_end;
     var label: ?DirectiveLabel = null;
     if (i < text.len and text[i] == '[') {
-        if (scanBracketLabel(text, i)) |raw| {
-            label = .{ .text = raw.content, .start = i + 1, .end = raw.end - 1 };
-            i = raw.end;
-        }
+        // A `[` directly after the name COMMITS this to being a labelled
+        // directive: if the bracket does not close, the whole thing is not a
+        // directive and stays literal text. The alternative -- falling back to
+        // the bare `:name` form, as if the bracket were ordinary prose after
+        // it -- silently swallows the marker while leaving the text the author
+        // meant to scope outside the node, which is the same quiet
+        // content-promotion `scanDirectiveLabel` describes. It also matches
+        // the block forms, where a label that does not scan already rejects
+        // the line (`block.zig`'s `parseLeafDirective`).
+        const raw = scanDirectiveLabel(text, i) orelse return null;
+        label = .{ .text = raw.content, .start = i + 1, .end = raw.end - 1 };
+        i = raw.end;
     }
 
     var attrs: ?attrs_mod.Parsed = null;
@@ -1611,7 +1673,17 @@ fn buildTextDirective(sc: *Scanner, d: TextDirective) Allocator.Error!Node.Id {
         // a `:name[label]` reports a span of `(0,0)`.
         const segs = try labelSegments(b.allocator, sc.segments, lab.start, lab.end);
         defer b.allocator.free(segs);
-        break :blk try parseInline(b, lab.text, segs, sc.link_refs, sc.options);
+        // Not `parseInline`: the nested scan has to carry the enclosing one's
+        // `directive_depth`, incremented, or nesting has no bound at all.
+        var nested: Scanner = .{
+            .b = b,
+            .link_refs = sc.link_refs,
+            .options = sc.options,
+            .segments = segs,
+            .directive_depth = sc.directive_depth + 1,
+        };
+        defer nested.deinit();
+        break :blk try runScan(&nested, lab.text);
     } else &.{};
     defer if (children.len > 0) b.allocator.free(children);
 
@@ -2614,6 +2686,75 @@ test "text directive label parses nested inline" {
     try testing.expect(ast.nodes[emph].kind == .inline_mark and ast.nodes[emph].kind.inline_mark == .emph);
 }
 
+test "text directive label nests another text directive" {
+    // The outer label holds a whole directive, brackets and all. Before
+    // `scanDirectiveLabel` the outer label failed to scan, the outer directive
+    // degraded to a bare `:vis` with no children and no attributes, and the
+    // text it scoped sat beside it as prose — so a filter that dropped
+    // `directive[name=vis]` removed an empty node and published the content.
+    var ast = try parseAndFinishWithOptions(":vis[a :vis[b]{.x} c]{.y}", directives_on);
+    defer ast.deinit();
+    const outer = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("vis", ast.nodes[outer].kind.container.name);
+    try testing.expectEqualStrings("y", ast.attrsOf(outer).get("class").?);
+    try testing.expectEqual(@as(?Node.Id, null), ast.nodes[outer].next_sibling);
+
+    const first = ast.nodes[outer].first_child.?;
+    try testing.expectEqualStrings("a ", ast.nodes[first].kind.str);
+    const inner = ast.nodes[first].next_sibling.?;
+    try testing.expectEqualStrings("vis", ast.nodes[inner].kind.container.name);
+    try testing.expectEqualStrings("x", ast.attrsOf(inner).get("class").?);
+    try testing.expectEqualStrings("b", ast.nodes[ast.nodes[inner].first_child.?].kind.str);
+    try testing.expectEqualStrings(" c", ast.nodes[ast.nodes[inner].next_sibling.?].kind.str);
+}
+
+test "text directive label keeps a link's balanced brackets" {
+    var ast = try parseAndFinishWithOptions(":vis[see [docs](/d) now]", directives_on);
+    defer ast.deinit();
+    const dir = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings("vis", ast.nodes[dir].kind.container.name);
+    const link = ast.nodes[ast.nodes[dir].first_child.?].next_sibling.?;
+    try testing.expect(ast.nodes[link].kind == .link);
+    try testing.expectEqualStrings("/d", ast.nodes[link].kind.link.destination.?);
+}
+
+test "an unterminated directive label is not a directive at all" {
+    // The bracket commits: rather than falling back to a bare `:vis` that
+    // silently swallows the marker, the whole thing stays literal, so the
+    // marker is still THERE for a caller to see it did not parse.
+    var ast = try parseAndFinishWithOptions(":vis[a [b c]{.y}", directives_on);
+    defer ast.deinit();
+    const child = ast.nodes[ast.root].first_child.?;
+    try testing.expectEqualStrings(":vis", ast.nodes[child].kind.str);
+    // Not one `str`: the unmatched `[`s split the run into several literal
+    // runs. What matters is that no directive node was built from any of it.
+    for (ast.nodes) |n| try testing.expect(n.kind != .container);
+}
+
+test "directive nesting past the cap stays literal text" {
+    // `max_directive_nesting` levels parse; the next colon is prose. The
+    // check is that the parser terminates and the deepest marker is still
+    // visible in the output, not the exact depth.
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(testing.allocator);
+    const over = max_directive_nesting + 3;
+    for (0..over) |_| try src.appendSlice(testing.allocator, ":v[");
+    try src.appendSlice(testing.allocator, "x");
+    for (0..over) |_| try src.append(testing.allocator, ']');
+
+    var ast = try parseAndFinishWithOptions(src.items, directives_on);
+    defer ast.deinit();
+    var depth: usize = 0;
+    var node = ast.nodes[ast.root].first_child.?;
+    while (ast.nodes[node].kind == .container) : (depth += 1) {
+        node = ast.nodes[node].first_child.?;
+    }
+    try testing.expectEqual(@as(usize, max_directive_nesting), depth);
+    // The colon the cap refused is literal text inside the innermost
+    // directive, not a marker the parser quietly dropped.
+    try testing.expectEqualStrings(":v", ast.nodes[node].kind.str);
+}
+
 test "colon not starting a valid directive stays literal" {
     // digit-led name is not a directive; whole thing is text
     var ast = try parseAndFinishWithOptions("ratio 3:4 mix", directives_on);
@@ -2923,6 +3064,24 @@ test "span: a text directive's label children address the true source bytes" {
     try testing.expectEqualStrings("b", Span.of(u8, ast.contentSpan(emph).?, s));
     const last = ast.ast.nodes[emph].next_sibling.?;
     try testing.expectEqualStrings(" c", Span.of(u8, ast.span(last), s));
+}
+
+test "span: a nested text directive addresses the true source bytes" {
+    // A label is parsed by a nested scanner over a slice, so a directive
+    // INSIDE a label is two rebases deep. If either is wrong the inner node's
+    // span points at the label's start instead of the document's.
+    const s = "x :vis[a :vis[b]{.x} c]{.y} y";
+    var ast = try parseAndFinishMappedDoc(s, directives_on);
+    defer ast.deinit();
+
+    const lead = ast.ast.nodes[ast.ast.root].first_child.?;
+    const outer = ast.ast.nodes[lead].next_sibling.?;
+    try testing.expectEqualStrings(":vis[a :vis[b]{.x} c]{.y}", Span.of(u8, ast.span(outer), s));
+    try testing.expectEqualStrings("a :vis[b]{.x} c", Span.of(u8, ast.contentSpan(outer).?, s));
+
+    const inner = ast.ast.nodes[ast.ast.nodes[outer].first_child.?].next_sibling.?;
+    try testing.expectEqualStrings(":vis[b]{.x}", Span.of(u8, ast.span(inner), s));
+    try testing.expectEqualStrings("b", Span.of(u8, ast.contentSpan(inner).?, s));
 }
 
 test "span: strong emphasis covers its own delimiters" {

@@ -2015,7 +2015,7 @@ pub const Parser = struct {
         // A container directive's `[label]` isn't represented (its children
         // are blocks, not inline) — consume and drop it if present.
         if (i < s.len and s[i] == '[') {
-            if (inline_mod.scanBracketLabel(s, i)) |raw| i = raw.end;
+            if (inline_mod.scanDirectiveLabel(s, i)) |raw| i = raw.end;
         }
         var attrs: ?attrs_mod.Parsed = null;
         if (i < s.len and s[i] == '{') {
@@ -2040,7 +2040,7 @@ pub const Parser = struct {
         var i = name_end;
         var label: ?[]const u8 = null;
         if (i < s.len and s[i] == '[') {
-            if (inline_mod.scanBracketLabel(s, i)) |raw| {
+            if (inline_mod.scanDirectiveLabel(s, i)) |raw| {
                 label = raw.content;
                 i = raw.end;
             }
@@ -4246,6 +4246,23 @@ test "leaf directive: AST kind and no-label case" {
     try testing.expect(r.ast.nodes[dir].kind == .container);
     try testing.expectEqual(@as(?AST.Form, .block_leaf), r.ast.nodes[dir].kind.container.form);
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[dir].first_child);
+}
+
+test "leaf directive: a label may hold another directive" {
+    // The label shares the inline directive label grammar, so balanced nested
+    // brackets scan. Before that, the whole LINE failed to be a leaf directive
+    // and fell back to a paragraph.
+    const html = try renderHtml("::vis[a :vis[b]{.x} c]{.y}\n", directives_on);
+    defer testing.allocator.free(html);
+    try testing.expectEqualStrings("<vis class=\"y\">a <vis class=\"x\">b</vis> c</vis>\n", html);
+}
+
+test "container directive: a label with nested brackets is still dropped" {
+    // A container directive's `[label]` is consumed and not represented; the
+    // point here is that the nested bracket does not stop the fence parsing.
+    const html = try renderHtml(":::box[see [docs](/d)]{.k}\nhi\n:::\n", directives_on);
+    defer testing.allocator.free(html);
+    try testing.expectEqualStrings("<box class=\"k\">\n<p>hi</p>\n</box>\n", html);
 }
 
 test "container directive interrupts a paragraph" {
