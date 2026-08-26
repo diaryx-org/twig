@@ -86,6 +86,12 @@ a later `--write` cannot reach back into a released section. See
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## 3.2.1
+
 ### Added
 
 - **djot** — record where a `{...}` attribute block was written ([`a2ff0b7`](https://github.com/diaryx-org/twig/commit/a2ff0b73c430d2bc78dcbb75c09e7e85a232dc90))
@@ -127,8 +133,6 @@ a later `--write` cannot reach back into a released section. See
   written on its own line(s) above the node. Deleting the paragraph in
   `{.vis}⏎held back⏎` used to leave `{.vis}⏎` behind; it now leaves
   nothing. Attributes written inside the node's own span are unaffected.
-
-<!-- git-cliff:end -->
 
 ## 3.2.0
 
