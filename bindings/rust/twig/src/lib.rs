@@ -941,6 +941,31 @@ impl Document {
         }
     }
 
+    /// The source span of the `{...}` attribute block attached to `node` — the
+    /// bytes a lossless serializer re-emits instead of the flattened
+    /// [`FlatNode::attrs`] projection, which a multi-line option block, or a
+    /// nested or array-valued entry, says more than.
+    ///
+    /// `None` when the node has no attributes, or has some with no single
+    /// recorded range: a synthesized set, or one merged from several source
+    /// blocks. That is the case a caller has to handle rather than assume away
+    /// — without this the only way to find an attribute block's extent was to
+    /// scan the source for `{` near the node, which reads a `{` in prose as an
+    /// attribute block and strands a real one that a heuristic missed.
+    ///
+    /// An accessor rather than a [`FlatNode`] field because the range is per
+    /// attribute BLOCK, not per `(key, value)` pair.
+    pub fn attrs_span(&mut self, node: NodeId) -> Result<Option<Range<usize>>, Error> {
+        let mut span = ffi::TwigSpan { start: 0, end: 0 };
+        let status =
+            unsafe { ffi::twig_document_attrs_span(self.raw.as_ptr(), node.0, &mut span) };
+        match status.0 {
+            ffi::TwigStatus::OK => Ok(Some(span.start..span.end)),
+            ffi::TwigStatus::NOT_FOUND => Ok(None),
+            _ => Err(Error::from_status(status).unwrap_err()),
+        }
+    }
+
     /// Everything HIDDEN before the content on the line byte `offset` sits on:
     /// every marker a node OPENS that line with, and the indentation between
     /// them, as one range running from the line start.
@@ -3765,6 +3790,33 @@ mod tests {
                 .expect("a paragraph");
             assert_eq!(para.marker_span, None, "{format:?}");
         });
+    }
+
+    #[test]
+    fn attrs_span_locates_the_attribute_block_a_heuristic_had_to_guess_at() {
+        // A Djot attribute line sits on its OWN line above the block it
+        // attaches to, so a consumer dropping the block has to drop that line
+        // too. Without this the extent was guessed at by scanning for `{`,
+        // which strands the line as a published paragraph when the guess
+        // misses — and the line names the audience.
+        let src = "{.vis .family}\nheld back\n\nplain\n";
+        let mut doc = Document::parse(src.as_bytes(), Format::Djot).expect("parse");
+        let nodes = doc.nodes().expect("nodes");
+        let paras: Vec<&FlatNode> = nodes.iter().filter(|n| n.kind == Kind::Para).collect();
+        assert_eq!(paras.len(), 2);
+
+        let span = doc
+            .attrs_span(paras[0].id)
+            .expect("attrs span")
+            .expect("the attributed paragraph has one");
+        assert_eq!(&src[span.clone()], "{.vis .family}");
+        // The block's own span starts AFTER the attribute line, which is why
+        // dropping the block alone leaves the line behind.
+        assert!(span.end <= paras[0].span.start);
+
+        // `None` is a real answer, not a failure: the second paragraph is
+        // unattributed.
+        assert_eq!(doc.attrs_span(paras[1].id).expect("attrs span"), None);
     }
 
     #[test]

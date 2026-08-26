@@ -346,6 +346,11 @@ unsafe extern "C" {
         node_id: u32,
         out_span: *mut TwigSpan,
     ) -> TwigStatus;
+    pub fn twig_document_attrs_span(
+        doc: *mut TwigDocument,
+        node_id: u32,
+        out_span: *mut TwigSpan,
+    ) -> TwigStatus;
     pub fn twig_document_line_prefix(
         doc: *mut TwigDocument,
         offset: usize,
