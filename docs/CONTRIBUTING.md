@@ -56,6 +56,10 @@ stale.
 The only prose written by hand is a release **intro**, below the end marker,
 for a release that wants a narrative rather than a list. Most want none.
 
+Cutting a release is a command, not a checklist: `zig build release -- <minor|…>`
+bumps, verifies, regenerates and cuts the region, commits, and tags — and stops
+before the push. See [RELEASING.md](/docs/RELEASING.md).
+
 ## Commit subjects
 
 Conventional commits, with `add(scope):` as Twig's spelling of `feat(scope):`
@@ -86,4 +90,6 @@ it. `src/languages/markdown/block.zig`'s `span:`-prefixed tests are the pattern.
 For the Rust bindings, `cargo test` links a prebuilt `libtwig.a` unless
 `TWIG_SYS_FORCE_SOURCE=1` is set. Without it you are testing the published Zig,
 not your working tree — so any change to `src/` needs that variable, or it will
-pass for the wrong reason.
+pass for the wrong reason. `zig build check` runs both suites the way CI does,
+with that variable set, and is the gate `zig build release` runs before it
+commits anything.

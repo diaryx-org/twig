@@ -151,7 +151,7 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Release notes from the same cliff.toml that writes CHANGELOG.md's
+      # Release notes from the same .config/cliff.toml that writes CHANGELOG.md's
       # Unreleased region, so the two group commits identically. This replaces
       # GitHub's generate_release_notes, which grouped by PR author rather than
       # by change type and ignored the `add(scope):` convention entirely.
@@ -159,7 +159,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: orhun/git-cliff-action@v4
         with:
-          config: cliff.toml
+          config: .config/cliff.toml
           args: --current --strip all
         env:
           OUTPUT: RELEASE_NOTES.md

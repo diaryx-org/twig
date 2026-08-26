@@ -73,12 +73,63 @@ What is left to write by hand is a release **intro** — a paragraph or two for 
 release that wants a narrative rather than a list, like 3.0.0's account of why
 it is a major. Most releases want none, and an intro that only restates the
 bullets below it should be cut. It goes below the end marker, where
-regeneration cannot reach it. Cutting a release means renaming `## Unreleased`
-to the version and leaving the generated region in place.
+regeneration cannot reach it.
 
-## 3.2.0
+Cutting a release is `zig build release -- <version|major|minor|patch>`, which
+regenerates the region, renames `## Unreleased` to the version, strips the two
+marker lines out of the section that just became history, and opens a fresh
+empty `## Unreleased` above it. Exactly one marker pair is ever in this file, so
+a later `--write` cannot reach back into a released section. See
+[RELEASING.md](/docs/RELEASING.md).
+
+## Unreleased
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
+
+### Added
+
+- **djot** — record where a `{...}` attribute block was written ([`a2ff0b7`](https://github.com/diaryx-org/twig/commit/a2ff0b73c430d2bc78dcbb75c09e7e85a232dc90))
+- **rust** — bind twig_document_attrs_span ([`c76924b`](https://github.com/diaryx-org/twig/commit/c76924b217dbc0aa2af898225b4f4c88847cc9f7))
+
+### Fixed
+
+- **markdown** — a directive's label may hold another directive ([`b5ae4f1`](https://github.com/diaryx-org/twig/commit/b5ae4f116fb048a51488d563fc274cf4b359fe6b))
+- **editor** — a deleted block takes its own attribute line with it ([`eecf11e`](https://github.com/diaryx-org/twig/commit/eecf11e7b321a15621192579cf62f6fbf010db35))
+
+### Behavioural changes
+
+- A Markdown text directive's `[label]` now accepts
+  balanced nested brackets, so a directive, link, or image inside one
+  parses as such. `:vis[a :vis[b]{.x} c]{.y}` used to yield an empty
+  `:vis` container followed by `[a `, an inner `vis`, and ` c]{.y}` as
+  text; it now yields one `vis` with `class="y"` holding the inner one.
+  Leaf and container directives (`::name[...]`, `:::name[...]`) take the
+  same labels — such a line used to parse as a paragraph.
+
+- A Markdown text directive whose `[` never closes is no
+  longer a directive at all. `:vis[a [b c]` used to produce a bare `vis`
+  container followed by the bracket text; it now stays literal text with
+  no container.
+
+- Markdown text directives nest at most 32 deep. Past
+  that the `:` is literal text rather than opening another directive.
+
+- `twig_document_attrs_span` (and `Document.attrsSpan` /
+  `attrsText`) now answer for djot documents, which always reported
+  TWIG_STATUS_NOT_FOUND before. A node whose attributes came from one
+  `{...}` block reports that block's range; a set merged from several
+  blocks, or synthesized like a heading's generated id, still reports
+  NOT_FOUND.
+
+- `twig_editor_delete_smart` / `deleteNodeSmart` and
+  `twig_editor_unwrap` / `unwrapNode` now also remove an attribute block
+  written on its own line(s) above the node. Deleting the paragraph in
+  `{.vis}⏎held back⏎` used to leave `{.vis}⏎` behind; it now leaves
+  nothing. Attributes written inside the node's own span are unaffected.
+
+<!-- git-cliff:end -->
+
+## 3.2.0
 
 ### Added
 
@@ -124,8 +175,6 @@ homebrew workflow ([`44843ea`](https://github.com/diaryx-org/twig/commit/44843ea
   `"Term\n: def"` reported the list as `5..10` around an item of `0..10`; it is
   now `0..10`. Deleting a one-item definition list used to leave `Term` behind.
   `content_span` was always right, so only the syntactic span moves.
-
-<!-- git-cliff:end -->
 
 ## 3.1.0
 

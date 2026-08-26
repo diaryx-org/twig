@@ -158,12 +158,95 @@ pub fn build(b: *std.Build) void {
     c_header_tests.root_module.linkLibrary(c_lib);
     const run_c_header_tests = b.addRunArtifact(c_header_tests);
 
+    // The release tool's changelog cut and version arithmetic
+    // (`scripts/release.zig`). It lives in scripts/ rather than src/, but it is
+    // the one maintenance tool that rewrites a file by hand instead of shelling
+    // out to something that owns the format, and a mistake in it is only
+    // visible once a release is already history — so its `test` blocks run with
+    // everything else. `addTest` compiles the file for those blocks; the tool's
+    // `main` is not run.
+    const release_tool_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/release.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const run_release_tool_tests = b.addRunArtifact(release_tool_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_c_lib_tests.step);
     test_step.dependOn(&run_bench_tests.step);
+    test_step.dependOn(&run_release_tool_tests.step);
     if (!target.result.cpu.arch.isWasm()) {
         test_step.dependOn(&run_c_header_tests.step);
     }
+
+    // ---- version, changelog, release ---------------------------------------
+    //
+    // The maintenance side of the build: the three commands a release is made
+    // of, and the one that runs all of them. See docs/RELEASING.md.
+    //
+    // Every one of these is `has_side_effects` — they rewrite the real tree or
+    // ask git and the network questions whose answers are not build inputs, so
+    // none of them may ever be served from the cache.
+
+    const version_sync_run = b.addSystemCommand(&.{ "sh", b.pathFromRoot("scripts/sync-version.sh") });
+    version_sync_run.has_side_effects = true;
+    const version_sync_step = b.step("sync-version", "Copy build.zig.zon's version into the Rust manifests");
+    version_sync_step.dependOn(&version_sync_run.step);
+
+    const version_check_run = b.addSystemCommand(&.{ "sh", b.pathFromRoot("scripts/sync-version.sh"), "--check" });
+    version_check_run.has_side_effects = true;
+    const version_check_step = b.step("sync-version-check", "Fail if the Rust manifests' version has drifted from build.zig.zon");
+    version_check_step.dependOn(&version_check_run.step);
+
+    const changelog_run = b.addSystemCommand(&.{ "sh", b.pathFromRoot("scripts/changelog.sh"), "--write" });
+    changelog_run.has_side_effects = true;
+    const changelog_step = b.step("changelog", "Regenerate docs/CHANGELOG.md's Unreleased region from the commits since the last tag");
+    changelog_step.dependOn(&changelog_run.step);
+
+    const changelog_check_run = b.addSystemCommand(&.{ "sh", b.pathFromRoot("scripts/changelog.sh"), "--check" });
+    changelog_check_run.has_side_effects = true;
+    const changelog_check_step = b.step("changelog-check", "Fail if docs/CHANGELOG.md's Unreleased region is stale");
+    changelog_check_step.dependOn(&changelog_check_run.step);
+
+    // The pre-release gate: what CI runs, in one command. Deliberately NOT
+    // including `changelog-check` — `release` regenerates the region itself,
+    // after this runs, so a stale region is not a reason to refuse a release.
+    const rust_check_run = b.addSystemCommand(&.{ "sh", b.pathFromRoot("scripts/rust-check.sh") });
+    rust_check_run.has_side_effects = true;
+    const check_step = b.step("check", "Pre-release gate: version sync + zig build + tests + C ABI library + the Rust binding suite (skipped with a note if cargo is missing)");
+    check_step.dependOn(version_check_step);
+    check_step.dependOn(b.getInstallStep());
+    check_step.dependOn(test_step);
+    check_step.dependOn(install_c_lib_step);
+    check_step.dependOn(&rust_check_run.step);
+
+    // The whole release, as one command: preflight, bump (via
+    // `scripts/sync-version.sh --set`, so this file stays the only place that
+    // knows which files carry a version), `zig build check`, the changelog
+    // regen + cut, the release commit, the annotated tag, and a stop before the
+    // push. See docs/RELEASING.md.
+    //
+    // The nested `zig build check` it runs is a separate top-level build
+    // against the same cache — which is exactly what a maintainer would type —
+    // and it has to run AFTER the bump, so it cannot be a dependency here.
+    const release = b.addExecutable(.{
+        .name = "release",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("scripts/release.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const release_run = b.addRunArtifact(release);
+    release_run.addArg(b.pathFromRoot("."));
+    release_run.addArg(b.graph.zig_exe);
+    if (b.args) |args| release_run.addArgs(args);
+    release_run.has_side_effects = true;
+    const release_step = b.step("release", "Cut a release: bump, verify, cut the changelog, commit, tag (push only with --push)");
+    release_step.dependOn(&release_run.step);
 }
