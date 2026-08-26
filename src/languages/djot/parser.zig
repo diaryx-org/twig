@@ -145,9 +145,42 @@ const PendingAttrs = struct {
     /// optionality only enters at the `AST.KeyVal` boundary (`commitAttrs`).
     const Entry = struct { key: []const u8, value: []const u8 };
 
+    /// Where these entries were WRITTEN, when that is one place. djot merges
+    /// consecutive `{...}` blocks into a single attribute set, so a set often
+    /// has no single range; `Document.attrs_spans` is `null` for exactly that
+    /// case and this is how the merge is noticed.
+    const Origin = union(enum) {
+        /// Nothing source-backed yet: a fresh accumulator, or one holding only
+        /// synthesized entries (a heading's generated id).
+        none,
+        /// Exactly one `{...}` block, at this range.
+        one: Span,
+        /// Two or more blocks. Two ranges are not one range, and reporting
+        /// either would tell a serializer to re-emit half the attributes.
+        many,
+    };
+
     entries: std.ArrayList(Entry) = .empty,
     owned_bufs: std.ArrayList([]const u8) = .empty,
     pending_key: ?[]const u8 = null,
+    origin: Origin = .none,
+
+    /// Fold one more block's origin in. Deliberately NOT "last writer wins":
+    /// once two blocks have contributed, the answer is `.many` forever, even
+    /// if a later merge brings nothing source-backed with it.
+    fn addOrigin(self: *PendingAttrs, incoming: Origin) void {
+        if (incoming == .none) return;
+        self.origin = if (self.origin == .none) incoming else .many;
+    }
+
+    /// The single range to record for these entries, or `null` when there
+    /// isn't one -- `Document.attrs_spans`'s contract.
+    fn originSpan(self: *const PendingAttrs) ?Span {
+        return switch (self.origin) {
+            .one => |sp| sp,
+            .none, .many => null,
+        };
+    }
 
     fn isEmpty(self: *const PendingAttrs) bool {
         return self.entries.items.len == 0;
@@ -195,6 +228,7 @@ const PendingAttrs = struct {
         for (self.owned_bufs.items) |b| allocator.free(b);
         self.owned_bufs.clearRetainingCapacity();
         self.entries.clearRetainingCapacity();
+        self.origin = .none;
     }
 
     /// Add one `.class` token: if `class` is already present, its value
@@ -239,6 +273,7 @@ const PendingAttrs = struct {
                 try self.setKeyval(allocator, kv.key, owned_val);
             }
         }
+        self.addOrigin(src.origin);
     }
 };
 
@@ -324,6 +359,12 @@ pub const TreeBuilder = struct {
     marker_spans: std.ArrayList(?Span) = .empty,
     owned_strings: std.ArrayList([]const u8) = .empty,
     attrs_table: std.ArrayList(AST.Attrs) = .empty,
+    /// `attrs_table`'s parallel side-table of source ranges, keyed by the same
+    /// `Attrs.Id` and appended in lockstep by `commitAttrs` -- this becomes
+    /// `Document.attrs_spans`, whose contract `null` follows: no single
+    /// recorded range, either because the set was synthesized or because
+    /// several `{...}` blocks merged into it.
+    attrs_span_table: std.ArrayList(?Span) = .empty,
     containers: std.ArrayList(TreeContainer) = .empty,
     context: Context = .normal,
     accumulated_text: std.ArrayList(u8) = .empty,
@@ -414,6 +455,7 @@ pub const TreeBuilder = struct {
         }
         const idx: u32 = @intCast(self.attrs_table.items.len);
         try self.attrs_table.append(self.allocator, .{ .entries = entries });
+        try self.attrs_span_table.append(self.allocator, pending.originSpan());
         self.nodes.items[id].attrs = idx;
     }
 
@@ -633,6 +675,7 @@ pub const TreeBuilder = struct {
             .node_content_spans = try self.content_spans.toOwnedSlice(self.allocator),
             .node_spelling = try self.spellings.toOwnedSlice(self.allocator),
             .node_marker_spans = try self.marker_spans.toOwnedSlice(self.allocator),
+            .attrs_spans = try self.attrs_span_table.toOwnedSlice(self.allocator),
         };
 
         // Drop the delimiter runs the inline pass built and abandoned, so the
@@ -653,12 +696,11 @@ pub const TreeBuilder = struct {
             .node_content_spans = compacted.node_content_spans,
             .node_spelling = compacted.node_spelling,
             .node_marker_spans = compacted.node_marker_spans,
-            // Empty for now: this parser accumulates attributes in
-            // `PendingAttrs`, which MERGES consecutive `{...}` blocks into one
-            // `Attrs`, so a single range does not always describe the result.
-            // Recording it only for the unmerged case is a follow-up; `null`
-            // throughout is the correct conservative answer meanwhile (see
-            // `Document.attrs_spans`).
+            // Built by `commitAttrs` from `PendingAttrs.origin` and carried
+            // through compaction unchanged (the attrs table is not
+            // renumbered). `null` per entry wherever the set has no single
+            // range -- a synthesized one, or two `{...}` blocks merged into
+            // one `Attrs` -- which is `Document.attrs_spans`'s contract.
             .attrs_spans = compacted.attrs_spans,
             .references = self.references,
             .auto_references = self.auto_references,
@@ -840,7 +882,7 @@ pub const TreeBuilder = struct {
             .attributes_open => try self.pushContainer(ev.start),
             .attributes_close => try self.closeInlineAttributes(ev),
             .block_attributes_open => try self.pushContainer(ev.start),
-            .block_attributes_close => try self.closeBlockAttributes(),
+            .block_attributes_close => try self.closeBlockAttributes(ev),
 
             .class => {
                 const cl = self.textOf(ev);
@@ -1201,10 +1243,10 @@ pub const TreeBuilder = struct {
     }
 
     fn closeInlineAttributes(self: *TreeBuilder, ev: Event) Allocator.Error!void {
-        _ = ev;
         var c = self.popContainer();
         defer c.deinit(self.allocator);
         if (c.attrs.isEmpty() or self.containers.items.len == 0) return;
+        c.attrs.addOrigin(attrsBlockOrigin(c.start, ev));
         if (c.attrs.get("id")) |i| try self.identifiers.put(self.allocator, try self.own(i), {});
 
         var tip_id = self.getTip();
@@ -1237,6 +1279,10 @@ pub const TreeBuilder = struct {
             // are non-optional — djot can't write a bare attribute), so
             // unwrapping here can't fail.
             for (a.entries) |kv| try existing.setKeyval(self.allocator, kv.key, kv.value.?);
+            // What was already committed came from somewhere, and merging
+            // `src` in makes that at least two places. A recorded range says
+            // where; a missing one is already unanswerable, and stays so.
+            existing.origin = if (self.attrs_span_table.items[idx]) |sp| .{ .one = sp } else .many;
         }
         try existing.mergeFrom(self.allocator, src);
         try self.commitAttrs(id, &existing);
@@ -1253,12 +1299,27 @@ pub const TreeBuilder = struct {
         return c == ' ' or c == '\t' or c == '\r' or c == '\n';
     }
 
-    fn closeBlockAttributes(self: *TreeBuilder) Allocator.Error!void {
+    fn closeBlockAttributes(self: *TreeBuilder, ev: Event) Allocator.Error!void {
         var c = self.popContainer();
         defer c.deinit(self.allocator);
         if (c.attrs.isEmpty() or self.containers.items.len == 0) return;
         if (c.attrs.get("id")) |i| try self.identifiers.put(self.allocator, try self.own(i), {});
+        c.attrs.addOrigin(attrsBlockOrigin(c.start, ev));
         try self.pending_block_attrs.mergeFrom(self.allocator, &c.attrs);
+    }
+
+    /// Where an attribute block was written: `start` is its `{` (the open
+    /// event's position, kept on the container) and the CLOSE event's position
+    /// is its `}`.
+    ///
+    /// `.none` when the close carries no `}` -- the block never closed, and
+    /// `block.zig` says so by emitting a close that does not sit after the
+    /// open. Attributes are still committed from what parsed, so this is a
+    /// real case and not an impossible one; what it must not do is name a
+    /// range that does not hold them.
+    fn attrsBlockOrigin(start: usize, ev: Event) PendingAttrs.Origin {
+        if (ev.end <= start) return .none;
+        return .{ .one = Span.init(start, ev.end + 1) };
     }
 
     fn closeHeading(self: *TreeBuilder, ev: Event) Allocator.Error!void {
@@ -1901,6 +1962,84 @@ test "span: trailing blank lines at end of input belong to no block" {
     try testing.expect(ast.nodes[bq].kind == .block_quote);
     const sp = doc.span(bq);
     try testing.expectEqualStrings("> q\n", src[sp.start..sp.end]);
+}
+
+// ── attrs_span ──────────────────────────────────────────────────────────
+// Where an attribute set was WRITTEN, which is not derivable from the node's
+// own span: a block attribute line sits on its own line ABOVE the block it
+// attaches to, so the block's span starts after it and a consumer dropping
+// the block leaves the line behind. `null` is a real answer wherever no
+// single range describes the set — see `Document.attrs_spans`.
+
+test "attrs_span: a block attribute line is the range above the block" {
+    const src = "{.vis .family}\nheld back\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const d = doc.document();
+
+    const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(doc.ast.nodes[para].kind == .para);
+    const as = d.attrsSpan(para) orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("{.vis .family}", src[as.start..as.end]);
+    // The paragraph itself begins after the line, which is exactly why the
+    // line needs naming separately.
+    try testing.expect(as.end <= doc.span(para).start);
+}
+
+test "attrs_span: a multi-line attribute block is one range end to end" {
+    const src = "{.vis\n .family}\nheld back\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const d = doc.document();
+
+    const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
+    const as = d.attrsSpan(para) orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("{.vis\n .family}", src[as.start..as.end]);
+}
+
+test "attrs_span: inline attributes are the block after the span" {
+    const src = "a [b]{.x} c\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const d = doc.document();
+
+    const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
+    var id = doc.ast.nodes[para].first_child;
+    while (id) |n| : (id = doc.ast.nodes[n].next_sibling) {
+        if (doc.ast.nodes[n].attrs != null) break;
+    }
+    const span_node = id orelse return error.TestExpectedNonNull;
+    const as = d.attrsSpan(span_node) orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("{.x}", src[as.start..as.end]);
+}
+
+test "attrs_span: two blocks merged into one set report no range" {
+    // djot merges consecutive `{...}` blocks into a single attribute set.
+    // Two ranges are not one range, and naming either would tell a serializer
+    // to re-emit half the attributes.
+    const src = "{.a}\n{.b}\npara\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const d = doc.document();
+
+    const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("a b", doc.ast.attrsOf(para).get("class").?);
+    try testing.expectEqual(@as(?Span, null), d.attrsSpan(para));
+}
+
+test "attrs_span: a synthesized set reports no range" {
+    // A heading's generated id was never written down, so there is nothing to
+    // point at — and `null` here is what stops a caller re-emitting bytes that
+    // do not exist.
+    const src = "# Title\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const d = doc.document();
+
+    const sec = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(doc.ast.nodes[sec].kind == .section);
+    try testing.expect(doc.ast.attrsOf(sec).get("id") != null);
+    try testing.expectEqual(@as(?Span, null), d.attrsSpan(sec));
 }
 
 // ── content_span on framed *leaves* ─────────────────────────────────────

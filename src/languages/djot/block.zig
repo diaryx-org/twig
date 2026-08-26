@@ -91,6 +91,11 @@ const Extra = struct {
     attr_parser: ?AttributeParser = null,
     attr_status: AttributeParser.Status = .continue_,
     attr_startpos: usize = 0,
+    /// Position of the closing `}`, once the attribute parser has reported
+    /// `.done`. Only then is the block a single source range a serializer can
+    /// re-emit, which is what `parser.zig` builds `Document.attrs_spans` from;
+    /// `attr_startpos` doubles as "no end yet" (see `closeAttributes`).
+    attr_endpos: usize = 0,
     attr_slices: std.ArrayList(Slice) = .empty,
     // fenced_div
     colons: usize = 0,
@@ -1185,6 +1190,7 @@ pub const Parser = struct {
             try c.extra.attr_slices.append(self.allocator, .{ .start = self.pos, .end = self.starteol });
             const res = try c.extra.attr_parser.?.feed(self.allocator, self.pos, self.endeol);
             c.extra.attr_status = res.status;
+            if (res.status == .done) c.extra.attr_endpos = res.position;
             const fails_and_no_eol = res.status == .fail and !self.matchEndlineAt(res.position + 1);
             if (res.status != .fail or !fails_and_no_eol) {
                 // (mirrors `res.status !== "fail" || !find(pattEndline, res.position+1)`)
@@ -1240,6 +1246,7 @@ pub const Parser = struct {
                 .attr_status = res.status,
                 .indent = self.indent,
                 .attr_startpos = self.pos,
+                .attr_endpos = if (res.status == .done) res.position else self.pos,
                 .attr_slices = slices,
             },
         }, false);
@@ -1264,7 +1271,11 @@ pub const Parser = struct {
             if (c.extra.attr_parser) |*ap| {
                 for (ap.matches.items) |m| try self.matches.append(self.allocator, m);
             }
-            try self.addMatch(self.pos, self.pos, .block_attributes_close);
+            // The `}`, not `self.pos`: by the time the container closes the
+            // parser has moved on, often to the start of the block the
+            // attributes attach TO. `parser.zig` reads this position as the
+            // block's end, and reads "not after the open" as "never closed".
+            try self.addMatch(c.extra.attr_endpos, c.extra.attr_endpos, .block_attributes_close);
         }
     }
 
