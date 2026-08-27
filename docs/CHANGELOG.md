@@ -86,7 +86,22 @@ a later `--write` cannot reach back into a released section. See
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Changed
+
+- **build** — cut releases with the shared tooling, not a sixth copy ([`860cb13`](https://github.com/diaryx-org/twig/commit/860cb13a62c0486d7735d4491b82b72f805e5d97))
+
+### Behavioural changes
+
+- `zig build release`, `zig build changelog`,
+  `zig build changelog-check`, and `zig build sync-version` no longer exist.
+  Releasing is `release <command>` from diaryx-org/devtools, which must be on
+  PATH; the changelog steps are `release changelog [--write|--check]`.
+  `zig build check`, `test`, `sync-version-check`, and the build steps are
+  unchanged.
+
+- `scripts/sync-version.sh` with no argument was a write and
+  is now an error naming `release bump`. `--check` and `--print` are unchanged;
+  `--set` is gone.
 
 <!-- git-cliff:end -->
 
