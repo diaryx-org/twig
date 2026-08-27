@@ -89,6 +89,7 @@ a later `--write` cannot reach back into a released section. See
 ### Changed
 
 - **build** — cut releases with the shared tooling, not a sixth copy ([`860cb13`](https://github.com/diaryx-org/twig/commit/860cb13a62c0486d7735d4491b82b72f805e5d97))
+- **release** — take the shared cliff config, one style for every repo ([`6e57d98`](https://github.com/diaryx-org/twig/commit/6e57d986977b9080ffacc7b1433776fc8d0e2cca))
 
 ### Behavioural changes
 
@@ -102,6 +103,9 @@ a later `--write` cannot reach back into a released section. See
 - `scripts/sync-version.sh` with no argument was a write and
   is now an error naming `release bump`. `--check` and `--print` are unchanged;
   `--set` is gone.
+
+- `tag_pattern` is anchored, `^v[0-9]`. A tag with a `v`
+  somewhere in it no longer ends the unreleased range.
 
 <!-- git-cliff:end -->
 
