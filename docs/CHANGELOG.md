@@ -63,8 +63,8 @@ which is exactly when it is least likely to be reconstructed.
 
 ## How the Unreleased section is written
 
-`scripts/changelog.sh --write` regenerates the marked region below from the
-commits since the last tag, using `cliff.toml`: one bullet per commit, grouped
+`release changelog --write` regenerates the marked region below from the
+commits since the last tag, using `.config/cliff.toml`: one bullet per commit, grouped
 Breaking / Added / Fixed / Changed, then the **Behavioural changes** section
 gathered from the trailers. Edits inside the markers are overwritten on the
 next run.
@@ -75,7 +75,7 @@ it is a major. Most releases want none, and an intro that only restates the
 bullets below it should be cut. It goes below the end marker, where
 regeneration cannot reach it.
 
-Cutting a release is `zig build release -- <version|major|minor|patch>`, which
+Cutting a release is `release release <version|major|minor|patch|as-is>`, which
 regenerates the region, renames `## Unreleased` to the version, strips the two
 marker lines out of the section that just became history, and opens a fresh
 empty `## Unreleased` above it. Exactly one marker pair is ever in this file, so

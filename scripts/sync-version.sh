@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 #
-# Keep the project's version in one place. `build.zig.zon` is the single source
-# of truth (it already drives the C ABI's twig_version); this propagates that
-# version into the Rust workspace — bindings/rust/Cargo.toml, whose
-# [workspace.package] version every crate inherits and whose
-# [workspace.dependencies] pin the intra-workspace crates by version, and
-# bindings/rust/Cargo.lock, which records the members' own versions.
+# Check that the project's version is in one place. `build.zig.zon` is the single
+# source of truth (it already drives the C ABI's twig_version); the Rust
+# workspace copies it — bindings/rust/Cargo.toml, whose [workspace.package]
+# version every crate inherits and whose [workspace.dependencies] pin the
+# intra-workspace crates by version, and bindings/rust/Cargo.lock, which records
+# the members' own versions.
 #
-#   scripts/sync-version.sh              # write: copy zon version -> Cargo.{toml,lock}
 #   scripts/sync-version.sh --check      # verify they match; exit 1 if not (CI)
-#   scripts/sync-version.sh --set X.Y.Z  # move the zon to X.Y.Z, then propagate
 #   scripts/sync-version.sh --print      # print the canonical version and stop
 #
-# `--set` is what `zig build release` bumps with: one program owns which files
-# carry a version, so the release tool never has to know. It takes a literal
-# version rather than `patch`/`minor`/`major` — the arithmetic lives in the
-# release tool, which is also what refuses a version that goes backwards.
+# This used to write as well, and `zig build release` bumped through its `--set`.
+# Writing moved to the shared release tooling (diaryx-org/devtools), which reads
+# `.config/release.toml` to learn that `bindings/rust/Cargo.toml` mirrors the
+# zon. Checking stayed here on purpose: a writer and an independent checker that
+# disagree fail loudly, where two writers would quietly produce different bytes.
+# The two were verified byte-identical on a 3.2.1 -> 3.3.0 bump before the
+# writing half was removed.
 #
 # Deliberately pure bash + sed/awk so it runs identically on a dev box and a
 # bare CI runner — no fig, cargo-edit, or even cargo required.
@@ -26,38 +27,22 @@ zon="$root/build.zig.zon"
 cargo="$root/bindings/rust/Cargo.toml"
 lock="$root/bindings/rust/Cargo.lock"
 
-mode="write"
 case "${1:-}" in
-    "") ;;
     --check) mode="check" ;;
     --print) mode="print" ;;
-    --set)
-        mode="set"
-        set_to="${2:-}"
-        if ! [[ "$set_to" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "sync-version: --set wants an x.y.z version, got '${set_to:-<nothing>}'" >&2
-            exit 2
-        fi
-        ;;
     -h | --help)
         sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
+    "")
+        echo "sync-version: --check or --print (writing is \`release bump\`, from diaryx-org/devtools)" >&2
+        exit 2
+        ;;
     *)
-        echo "sync-version: unknown argument '$1' (expected --check, --set X.Y.Z, --print, or nothing)" >&2
+        echo "sync-version: unknown argument '$1' (expected --check or --print)" >&2
         exit 2
         ;;
 esac
-
-# `--set` moves the source of truth first; everything below then propagates it
-# exactly as a plain run would, so the two paths cannot drift apart.
-if [ "$mode" = set ]; then
-    tmp="$(mktemp)"
-    sed 's/^\([[:space:]]*\.version = "\)[^"]*"/\1'"$set_to"'"/' "$zon" > "$tmp"
-    mv "$tmp" "$zon"
-    echo "sync-version: build.zig.zon -> $set_to"
-    mode="write"
-fi
 
 # Canonical version: the `.version = "x.y.z",` line in build.zig.zon.
 version="$(sed -n 's/^[[:space:]]*\.version = "\([^"]*\)".*/\1/p' "$zon" | head -1)"
@@ -72,8 +57,7 @@ if [ "$mode" = print ]; then
 fi
 
 # What each derived file should say, given that version. Built in full and then
-# either written or diffed, so `--check` and the write path can never disagree
-# about what "in sync" means.
+# diffed, which is the whole of what `--check` means.
 #
 # Cargo.toml: the [workspace.package] `version = "…"` (anchored at line start),
 # and the version inside each internal `{ path = "…", version = "…" }` entry in
@@ -112,24 +96,9 @@ if [ "$mode" = check ]; then
         drift=true
     fi
     if [ "$drift" = true ]; then
-        echo "              Run scripts/sync-version.sh and commit the result." >&2
+        echo "              Run \`release bump as-is\` and commit the result." >&2
         exit 1
     fi
     echo "sync-version: in sync ($version)"
     exit 0
-fi
-
-wrote=false
-if ! printf '%s\n' "$want_cargo" | diff -q "$cargo" - >/dev/null 2>&1; then
-    printf '%s\n' "$want_cargo" > "$cargo"
-    echo "sync-version: bindings/rust/Cargo.toml -> $version (package + internal deps)"
-    wrote=true
-fi
-if ! printf '%s\n' "$want_lock" | diff -q "$lock" - >/dev/null 2>&1; then
-    printf '%s\n' "$want_lock" > "$lock"
-    echo "sync-version: bindings/rust/Cargo.lock -> $version"
-    wrote=true
-fi
-if [ "$wrote" = false ]; then
-    echo "sync-version: already in sync ($version)"
 fi

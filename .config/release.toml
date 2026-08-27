@@ -1,0 +1,54 @@
+# What the shared release tooling needs to know about twig.
+#
+# twig is the case the defaults do not describe: the version is decided in
+# `build.zig.zon`, not in a Cargo manifest, and the Rust workspace that copies it
+# lives under `bindings/rust/` with its own lockfile. `version_prefix` is the
+# whole of what makes the zon readable — a `.` and four spaces of indentation
+# apart, it is the same line as a Cargo workspace's.
+name = "twig"
+url = "https://github.com/diaryx-org/twig"
+release_branch = "main"
+
+# Where the version is decided. The prefix is matched against the raw line, so
+# the zon's indentation is part of it.
+manifest = "build.zig.zon"
+version_prefix = '    .version = "'
+# The zon is not a Cargo manifest: there is no root Cargo.lock to update and no
+# `{ path = …, version = … }` entries to retarget here.
+cargo_workspace = false
+
+# The Cargo workspace that follows that version — `[workspace.package]` and the
+# `[workspace.dependencies]` pins alike, plus its own lockfile beside it. This is
+# what `scripts/sync-version.sh` used to do, and what `zig build check` still
+# verifies afterwards.
+mirrors = ["bindings/rust/Cargo.toml"]
+
+# How a released section heads itself. The Cargo workspaces in this org write
+# `## v3.2.1 — 2026-08-26`; twig has always written the bare number, and its
+# historical sections are not worth rewriting to agree. Reading accepts both
+# either way — only writing follows this.
+section_prefix = ""
+section_date = false
+
+# Where the changelog begins. twig's oldest section is 2.7.0 and it says nothing
+# about the thirteen releases before that — a decision rather than a gap, so the
+# backfill stops there.
+changelog_since = "v2.7.0"
+
+# What to run before cutting. Each repo owns its own CI; this names it.
+verify = "zig build check"
+# …and here, after the bump rather than before it. `zig build check` depends on
+# `sync-version-check`, which compares build.zig.zon against the Rust manifests,
+# so running it first would be checking the versions this release replaces. A
+# failure after the bump restores the tree.
+verify_after_bump = true
+
+# What pushing the tag sets off, most consequential first. The warning printed
+# before the push is handed back to you is composed from these.
+[[tag_starts]]
+workflow = "release.yml"
+does = "uploads the seven crates to crates.io and cuts the GitHub release"
+
+[[tag_starts]]
+workflow = "homebrew.yml"
+does = "builds the CLI binaries and the wasm32-wasi build, and writes the tap"
