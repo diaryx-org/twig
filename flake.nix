@@ -4,16 +4,19 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # Pins the exact Zig toolchain (0.16.0) twig is built with, matching CI.
-    zig-overlay.url = "github:mitchellh/zig-overlay";
-    zig-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    # The Zig toolchain twig is built with, and the dev shell that carries it.
+    # The version itself lives in diaryx-org/nix, because prov builds twig-doc
+    # through its build script and so has to agree with this repo about it —
+    # `nix eval --raw github:diaryx-org/nix#versions.zig` is what CI reads.
+    diaryx-nix.url = "github:diaryx-org/nix";
+    diaryx-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils, zig-overlay }:
+  outputs = { self, nixpkgs, flake-utils, diaryx-nix }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
-        zig = zig-overlay.packages.${system}."0.16.0";
+        zig = diaryx-nix.lib.${system}.zig;
 
         # The version lives in build.zig.zon (the single source of truth the CLI
         # compiles into its `--version` string via build.zig). Parse it so the
@@ -67,13 +70,8 @@
           program = "${self.packages.${system}.twig}/bin/twig";
         };
 
-        devShells.default = pkgs.mkShell {
-          # git-cliff drives scripts/changelog.sh, which regenerates the
-          # generated region of CHANGELOG.md's Unreleased section.
-          nativeBuildInputs = [
-            zig
-            pkgs.git-cliff
-          ];
-        };
+        # git-cliff comes with the shared shell, for scripts/changelog.sh and the
+        # generated region of CHANGELOG.md's Unreleased section.
+        devShells.default = diaryx-nix.devShells.${system}.zig;
       });
 }
