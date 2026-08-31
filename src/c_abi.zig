@@ -2729,10 +2729,16 @@ pub export fn twig_editor_toggle_block_container(
 /// The gestures `twig_format_supports` answers for (C ABI enum; values are the
 /// wire contract, mirrored by `TwigGesture` in `twig.h`).
 ///
-/// One entry per gesture with a FORMAT-level gate. `twig_editor_split_block`,
-/// `twig_editor_renumber_ordered_lists` and the table ops are absent on
-/// purpose — see `twig.Editor.Gesture` for why each is unanswerable or
-/// vacuous here.
+/// One entry per gesture with a FORMAT-level gate, which is now every gesture
+/// the editor has. `twig_editor_split_block`,
+/// `twig_editor_renumber_ordered_lists` and the seven table ops used to be
+/// absent because they consulted no `Syntax` field at all — the very reason a C
+/// caller could aim `twig_editor_table_edit` at an HTML `<table>` and be told
+/// `ok` while the table was replaced with pipe text. They are 15-23; see
+/// `twig.Editor.Gesture`.
+///
+/// Values are the wire contract, so this list is APPEND-ONLY: a cached
+/// capability table keyed on these codes must keep meaning what it meant.
 const TwigGesture = enum(c_int) {
     wrap_range = 0,
     toggle_inline = 1,
@@ -2749,6 +2755,15 @@ const TwigGesture = enum(c_int) {
     insert_footnote = 12,
     insert_literal = 13,
     insert_line_break = 14,
+    split_block = 15,
+    renumber_ordered_lists = 16,
+    table_insert_row = 17,
+    table_delete_row = 18,
+    table_insert_column = 19,
+    table_delete_column = 20,
+    table_set_alignment = 21,
+    table_move_row = 22,
+    table_move_column = 23,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2769,6 +2784,15 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         12 => .insert_footnote,
         13 => .insert_literal,
         14 => .insert_line_break,
+        15 => .split_block,
+        16 => .renumber_ordered_lists,
+        17 => .table_insert_row,
+        18 => .table_delete_row,
+        19 => .table_insert_column,
+        20 => .table_delete_column,
+        21 => .table_set_alignment,
+        22 => .table_move_row,
+        23 => .table_move_column,
         else => null,
     };
 }
@@ -2846,7 +2870,10 @@ pub export fn twig_format_is_authorable(format: c_int, out_authorable: ?*c_int) 
 /// ordered list. When the numbering is already sequential this is a no-op that
 /// still returns `.ok`; `out_change` then reports the most recent prior edit (or
 /// is left untouched when there is none), so a caller must not treat a `.ok`
-/// return as proof the source moved.
+/// return as proof the source moved. `unsupported_format` where the format does
+/// not spell an ordered item as a numbered line marker (HTML's `<ol>` carries
+/// its numbering in the tag), which used to be that same silent no-op — ask
+/// `twig_format_supports` with `TWIG_GESTURE_RENUMBER_ORDERED_LISTS`.
 pub export fn twig_editor_renumber_ordered_lists(
     ed: ?*TwigEditor,
     offset: usize,
@@ -2882,7 +2909,12 @@ const TwigTableOp = enum(c_int) {
 /// for insert/move a side (0 = before/up/left, 1 = after/down/right), for
 /// set_alignment a `TwigAlignment`, and ignored for the deletes. `not_found`
 /// when `offset` is not in a table, `not_editable` for a refused (degenerate)
-/// edit. Fills out_change on success if non-NULL.
+/// edit, `unsupported_format` when the format has no table spelling to write the
+/// rebuilt table back with — which is checked before anything is read, so the
+/// source is untouched. That last one is why the `TWIG_GESTURE_TABLE_*` codes
+/// exist: an HTML `<table>` parses into the very nodes a pipe table does, so
+/// this call used to return `.ok` having replaced the table with pipe text.
+/// Fills out_change on success if non-NULL.
 pub export fn twig_editor_table_edit(
     ed: ?*TwigEditor,
     offset: usize,
@@ -3039,6 +3071,9 @@ pub export fn twig_editor_insert_thematic_break(
 /// See `twig.h` for the semantics and `twig.Editor.splitBlock` for the
 /// implementation — in particular why a table and a setext heading are
 /// `not_editable`, and why a list item's marker is repeated verbatim.
+/// `unsupported_format` where a blank line does not separate blocks: in HTML it
+/// is whitespace inside the `<p>`, so this used to report `.ok` for an edit that
+/// left one paragraph as one paragraph.
 pub export fn twig_editor_split_block(
     ed: ?*TwigEditor,
     offset: usize,

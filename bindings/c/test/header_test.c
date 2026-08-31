@@ -47,6 +47,11 @@ PIN(TWIG_GESTURE_WRAP_RANGE == 0);
 PIN(TWIG_GESTURE_TOGGLE_INLINE == 1);
 PIN(TWIG_GESTURE_TOGGLE_BLOCK_CONTAINER == 3);
 PIN(TWIG_GESTURE_INSERT_LINE_BREAK == 14);
+// The nine appended when the table, split and renumber gestures gained a
+// format gate. 14 stays pinned above: it was the end of the space once, and a
+// caller that cached it then must still find it there.
+PIN(TWIG_GESTURE_SPLIT_BLOCK == 15);
+PIN(TWIG_GESTURE_TABLE_MOVE_COLUMN == 23);
 PIN(TWIG_ALIGN_NONE == -1);
 PIN(TWIG_ALIGN_DEFAULT == 0);
 PIN(TWIG_ALIGN_LEFT == 1);
@@ -532,6 +537,41 @@ static void test_format_capability_matches_the_gestures(void) {
     CHECK(twig_editor_toggle_inline(dj, 0, 2, TWIG_INLINE_MARK, NULL) ==
           TWIG_STATUS_OK);
     twig_editor_destroy(dj);
+
+    // The nine codes added last: a C caller can now ask BEFORE aiming a table
+    // edit at a document whose table twig can read and cannot write.
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_TABLE_INSERT_ROW, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_SPLIT_BLOCK, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML,
+                               TWIG_GESTURE_RENUMBER_ORDERED_LISTS, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, TWIG_GESTURE_TABLE_INSERT_ROW,
+                               0, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+
+    // And the 0 is the answer the call itself gives, over a real HTML table —
+    // the edit that used to return OK having replaced it with pipe text.
+    const char *html_table = "<table><tr><td>a</td></tr></table>";
+    TwigEditor *ht = NULL;
+    CHECK(twig_editor_create((const uint8_t *)html_table, strlen(html_table),
+                             TWIG_FORMAT_HTML, &ht) == TWIG_STATUS_OK);
+    CHECK(twig_editor_table_edit(ht, 15, TWIG_TABLE_INSERT_ROW, 1, NULL) ==
+          TWIG_STATUS_UNSUPPORTED_FORMAT);
+    CHECK(twig_editor_split_block(ht, 15, NULL) == TWIG_STATUS_UNSUPPORTED_FORMAT);
+    CHECK(twig_editor_renumber_ordered_lists(ht, 15, NULL) ==
+          TWIG_STATUS_UNSUPPORTED_FORMAT);
+    // Not one byte moved — the refusal comes before anything is spliced.
+    const uint8_t *after = NULL;
+    size_t after_len = 0;
+    CHECK(twig_editor_source(ht, &after, &after_len) == TWIG_STATUS_OK);
+    CHECK(after_len == strlen(html_table));
+    CHECK(memcmp(after, html_table, after_len) == 0);
+    twig_editor_destroy(ht);
 
     // `kind` is read in the gesture's own space: 1 is EMPH to an inline gesture
     // and BULLET_LIST to the container one. A kindless gesture rejects a stray

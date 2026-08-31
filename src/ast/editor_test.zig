@@ -578,6 +578,19 @@ test "renumberOrderedLists: not inside an ordered list is NoBlock" {
     try testing.expectError(error.NoBlock, fx.ed.renumberOrderedLists(3));
 }
 
+test "renumberOrderedLists: a format that spells no numbered marker refuses" {
+    // An HTML `<ol>` parses into the same `ordered_list`/`list_item` nodes a
+    // Markdown one does, so the pass ran, found no `N.` run to rewrite, and
+    // reported the no-op as a success — a gesture that can only ever do nothing,
+    // answering as though it had done something. The number is in the tag here,
+    // not in the line.
+    const src = "<ol><li>a</li><li>b</li></ol>";
+    var fx = try Fixture.init(src, .html);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.renumberOrderedLists(8));
+    try fx.expectSource(src);
+}
+
 // ── Tables ───────────────────────────────────────────────────────────────────
 
 const table_src = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
@@ -647,6 +660,48 @@ test "table ops off a table are NoBlock" {
     var fx = try Fixture.init("just a paragraph\n", .markdown);
     defer fx.deinit();
     try testing.expectError(error.NoBlock, fx.ed.tableInsertRow(3, true));
+}
+
+test "table edits re-spell in the format's OWN dialect, not GFM's" {
+    // Djot's delimiter row carries no padding and keeps every cell three wide
+    // (`|:-:|`, never `| :---: |`): djot.js steps one byte past the bar before
+    // matching the dashes, so the Markdown spelling reads there as an ordinary
+    // data row and the table loses its header. Before `Syntax.table_spelling`
+    // this file wrote Markdown's skeleton into every format it could extract.
+    var fx = try Fixture.init("|a|b|\n|---|---|\n|1|2|\n", .djot);
+    defer fx.deinit();
+    try fx.ed.tableSetAlignment(1, .center); // caret in column `a`
+    try fx.expectSource("| a | b |\n|:-:|---|\n| 1 | 2 |\n");
+    // The rows ARE padded — only the delimiter isn't — and the result is still
+    // one table with a header row, which is the property the padding protects.
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+    const head = fx.find(.{ .tag = .row }) orelse return error.NoRow;
+    try testing.expect(fx.ed.astView().nodes[head].kind.row.head);
+}
+
+test "table gestures refuse a format with no table spelling, and touch nothing" {
+    // The destructive case the gate exists for, and the reason it is checked
+    // BEFORE the grid is extracted. HTML's parser lowers `<table>/<tr>/<td>` to
+    // the same `table`/`row`/`cell` nodes a pipe table produces, so extraction
+    // used to succeed and the rebuilt pipe text was spliced over the elements —
+    // which HTML reparses as a paragraph. A document that still parses is one
+    // the splicer will not roll back, so there was no `EditConflict` and no
+    // error at all: the table was simply gone.
+    const src = "<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>";
+    var fx = try Fixture.init(src, .html);
+    defer fx.deinit();
+    const caret = std.mem.indexOf(u8, src, "a").?; // inside the first cell
+    try testing.expectError(error.UnsupportedFormat, fx.ed.tableInsertRow(caret, true));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.tableDeleteRow(caret));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.tableInsertColumn(caret, true));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.tableDeleteColumn(caret));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.tableSetAlignment(caret, .center));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.tableMoveRow(caret, true));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.tableMoveColumn(caret, true));
+    // The assertion that matters: not one byte moved, and the table is still a
+    // table rather than a paragraph of pipes.
+    try fx.expectSource(src);
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
 }
 
 test "insertLineBreak: splices an in-cell <br> that reparses as a hard_break (markdown)" {
@@ -1865,6 +1920,24 @@ test "split_block: at a paragraph's end the empty block is unrepresentable" {
     try testing.expectEqual(@as(usize, 1), paras);
 }
 
+test "split_block: a format that doesn't divide blocks with a blank line refuses" {
+    // The separator every case above writes means "two blocks" only where a
+    // blank line separates blocks. Inside an HTML `<p>` it is insignificant
+    // whitespace: the gesture wrote its newlines, the reparse gave back the one
+    // paragraph it started with, and success was reported for an edit that had
+    // changed nothing about the document's shape. The refusal is checked before
+    // a byte is read, so the source is untouched rather than merely restored.
+    const src = "<p>ab</p>";
+    var fx = try Fixture.init(src, .html);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.splitBlock(4)); // between `a` and `b`
+    try fx.expectSource(src);
+
+    // Not a property of the caret: a format with no block separator refuses
+    // everywhere in the document, including a position with no block at all.
+    try testing.expectError(error.UnsupportedFormat, fx.ed.splitBlock(0));
+}
+
 // ── code blocks ──────────────────────────────────────────────────────────────
 
 /// The info string the parser reads back off the edited source — the only thing
@@ -2242,6 +2315,15 @@ const all_gestures = blk: {
         .insert_footnote,
         .insert_literal,
         .insert_line_break,
+        .split_block,
+        .renumber_ordered_lists,
+        .table_insert_row,
+        .table_delete_row,
+        .table_insert_column,
+        .table_delete_column,
+        .table_set_alignment,
+        .table_move_row,
+        .table_move_column,
     };
 };
 
@@ -2279,6 +2361,15 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .insert_footnote => ed.insertFootnote(0, "n"),
         .insert_literal => ed.insertLiteral(0, "x"),
         .insert_line_break => ed.insertLineBreak(0),
+        .split_block => ed.splitBlock(0),
+        .renumber_ordered_lists => ed.renumberOrderedLists(0),
+        .table_insert_row => ed.tableInsertRow(0, true),
+        .table_delete_row => ed.tableDeleteRow(0),
+        .table_insert_column => ed.tableInsertColumn(0, true),
+        .table_delete_column => ed.tableDeleteColumn(0),
+        .table_set_alignment => ed.tableSetAlignment(0, .center),
+        .table_move_row => ed.tableMoveRow(0, true),
+        .table_move_column => ed.tableMoveColumn(0, true),
     };
 }
 
@@ -2323,6 +2414,15 @@ test "supports is the per-gesture answer authorable() cannot give" {
     try testing.expect(!Editor.supports(html, .{ .toggle_block_container = .block_quote }));
     try testing.expect(!Editor.supports(html, .toggle_code_block));
     try testing.expect(!Editor.supports(html, .insert_literal));
+    // The three that used to answer nothing at all, because they consulted no
+    // `Syntax` field: HTML has a table its parser reads and no table spelling to
+    // write one back with, no blank-line block separation, and no numbered list
+    // marker. A toolbar can gray all nine out now instead of offering an edit
+    // that destroyed the table it was aimed at.
+    try testing.expect(!Editor.supports(html, .table_insert_row));
+    try testing.expect(!Editor.supports(html, .table_set_alignment));
+    try testing.expect(!Editor.supports(html, .split_block));
+    try testing.expect(!Editor.supports(html, .renumber_ordered_lists));
 
     // A format that spells nothing answers false to every gesture, so
     // `authorable()` and `supports` agree there — the coarse predicate is only

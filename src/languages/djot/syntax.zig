@@ -68,6 +68,27 @@ pub const table: syntax.Syntax = .{
     .code_fence = .{ .char = '`' },
     .task_marker = .{ .unchecked = "[ ]", .checked = "[x]" },
     .footnote = .{ .ref_open = "[^", .ref_close = "]", .def_suffix = ": " },
+    // Pipe tables, spelled exactly as `djot/serializer.zig` writes them — which
+    // is NOT Markdown's spelling, in two ways that both matter:
+    //
+    //   * The delimiter row carries NO padding. djot.js steps a single byte past
+    //     the `|` before matching the dashes, so `| --- |` is an ordinary data
+    //     row there and the table loses its header. Rows themselves are padded,
+    //     because a data cell's content may begin with a space.
+    //   * An aligned cell REPLACES a dash rather than adding to the run
+    //     (`:--`/`--:`/`:-:`), keeping every delimiter cell three wide.
+    .table_spelling = .{
+        .bar = "|",
+        .delim_pad = "",
+        .delim = .init(.{
+            .default = "---",
+            .left = ":--",
+            .right = "--:",
+            .center = ":-:",
+        }),
+    },
+    // A blank line: djot ends a paragraph the same way Markdown does.
+    .block_separator = "\n",
     // `{#id .class key="val"}`. Djot quotes every value — its attribute grammar
     // admits a bare value, but the serializer has always quoted, and quoting is
     // never wrong.
@@ -114,6 +135,22 @@ test "djot spells every inline kind" {
     }
     table.assertCoherent();
     try std.testing.expect(table.authorable());
+}
+
+test "djot's delimiter row abuts the bar, unlike Markdown's" {
+    // The claim this table makes about the parser, pinned where a change to
+    // either would be noticed. `| --- |` is a data row in djot — djot.js steps
+    // one byte past the `|` before matching — so the padding is the difference
+    // between a table with a header and a table without one. The aligned cells
+    // stay three wide because a colon replaces a dash.
+    const ts = table.table_spelling.?;
+    try std.testing.expectEqualStrings("", ts.delim_pad);
+    try std.testing.expectEqualStrings(" ", ts.pad);
+    try std.testing.expectEqualStrings("---", ts.delim.get(.default));
+    try std.testing.expectEqualStrings(":--", ts.delim.get(.left));
+    try std.testing.expectEqualStrings("--:", ts.delim.get(.right));
+    try std.testing.expectEqualStrings(":-:", ts.delim.get(.center));
+    table.assertCoherent();
 }
 
 test "djot has no in-cell break spelling (deliberately null)" {

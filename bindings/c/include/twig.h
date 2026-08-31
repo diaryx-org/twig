@@ -931,19 +931,26 @@ typedef enum TwigBlockContainerKind {
 // would refuse.
 
 // The gestures twig_format_supports answers for. One entry per gesture with a
-// FORMAT-level gate; the names match the twig_editor_* function they ask about.
-// (The integer values are the wire contract — do not renumber.)
+// FORMAT-level gate — which, since 15-23 were added, is every gesture the editor
+// has. The names match the twig_editor_* function they ask about. (The integer
+// values are the wire contract — do not renumber, and append only.)
 //
-// Three gestures are deliberately absent, for two different reasons:
+// 15-23 were absent until the formats they lied to were noticed. All nine used
+// to read no format spelling at all, so they refused on position and never on
+// format — and an HTML document is where that stopped being harmless:
 //
-//   - twig_editor_split_block consults the format only for the block it lands
-//     in (a fence inside a code block, a heading marker inside a heading,
-//     nothing at all in a paragraph). Its answer is a property of the caret, so
-//     no format-only query could be honest about it.
-//   - twig_editor_renumber_ordered_lists and the seven twig_editor_table_edit
-//     ops read no format spelling at all — they rewrite structure already in the
-//     source and refuse on position (TWIG_STATUS_NOT_FOUND), never on format.
-//     There is nothing here for them to report.
+//   - TWIG_GESTURE_TABLE_* — HTML's parser lowers <table>/<tr>/<td> to the same
+//     nodes a pipe table produces, so twig_editor_table_edit extracted the grid
+//     and wrote GFM pipe text over the <table>…</table> region. HTML reparses
+//     that as a paragraph — a document that still parses, so no rollback, no
+//     error, and the table destroyed. These nine codes are how a caller asks
+//     first.
+//   - TWIG_GESTURE_SPLIT_BLOCK — the blank line it writes means "two blocks"
+//     only where blank lines separate blocks. In HTML it is whitespace inside
+//     the <p>: one paragraph in, one paragraph out, TWIG_STATUS_OK returned.
+//   - TWIG_GESTURE_RENUMBER_ORDERED_LISTS — a textual N. / N) rewrite finds
+//     nothing in an <ol>, whose numbering lives in the tag, and reported the
+//     no-op as success.
 typedef enum TwigGesture {
     TWIG_GESTURE_WRAP_RANGE = 0,
     TWIG_GESTURE_TOGGLE_INLINE = 1,
@@ -960,6 +967,15 @@ typedef enum TwigGesture {
     TWIG_GESTURE_INSERT_FOOTNOTE = 12,
     TWIG_GESTURE_INSERT_LITERAL = 13,
     TWIG_GESTURE_INSERT_LINE_BREAK = 14,
+    TWIG_GESTURE_SPLIT_BLOCK = 15,
+    TWIG_GESTURE_RENUMBER_ORDERED_LISTS = 16,
+    TWIG_GESTURE_TABLE_INSERT_ROW = 17,
+    TWIG_GESTURE_TABLE_DELETE_ROW = 18,
+    TWIG_GESTURE_TABLE_INSERT_COLUMN = 19,
+    TWIG_GESTURE_TABLE_DELETE_COLUMN = 20,
+    TWIG_GESTURE_TABLE_SET_ALIGNMENT = 21,
+    TWIG_GESTURE_TABLE_MOVE_ROW = 22,
+    TWIG_GESTURE_TABLE_MOVE_COLUMN = 23,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1326,6 +1342,11 @@ TwigStatus twig_editor_toggle_block_container(
 // Djot doesn't let a list marker interrupt a paragraph, so in "1. a\n   2. b"
 // the second line is text inside item `a`, while Markdown reads it as a nested
 // item — the same bytes, renumbered in one format and left alone in the other.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT where the format doesn't spell an ordered item
+// as a numbered line marker: an <ol> keeps its numbering in the tag, so there is
+// no digit to rewrite and this used to return OK having done nothing at all. Ask
+// twig_format_supports with TWIG_GESTURE_RENUMBER_ORDERED_LISTS.
 TwigStatus twig_editor_renumber_ordered_lists(
     TwigEditor *editor,
     size_t offset,
@@ -1351,6 +1372,14 @@ typedef enum {
 // TWIG_STATUS_NOT_FOUND when `offset` is not inside a table;
 // TWIG_STATUS_NOT_EDITABLE for a refused edit (deleting the header row, the last
 // body row, or the last column). Fills out_change on success if non-NULL.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT when the format has no table spelling to write
+// the rebuilt table back with — checked before the grid is read, so the source
+// is untouched rather than restored. A format can have a table twig can READ and
+// none it can WRITE: HTML's <table> parses into the same nodes a pipe table
+// does, so this used to return OK having replaced the table with pipe text that
+// reparsed as a paragraph. Ask twig_format_supports with the matching
+// TWIG_GESTURE_TABLE_* code.
 TwigStatus twig_editor_table_edit(
     TwigEditor *editor,
     size_t offset,
@@ -1564,6 +1593,11 @@ TwigStatus twig_editor_insert_thematic_break(
 // parse back as one block). TWIG_STATUS_NOT_FOUND when nothing covers `offset` —
 // an empty document has no block to divide. TWIG_STATUS_INVALID_ARGUMENT when
 // `offset` is past the source.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT where a blank line does not separate blocks,
+// checked before the source is read. In HTML a blank line is whitespace inside
+// the <p>, so this used to return OK for an edit that left one paragraph as one
+// paragraph. Ask twig_format_supports with TWIG_GESTURE_SPLIT_BLOCK.
 TwigStatus twig_editor_split_block(
     TwigEditor *editor,
     size_t offset,

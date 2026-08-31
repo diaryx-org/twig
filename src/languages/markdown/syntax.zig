@@ -69,6 +69,25 @@ pub const table: syntax.Syntax = .{
     .task_marker = .{ .unchecked = "[ ]", .checked = "[x]" },
     // GFM footnotes.
     .footnote = .{ .ref_open = "[^", .ref_close = "]", .def_suffix = ": " },
+    // GFM pipe tables. Padded on both sides of every cell, the delimiter row
+    // included — GFM matches the dashes after skipping whitespace, so `| --- |`
+    // is a delimiter here even though the same line is a data row in djot. The
+    // aligned forms ADD their colon to the three-dash run rather than replacing
+    // a dash, which is the other half of what makes the two spellings distinct
+    // tables rather than one shared constant.
+    .table_spelling = .{
+        .bar = "|",
+        .delim_pad = " ",
+        .delim = .init(.{
+            .default = "---",
+            .left = ":---",
+            .right = "---:",
+            .center = ":---:",
+        }),
+    },
+    // A blank line, as everywhere in CommonMark: it is what ends a paragraph and
+    // opens the next.
+    .block_separator = "\n",
     // A generic directive's `{#id .class key=val}` shorthand. Unlike djot, a
     // value is left bare when `attributes.zig`'s `isNameChar` grammar can read
     // it back, and quoted (escaping `"`/`\`) otherwise.
@@ -132,6 +151,21 @@ test "markdown SPELLS every mark but AUTHORS only three" {
 
     table.assertCoherent();
     try std.testing.expect(table.authorable());
+}
+
+test "markdown pads its delimiter row and grows the dash run for alignment" {
+    // The half of the pipe-table spelling that differs from djot's, stated
+    // beside the parser that has to read it back. GFM skips whitespace before
+    // matching the dashes, so the padding is free here and is what the
+    // serializer emits; the colon is ADDED to the three-dash run.
+    const ts = table.table_spelling.?;
+    try std.testing.expectEqualStrings(" ", ts.delim_pad);
+    try std.testing.expectEqualStrings(" ", ts.pad);
+    try std.testing.expectEqualStrings("---", ts.delim.get(.default));
+    try std.testing.expectEqualStrings(":---", ts.delim.get(.left));
+    try std.testing.expectEqualStrings("---:", ts.delim.get(.right));
+    try std.testing.expectEqualStrings(":---:", ts.delim.get(.center));
+    table.assertCoherent();
 }
 
 test "markdown spells the in-cell break as <br>" {

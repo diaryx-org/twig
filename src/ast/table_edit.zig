@@ -21,8 +21,14 @@
 //! below. Rebuilding the table's line region in one buffer and splicing it once
 //! keeps the edit a single reparse and a single undo step, the same discipline
 //! the list rewrites keep. Cell content is copied verbatim from the source
-//! (escapes and all), so a `\|` in a cell survives; only the pipe skeleton and
-//! the delimiter are this module's to spell.
+//! (escapes and all), so a `\|` in a cell survives; only the skeleton and the
+//! delimiter are this module's to WRITE — and the bytes it writes them with come
+//! from the caller's `TableSpelling`, never from here. They used to be literals,
+//! which made every table this file could extract a GFM table on the way back
+//! out: djot's unpadded delimiter row was respelled as Markdown's padded one
+//! (which djot reads as a data row), and an HTML `<table>` — whose parser
+//! produces the very same `table`/`row`/`cell` nodes — was overwritten with pipe
+//! text. See `syntax.zig`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,6 +36,7 @@ const AST = @import("ast.zig");
 const Document = @import("../document.zig");
 const Span = @import("../span.zig");
 const locate = @import("locate.zig");
+const TableSpelling = @import("../syntax.zig").TableSpelling;
 
 pub const Alignment = AST.Alignment;
 
@@ -166,51 +173,65 @@ fn columnAt(src: []const u8, row_start: usize, offset: usize) usize {
     return if (pipes == 0) 0 else pipes - 1;
 }
 
-/// Serialize `grid` back to pipe-table source: header rows, the delimiter row
-/// spelled from the alignments, then the body rows. Columns are padded so every
-/// row and the delimiter share a width. The caller owns the returned bytes.
-pub fn emit(allocator: Allocator, grid: *const Grid) Error![]u8 {
+/// Serialize `grid` back to `spelling`'s table source: header rows, the
+/// delimiter row spelled from the alignments, then the body rows. Ragged rows
+/// are padded to the grid's width so every row and the delimiter agree. The
+/// caller owns the returned bytes.
+///
+/// `spelling` is the format's, taken from its `Syntax` — a caller with no table
+/// spelling has no table to write and must refuse before it gets here.
+pub fn emit(allocator: Allocator, grid: *const Grid, spelling: TableSpelling) Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     const cols = grid.cols();
 
     for (grid.rows.items, 0..) |row, r| {
-        try emitRow(allocator, &out, row.items, cols);
+        try emitRow(allocator, &out, row.items, cols, spelling);
         // The delimiter goes right after the last header row.
-        if (r + 1 == grid.header_rows) try emitDelimiter(allocator, &out, grid.aligns.items);
+        if (r + 1 == grid.header_rows) try emitDelimiter(allocator, &out, grid.aligns.items, spelling);
     }
     // A header-only table (all rows are header) still needs its delimiter.
     if (grid.header_rows >= grid.rows.items.len) {
-        try emitDelimiter(allocator, &out, grid.aligns.items);
+        try emitDelimiter(allocator, &out, grid.aligns.items, spelling);
     }
     return out.toOwnedSlice(allocator);
 }
 
-fn emitRow(allocator: Allocator, out: *std.ArrayList(u8), cells: []const []const u8, cols: usize) !void {
-    try out.append(allocator, '|');
+fn emitRow(
+    allocator: Allocator,
+    out: *std.ArrayList(u8),
+    cells: []const []const u8,
+    cols: usize,
+    spelling: TableSpelling,
+) !void {
+    try out.appendSlice(allocator, spelling.bar);
     var c: usize = 0;
     while (c < cols) : (c += 1) {
         const content = if (c < cells.len) cells[c] else "";
-        try out.append(allocator, ' ');
+        try out.appendSlice(allocator, spelling.pad);
         try out.appendSlice(allocator, content);
-        try out.append(allocator, ' ');
-        try out.append(allocator, '|');
+        try out.appendSlice(allocator, spelling.pad);
+        try out.appendSlice(allocator, spelling.bar);
     }
     try out.append(allocator, '\n');
 }
 
-fn emitDelimiter(allocator: Allocator, out: *std.ArrayList(u8), aligns: []const Alignment) !void {
-    try out.append(allocator, '|');
+/// The line that marks the rows above it as the header and sets the columns'
+/// alignment. Its padding is its own (`delim_pad`, not `pad`): djot recognises
+/// the dashes only when they abut the bar, so the two formats pad a data row the
+/// same way and a delimiter row differently.
+fn emitDelimiter(
+    allocator: Allocator,
+    out: *std.ArrayList(u8),
+    aligns: []const Alignment,
+    spelling: TableSpelling,
+) !void {
+    try out.appendSlice(allocator, spelling.bar);
     for (aligns) |a| {
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, switch (a) {
-            .default => "---",
-            .left => ":---",
-            .right => "---:",
-            .center => ":---:",
-        });
-        try out.append(allocator, ' ');
-        try out.append(allocator, '|');
+        try out.appendSlice(allocator, spelling.delim_pad);
+        try out.appendSlice(allocator, spelling.delim.get(a));
+        try out.appendSlice(allocator, spelling.delim_pad);
+        try out.appendSlice(allocator, spelling.bar);
     }
     try out.append(allocator, '\n');
 }

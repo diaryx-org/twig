@@ -643,16 +643,21 @@ impl BlockContainerKind {
 /// }
 /// ```
 ///
-/// Only the gestures with a **format-level** gate appear. Three are absent for
-/// two different reasons:
+/// Only the gestures with a **format-level** gate appear — which, since the last
+/// nine were added, is every gesture the editor has. Those nine read no format
+/// spelling at all until an HTML document showed what that cost:
 ///
-/// - [`Editor::split_block`] consults the format only for the block it lands in
-///   (a fence inside a code block, a heading marker inside a heading, nothing at
-///   all in a paragraph). Its answer is a property of the caret, so no
-///   format-only query could be honest about it.
-/// - [`Editor::renumber_ordered_lists`] and the table ops read no format
-///   spelling at all — they rewrite structure already in the source and refuse
-///   on position, never on format.
+/// - The `Table*` variants. HTML's parser lowers `<table>/<tr>/<td>` to the same
+///   nodes a pipe table produces, so [`Editor::table_insert_row`] and its
+///   siblings extracted the grid and wrote pipe text over the elements. HTML
+///   reparses that as a paragraph —
+///   a document that still parses, so nothing rolled it back and no error was
+///   returned. The table was simply gone.
+/// - [`Gesture::SplitBlock`]. The blank line it writes means "two blocks" only
+///   where blank lines separate blocks; inside a `<p>` it is whitespace, so
+///   [`Editor::split_block`] reported success over an unchanged document.
+/// - [`Gesture::RenumberOrderedLists`]. A textual `N.` rewrite finds nothing in
+///   an `<ol>`, whose numbering is in the tag, and called the no-op a success.
 ///
 /// `#[non_exhaustive]` for the reason [`Format`] is: the gesture list grows with
 /// the editor surface, and a caller matching on this should not need a rebuild.
@@ -674,6 +679,15 @@ pub enum Gesture {
     InsertFootnote,
     InsertLiteral,
     InsertLineBreak,
+    SplitBlock,
+    RenumberOrderedLists,
+    TableInsertRow,
+    TableDeleteRow,
+    TableInsertColumn,
+    TableDeleteColumn,
+    TableSetAlignment,
+    TableMoveRow,
+    TableMoveColumn,
 }
 
 impl Gesture {
@@ -698,6 +712,15 @@ impl Gesture {
             Gesture::InsertFootnote => (12, 0),
             Gesture::InsertLiteral => (13, 0),
             Gesture::InsertLineBreak => (14, 0),
+            Gesture::SplitBlock => (15, 0),
+            Gesture::RenumberOrderedLists => (16, 0),
+            Gesture::TableInsertRow => (17, 0),
+            Gesture::TableDeleteRow => (18, 0),
+            Gesture::TableInsertColumn => (19, 0),
+            Gesture::TableDeleteColumn => (20, 0),
+            Gesture::TableSetAlignment => (21, 0),
+            Gesture::TableMoveRow => (22, 0),
+            Gesture::TableMoveColumn => (23, 0),
         }
     }
 }
@@ -5357,8 +5380,53 @@ mod tests {
             Gesture::InsertFootnote,
             Gesture::InsertLiteral,
             Gesture::InsertLineBreak,
+            Gesture::SplitBlock,
+            Gesture::RenumberOrderedLists,
+            Gesture::TableInsertRow,
+            Gesture::TableDeleteRow,
+            Gesture::TableInsertColumn,
+            Gesture::TableDeleteColumn,
+            Gesture::TableSetAlignment,
+            Gesture::TableMoveRow,
+            Gesture::TableMoveColumn,
         ]);
         all
+    }
+
+    #[test]
+    fn the_wire_space_ends_where_the_sweep_does() {
+        // `all_gestures` is hand-written and, unlike the Zig union it mirrors,
+        // has no compile-time cross-check: a variant added to the enum and to
+        // `to_c` can silently miss the sweep below. So pin the space from both
+        // ends — the sweep must cover a contiguous range of codes, every one of
+        // them must decode C-side, and one past the end must not.
+        let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes, (0..=23).collect::<Vec<c_int>>());
+
+        let mut supported = -1;
+        for code in &codes {
+            let status = unsafe {
+                ffi::twig_format_supports(
+                    ffi::TwigFormat::from(Format::Markdown) as c_int,
+                    *code,
+                    0,
+                    &mut supported,
+                )
+            };
+            assert_eq!(Error::from_status(status), Ok(()), "code {code} did not decode");
+        }
+        // One past the end is not a gesture, which is what makes appending safe.
+        let status = unsafe {
+            ffi::twig_format_supports(
+                ffi::TwigFormat::from(Format::Markdown) as c_int,
+                24,
+                0,
+                &mut supported,
+            )
+        };
+        assert_eq!(Error::from_status(status), Err(Error::InvalidArgument));
     }
 
     #[test]
@@ -5375,6 +5443,15 @@ mod tests {
         )));
         assert!(!Format::Html.supports(Gesture::ToggleCodeBlock));
         assert!(!Format::Html.supports(Gesture::InsertLiteral));
+        // The nine that used to answer nothing at all: HTML has a table its
+        // parser reads and no spelling to write one back with, no blank-line
+        // block separation, and no numbered list marker.
+        assert!(!Format::Html.supports(Gesture::TableInsertRow));
+        assert!(!Format::Html.supports(Gesture::TableSetAlignment));
+        assert!(!Format::Html.supports(Gesture::SplitBlock));
+        assert!(!Format::Html.supports(Gesture::RenumberOrderedLists));
+        assert!(Format::Markdown.supports(Gesture::TableInsertRow));
+        assert!(Format::Djot.supports(Gesture::SplitBlock));
 
         // A format that spells nothing answers false everywhere, so the coarse
         // predicate agrees there — it only misleads in the middle of the range.
@@ -5418,6 +5495,17 @@ mod tests {
                 "{fmt:?}: supports said {claimed}, gesture said {observed:?}",
             );
         }
+
+        // The destructive one, spelled out: an HTML `<table>` extracts as a grid
+        // and cannot be written back, so the refusal has to arrive before
+        // anything is spliced. A `Ok(())` here once meant a destroyed table.
+        let src = "<table><tr><td>a</td></tr></table>";
+        let mut ed = Editor::new_str(src, Format::Html).expect("editor");
+        assert!(!Format::Html.supports(Gesture::TableInsertRow));
+        assert_eq!(ed.table_insert_row(15, true), Err(Error::UnsupportedFormat));
+        assert_eq!(ed.renumber_ordered_lists(15), Err(Error::UnsupportedFormat));
+        assert!(matches!(ed.split_block(15), Err(Error::UnsupportedFormat)));
+        assert_eq!(ed.source().expect("source"), src.as_bytes());
     }
 
     #[test]

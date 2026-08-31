@@ -187,22 +187,31 @@ pub const Editor = struct {
     /// with. A payload here exists exactly where the gesture has a `kind`
     /// parameter, so a caller that can spell the call can spell the query.
     ///
-    /// Only the gestures with a FORMAT-level gate appear. The omissions are
-    /// deliberate, and each is a different reason:
+    /// Every gesture `Editor` has appears here, because every gesture now has a
+    /// FORMAT-level gate. Nine of them didn't:
     ///
-    ///   * `splitBlock` consults the table only for the block it lands in — a
-    ///     code fence inside a code block, a heading marker inside a heading,
-    ///     nothing at all in a paragraph. Its answer is a property of the
-    ///     caret, not the format, so no format-only query can be honest about
-    ///     it.
-    ///   * `renumberOrderedLists` and the seven table gestures read no `Syntax`
-    ///     field at all: they rewrite structure that is already in the source,
-    ///     and refuse on position (`NoBlock`/`NotEditable`) rather than on
-    ///     spelling. There is nothing for a capability query to report.
+    ///   * The seven TABLE gestures rebuilt a table by writing pipe syntax from
+    ///     literals in `table_edit.zig`. HTML's parser lowers `<table>` to the
+    ///     same `table`/`row`/`cell` nodes a pipe table produces, so the grid
+    ///     extracted cleanly and the pipes were spliced over the elements —
+    ///     which reparses as a paragraph, so not even `EditConflict` fired. They
+    ///     read `Syntax.table_spelling` now.
+    ///   * `splitBlock`'s plain-text arm separated the halves with a blank line,
+    ///     which means "two blocks" only where blank lines separate blocks. In
+    ///     HTML it is insignificant whitespace inside the `<p>`: one paragraph
+    ///     in, one paragraph out, success reported. It reads
+    ///     `Syntax.block_separator` now, and `assertCoherent` pins the other two
+    ///     spellings it may need (a heading marker, a code fence) non-null
+    ///     alongside it, so the answer below stays a total one rather than a
+    ///     property of the caret.
+    ///   * `renumberOrderedLists` rewrote `N.`/`N)` markers textually, which
+    ///     finds nothing in an HTML `<ol>` and reports a successful no-op. It
+    ///     gates on the ordered-list container spelling now.
     ///
-    /// Both groups return `error.UnsupportedFormat` from NO branch, which is
-    /// what `test "every gesture's gate matches what supports claims"` relies
-    /// on to enumerate this union exhaustively.
+    /// The table gestures get one variant EACH rather than one shared
+    /// `table_edit`, which is the granularity the task and code-block families
+    /// already use: they share a gate, and a toolbar still grays out seven
+    /// buttons.
     pub const Gesture = union(enum) {
         wrap_range: InlineKind,
         toggle_inline: InlineKind,
@@ -219,6 +228,15 @@ pub const Editor = struct {
         insert_footnote,
         insert_literal,
         insert_line_break,
+        split_block,
+        renumber_ordered_lists,
+        table_insert_row,
+        table_delete_row,
+        table_insert_column,
+        table_delete_column,
+        table_set_alignment,
+        table_move_row,
+        table_move_column,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -269,7 +287,37 @@ pub const Editor = struct {
             .insert_footnote => syntax.footnote != null,
             .insert_literal => syntax.text_escapes != null,
             .insert_line_break => syntax.cell_line_break != null,
+            // A total answer only because `assertCoherent` pins a heading marker
+            // and a code fence non-null wherever a block separator is: those are
+            // the two spellings `splitBlock` reaches for once it knows which
+            // block the caret is in, and without that invariant this row would
+            // be true while the gesture reported unsupported in a fence.
+            .split_block => syntax.block_separator != null,
+            .renumber_ordered_lists => spellsOrderedMarkers(syntax),
+            .table_insert_row,
+            .table_delete_row,
+            .table_insert_column,
+            .table_delete_column,
+            .table_set_alignment,
+            .table_move_row,
+            .table_move_column,
+            => syntax.table_spelling != null,
         };
+    }
+
+    /// Whether this format spells an ordered list item as a NUMBERED LINE
+    /// MARKER — the one question `renumberOrderedLists` needs answered, and the
+    /// expression it and `supports` share so the two cannot drift.
+    ///
+    /// The renumber pass rewrites the numeric run of a `N.` / `N)` marker in the
+    /// source. That is a gesture about a marker, so a spelling is not enough: a
+    /// format could spell an ordered list some other way (`ContainerSpelling`
+    /// admits a fixed `marker`), and rewriting digits in it would find none and
+    /// call the no-op a success — which is precisely what an HTML `<ol>` did
+    /// before this gate, where there is no container spelling at all.
+    fn spellsOrderedMarkers(syntax: *const Syntax) bool {
+        const sp = syntax.container_spelling.get(.ordered_list) orelse return false;
+        return sp.numbered;
     }
 
     // ── Inline marks ───────────────────────────────────────────────────────
@@ -656,7 +704,14 @@ pub const Editor = struct {
     /// Only the numeric run of a `N.` / `N)` marker is rewritten; its delimiter,
     /// spacing, indentation, and every other (bullet, prose, continuation, blank)
     /// line are copied byte-for-byte.
+    ///
+    /// `error.UnsupportedFormat` where the format doesn't spell an ordered item
+    /// as a numbered line marker (see `spellsOrderedMarkers`). An HTML `<ol>`
+    /// parses into the same `ordered_list`/`list_item` nodes a Markdown one
+    /// does, so the pass used to run over it, find no `N.` to rewrite, and
+    /// report the silent no-op as a success.
     pub fn renumberOrderedLists(self: *Editor, offset: usize) Error!void {
+        if (!spellsOrderedMarkers(self.syntax)) return error.UnsupportedFormat;
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
         const ast = self.astView();
@@ -843,7 +898,15 @@ pub const Editor = struct {
     ///
     /// `error.NoBlock` when nothing covers `offset` — an empty document has no
     /// block to divide.
+    ///
+    /// `error.UnsupportedFormat` when the format has no `block_separator`, and
+    /// that is checked FIRST, before a single byte of source is read: the blank
+    /// line every case above writes is only a divider where blank lines divide
+    /// blocks. In HTML it is insignificant whitespace inside the `<p>`, so the
+    /// gesture used to report success over a document it had not changed the
+    /// shape of at all.
     pub fn splitBlock(self: *Editor, offset: usize) Error!void {
+        const separator = self.syntax.block_separator orelse return error.UnsupportedFormat;
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
         const doc = &self.splicer.doc;
@@ -889,7 +952,7 @@ pub const Editor = struct {
                 // sibling's rendering. Everywhere else the blank IS the divider.
                 if (!in_item) {
                     try out.appendSlice(allocator, blank);
-                    try out.append(allocator, '\n');
+                    try out.appendSlice(allocator, separator);
                 }
                 try out.appendSlice(allocator, prefix);
                 try out.appendSlice(allocator, marker.items);
@@ -907,7 +970,7 @@ pub const Editor = struct {
                 try out.appendNTimes(allocator, fence.char, at.width);
                 try out.append(allocator, '\n');
                 try out.appendSlice(allocator, blank);
-                try out.append(allocator, '\n');
+                try out.appendSlice(allocator, separator);
                 // Verbatim from the fence character on, so width and info
                 // string both survive; the prefix is re-minted, not copied.
                 try out.appendSlice(allocator, prefix);
@@ -1279,7 +1342,18 @@ pub const Editor = struct {
 
     /// Lift the table at `offset`, apply one grid op, and splice the rebuilt
     /// table back — the shared body of every table gesture above.
+    ///
+    /// The spelling is fetched FIRST, before the grid is extracted and long
+    /// before anything is spliced, and that ordering is the whole fix rather
+    /// than a tidiness: a format can have a table this file can READ and no
+    /// table it can WRITE. HTML is exactly that — `html/parser.zig` lowers
+    /// `<table>/<tr>/<td>` to the same `table`/`row`/`cell` nodes a pipe table
+    /// produces, so extraction succeeded and the rebuilt pipe text went over the
+    /// `<table>…</table>` region, which HTML then reparsed as a paragraph. A
+    /// document that still parses is one the splicer will not roll back, so the
+    /// table was destroyed without an error anywhere.
     fn tableEdit(self: *Editor, offset: usize, op: TableOp) Error!void {
+        const spelling = self.syntax.table_spelling orelse return error.UnsupportedFormat;
         const src = self.sourceBytes();
         if (offset > src.len) return error.InvalidRange;
         const allocator = self.splicer.allocator;
@@ -1297,7 +1371,7 @@ pub const Editor = struct {
             .move_column => |d| table_edit.moveColumn(&grid, d),
         }) catch |e| return mapTableErr(e);
 
-        const bytes = table_edit.emit(allocator, &grid) catch |e| return mapTableErr(e);
+        const bytes = table_edit.emit(allocator, &grid, spelling) catch |e| return mapTableErr(e);
         defer allocator.free(bytes);
         return self.commitSplice(grid.region.start, grid.region.end, bytes);
     }

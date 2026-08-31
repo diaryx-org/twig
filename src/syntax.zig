@@ -149,6 +149,37 @@ pub const FootnoteSpelling = struct {
     label_forbids: []const u8 = "[]",
 };
 
+/// How a format spells a PIPE TABLE's skeleton — the bars, the padding, and the
+/// delimiter row that carries the columns' alignment.
+///
+/// A table is the one construct an editor re-spells IN FULL rather than wrapping
+/// or prefixing: a column op touches every row and the delimiter at once, so the
+/// grid is lifted out of the tree, mutated, and written back as fresh source (see
+/// `ast/table_edit.zig`). Every byte of the skeleton is therefore a spelling this
+/// table has to carry. They were literals in `table_edit.zig`, which wrote GFM
+/// into every format whose table the extractor could read.
+pub const TableSpelling = struct {
+    /// Borders a row and separates its cells.
+    bar: []const u8,
+    /// Written on both sides of a cell's content, so a row reads `| a | b |`
+    /// rather than `|a|b|`. Both serializers pad, and an edited table has to
+    /// come back out the way the serializer would have written it.
+    pad: []const u8 = " ",
+    /// The same, around a DELIMITER cell. A separate field because the two
+    /// formats disagree, and djot's answer is load-bearing rather than a matter
+    /// of style: djot.js steps a single byte past the `|` before matching the
+    /// dashes, so `| --- |` is read there as an ordinary data row and the table
+    /// silently loses its header. See `djot/serializer.zig`'s
+    /// `writeTableSeparator`, which spells the same line on the way out.
+    delim_pad: []const u8,
+    /// The delimiter cell per column alignment, colons included and padding
+    /// excluded. A table rather than a dash run plus a colon rule, because the
+    /// formats build the aligned forms differently: Markdown ADDS a colon to the
+    /// three-dash run (`:---`), djot REPLACES a dash so the cell stays three
+    /// wide (`:--`). One rule that produced both would be a rule about nothing.
+    delim: std.EnumArray(AST.Alignment, []const u8),
+};
+
 /// How a format escapes a link's `(destination)` position.
 ///
 /// This is NOT `link_text_escapes`' alphabet: this one guards the position
@@ -279,6 +310,35 @@ pub const Syntax = struct {
     /// How a footnote's reference and definition are spelled. `null` = this
     /// format has no footnotes. See `FootnoteSpelling`.
     footnote: ?FootnoteSpelling = null,
+
+    /// How a pipe table is spelled. `null` = this format has no pipe table, so
+    /// every table gesture is unsupported. See `TableSpelling`.
+    ///
+    /// HTML is what forced this field to exist, and it is the sharpest case in
+    /// the file for why a gesture must consult a table before it reads the tree:
+    /// `html/parser.zig` lowers `<table>/<tr>/<td>` to the SAME `table`/`row`/
+    /// `cell` nodes a pipe table produces, so the grid extracted perfectly and
+    /// the rebuilt pipe text was spliced straight over the `<table>…</table>`
+    /// region. HTML's forgiving reparse reads that as a paragraph — a document
+    /// that still parses, so there was no `EditConflict` to roll it back, and
+    /// the table was gone.
+    table_spelling: ?TableSpelling = null,
+
+    /// What separates two BLOCKS of the same kind — the bytes `Editor.splitBlock`
+    /// writes between the halves of a block it divides at the caret, after the
+    /// enclosing container's blank-line prefix (`ContainerSpelling.blank`).
+    ///
+    /// A blank line in both formats that have one, which is why the value is a
+    /// bare newline rather than a line of text: the algorithm has already
+    /// written whatever prefix the line carries, and what makes the line a
+    /// SEPARATOR is that nothing else follows it.
+    ///
+    /// `null` = this format does not divide blocks with a blank line, and
+    /// `splitBlock` over it is `error.UnsupportedFormat`. HTML is why: its
+    /// blocks are element pairs, so the newlines a split wrote landed INSIDE the
+    /// `<p>` as insignificant whitespace — one paragraph in, one paragraph out,
+    /// and a success reported for a gesture that had done nothing.
+    block_separator: ?[]const u8 = null,
 
     /// The bytes a link's TEXT position must have backslash-escaped for the text
     /// to reparse as the literal string handed in. Each one either opens a
@@ -434,6 +494,33 @@ pub const Syntax = struct {
             std.debug.assert(std.mem.eql(u8, d.open, fs.ref_open));
             std.debug.assert(std.mem.eql(u8, d.close, fs.ref_close));
         }
+        // A table is re-spelled cell by cell between bars, so anything holding a
+        // BAR outside a cell's content mints a column no row asked for — and the
+        // rebuilt table would have a different shape from the grid it came from.
+        // An empty delimiter cell is the same failure from the other side: a
+        // delimiter row of bare bars isn't one, so the header would be lost.
+        if (self.table_spelling) |ts| {
+            std.debug.assert(ts.bar.len > 0);
+            std.debug.assert(std.mem.indexOf(u8, ts.pad, ts.bar) == null);
+            std.debug.assert(std.mem.indexOf(u8, ts.delim_pad, ts.bar) == null);
+            for (std.enums.values(AST.Alignment)) |a| {
+                const cell = ts.delim.get(a);
+                std.debug.assert(cell.len > 0);
+                std.debug.assert(std.mem.indexOf(u8, cell, ts.bar) == null);
+            }
+        }
+        // `splitBlock` divides a block at the caret and gives BOTH halves the
+        // same kind, which means re-spelling a heading's marker and closing and
+        // reopening a code fence. A format that separated blocks but could spell
+        // neither would make `Editor.supports(.split_block)` — a format-level
+        // answer, given without a document — start lying the moment the caret
+        // sat in a heading or a fence. That is the exact drift the capability
+        // query exists to prevent, so it is pinned here rather than caveated
+        // there.
+        if (self.block_separator != null) {
+            std.debug.assert(self.heading_marker != null);
+            std.debug.assert(self.code_fence != null);
+        }
     }
 };
 
@@ -445,5 +532,7 @@ test "a parse-only format spells nothing" {
     try std.testing.expect(s.heading_marker == null);
     try std.testing.expect(s.text_escapes == null);
     try std.testing.expect(s.block_start_escapes == null);
+    try std.testing.expect(s.table_spelling == null);
+    try std.testing.expect(s.block_separator == null);
     s.assertCoherent();
 }
