@@ -7,6 +7,39 @@ created: 2026-07-19
 
 # Hard line breaks inside table cells
 
+## Update (2026-08-30): HTML authors this gesture too
+
+HTML has since grown a real `Syntax` table (`src/languages/html/syntax.zig`,
+bound in `src/format.zig`'s HTML row), so the "parse-only, therefore
+unauthorable" framing this document reaches for in three places is no longer the
+state of the code. HTML spells seven of the nine inline marks as tag pairs,
+`<code>` for verbatim, `thematic_break = "<hr>"` — and `cell_line_break =
+"<br>"`, the field this proposal added. `Editor.insertLineBreak` consequently
+*succeeds* in an HTML cell rather than refusing it, which
+`src/ast/editor_test.zig`'s "insertLineBreak: html spells the in-cell break
+natively" pins from caret to bytes.
+
+Two consequences for what follows:
+
+- The 2026-07-20 bullets have been amended in place where they asserted the old
+  state. Their reasoning is left as written, because it is still why the gesture
+  needed no new machinery for HTML: the parse and serialize halves were already
+  there, and only the spelling was missing.
+- **Design § 1's spelling table has HTML's row wrong.** It reads `null` /
+  "parse-only; already unauthorable"; the landed value is `"<br>"`. The draft
+  below is left as drafted and this note is the correction. XML's half of that
+  row is still right — XML carries no `Syntax` table at all
+  (`src/format.zig`'s XML row says so and why).
+
+What HTML still cannot author, it cannot author because the *shape* of the
+spelling differs, not because the table is a stub. `heading_marker` is a byte
+repeated `level` times, `container_spelling` is a prefix on every line, and
+`code_fence` measures a run of its fence byte; none of those describes
+`<h1>…</h1>`, `<blockquote>`, or `<pre><code>`. A link puts its destination in a
+quoted attribute rather than in a `Delims` pair. And the escape alphabets feed
+routines that emit a literal backslash, which is not an escape in HTML at all.
+`src/languages/html/syntax.zig`'s module doc comment is the long form.
+
 ## Update (2026-07-20): decisions & scope
 
 The open questions below are resolved for the first landing. Scope: **Markdown
@@ -29,19 +62,34 @@ and HTML supported, djot deliberately not.**
   maps `<br>` → `hard_break` (`html/parser.zig:247`) and the HTML serializer
   already emits `<br>` for `hard_break` (`html/serializer.zig:909`); an HTML cell
   break already round-trips HTML → AST → HTML unchanged (the trailing newline the
-  serializer adds is insignificant HTML whitespace). HTML carries no `Syntax`
-  table (it is parse-only / unauthorable), so the editor op correctly reports
-  `error.UnsupportedFormat` for it — authoring is not the point, round-trip is.
+  serializer adds is insignificant HTML whitespace). At the time HTML carried no
+  `Syntax` table, so the editor op reported `error.UnsupportedFormat` for it and
+  the round trip, not the authoring, was the whole claim. The round-trip half
+  stands; the refusal does not — HTML spells `cell_line_break = "<br>"` today and
+  authors the break like any other format (see the 2026-08-30 note above).
 
-  Scope caveat, verified on the CLI: twig's HTML parser lowers `<table>`/`<tr>`/
-  `<td>` to **generic `element` nodes**, not the semantic `table`/`row`/`cell`
-  nodes the Markdown pipe-table path keys on. So HTML → Markdown does *not*
-  reconstruct a pipe table (the table passes through as raw HTML, and its
-  `hard_break` serializes via the ordinary arm) — that is a separate, pre-existing
-  limitation this proposal does not address. "HTML supported" here means the
-  HTML → AST → HTML round-trip of a cell break, not HTML → Markdown table
-  reconstruction. The Markdown serializer's `in_cell` branch only fires for a
-  `hard_break` that is a child of a real `cell` node.
+  **Scope caveat, void since 2026-08-30.** As drafted, this bullet said —
+  correctly then, and verified on the CLI — that twig's HTML parser lowered
+  `<table>`/`<tr>`/`<td>` to **generic `element` nodes** rather than the semantic
+  `table`/`row`/`cell` nodes the Markdown pipe-table path keys on, and concluded
+  that "HTML supported" meant only the HTML → AST → HTML round trip of a cell
+  break.
+
+  The parser no longer does that, and nothing should be reasoned from the old
+  shape. `semanticKind` (`src/languages/html/parser.zig`) maps `<table>` →
+  `.table`, `<tr>` → `.row` carrying `head` inferred from whether its cells are
+  `<th>`, and `<th>`/`<td>` → `.cell` carrying `head`, `alignment`, `colspan`,
+  and `rowspan`; `flattenRowGroups` splices `<thead>`/`<tbody>`/`<tfoot>` away,
+  because the shared model is `table -> caption?, row*` and has no node for a row
+  group. An HTML table therefore arrives in the AST in exactly the vocabulary the
+  pipe-table serializers walk — `src/format.zig`'s "round-trip: a table survives
+  Djot -> HTML -> Djot" parses real HTML and gets its pipe table back with
+  alignment and caption intact — and the Markdown serializer's `in_cell` branch,
+  which fires for a `hard_break` that is a child of a real `cell` node, fires for
+  an HTML-parsed cell like any other. What is genuinely lossy on that path is
+  narrower and lives elsewhere: a header-less HTML table gains a synthesized
+  empty header row, and `colspan`/`rowspan` have no pipe-table spelling
+  (`src/diagnostics.zig`'s `tableFidelity` reports the first as `degraded`).
 
 - **Round-trip goal is *canonicalizing*, not byte-preserving (open question 3).**
   The narrow cell promotion accepts `<br>`, `<br/>`, and `<br />` and the

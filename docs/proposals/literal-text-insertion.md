@@ -7,6 +7,27 @@ created: 2026-07-19
 
 # Format-correct literal text insertion
 
+## Update (2026-08-30): HTML's `null` is about backslashes, not about parsing
+
+The landed alphabets are as described below, HTML's pair included: `text_escapes`
+and `block_start_escapes` are both `null` there, so `insertLiteral` is a clean
+`error.UnsupportedFormat` for HTML. The *reason* this document gives — "parse-only;
+already unauthorable" — has stopped being true, and is corrected in place in the
+two spots where it appears.
+
+HTML carries a `Syntax` table now (`src/languages/html/syntax.zig`): seven of the
+nine inline marks as tag pairs, `<code>` for verbatim, `<hr>` for a thematic
+break, and `<br>` for the in-cell break the sibling proposal added. It is an
+authoring target — just not for this gesture, and for a mechanism reason rather
+than a parsing one. Every routine that reads these alphabets emits a literal
+backslash before a byte drawn from them, and HTML escapes with entities, so
+filling them with `&<>` would make `insertLiteral` write `\&` — two characters of
+HTML text, not an escape. `null` is the honest entry, and the refusal it produces
+is the right answer for the right reason.
+
+XML is the one still described correctly by the old phrasing: it carries no
+`Syntax` table at all and is parse-and-render only.
+
 ## Summary
 
 Twig can wrap, toggle, and convert markup, but it has **no way to insert a run of
@@ -65,7 +86,8 @@ so leaf has no format-correct way to insert a literal `*`.
 
 - One editor op inserts a run of text that round-trips as **that exact text**,
   escaped the way the current format spells a literal — Markdown `\*`, Djot's
-  alphabet, and `error.UnsupportedFormat` for a parse-only format (HTML/XML).
+  alphabet, and `error.UnsupportedFormat` for a format that has no backslash
+  escape to spell it with (HTML/XML).
 - The escape decision is **positional**: a `#`/`-`/`>` only needs escaping at a
   line start (where it opens a block); `*`/`_`/`` ` ``/`[` matter anywhere inline.
 - Conformance is untouched — this is an additive spelling table + op, no parser
@@ -118,7 +140,7 @@ Per-format literals (`src/languages/{markdown,djot}/syntax.zig`):
 |----------|----------------|-----------------------|-----------|
 | Markdown | `` "\\*_`[]~" `` | `"#->+"` (+ `=` for setext) | CommonMark inline + block openers. |
 | Djot     | open question — its `link_text_escapes` is `` "\\[]*_^`~\"'-.:{}" `` | open question | Djot's inline alphabet is wider; needs its own audit. |
-| HTML/XML | `null`         | `null`                | Parse-only; already unauthorable. |
+| HTML/XML | `null`         | `null`                | No backslash escape to spell a literal with — HTML escapes with entities, XML is parse-only. |
 
 (The exact Markdown alphabet wants the same care `link_text_escapes` got — this
 table is the shape, not the final byte set; see open questions.)
