@@ -1511,16 +1511,16 @@ const Parser = struct {
     /// paragraph: the paragraph's lines are the block's opaque content.
     fn parseLeafParagraph(self: *Parser, span: Span, end_ex: usize, style: []const u8) Allocator.Error!BlockResult {
         _ = self.pending.takeStyle();
-        const id = try self.buildLeafBlock(style, span, span);
+        const id = try self.buildLeafBlock(style, span);
         const meta_start = try self.applyPending(id, try self.leafExtra(style));
         const start = meta_start orelse span.start;
         self.b.setSpan(id, Span.init(start, span.end));
         return .{ .id = id, .next = end_ex, .start_offset = start, .end_offset = span.end };
     }
 
-    /// The semantic projection of a leaf style's positionals: nothing, since
-    /// `source`'s language rides in `Kind.code_block.lang` and `verse`'s
-    /// attribution is folded into `named` by `verseAttribution`.
+    /// The semantic projection of a leaf style's positionals: nothing extra,
+    /// since `source`'s language rides in `Kind.code_block.lang` and a
+    /// `verse`'s attribution is folded into the named entries here.
     fn leafExtra(self: *Parser, style: []const u8) Allocator.Error![]const AST.KeyVal {
         if (std.mem.eql(u8, style, "verse")) try self.takeQuoteAttribution();
         return &.{};
@@ -1534,10 +1534,8 @@ const Parser = struct {
     }
 
     /// Build the leaf-block node a (style, content) pair means. `content` is
-    /// the opaque interior (`null` content span for an empty block); `outer`
-    /// is only used for the verse case's line splitting.
-    fn buildLeafBlock(self: *Parser, style: []const u8, content: Span, outer: Span) Allocator.Error!Node.Id {
-        _ = outer;
+    /// the opaque interior (empty for an empty block).
+    fn buildLeafBlock(self: *Parser, style: []const u8, content: Span) Allocator.Error!Node.Id {
         const text = self.source[content.start..content.end];
         const has_content = content.end > content.start;
         if (std.mem.eql(u8, style, "verse")) return try self.buildVerse(content);
@@ -1694,7 +1692,7 @@ const Parser = struct {
         var meta_start: ?usize = null;
         switch (kind) {
             .leaf => |s| {
-                id = try self.buildLeafBlock(s, content, content);
+                id = try self.buildLeafBlock(s, content);
                 meta_start = try self.applyPending(id, try self.leafExtra(s));
             },
             .quote, .parent => {
@@ -2116,9 +2114,30 @@ const Parser = struct {
             }
         }
 
+        // An ordered list's numbering style and start may be attributes on
+        // the list (`[loweralpha,start=3]`) as well as spelled by its marker.
+        var numbering = first.numbering;
+        var start_at = first.start;
+        if (first.kind == .ordered) {
+            if (meta.style) |st| {
+                if (numberingForStyle(st)) |n| {
+                    numbering = n;
+                    _ = meta.takeStyle();
+                }
+            }
+            if (meta.get("start")) |v| {
+                if (std.fmt.parseInt(u32, v, 10) catch null) |n| {
+                    start_at = n;
+                    for (meta.named.items, 0..) |kv, k| if (std.mem.eql(u8, kv.key, "start")) {
+                        _ = meta.named.orderedRemove(k);
+                        break;
+                    };
+                }
+            }
+        }
         const kind: Node.Kind = switch (first.kind) {
             .unordered => if (all_boxed) .{ .task_list = .{ .tight = true } } else .{ .bullet_list = .{ .tight = true } },
-            .ordered => .{ .ordered_list = .{ .numbering = first.numbering, .tight = true, .start = first.start } },
+            .ordered => .{ .ordered_list = .{ .numbering = numbering, .tight = true, .start = start_at } },
             .callout => .{ .ordered_list = .{ .numbering = .decimal, .tight = true, .start = null } },
             .description => .definition_list,
         };
@@ -2287,6 +2306,16 @@ pub fn matchBlockMacroText(t: []const u8) ?BlockMacro {
             if (std.mem.indexOfAny(u8, target, " \t") != null) return null;
             return .{ .name = name, .target = target, .attrs = rest[open + 1 .. rest.len - 1] };
         }
+    }
+    return null;
+}
+
+/// The numbering an ordered list's style names, or null for any other style.
+pub fn numberingForStyle(style: []const u8) ?AST.ListNumbering {
+    const names = .{ "arabic", "loweralpha", "upperalpha", "lowerroman", "upperroman" };
+    const values = .{ AST.ListNumbering.decimal, .lower_alpha, .upper_alpha, .lower_roman, .upper_roman };
+    inline for (names, values) |n, v| {
+        if (std.mem.eql(u8, style, n)) return v;
     }
     return null;
 }
@@ -2506,7 +2535,7 @@ const Scanner = struct {
         const i = self.i;
         if (i + 1 >= self.text.len) return false;
         const n = self.text[i + 1];
-        if (std.mem.indexOfScalar(u8, "\\*_`#^~+{}[]<>&|(-=.'\"", n) != null) {
+        if (std.mem.indexOfScalar(u8, "\\*_`#^~+{}[]<>&|(-=.'\"/:", n) != null) {
             try self.literal(self.text[i + 1 .. i + 2], i, i + 2);
             self.i = i + 2;
             return true;
@@ -2887,14 +2916,18 @@ const Scanner = struct {
     fn tryWord(self: *Scanner) Allocator.Error!bool {
         const i = self.i;
         const t = self.text;
-        if (i > 0 and isWordByte(t[i - 1])) return false;
         var j = i;
         while (j < t.len and (std.ascii.isAlphanumeric(t[j]) or t[j] == '-' or t[j] == '_')) j += 1;
         const name = t[i..j];
+        const at_boundary = i == 0 or !isWordByte(t[i - 1]);
         if (j < t.len and t[j] == ':') {
-            if (isUrlStart(t[i..])) return try self.tryUrl(i);
+            // A URL wants a word boundary before it; a macro does not (as in
+            // Asciidoctor, whose macro patterns carry no lookbehind), so
+            // `wordfootnote:[x]` is a word and a footnote.
+            if (at_boundary and isUrlStart(t[i..])) return try self.tryUrl(i);
             if (try self.tryMacro(name, i, j + 1)) return true;
         }
+        if (!at_boundary) return false;
         return try self.tryEmail(i);
     }
 
@@ -3622,6 +3655,15 @@ test "a role before a span is its class; a role on a # span makes it a styled sp
     const z = nth(&doc, root, 4);
     try testing.expect(doc.ast.nodes[z].kind.inline_mark == .emph);
     try testing.expectEqualStrings("only", doc.ast.attrsOf(z).get("id").?);
+}
+
+test "a macro needs no word boundary before it; a URL does" {
+    var doc = try parseInlineList(testing.allocator, "xfootnote:[n] xhttps://a.org\n");
+    defer doc.deinit();
+    const root = doc.ast.root;
+    try testing.expectEqualStrings("x", doc.ast.nodes[nth(&doc, root, 0)].kind.str);
+    try testing.expectEqual(AST.TextLeafKind.footnote_reference, doc.ast.nodes[nth(&doc, root, 1)].kind.text_leaf.kind);
+    try testing.expectEqualStrings(" xhttps://a.org", doc.ast.nodes[nth(&doc, root, 2)].kind.str);
 }
 
 test "a bracket that precedes nothing spannable is literal text" {

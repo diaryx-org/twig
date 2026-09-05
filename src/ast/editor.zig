@@ -1943,7 +1943,7 @@ fn listMarker(sp: ContainerSpelling, ordinal: u32, buf: *[24]u8) []const u8 {
 /// bullet. Lets `openContainerOnBlankLine` tell "the same button again" from
 /// "the other list button" against `ContainerSpelling.numbered`.
 fn isOrderedMarker(c: u8) bool {
-    return c == '(' or (c >= '0' and c <= '9');
+    return c == '(' or c == '.' or (c >= '0' and c <= '9');
 }
 
 fn skipQuoteMarker(line: []const u8, i: usize) ?usize {
@@ -1971,6 +1971,9 @@ fn listMarkerAt(line: []const u8, from: usize) ?struct { start: usize, end: usiz
     if (j >= line.len) return null;
     if (line[j] == '-' or line[j] == '*' or line[j] == '+') {
         j += 1;
+    } else if (line[j] == '.') {
+        // AsciiDoc's ordered marker: a run of dots, its depth its nesting.
+        while (j < line.len and line[j] == '.') j += 1;
     } else {
         if (line[j] == '(') j += 1;
         var digits: usize = 0;

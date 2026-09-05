@@ -37,6 +37,7 @@ The following languages are implemented:
 - Djot — 100% conformant with the djot.js corpus: all 265 cases that define an HTML expectation pass. The 6 remaining cases assert against djot.js's internal AST-dump debug format (not HTML); their parser behaviours are covered directly by native AST unit tests instead.
 - Markdown (fully CommonMark 0.31.2 conformant — 652/652 spec examples passing)
 - HTML (generic-markup parser + serializer; forgiving document-oriented tree construction)
+- AsciiDoc — every block and inline shape the official ASG schema (draft-01) enumerates, plus tables, footnotes, superscript and the other constructs the schema does not model yet; the vendored AsciiDoc TCK passes 13/13 and twig's own schema-validated corpus 137/137. Parses, renders, serializes (`-o asciidoc`) and authors.
 
 # License
 

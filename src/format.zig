@@ -65,6 +65,7 @@ const Syntax = syntax_mod.Syntax;
 
 const djot_serializer = Djot.serializer;
 const markdown_serializer = Markdown.serializer;
+const asciidoc_serializer = Asciidoc.serializer;
 
 /// Every language Twig can PARSE — the `-i`/`--input` vocabulary, the enum
 /// `ParsedDoc` is tagged by, and what the C ABI's `TwigFormat` wire codes decode
@@ -316,6 +317,14 @@ fn serializeFromAstMarkdown(allocator: Allocator, ast: *const AST) anyerror![]u8
     return markdown_serializer.serializeAstAlloc(allocator, ast);
 }
 
+fn serializeCanonicalAsciidoc(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
+    return asciidoc_serializer.serializeAlloc(allocator, &doc.asciidoc);
+}
+
+fn serializeFromAstAsciidoc(allocator: Allocator, ast: *const AST) anyerror![]u8 {
+    return asciidoc_serializer.serializeAstAlloc(allocator, ast);
+}
+
 /// One entry per `Format`. This IS the extensibility point Twig is built
 /// around: consumers are written entirely against this table, never against a
 /// per-language switch of their own.
@@ -414,6 +423,7 @@ pub const registry = [_]Entry{
         .parse = parseAsciidoc,
         .parseToAst = parseToAstAsciidoc,
         .renderHtml = renderHtmlGeneric,
+        .serializeCanonical = serializeCanonicalAsciidoc,
         // AsciiDoc's parser covers the language as the ASG schema enumerates
         // it (`languages/asciidoc/parser.zig`'s doc comment lists the
         // constructs, and the handful it leaves unmodelled). What it does not
@@ -423,11 +433,15 @@ pub const registry = [_]Entry{
         // let this row exist before the parser was complete, and it still
         // holds at the parser's edges.
         //
-        // No `serializeCanonical`: there is no AsciiDoc serializer at all yet,
-        // so `convert -o canonical` reports unsupported rather than inventing
-        // output — and so does `-o asciidoc`, via the equally empty target row
-        // below. No `syntax` either: every authoring gesture over an AsciiDoc
-        // document is refused by the same `Syntax.none` XML and HTML carry.
+        // A PARTIAL `syntax`, ragged the way HTML's is and for the same
+        // reason: the inline marks, the heading marker, the three container
+        // prefixes, the fence, the task box and the escape alphabets all fit
+        // the gesture algorithms' shapes; a link (`dest[text]`, the halves in
+        // the other order from `[text](dest)`), a footnote (one macro, no
+        // definition line) and a table (`|===`-fenced, no delimiter row) do
+        // not, and those gestures stay unsupported. See
+        // `languages/asciidoc/syntax.zig`.
+        .syntax = &Asciidoc.syntax.table,
     },
 };
 
@@ -470,11 +484,7 @@ pub const targets = [_]TargetEntry{
         // `-o xml` still works, through the input row's `serializeCanonical`.
     },
     .{ .id = .html, .reads_back_as = .html, .serializeFromAst = serializeFromAstHtml },
-    .{
-        .id = .asciidoc,
-        .reads_back_as = .asciidoc,
-        // No serializer of any kind yet — see the `.asciidoc` input row.
-    },
+    .{ .id = .asciidoc, .reads_back_as = .asciidoc, .serializeFromAst = serializeFromAstAsciidoc },
 };
 
 /// Look up `fmt`'s entry. Every `Format` variant has exactly one `registry`
@@ -658,18 +668,33 @@ test "which formats can be authored into at all" {
     try std.testing.expect(syntaxFor(.html).authorable());
     try std.testing.expect(syntaxFor(.html).heading_marker == null);
     try std.testing.expect(syntaxFor(.html).text_escapes == null);
-    // XML and AsciiDoc still carry the table that spells nothing, so every
-    // gesture over them is refused.
+    // XML alone still carries the table that spells nothing, so every
+    // gesture over it is refused; AsciiDoc's table is ragged like HTML's.
     try std.testing.expect(!syntaxFor(.xml).authorable());
-    try std.testing.expect(!syntaxFor(.asciidoc).authorable());
+    try std.testing.expect(syntaxFor(.asciidoc).authorable());
+    try std.testing.expect(syntaxFor(.asciidoc).link_text_escapes == null);
 }
 
-test "AsciiDoc parses and renders but does not serialize" {
+test "AsciiDoc parses, renders and serializes in both directions" {
     const entry = entryFor(.asciidoc);
-    try std.testing.expect(entry.serializeCanonical == null);
-    try std.testing.expect(targetEntryFor(.asciidoc).serializeFromAst == null);
+    try std.testing.expect(entry.serializeCanonical != null);
+    try std.testing.expect(targetEntryFor(.asciidoc).serializeFromAst != null);
     try std.testing.expectEqual(Format.asciidoc, parseFormatName("adoc").?);
     try std.testing.expectEqual(Format.asciidoc, detectFromExtension("guide.ADOC").?);
+
+    // Canonical: the input row's own serializer, over the parsed document.
+    var doc = try parseAsciidoc(&ParseConfig{}, std.testing.allocator, "= Title\n\nsome *bold* text\n");
+    defer doc.deinit();
+    const canonical = try serializeCanonicalAlloc(std.testing.allocator, &doc);
+    defer std.testing.allocator.free(canonical);
+    try std.testing.expectEqualStrings("= Title\n\nsome *bold* text\n", canonical);
+
+    // Cross-format: a Markdown tree written as AsciiDoc.
+    var md = try parseMarkdown(&ParseConfig{}, std.testing.allocator, "# Title\n\nsome **bold** text\n");
+    defer md.deinit();
+    const converted = try serializeFromAstAlloc(std.testing.allocator, md.ast(), .asciidoc);
+    defer std.testing.allocator.free(converted);
+    try std.testing.expectEqualStrings("= Title\n\nsome *bold* text\n", converted);
 }
 
 test "an unimplemented AsciiDoc construct renders as literal source, not as a mangled tree" {

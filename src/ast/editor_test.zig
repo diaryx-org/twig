@@ -2429,8 +2429,30 @@ test "supports is the per-gesture answer authorable() cannot give" {
     // ever misleading in the middle of the range.
     for (all_gestures) |g| {
         try testing.expect(!Editor.supports(format.syntaxFor(.xml), g));
-        try testing.expect(!Editor.supports(format.syntaxFor(.asciidoc), g));
     }
+
+    // AsciiDoc sits in the middle of the range the other way round from
+    // HTML: every block gesture works, and it is the three whose SHAPE the
+    // algorithms cannot write — a link (`dest[text]`), a footnote (one macro),
+    // a table (`|===`-fenced, no delimiter row) — that a toolbar grays out.
+    const adoc = format.syntaxFor(.asciidoc);
+    try testing.expect(adoc.authorable());
+    try testing.expect(Editor.supports(adoc, .{ .toggle_inline = .mark }));
+    try testing.expect(Editor.supports(adoc, .{ .toggle_inline = .superscript }));
+    try testing.expect(!Editor.supports(adoc, .{ .toggle_inline = .insert }));
+    try testing.expect(Editor.supports(adoc, .set_block));
+    try testing.expect(Editor.supports(adoc, .{ .toggle_block_container = .block_quote }));
+    try testing.expect(Editor.supports(adoc, .{ .toggle_block_container = .ordered_list }));
+    try testing.expect(Editor.supports(adoc, .toggle_code_block));
+    try testing.expect(Editor.supports(adoc, .toggle_task_item));
+    try testing.expect(Editor.supports(adoc, .insert_literal));
+    try testing.expect(Editor.supports(adoc, .split_block));
+    try testing.expect(Editor.supports(adoc, .renumber_ordered_lists));
+    try testing.expect(!Editor.supports(adoc, .insert_link));
+    try testing.expect(!Editor.supports(adoc, .insert_image));
+    try testing.expect(!Editor.supports(adoc, .insert_footnote));
+    try testing.expect(!Editor.supports(adoc, .insert_line_break));
+    try testing.expect(!Editor.supports(adoc, .table_insert_row));
 
     // And the two authorable formats differ from each other, which is the other
     // half of why one boolean can't serve: djot spells all eight inline marks,

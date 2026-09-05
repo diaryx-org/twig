@@ -44,6 +44,16 @@ pub const asg = @import("asg.zig");
 /// constructs covered and the shape each takes in the shared vocabulary.
 pub const parser = @import("parser.zig");
 
+/// Twig's shared `AST` -> AsciiDoc text: `convert -o asciidoc`, and
+/// `-o canonical` for a document that came from AsciiDoc. See its module
+/// doc comment for the spellings and what degrades.
+pub const serializer = @import("serializer.zig");
+
+/// AsciiDoc's surface spelling — the table the editor's authoring gestures
+/// consult and the serializer reads its delimiters from. See `src/syntax.zig`
+/// for the model and this file for what stays null and why.
+pub const syntax = @import("syntax.zig");
+
 /// The vendored TCK corpus runner and its ratchets. See its module doc
 /// comment for the codec round-trip and the parser comparison it now also
 /// runs.

@@ -6,7 +6,8 @@
 //! Twig's formats are RAGGED: every one of them parses and renders, but they
 //! author wildly different subsets — djot spells all eight inline marks,
 //! Markdown only three (`**`/`*`/`` ` ``), HTML spells seven as tag pairs and
-//! nothing block-level, XML none at all. A `?Delims` per (format, kind)
+//! nothing block-level, AsciiDoc everything but a link, a footnote and a
+//! table, XML none at all. A `?Delims` per (format, kind)
 //! makes that raggedness DATA. The alternative — a `switch (format)` per op,
 //! with an `else => unsupported_format` arm — is what the C ABI grew instead,
 //! and it put the spelling of djot's `{=mark=}` behind an `extern` boundary
@@ -249,7 +250,7 @@ pub const AttrSpelling = struct {
 pub const Quoting = enum { never, always, when_needed };
 
 /// The spelling of a format that can't be authored into at all — every field
-/// left at "can't spell it". A parse-only language (XML, AsciiDoc) carries THIS
+/// left at "can't spell it". A parse-only language (XML) carries THIS
 /// rather than a `null`, which is what lets `Editor.syntax` be a plain pointer:
 /// every gesture consults a table, finds the `null` it would have found anyway,
 /// and reports unsupported through the one uniform path. There is no second
@@ -423,8 +424,8 @@ pub const Syntax = struct {
     /// ANY one gesture, which is a weaker claim than it looks. HTML answers true
     /// on its inline marks alone while every block gesture over it is still
     /// unsupported, so this is a "is there a door in" predicate, not a
-    /// capability report. `false` for a format that spells nothing (XML,
-    /// AsciiDoc). For what a given format actually preserves per node kind, see
+    /// capability report. `false` for a format that spells nothing (XML).
+    /// For what a given format actually preserves per node kind, see
     /// `diagnostics.zig`'s measured fidelity table.
     pub fn authorable(self: *const Syntax) bool {
         return self.link_text_escapes != null or
