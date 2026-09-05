@@ -414,21 +414,14 @@ pub const registry = [_]Entry{
         .parse = parseAsciidoc,
         .parseToAst = parseToAstAsciidoc,
         .renderHtml = renderHtmlGeneric,
-        // ── The raggedest row in the table, and deliberately so ─────────────
-        // AsciiDoc's parser covers a real slice of the language and NOT the
-        // whole of it (`languages/asciidoc/parser.zig`'s doc comment draws the
-        // exact line: four spans in both forms, the delimited blocks, sections,
-        // unordered lists, the header — but no links, images, xrefs, attribute
-        // references, ordered lists or block metadata).
-        //
-        // A row this partial earns its place because of HOW the parser fails:
-        // every construct it doesn't implement survives as LITERAL SOURCE TEXT,
-        // so an unhandled `image:logo.png[Logo]` renders as those very
-        // characters — visibly unhandled, and diagnosable by whoever sees it —
-        // rather than as a mangled tree. That is the property that makes
-        // `renderHtml` honest here, and it is a property the parser had to earn:
-        // the unconstrained spans (`**bold**`) used to corrupt instead, which is
-        // why they were fixed before this entry was written rather than after.
+        // AsciiDoc's parser covers the language as the ASG schema enumerates
+        // it (`languages/asciidoc/parser.zig`'s doc comment lists the
+        // constructs, and the handful it leaves unmodelled). What it does not
+        // recognize survives as LITERAL SOURCE TEXT, so an unhandled
+        // `menu:File[Save]` renders as those very characters — visibly
+        // unhandled — rather than as a mangled tree. That property is what
+        // let this row exist before the parser was complete, and it still
+        // holds at the parser's edges.
         //
         // No `serializeCanonical`: there is no AsciiDoc serializer at all yet,
         // so `convert -o canonical` reports unsupported rather than inventing
@@ -680,15 +673,16 @@ test "AsciiDoc parses and renders but does not serialize" {
 }
 
 test "an unimplemented AsciiDoc construct renders as literal source, not as a mangled tree" {
-    // The property the registry entry rests on — see the `.asciidoc` row. A
-    // block macro is one of the many things `asciidoc/parser.zig` does not
-    // implement; what matters is that its source SURVIVES to the output instead
-    // of being half-consumed into some other node.
-    var doc = try parseAsciidoc(&ParseConfig{}, std.testing.allocator, "image:logo.png[Logo]\n");
+    // The property the registry entry rested on before the parser was
+    // complete, and still holds at its edges — see the `.asciidoc` row. The
+    // `menu:` macro is one of the few things `asciidoc/parser.zig` leaves
+    // unmodelled; what matters is that its source SURVIVES to the output
+    // instead of being half-consumed into some other node.
+    var doc = try parseAsciidoc(&ParseConfig{}, std.testing.allocator, "menu:File[Save]\n");
     defer doc.deinit();
     const html = try renderHtmlAlloc(std.testing.allocator, &doc);
     defer std.testing.allocator.free(html);
-    try std.testing.expectEqualStrings("<p>image:logo.png[Logo]</p>\n", html);
+    try std.testing.expectEqualStrings("<p>menu:File[Save]</p>\n", html);
 }
 
 // ── cross-format round-trips ───────────────────────────────────────────────

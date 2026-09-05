@@ -13,7 +13,8 @@ has no import cycle with the machinery and no global state of its own.
 
 
 def define(*, case, doc, header, para, leaf, parent, section, heading, ulist,
-           olist, colist, item, dlist, ditem, brk, macro, text, span, lines):
+           olist, colist, item, dlist, ditem, brk, macro, text, span, lines,
+           meta, ref, charref, raw):
 
     # ── paragraphs ──────────────────────────────────────────────────────────
     # docs/modules/blocks/pages/paragraph.adoc. The TCK covers the single-line,
@@ -191,17 +192,18 @@ def define(*, case, doc, header, para, leaf, parent, section, heading, ulist,
 
     case(
         "block/header/blank-line-ends-header",
-        "= Title\n\n:not-an-entry: value\n",
+        "= Title\n\nbody\n:icons: font\n",
         doc(
-            para(text(":not-an-entry: value"), at=lines(3)),
+            para(text("body\n:icons: font"), at=lines(3, 4)),
             header=header(text("Title"), at=lines(1)),
             attributes={},
-            at=lines(1, 3),
+            at=lines(1, 4),
         ),
-        note="A blank line closes the header, so what follows is body — an "
-             "attribute entry below it is a paragraph, not an entry. (Asciidoctor "
-             "does hoist body-level entries into the attribute table; the ASG "
-             "models the document TREE, and the line is a paragraph in it.)",
+        note="A blank line closes the header, so an entry-shaped line that "
+             "follows body text is paragraph text, not a header entry. (A "
+             "standalone body-level `:name: value` line is a body attribute "
+             "entry — a shape the ASG does not model, so twig's `attributeEntry` "
+             "extension covers it in unit tests rather than here.)",
     )
 
     case(
@@ -275,19 +277,23 @@ def define(*, case, doc, header, para, leaf, parent, section, heading, ulist,
     )
 
     case(
-        "block/list/unordered/marker-change-starts-new-list",
+        "block/list/unordered/marker-change-nests",
         "* one\n- two\n",
         doc(
-            ulist(item(text("one"), marker="*", at=lines(1)), marker="*", at=lines(1)),
-            ulist(item(text("two"), marker="-", at=lines(2)), marker="-", at=lines(2)),
+            ulist(
+                item(
+                    text("one"), marker="*", at=lines(1, 2),
+                    blocks=[ulist(item(text("two"), marker="-", at=lines(2)), marker="-", at=lines(2))],
+                ),
+                marker="*", at=lines(1, 2),
+            ),
             at=lines(1, 2),
         ),
-        note="A different marker character at the same level begins a sibling "
-             "list rather than continuing the first "
+        note="A different marker begins a NESTED list inside the current item "
              "(docs/modules/lists/pages/unordered.adoc — 'to nest, change the "
-             "marker'). Asciidoctor instead NESTS the second list; twig follows "
-             "the documentation's flat reading, which is also what the ASG's "
-             "`marker` field per list implies.",
+             "marker'), which is also what Asciidoctor does. An earlier reading "
+             "of the same sentence made the second list a sibling; the "
+             "documentation's own nested-list examples settle it.",
     )
 
     case(
@@ -856,4 +862,788 @@ def define(*, case, doc, header, para, leaf, parent, section, heading, ulist,
         note="A doubled opener with no doubled close falls THROUGH to the "
              "constrained scan rather than going literal — asciidoctor's own "
              "ordering, where the constrained pattern's interior is `*bold`.",
+    )
+
+    # ── ordered and callout lists ───────────────────────────────────────────
+    # docs/modules/lists/pages/ordered.adoc. A list's `marker` is its first
+    # item's marker as written, and an item's marker is its own — so a list
+    # numbered `1.`/`2.` reports `1.` at the list and each ordinal at the item.
+
+    case(
+        "block/list/ordered/dot-markers",
+        ". one\n. two\n",
+        doc(
+            olist(
+                item(text("one"), marker=".", at=lines(1)),
+                item(text("two"), marker=".", at=lines(2)),
+                marker=".", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/list/ordered/explicit-numbers",
+        "1. one\n2. two\n",
+        doc(
+            olist(
+                item(text("one"), marker="1.", at=lines(1)),
+                item(text("two"), marker="2.", at=lines(2)),
+                marker="1.", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+        note="Explicit ordinals of one family (`1.`, `2.`) are one list; the "
+             "list's marker is the first item's, each item keeps its own.",
+    )
+
+    case(
+        "block/list/ordered/alpha-marker",
+        "a. one\nb. two\n",
+        doc(
+            olist(
+                item(text("one"), marker="a.", at=lines(1)),
+                item(text("two"), marker="b.", at=lines(2)),
+                marker="a.", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/list/ordered/roman-marker",
+        "i) one\nii) two\n",
+        doc(
+            olist(
+                item(text("one"), marker="i)", at=lines(1)),
+                item(text("two"), marker="ii)", at=lines(2)),
+                marker="i)", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/list/ordered/nested-by-marker-depth",
+        ". one\n.. nested\n. two\n",
+        doc(
+            olist(
+                item(
+                    text("one"), marker=".", at=lines(1, 2),
+                    blocks=[olist(item(text("nested"), marker="..", at=lines(2)), marker="..", at=lines(2))],
+                ),
+                item(text("two"), marker=".", at=lines(3)),
+                marker=".", at=lines(1, 3),
+            ),
+            at=lines(1, 3),
+        ),
+    )
+
+    case(
+        "block/list/callout/two-items",
+        "<1> one\n<2> two\n",
+        doc(
+            colist(
+                item(text("one"), marker="<1>", at=lines(1)),
+                item(text("two"), marker="<2>", at=lines(2)),
+                marker="<1>", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    # ── nesting, continuation and attached blocks ───────────────────────────
+    # docs/modules/lists/pages/{nested,continuation}.adoc.
+
+    case(
+        "block/list/unordered/nested-by-marker-depth",
+        "* one\n** two\n* three\n",
+        doc(
+            ulist(
+                item(
+                    text("one"), marker="*", at=lines(1, 2),
+                    blocks=[ulist(item(text("two"), marker="**", at=lines(2)), marker="**", at=lines(2))],
+                ),
+                item(text("three"), marker="*", at=lines(3)),
+                marker="*", at=lines(1, 3),
+            ),
+            at=lines(1, 3),
+        ),
+    )
+
+    case(
+        "block/list/mixed/ordered-inside-unordered",
+        "* fruit\n. apple\n. pear\n* veg\n",
+        doc(
+            ulist(
+                item(
+                    text("fruit"), marker="*", at=lines(1, 3),
+                    blocks=[olist(
+                        item(text("apple"), marker=".", at=lines(2)),
+                        item(text("pear"), marker=".", at=lines(3)),
+                        marker=".", at=lines(2, 3),
+                    )],
+                ),
+                item(text("veg"), marker="*", at=lines(4)),
+                marker="*", at=lines(1, 4),
+            ),
+            at=lines(1, 4),
+        ),
+        note="docs/modules/lists/pages/nested.adoc's own mixed example: a list "
+             "of another type nests without any marker-depth change.",
+    )
+
+    case(
+        "block/list/unordered/blank-line-then-nested",
+        "* one\n\n** two\n",
+        doc(
+            ulist(
+                item(
+                    text("one"), marker="*", at=lines(1, 3),
+                    blocks=[ulist(item(text("two"), marker="**", at=lines(3)), marker="**", at=lines(3))],
+                ),
+                marker="*", at=lines(1, 3),
+            ),
+            at=lines(1, 3),
+        ),
+    )
+
+    case(
+        "block/list/unordered/continuation-paragraph",
+        "* one\n+\npara\n",
+        doc(
+            ulist(
+                item(text("one"), marker="*", at=lines(1, 3), blocks=[para(text("para"), at=lines(3))]),
+                marker="*", at=lines(1, 3),
+            ),
+            at=lines(1, 3),
+        ),
+        note="The `+` list continuation attaches the block below it to the "
+             "item; the item's location runs through the attached block.",
+    )
+
+    case(
+        "block/list/unordered/continuation-listing",
+        "* one\n+\n----\ncode\n----\n* two\n",
+        doc(
+            ulist(
+                item(
+                    text("one"), marker="*", at=lines(1, 5),
+                    blocks=[leaf("listing", text("code"), at=lines(3, 5), form="delimited", delimiter="----")],
+                ),
+                item(text("two"), marker="*", at=lines(6)),
+                marker="*", at=lines(1, 6),
+            ),
+            at=lines(1, 6),
+        ),
+    )
+
+    case(
+        "block/list/unordered/attached-indented-literal",
+        "* one\n\n  literal\n",
+        doc(
+            ulist(
+                item(
+                    text("one"), marker="*", at=lines(1, 3),
+                    blocks=[leaf("literal", text("literal", spelling="  literal"), at=lines(3), form="indented")],
+                ),
+                marker="*", at=lines(1, 3),
+            ),
+            at=lines(1, 3),
+        ),
+        note="A blank-separated indented paragraph after an item attaches to "
+             "it as a literal block (docs/modules/lists/pages/continuation.adoc). "
+             "The literal's text is dedented; its location is the raw line.",
+    )
+
+    case(
+        "block/list/unordered/checklist",
+        "* [x] one\n* [ ] two\n",
+        doc(
+            ulist(
+                item(text("[x] one"), marker="*", at=lines(1)),
+                item(text("[ ] two"), marker="*", at=lines(2)),
+                marker="*", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+        note="The ASG has no checkbox, so a checklist item's box is principal "
+             "text to it; twig's tree reads the same source as a task list.",
+    )
+
+    case(
+        "block/list/unordered/title-belongs-to-the-list",
+        ".Things\n* a\n",
+        doc(
+            ulist(item(text("a"), marker="*", at=lines(2)), marker="*", at=lines(1, 2), title=[text("Things")]),
+            at=lines(1, 2),
+        ),
+        note="Block metadata above a list is the LIST's (its location starts at "
+             "the title line), not the first item's.",
+    )
+
+    # ── description lists ───────────────────────────────────────────────────
+    # docs/modules/lists/pages/description.adoc.
+
+    case(
+        "block/dlist/single-item",
+        "term:: desc\n",
+        doc(
+            dlist(ditem(text("desc"), terms=[[text("term")]], marker="::", at=lines(1)), marker="::", at=lines(1)),
+            at=lines(1),
+        ),
+    )
+
+    case(
+        "block/dlist/description-on-next-line",
+        "term::\n  desc\n",
+        doc(
+            dlist(ditem(text("desc"), terms=[[text("term")]], marker="::", at=lines(1, 2)), marker="::", at=lines(1, 2)),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/dlist/multiple-terms",
+        "one::\ntwo:: desc\n",
+        doc(
+            dlist(
+                ditem(text("desc"), terms=[[text("one")], [text("two")]], marker="::", at=lines(1, 2)),
+                marker="::", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/dlist/two-items",
+        "a:: 1\nb:: 2\n",
+        doc(
+            dlist(
+                ditem(text("1"), terms=[[text("a")]], marker="::", at=lines(1)),
+                ditem(text("2"), terms=[[text("b")]], marker="::", at=lines(2)),
+                marker="::", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/dlist/nested-by-colon-count",
+        "a:: 1\nb::: 2\n",
+        doc(
+            dlist(
+                ditem(
+                    text("1"), terms=[[text("a")]], marker="::", at=lines(1, 2),
+                    blocks=[dlist(ditem(text("2"), terms=[[text("b")]], marker=":::", at=lines(2)), marker=":::", at=lines(2))],
+                ),
+                marker="::", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/dlist/semicolon-marker",
+        "term;; desc\n",
+        doc(
+            dlist(ditem(text("desc"), terms=[[text("term")]], marker=";;", at=lines(1)), marker=";;", at=lines(1)),
+            at=lines(1),
+        ),
+    )
+
+    case(
+        "block/dlist/term-with-nested-unordered-list",
+        "term::\n* a\n",
+        doc(
+            dlist(
+                ditem(
+                    terms=[[text("term")]], marker="::", at=lines(1, 2),
+                    blocks=[ulist(item(text("a"), marker="*", at=lines(2)), marker="*", at=lines(2))],
+                ),
+                marker="::", at=lines(1, 2),
+            ),
+            at=lines(1, 2),
+        ),
+        note="A term with no description of its own and a list under it: no "
+             "`principal`, and the list is the item's block.",
+    )
+
+    case(
+        "block/dlist/with-continuation",
+        "term:: desc\n+\npara\n",
+        doc(
+            dlist(
+                ditem(text("desc"), terms=[[text("term")]], marker="::", at=lines(1, 3), blocks=[para(text("para"), at=lines(3))]),
+                marker="::", at=lines(1, 3),
+            ),
+            at=lines(1, 3),
+        ),
+    )
+
+    # ── discrete headings ───────────────────────────────────────────────────
+    # docs/modules/blocks/pages/discrete-headings.adoc.
+
+    case(
+        "block/heading/discrete",
+        "[discrete]\n== Title\n",
+        doc(
+            heading(text("Title"), level=1, at=lines(1, 2), metadata=meta(at=lines(1), attributes={"$1": "discrete"})),
+            at=lines(1, 2),
+        ),
+        note="A `[discrete]` heading is a block in the flow, not a section; "
+             "the style itself is the first positional attribute.",
+    )
+
+    # ── block metadata ──────────────────────────────────────────────────────
+    # docs/modules/attributes/pages/{id,role,options,positional-and-named-attributes}.adoc
+    # and docs/modules/blocks/pages/add-title.adoc. Every block's location
+    # starts at its first metadata line; `metadata.location` is the attribute
+    # line(s) alone; a title's text is located after its dot.
+
+    case(
+        "block/paragraph/with-title",
+        ".Title\ntext\n",
+        doc(para(text("text"), at=lines(1, 2), title=[text("Title")]), at=lines(1, 2)),
+    )
+
+    case(
+        "block/paragraph/with-id-anchor-line",
+        "[[para-id]]\ntext\n",
+        doc(para(text("text"), at=lines(1, 2), id="para-id"), at=lines(1, 2)),
+        note="A bare anchor line sets `id` and nothing else — no `metadata` "
+             "object, which the ASG reserves for an attribute list.",
+    )
+
+    case(
+        "block/paragraph/with-reftext",
+        "[[para-id,Reference Text]]\ntext\n",
+        doc(para(text("text"), at=lines(1, 2), id="para-id", reftext=[text("Reference Text")]), at=lines(1, 2)),
+    )
+
+    case(
+        "block/paragraph/shorthand-attributes",
+        "[#the-id.role1.role2%opt]\ntext\n",
+        doc(
+            para(
+                text("text"), at=lines(1, 2), id="the-id",
+                metadata=meta(at=lines(1), roles=["role1", "role2"], options=["opt"]),
+            ),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/paragraph/named-attributes",
+        '[key=value,other="quoted, value"]\ntext\n',
+        doc(
+            para(text("text"), at=lines(1, 2), metadata=meta(at=lines(1), attributes={"key": "value", "other": "quoted, value"})),
+            at=lines(1, 2),
+        ),
+        note="A quoted value keeps its comma; the quotes themselves are not "
+             "part of the value.",
+    )
+
+    case(
+        "block/paragraph/style-is-first-positional",
+        "[lead]\ntext\n",
+        doc(
+            para(text("text"), at=lines(1, 2), metadata=meta(at=lines(1), attributes={"$1": "lead"})),
+            at=lines(1, 2),
+        ),
+        note="The block style is the first positional attribute, spelled `$1` "
+             "per the schema's positional-attribute pattern.",
+    )
+
+    case(
+        "block/paragraph/empty-attribute-line",
+        "[]\ntext\n",
+        doc(para(text("text"), at=lines(1, 2), metadata=meta(at=lines(1))), at=lines(1, 2)),
+        note="An empty attribute line is still an attribute line: a `metadata` "
+             "object with only its location.",
+    )
+
+    case(
+        "block/listing/source-with-language",
+        "[source,ruby]\n----\nputs 1\n----\n",
+        doc(
+            leaf(
+                "listing", text("puts 1"), at=lines(1, 4), form="delimited", delimiter="----",
+                metadata=meta(at=lines(1), attributes={"$1": "source", "$2": "ruby"}),
+            ),
+            at=lines(1, 4),
+        ),
+    )
+
+    case(
+        "block/listing/title-then-attributes",
+        ".Example\n[source,ruby]\n----\nx\n----\n",
+        doc(
+            leaf(
+                "listing", text("x"), at=lines(1, 5), form="delimited", delimiter="----",
+                title=[text("Example")],
+                metadata=meta(at=lines(2), attributes={"$1": "source", "$2": "ruby"}),
+            ),
+            at=lines(1, 5),
+        ),
+    )
+
+    case(
+        "block/section/with-id-anchor-line",
+        "[[sec]]\n== Title\n",
+        doc(section(title=[text("Title")], level=1, at=lines(1, 2), id="sec"), at=lines(1, 2)),
+    )
+
+    case(
+        "block/section/anchor-in-title",
+        "== Title [[sec]]\n",
+        doc(section(title=[text("Title")], level=1, at=lines(1), id="sec"), at=lines(1)),
+        note="A trailing `[[id]]` in the title line is the section's id, not "
+             "title text; the section's location still covers the whole line.",
+    )
+
+    case(
+        "block/section/with-role",
+        "[.classy]\n== Title\n",
+        doc(section(title=[text("Title")], level=1, at=lines(1, 2), metadata=meta(at=lines(1), roles=["classy"])), at=lines(1, 2)),
+    )
+
+    # ── styled blocks ───────────────────────────────────────────────────────
+    # docs/modules/blocks/pages/{admonitions,verses}.adoc,
+    # docs/modules/verbatim/pages/{listing-blocks,literal-blocks}.adoc,
+    # docs/modules/stem/pages/stem.adoc.
+
+    case(
+        "block/admonition/delimited",
+        "[NOTE]\n====\ntext\n====\n",
+        doc(
+            parent(
+                "admonition", para(text("text"), at=lines(3)), variant="note",
+                at=lines(1, 4), delimiter="====",
+                metadata=meta(at=lines(1), attributes={"$1": "NOTE"}),
+            ),
+            at=lines(1, 4),
+        ),
+        note="An admonition style on an example block makes it an admonition "
+             "whose `variant` is the style, lowercased.",
+    )
+
+    case(
+        "block/example/with-title",
+        ".Title\n====\ntext\n====\n",
+        doc(
+            parent("example", para(text("text"), at=lines(3)), at=lines(1, 4), delimiter="====", title=[text("Title")]),
+            at=lines(1, 4),
+        ),
+    )
+
+    case(
+        "block/quote/with-attribution",
+        "[quote,Someone,Somewhere]\n____\ntext\n____\n",
+        doc(
+            parent(
+                "quote", para(text("text"), at=lines(3)), at=lines(1, 4), delimiter="____",
+                metadata=meta(at=lines(1), attributes={"$1": "quote", "$2": "Someone", "$3": "Somewhere"}),
+            ),
+            at=lines(1, 4),
+        ),
+    )
+
+    case(
+        "block/verse/delimited",
+        "[verse]\n____\nRoses are red\n  violets blue\n____\n",
+        doc(
+            leaf(
+                "verse", text("Roses are red\n  violets blue"), at=lines(1, 5), form="delimited", delimiter="____",
+                metadata=meta(at=lines(1), attributes={"$1": "verse"}),
+            ),
+            at=lines(1, 5),
+        ),
+        note="A verse keeps its line breaks and indentation verbatim, as one "
+             "text node — twig's tree holds it as a line block, one node per "
+             "line, and the codec joins them back.",
+    )
+
+    case(
+        "block/literal/indented-paragraph",
+        "  literal\n",
+        doc(leaf("literal", text("literal", spelling="  literal"), at=lines(1), form="indented"), at=lines(1)),
+        note="An indented paragraph is a literal block in the `indented` form; "
+             "its text is dedented and its location is the raw line.",
+    )
+
+    case(
+        "block/listing/paragraph-style",
+        "[listing]\ntext\n",
+        doc(
+            leaf("listing", text("text"), at=lines(1, 2), form="paragraph", metadata=meta(at=lines(1), attributes={"$1": "listing"})),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/literal/paragraph-style",
+        "[literal]\ntext\n",
+        doc(
+            leaf("literal", text("text"), at=lines(1, 2), form="paragraph", metadata=meta(at=lines(1), attributes={"$1": "literal"})),
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/stem/delimited",
+        "[stem]\n++++\nx^2\n++++\n",
+        doc(
+            leaf("stem", text("x^2"), at=lines(1, 4), form="delimited", delimiter="++++", metadata=meta(at=lines(1), attributes={"$1": "stem"})),
+            at=lines(1, 4),
+        ),
+    )
+
+    case(
+        "block/open/source-style",
+        "[source,js]\n--\nx\n--\n",
+        doc(
+            leaf(
+                "listing", text("x"), at=lines(1, 4), form="delimited", delimiter="--",
+                metadata=meta(at=lines(1), attributes={"$1": "source", "$2": "js"}),
+            ),
+            at=lines(1, 4),
+        ),
+        note="An open block takes the style's identity: `[source]` on `--` is a "
+             "listing whose delimiter is `--`.",
+    )
+
+    case(
+        "block/listing/markdown-fence",
+        "```ruby\nx\n```\n",
+        doc(leaf("listing", text("x"), at=lines(1, 3), form="delimited", delimiter="```"), at=lines(1, 3)),
+        note="Asciidoctor reads a Markdown-style fence as a listing; the "
+             "delimiter is the backtick run, the info string is not part of it.",
+    )
+
+    # ── block macros ────────────────────────────────────────────────────────
+    # docs/modules/macros/pages/{image,audio-and-video}.adoc, toc.adoc.
+
+    case(
+        "block/macro/image",
+        "image::logo.png[Logo]\n",
+        doc(macro("image", at=lines(1), target="logo.png"), at=lines(1)),
+    )
+
+    case(
+        "block/macro/image-with-title",
+        ".A logo\nimage::logo.png[]\n",
+        doc(macro("image", at=lines(1, 2), target="logo.png", title=[text("A logo")]), at=lines(1, 2)),
+    )
+
+    case(
+        "block/macro/toc",
+        "toc::[]\n",
+        doc(macro("toc", at=lines(1)), at=lines(1)),
+        note="A macro with an empty target has no `target` key.",
+    )
+
+    case(
+        "block/macro/video",
+        "video::clip.mp4[]\n",
+        doc(macro("video", at=lines(1), target="clip.mp4"), at=lines(1)),
+    )
+
+    case(
+        "block/macro/audio",
+        "audio::clip.mp3[]\n",
+        doc(macro("audio", at=lines(1), target="clip.mp3"), at=lines(1)),
+    )
+
+    # ── the header's author line ────────────────────────────────────────────
+    # docs/modules/document/pages/author-line.adoc.
+
+    case(
+        "block/header/author-line",
+        "= Title\nDoc Writer <doc@example.org>\n",
+        doc(
+            header=header(
+                text("Title"), at=lines(1, 2),
+                authors=[{"fullname": "Doc Writer", "initials": "DW", "firstname": "Doc", "lastname": "Writer", "address": "doc@example.org"}],
+            ),
+            attributes={},
+            at=lines(1, 2),
+        ),
+    )
+
+    case(
+        "block/header/multiple-authors",
+        "= Title\nAda B. Lovelace; Charles Babbage\n",
+        doc(
+            header=header(
+                text("Title"), at=lines(1, 2),
+                authors=[
+                    {"fullname": "Ada B. Lovelace", "initials": "ABL", "firstname": "Ada", "middlename": "B.", "lastname": "Lovelace"},
+                    {"fullname": "Charles Babbage", "initials": "CB", "firstname": "Charles", "lastname": "Babbage"},
+                ],
+            ),
+            attributes={},
+            at=lines(1, 2),
+        ),
+    )
+
+    # ── references ──────────────────────────────────────────────────────────
+    # docs/modules/macros/pages/{url,link-macro,email-macro,xref}.adoc.
+
+    case(
+        "inline/ref/bare-url",
+        "see https://example.org now\n",
+        [
+            text("see "),
+            ref("link", "https://example.org", text("https://example.org"), at="https://example.org"),
+            text(" now"),
+        ],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/url-with-text",
+        "https://example.org[Example]\n",
+        [ref("link", "https://example.org", text("Example"), at="https://example.org[Example]")],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/trailing-punctuation",
+        "at https://example.org.\n",
+        [
+            text("at "),
+            ref("link", "https://example.org", text("https://example.org"), at="https://example.org"),
+            text("."),
+        ],
+        level="inline",
+        note="Sentence punctuation after a bare URL is not part of it.",
+    )
+
+    case(
+        "inline/ref/url-in-parentheses",
+        "(https://example.org)\n",
+        [
+            text("("),
+            ref("link", "https://example.org", text("https://example.org"), at="https://example.org"),
+            text(")"),
+        ],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/link-macro",
+        "link:page.html[Page]\n",
+        [ref("link", "page.html", text("Page"), at="link:page.html[Page]")],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/link-macro-empty-text",
+        "link:page.html[]\n",
+        [ref("link", "page.html", text("page.html"), at="link:page.html[]")],
+        level="inline",
+        note="With no text of its own a link shows its target, located where "
+             "the target is spelled.",
+    )
+
+    case(
+        "inline/ref/angle-url",
+        "<https://example.org>\n",
+        [ref("link", "https://example.org", text("https://example.org"), at="<https://example.org>")],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/email",
+        "mail a@example.org now\n",
+        [text("mail "), ref("link", "mailto:a@example.org", text("a@example.org"), at="a@example.org"), text(" now")],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/mailto-macro",
+        "mailto:a@example.org[Mail]\n",
+        [ref("link", "mailto:a@example.org", text("Mail"), at="mailto:a@example.org[Mail]")],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/xref-angle",
+        "see <<sec>>\n",
+        [text("see "), ref("xref", "sec", text("sec"), at="<<sec>>")],
+        level="inline",
+        note="An xref with no text shows its target, as a link does.",
+    )
+
+    case(
+        "inline/ref/xref-with-text",
+        "<<sec,Section>>\n",
+        [ref("xref", "sec", text("Section"), at="<<sec,Section>>")],
+        level="inline",
+    )
+
+    case(
+        "inline/ref/xref-macro",
+        "xref:sec[Section]\n",
+        [ref("xref", "sec", text("Section"), at="xref:sec[Section]")],
+        level="inline",
+    )
+
+    case(
+        "inline/span/strong-containing-link",
+        "*see https://x.org[X]*\n",
+        [span("strong", text("see "), ref("link", "https://x.org", text("X"), at="https://x.org[X]"), at="*see https://x.org[X]*")],
+        level="inline",
+    )
+
+    # ── literals: character references, passthroughs, escapes ──────────────
+    # docs/modules/subs/pages/{special-characters,replacements}.adoc,
+    # docs/modules/pass/pages/pass-macro.adoc.
+
+    case(
+        "inline/charref/named",
+        "a &amp; b\n",
+        [text("a "), charref("&amp;"), text(" b")],
+        level="inline",
+        note="A character reference is its own literal, valued as written.",
+    )
+
+    case(
+        "inline/charref/numeric",
+        "&#169; 2024\n",
+        [charref("&#169;"), text(" 2024")],
+        level="inline",
+    )
+
+    case(
+        "inline/raw/triple-plus",
+        "a +++<b>x</b>+++ b\n",
+        [text("a "), raw("<b>x</b>", at="+++<b>x</b>+++"), text(" b")],
+        level="inline",
+    )
+
+    case(
+        "inline/raw/pass-macro",
+        "pass:[<u>x</u>]\n",
+        [raw("<u>x</u>", at="pass:[<u>x</u>]")],
+        level="inline",
+    )
+
+    case(
+        "inline/escape/backslash-before-strong",
+        "\\*not bold*\n",
+        [text("*not bold*", spelling="\\*not bold*")],
+        level="inline",
+        note="A backslash suppresses the span; the text's location still "
+             "covers the backslash, which is source the text came from.",
+    )
+
+    case(
+        "inline/literal/constrained-plus",
+        "a +*x*+ b\n",
+        [text("a *x* b", spelling="a +*x*+ b")],
+        level="inline",
+        note="`+…+` is text with no substitutions applied — and adjacent text "
+             "fuses into one node, so the whole line is a single text.",
     )
