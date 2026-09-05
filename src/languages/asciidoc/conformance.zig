@@ -21,10 +21,9 @@
 //!
 //! ── The parse comparison (`runParse`/`PARSE_BASELINE`) ───────────────────────
 //! `parser.parse`/`parser.parseInlineList` (chosen by `case.level`) ->
-//! `asg.encode` -> compare against `case.asg`, structurally, over all 13
-//! cases — small enough that, unlike rST's 494-case split, there is no
-//! subset excluded from this comparison; the TCK has no error-asserting cases
-//! at all yet.
+//! `asg.encode` -> compare against `case.asg`, structurally, over every case
+//! of both corpora — unlike rST's 494-case split, there is no subset excluded
+//! from this comparison; the TCK has no error-asserting cases at all.
 //!
 //! ── The second corpus, and why twig had to author one ───────────────────────
 //! Thirteen cases cannot drive a parser to completion, and there is no bigger
@@ -226,12 +225,12 @@ pub const PARSE_BASELINE: u32 = 13;
 /// Ratchet floor for twig's own corpus under `.parse`. Separate from
 /// `PARSE_BASELINE` because the two corpora carry different authority (see
 /// this file's doc comment) and should be readable apart at a glance.
-pub const TWIG_PARSE_BASELINE: u32 = 66;
+pub const TWIG_PARSE_BASELINE: u32 = 137;
 
 /// Ratchet floor for twig's own corpus under `.codec` — every authored case
 /// must also survive `asg.zig`'s own decode/encode round-trip, which is what
 /// keeps the codec's vocabulary growing in step with the parser's.
-pub const TWIG_CODEC_BASELINE: u32 = 66;
+pub const TWIG_CODEC_BASELINE: u32 = 137;
 
 /// The vendored TCK through the parser — `runParse`'s original signature.
 pub fn runParse(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(Failure)) !RunResult {

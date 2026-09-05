@@ -105,11 +105,11 @@ pub enum TwigFormat {
     Markdown = 2,
     Xml = 3,
     Html = 4,
-    /// Parses and renders, but does not serialize: `twig_document_serialize`
-    /// with this code reports `TWIG_STATUS_UNSUPPORTED_FORMAT`, and no editing
-    /// gesture applies to an AsciiDoc document. The parser also covers a SLICE
-    /// of the language rather than all of it; what it doesn't implement
-    /// survives as literal source text.
+    /// Parses, renders, serializes and edits. The link, image, footnote and
+    /// table gestures report `TWIG_STATUS_UNSUPPORTED_FORMAT` over an
+    /// AsciiDoc document (their AsciiDoc spellings have a shape the gesture
+    /// algorithms cannot write); every other gesture works. What the parser
+    /// leaves unmodelled survives as literal source text.
     Asciidoc = 5,
 }
 

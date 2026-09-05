@@ -7,9 +7,9 @@
   "format": "Identical to asciidoc-tck-corpus.json's, so conformance.zig runs both through one path and any case here can be exported as a TCK -input.adoc/-output.json pair (--export-tck) and offered upstream.",
   "license": "EPL-2.0, matching the AsciiDoc TCK's, so cases can be contributed upstream unchanged.",
   "counts": {
-   "cases": 66,
-   "block": 47,
-   "inline": 19
+   "cases": 137,
+   "block": 99,
+   "inline": 38
   }
  },
  "cases": [
@@ -976,7 +976,7 @@
   {
    "id": "block/header/blank-line-ends-header",
    "level": "block",
-   "adoc": "= Title\n\n:not-an-entry: value\n",
+   "adoc": "= Title\n\nbody\n:icons: font\n",
    "config": null,
    "asg": {
     "name": "document",
@@ -1019,15 +1019,15 @@
        {
         "name": "text",
         "type": "string",
-        "value": ":not-an-entry: value",
+        "value": "body\n:icons: font",
         "location": [
          {
           "line": 3,
           "col": 1
          },
          {
-          "line": 3,
-          "col": 20
+          "line": 4,
+          "col": 12
          }
         ]
        }
@@ -1038,8 +1038,8 @@
         "col": 1
        },
        {
-        "line": 3,
-        "col": 20
+        "line": 4,
+        "col": 12
        }
       ]
      }
@@ -1050,12 +1050,12 @@
       "col": 1
      },
      {
-      "line": 3,
-      "col": 20
+      "line": 4,
+      "col": 12
      }
     ]
    },
-   "note": "A blank line closes the header, so what follows is body — an attribute entry below it is a paragraph, not an entry. (Asciidoctor does hoist body-level entries into the attribute table; the ASG models the document TREE, and the line is a paragraph in it.)"
+   "note": "A blank line closes the header, so an entry-shaped line that follows body text is paragraph text, not a header entry. (A standalone body-level `:name: value` line is a body attribute entry — a shape the ASG does not model, so twig's `attributeEntry` extension covers it in unit tests rather than here.)"
   },
   {
    "id": "block/header/title-not-at-line-one",
@@ -1593,7 +1593,7 @@
    }
   },
   {
-   "id": "block/list/unordered/marker-change-starts-new-list",
+   "id": "block/list/unordered/marker-change-nests",
    "level": "block",
    "adoc": "* one\n- two\n",
    "config": null,
@@ -1628,48 +1628,50 @@
           ]
          }
         ],
-        "location": [
+        "blocks": [
          {
-          "line": 1,
-          "col": 1
-         },
-         {
-          "line": 1,
-          "col": 5
-         }
-        ]
-       }
-      ],
-      "location": [
-       {
-        "line": 1,
-        "col": 1
-       },
-       {
-        "line": 1,
-        "col": 5
-       }
-      ]
-     },
-     {
-      "name": "list",
-      "type": "block",
-      "marker": "-",
-      "variant": "unordered",
-      "items": [
-       {
-        "name": "listItem",
-        "type": "block",
-        "marker": "-",
-        "principal": [
-         {
-          "name": "text",
-          "type": "string",
-          "value": "two",
+          "name": "list",
+          "type": "block",
+          "marker": "-",
+          "variant": "unordered",
+          "items": [
+           {
+            "name": "listItem",
+            "type": "block",
+            "marker": "-",
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "two",
+              "location": [
+               {
+                "line": 2,
+                "col": 3
+               },
+               {
+                "line": 2,
+                "col": 5
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 2,
+              "col": 1
+             },
+             {
+              "line": 2,
+              "col": 5
+             }
+            ]
+           }
+          ],
           "location": [
            {
             "line": 2,
-            "col": 3
+            "col": 1
            },
            {
             "line": 2,
@@ -1680,7 +1682,7 @@
         ],
         "location": [
          {
-          "line": 2,
+          "line": 1,
           "col": 1
          },
          {
@@ -1692,7 +1694,7 @@
       ],
       "location": [
        {
-        "line": 2,
+        "line": 1,
         "col": 1
        },
        {
@@ -1713,7 +1715,7 @@
      }
     ]
    },
-   "note": "A different marker character at the same level begins a sibling list rather than continuing the first (docs/modules/lists/pages/unordered.adoc — 'to nest, change the marker'). Asciidoctor instead NESTS the second list; twig follows the documentation's flat reading, which is also what the ASG's `marker` field per list implies."
+   "note": "A different marker begins a NESTED list inside the current item (docs/modules/lists/pages/unordered.adoc — 'to nest, change the marker'), which is also what Asciidoctor does. An earlier reading of the same sentence made the second list a sibling; the documentation's own nested-list examples settle it."
   },
   {
    "id": "block/list/unordered/wrapped-principal-text",
@@ -4770,6 +4772,5486 @@
     }
    ],
    "note": "A doubled opener with no doubled close falls THROUGH to the constrained scan rather than going literal — asciidoctor's own ordering, where the constrained pattern's interior is `*bold`."
+  },
+  {
+   "id": "block/list/ordered/dot-markers",
+   "level": "block",
+   "adoc": ". one\n. two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": ".",
+      "variant": "ordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": ".",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 5
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": ".",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 2,
+            "col": 3
+           },
+           {
+            "line": 2,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 5
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/ordered/explicit-numbers",
+   "level": "block",
+   "adoc": "1. one\n2. two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "1.",
+      "variant": "ordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "1.",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 4
+           },
+           {
+            "line": 1,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "2.",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 2,
+            "col": 4
+           },
+           {
+            "line": 2,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 6
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 6
+     }
+    ]
+   },
+   "note": "Explicit ordinals of one family (`1.`, `2.`) are one list; the list's marker is the first item's, each item keeps its own."
+  },
+  {
+   "id": "block/list/ordered/alpha-marker",
+   "level": "block",
+   "adoc": "a. one\nb. two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "a.",
+      "variant": "ordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "a.",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 4
+           },
+           {
+            "line": 1,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "b.",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 2,
+            "col": 4
+           },
+           {
+            "line": 2,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 6
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 6
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/ordered/roman-marker",
+   "level": "block",
+   "adoc": "i) one\nii) two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "i)",
+      "variant": "ordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "i)",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 4
+           },
+           {
+            "line": 1,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "ii)",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 2,
+            "col": 5
+           },
+           {
+            "line": 2,
+            "col": 7
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 7
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 7
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 7
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/ordered/nested-by-marker-depth",
+   "level": "block",
+   "adoc": ". one\n.. nested\n. two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": ".",
+      "variant": "ordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": ".",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "list",
+          "type": "block",
+          "marker": "..",
+          "variant": "ordered",
+          "items": [
+           {
+            "name": "listItem",
+            "type": "block",
+            "marker": "..",
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "nested",
+              "location": [
+               {
+                "line": 2,
+                "col": 4
+               },
+               {
+                "line": 2,
+                "col": 9
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 2,
+              "col": 1
+             },
+             {
+              "line": 2,
+              "col": 9
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 9
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 9
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": ".",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 3,
+            "col": 3
+           },
+           {
+            "line": 3,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 5
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/callout/two-items",
+   "level": "block",
+   "adoc": "<1> one\n<2> two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "<1>",
+      "variant": "callout",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "<1>",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 5
+           },
+           {
+            "line": 1,
+            "col": 7
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 7
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "<2>",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 2,
+            "col": 5
+           },
+           {
+            "line": 2,
+            "col": 7
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 7
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 7
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 7
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/unordered/nested-by-marker-depth",
+   "level": "block",
+   "adoc": "* one\n** two\n* three\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "list",
+          "type": "block",
+          "marker": "**",
+          "variant": "unordered",
+          "items": [
+           {
+            "name": "listItem",
+            "type": "block",
+            "marker": "**",
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "two",
+              "location": [
+               {
+                "line": 2,
+                "col": 4
+               },
+               {
+                "line": 2,
+                "col": 6
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 2,
+              "col": 1
+             },
+             {
+              "line": 2,
+              "col": 6
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 6
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "three",
+          "location": [
+           {
+            "line": 3,
+            "col": 3
+           },
+           {
+            "line": 3,
+            "col": 7
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 7
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 7
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 7
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/mixed/ordered-inside-unordered",
+   "level": "block",
+   "adoc": "* fruit\n. apple\n. pear\n* veg\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "fruit",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 7
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "list",
+          "type": "block",
+          "marker": ".",
+          "variant": "ordered",
+          "items": [
+           {
+            "name": "listItem",
+            "type": "block",
+            "marker": ".",
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "apple",
+              "location": [
+               {
+                "line": 2,
+                "col": 3
+               },
+               {
+                "line": 2,
+                "col": 7
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 2,
+              "col": 1
+             },
+             {
+              "line": 2,
+              "col": 7
+             }
+            ]
+           },
+           {
+            "name": "listItem",
+            "type": "block",
+            "marker": ".",
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "pear",
+              "location": [
+               {
+                "line": 3,
+                "col": 3
+               },
+               {
+                "line": 3,
+                "col": 6
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 3,
+              "col": 1
+             },
+             {
+              "line": 3,
+              "col": 6
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 6
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "veg",
+          "location": [
+           {
+            "line": 4,
+            "col": 3
+           },
+           {
+            "line": 4,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 4,
+          "col": 1
+         },
+         {
+          "line": 4,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 5
+     }
+    ]
+   },
+   "note": "docs/modules/lists/pages/nested.adoc's own mixed example: a list of another type nests without any marker-depth change."
+  },
+  {
+   "id": "block/list/unordered/blank-line-then-nested",
+   "level": "block",
+   "adoc": "* one\n\n** two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "list",
+          "type": "block",
+          "marker": "**",
+          "variant": "unordered",
+          "items": [
+           {
+            "name": "listItem",
+            "type": "block",
+            "marker": "**",
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "two",
+              "location": [
+               {
+                "line": 3,
+                "col": 4
+               },
+               {
+                "line": 3,
+                "col": 6
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 3,
+              "col": 1
+             },
+             {
+              "line": 3,
+              "col": 6
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 6
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 6
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/unordered/continuation-paragraph",
+   "level": "block",
+   "adoc": "* one\n+\npara\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "paragraph",
+          "type": "block",
+          "inlines": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "para",
+            "location": [
+             {
+              "line": 3,
+              "col": 1
+             },
+             {
+              "line": 3,
+              "col": 4
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 4
+     }
+    ]
+   },
+   "note": "The `+` list continuation attaches the block below it to the item; the item's location runs through the attached block."
+  },
+  {
+   "id": "block/list/unordered/continuation-listing",
+   "level": "block",
+   "adoc": "* one\n+\n----\ncode\n----\n* two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "listing",
+          "type": "block",
+          "form": "delimited",
+          "delimiter": "----",
+          "inlines": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "code",
+            "location": [
+             {
+              "line": 4,
+              "col": 1
+             },
+             {
+              "line": 4,
+              "col": 4
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 5,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 5,
+          "col": 4
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "two",
+          "location": [
+           {
+            "line": 6,
+            "col": 3
+           },
+           {
+            "line": 6,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 6,
+          "col": 1
+         },
+         {
+          "line": 6,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 6,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 6,
+      "col": 5
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/list/unordered/attached-indented-literal",
+   "level": "block",
+   "adoc": "* one\n\n  literal\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "literal",
+          "type": "block",
+          "form": "indented",
+          "inlines": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "literal",
+            "location": [
+             {
+              "line": 3,
+              "col": 1
+             },
+             {
+              "line": 3,
+              "col": 9
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 9
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 9
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 9
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 9
+     }
+    ]
+   },
+   "note": "A blank-separated indented paragraph after an item attaches to it as a literal block (docs/modules/lists/pages/continuation.adoc). The literal's text is dedented; its location is the raw line."
+  },
+  {
+   "id": "block/list/unordered/checklist",
+   "level": "block",
+   "adoc": "* [x] one\n* [ ] two\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "[x] one",
+          "location": [
+           {
+            "line": 1,
+            "col": 3
+           },
+           {
+            "line": 1,
+            "col": 9
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 9
+         }
+        ]
+       },
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "[ ] two",
+          "location": [
+           {
+            "line": 2,
+            "col": 3
+           },
+           {
+            "line": 2,
+            "col": 9
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 9
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 9
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 9
+     }
+    ]
+   },
+   "note": "The ASG has no checkbox, so a checklist item's box is principal text to it; twig's tree reads the same source as a task list."
+  },
+  {
+   "id": "block/list/unordered/title-belongs-to-the-list",
+   "level": "block",
+   "adoc": ".Things\n* a\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "list",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Things",
+        "location": [
+         {
+          "line": 1,
+          "col": 2
+         },
+         {
+          "line": 1,
+          "col": 7
+         }
+        ]
+       }
+      ],
+      "marker": "*",
+      "variant": "unordered",
+      "items": [
+       {
+        "name": "listItem",
+        "type": "block",
+        "marker": "*",
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "a",
+          "location": [
+           {
+            "line": 2,
+            "col": 3
+           },
+           {
+            "line": 2,
+            "col": 3
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 3
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 3
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 3
+     }
+    ]
+   },
+   "note": "Block metadata above a list is the LIST's (its location starts at the title line), not the first item's."
+  },
+  {
+   "id": "block/dlist/single-item",
+   "level": "block",
+   "adoc": "term:: desc\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": "::",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "term",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 4
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "desc",
+          "location": [
+           {
+            "line": 1,
+            "col": 8
+           },
+           {
+            "line": 1,
+            "col": 11
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 11
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 11
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 11
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/dlist/description-on-next-line",
+   "level": "block",
+   "adoc": "term::\n  desc\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": "::",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "term",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 4
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "desc",
+          "location": [
+           {
+            "line": 2,
+            "col": 3
+           },
+           {
+            "line": 2,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 6
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 6
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/dlist/multiple-terms",
+   "level": "block",
+   "adoc": "one::\ntwo:: desc\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": "::",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "one",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 3
+            }
+           ]
+          }
+         ],
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "two",
+           "location": [
+            {
+             "line": 2,
+             "col": 1
+            },
+            {
+             "line": 2,
+             "col": 3
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "desc",
+          "location": [
+           {
+            "line": 2,
+            "col": 7
+           },
+           {
+            "line": 2,
+            "col": 10
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 10
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 10
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 10
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/dlist/two-items",
+   "level": "block",
+   "adoc": "a:: 1\nb:: 2\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": "::",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "a",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 1
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "1",
+          "location": [
+           {
+            "line": 1,
+            "col": 5
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 5
+         }
+        ]
+       },
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "b",
+           "location": [
+            {
+             "line": 2,
+             "col": 1
+            },
+            {
+             "line": 2,
+             "col": 1
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "2",
+          "location": [
+           {
+            "line": 2,
+            "col": 5
+           },
+           {
+            "line": 2,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 5
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 5
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 5
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/dlist/nested-by-colon-count",
+   "level": "block",
+   "adoc": "a:: 1\nb::: 2\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": "::",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "a",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 1
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "1",
+          "location": [
+           {
+            "line": 1,
+            "col": 5
+           },
+           {
+            "line": 1,
+            "col": 5
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "dlist",
+          "type": "block",
+          "marker": ":::",
+          "items": [
+           {
+            "name": "dlistItem",
+            "type": "block",
+            "marker": ":::",
+            "terms": [
+             [
+              {
+               "name": "text",
+               "type": "string",
+               "value": "b",
+               "location": [
+                {
+                 "line": 2,
+                 "col": 1
+                },
+                {
+                 "line": 2,
+                 "col": 1
+                }
+               ]
+              }
+             ]
+            ],
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "2",
+              "location": [
+               {
+                "line": 2,
+                "col": 6
+               },
+               {
+                "line": 2,
+                "col": 6
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 2,
+              "col": 1
+             },
+             {
+              "line": 2,
+              "col": 6
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 6
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 6
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 6
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/dlist/semicolon-marker",
+   "level": "block",
+   "adoc": "term;; desc\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": ";;",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": ";;",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "term",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 4
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "desc",
+          "location": [
+           {
+            "line": 1,
+            "col": 8
+           },
+           {
+            "line": 1,
+            "col": 11
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 11
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 11
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 11
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/dlist/term-with-nested-unordered-list",
+   "level": "block",
+   "adoc": "term::\n* a\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": "::",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "term",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 4
+            }
+           ]
+          }
+         ]
+        ],
+        "blocks": [
+         {
+          "name": "list",
+          "type": "block",
+          "marker": "*",
+          "variant": "unordered",
+          "items": [
+           {
+            "name": "listItem",
+            "type": "block",
+            "marker": "*",
+            "principal": [
+             {
+              "name": "text",
+              "type": "string",
+              "value": "a",
+              "location": [
+               {
+                "line": 2,
+                "col": 3
+               },
+               {
+                "line": 2,
+                "col": 3
+               }
+              ]
+             }
+            ],
+            "location": [
+             {
+              "line": 2,
+              "col": 1
+             },
+             {
+              "line": 2,
+              "col": 3
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 2,
+            "col": 1
+           },
+           {
+            "line": 2,
+            "col": 3
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 3
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 3
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 3
+     }
+    ]
+   },
+   "note": "A term with no description of its own and a list under it: no `principal`, and the list is the item's block."
+  },
+  {
+   "id": "block/dlist/with-continuation",
+   "level": "block",
+   "adoc": "term:: desc\n+\npara\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "dlist",
+      "type": "block",
+      "marker": "::",
+      "items": [
+       {
+        "name": "dlistItem",
+        "type": "block",
+        "marker": "::",
+        "terms": [
+         [
+          {
+           "name": "text",
+           "type": "string",
+           "value": "term",
+           "location": [
+            {
+             "line": 1,
+             "col": 1
+            },
+            {
+             "line": 1,
+             "col": 4
+            }
+           ]
+          }
+         ]
+        ],
+        "principal": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "desc",
+          "location": [
+           {
+            "line": 1,
+            "col": 8
+           },
+           {
+            "line": 1,
+            "col": 11
+           }
+          ]
+         }
+        ],
+        "blocks": [
+         {
+          "name": "paragraph",
+          "type": "block",
+          "inlines": [
+           {
+            "name": "text",
+            "type": "string",
+            "value": "para",
+            "location": [
+             {
+              "line": 3,
+              "col": 1
+             },
+             {
+              "line": 3,
+              "col": 4
+             }
+            ]
+           }
+          ],
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/heading/discrete",
+   "level": "block",
+   "adoc": "[discrete]\n== Title\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "heading",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Title",
+        "location": [
+         {
+          "line": 2,
+          "col": 4
+         },
+         {
+          "line": 2,
+          "col": 8
+         }
+        ]
+       }
+      ],
+      "metadata": {
+       "attributes": {
+        "$1": "discrete"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 10
+        }
+       ]
+      },
+      "level": 1,
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 8
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 8
+     }
+    ]
+   },
+   "note": "A `[discrete]` heading is a block in the flow, not a section; the style itself is the first positional attribute."
+  },
+  {
+   "id": "block/paragraph/with-title",
+   "level": "block",
+   "adoc": ".Title\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Title",
+        "location": [
+         {
+          "line": 1,
+          "col": 2
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/paragraph/with-id-anchor-line",
+   "level": "block",
+   "adoc": "[[para-id]]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "id": "para-id",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   },
+   "note": "A bare anchor line sets `id` and nothing else — no `metadata` object, which the ASG reserves for an attribute list."
+  },
+  {
+   "id": "block/paragraph/with-reftext",
+   "level": "block",
+   "adoc": "[[para-id,Reference Text]]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "id": "para-id",
+      "reftext": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Reference Text",
+        "location": [
+         {
+          "line": 1,
+          "col": 11
+         },
+         {
+          "line": 1,
+          "col": 24
+         }
+        ]
+       }
+      ],
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/paragraph/shorthand-attributes",
+   "level": "block",
+   "adoc": "[#the-id.role1.role2%opt]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "id": "the-id",
+      "metadata": {
+       "options": [
+        "opt"
+       ],
+       "roles": [
+        "role1",
+        "role2"
+       ],
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 25
+        }
+       ]
+      },
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/paragraph/named-attributes",
+   "level": "block",
+   "adoc": "[key=value,other=\"quoted, value\"]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "key": "value",
+        "other": "quoted, value"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 33
+        }
+       ]
+      },
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   },
+   "note": "A quoted value keeps its comma; the quotes themselves are not part of the value."
+  },
+  {
+   "id": "block/paragraph/style-is-first-positional",
+   "level": "block",
+   "adoc": "[lead]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "lead"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 6
+        }
+       ]
+      },
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   },
+   "note": "The block style is the first positional attribute, spelled `$1` per the schema's positional-attribute pattern."
+  },
+  {
+   "id": "block/paragraph/empty-attribute-line",
+   "level": "block",
+   "adoc": "[]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "paragraph",
+      "type": "block",
+      "metadata": {
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 2
+        }
+       ]
+      },
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   },
+   "note": "An empty attribute line is still an attribute line: a `metadata` object with only its location."
+  },
+  {
+   "id": "block/listing/source-with-language",
+   "level": "block",
+   "adoc": "[source,ruby]\n----\nputs 1\n----\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "source",
+        "$2": "ruby"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 13
+        }
+       ]
+      },
+      "form": "delimited",
+      "delimiter": "----",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "puts 1",
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/listing/title-then-attributes",
+   "level": "block",
+   "adoc": ".Example\n[source,ruby]\n----\nx\n----\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Example",
+        "location": [
+         {
+          "line": 1,
+          "col": 2
+         },
+         {
+          "line": 1,
+          "col": 8
+         }
+        ]
+       }
+      ],
+      "metadata": {
+       "attributes": {
+        "$1": "source",
+        "$2": "ruby"
+       },
+       "location": [
+        {
+         "line": 2,
+         "col": 1
+        },
+        {
+         "line": 2,
+         "col": 13
+        }
+       ]
+      },
+      "form": "delimited",
+      "delimiter": "----",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "x",
+        "location": [
+         {
+          "line": 4,
+          "col": 1
+         },
+         {
+          "line": 4,
+          "col": 1
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 5,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 5,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/section/with-id-anchor-line",
+   "level": "block",
+   "adoc": "[[sec]]\n== Title\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "section",
+      "type": "block",
+      "id": "sec",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Title",
+        "location": [
+         {
+          "line": 2,
+          "col": 4
+         },
+         {
+          "line": 2,
+          "col": 8
+         }
+        ]
+       }
+      ],
+      "level": 1,
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 8
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 8
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/section/anchor-in-title",
+   "level": "block",
+   "adoc": "== Title [[sec]]\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "section",
+      "type": "block",
+      "id": "sec",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Title",
+        "location": [
+         {
+          "line": 1,
+          "col": 4
+         },
+         {
+          "line": 1,
+          "col": 8
+         }
+        ]
+       }
+      ],
+      "level": 1,
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 16
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 16
+     }
+    ]
+   },
+   "note": "A trailing `[[id]]` in the title line is the section's id, not title text; the section's location still covers the whole line."
+  },
+  {
+   "id": "block/section/with-role",
+   "level": "block",
+   "adoc": "[.classy]\n== Title\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "section",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Title",
+        "location": [
+         {
+          "line": 2,
+          "col": 4
+         },
+         {
+          "line": 2,
+          "col": 8
+         }
+        ]
+       }
+      ],
+      "metadata": {
+       "roles": [
+        "classy"
+       ],
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 9
+        }
+       ]
+      },
+      "level": 1,
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 8
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 8
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/admonition/delimited",
+   "level": "block",
+   "adoc": "[NOTE]\n====\ntext\n====\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "admonition",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "NOTE"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 6
+        }
+       ]
+      },
+      "form": "delimited",
+      "delimiter": "====",
+      "variant": "note",
+      "blocks": [
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "text",
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 4
+     }
+    ]
+   },
+   "note": "An admonition style on an example block makes it an admonition whose `variant` is the style, lowercased."
+  },
+  {
+   "id": "block/example/with-title",
+   "level": "block",
+   "adoc": ".Title\n====\ntext\n====\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "example",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Title",
+        "location": [
+         {
+          "line": 1,
+          "col": 2
+         },
+         {
+          "line": 1,
+          "col": 6
+         }
+        ]
+       }
+      ],
+      "form": "delimited",
+      "delimiter": "====",
+      "blocks": [
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "text",
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/quote/with-attribution",
+   "level": "block",
+   "adoc": "[quote,Someone,Somewhere]\n____\ntext\n____\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "quote",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "quote",
+        "$2": "Someone",
+        "$3": "Somewhere"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 25
+        }
+       ]
+      },
+      "form": "delimited",
+      "delimiter": "____",
+      "blocks": [
+       {
+        "name": "paragraph",
+        "type": "block",
+        "inlines": [
+         {
+          "name": "text",
+          "type": "string",
+          "value": "text",
+          "location": [
+           {
+            "line": 3,
+            "col": 1
+           },
+           {
+            "line": 3,
+            "col": 4
+           }
+          ]
+         }
+        ],
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/verse/delimited",
+   "level": "block",
+   "adoc": "[verse]\n____\nRoses are red\n  violets blue\n____\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "verse",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "verse"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 7
+        }
+       ]
+      },
+      "form": "delimited",
+      "delimiter": "____",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "Roses are red\n  violets blue",
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 4,
+          "col": 14
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 5,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 5,
+      "col": 4
+     }
+    ]
+   },
+   "note": "A verse keeps its line breaks and indentation verbatim, as one text node — twig's tree holds it as a line block, one node per line, and the codec joins them back."
+  },
+  {
+   "id": "block/literal/indented-paragraph",
+   "level": "block",
+   "adoc": "  literal\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "literal",
+      "type": "block",
+      "form": "indented",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "literal",
+        "location": [
+         {
+          "line": 1,
+          "col": 1
+         },
+         {
+          "line": 1,
+          "col": 9
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 9
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 9
+     }
+    ]
+   },
+   "note": "An indented paragraph is a literal block in the `indented` form; its text is dedented and its location is the raw line."
+  },
+  {
+   "id": "block/listing/paragraph-style",
+   "level": "block",
+   "adoc": "[listing]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "listing"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 9
+        }
+       ]
+      },
+      "form": "paragraph",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/literal/paragraph-style",
+   "level": "block",
+   "adoc": "[literal]\ntext\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "literal",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "literal"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 9
+        }
+       ]
+      },
+      "form": "paragraph",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "text",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 4
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/stem/delimited",
+   "level": "block",
+   "adoc": "[stem]\n++++\nx^2\n++++\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "stem",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "stem"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 6
+        }
+       ]
+      },
+      "form": "delimited",
+      "delimiter": "++++",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "x^2",
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 3
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 4
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 4
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/open/source-style",
+   "level": "block",
+   "adoc": "[source,js]\n--\nx\n--\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "metadata": {
+       "attributes": {
+        "$1": "source",
+        "$2": "js"
+       },
+       "location": [
+        {
+         "line": 1,
+         "col": 1
+        },
+        {
+         "line": 1,
+         "col": 11
+        }
+       ]
+      },
+      "form": "delimited",
+      "delimiter": "--",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "x",
+        "location": [
+         {
+          "line": 3,
+          "col": 1
+         },
+         {
+          "line": 3,
+          "col": 1
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 4,
+        "col": 2
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 4,
+      "col": 2
+     }
+    ]
+   },
+   "note": "An open block takes the style's identity: `[source]` on `--` is a listing whose delimiter is `--`."
+  },
+  {
+   "id": "block/listing/markdown-fence",
+   "level": "block",
+   "adoc": "```ruby\nx\n```\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "listing",
+      "type": "block",
+      "form": "delimited",
+      "delimiter": "```",
+      "inlines": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "x",
+        "location": [
+         {
+          "line": 2,
+          "col": 1
+         },
+         {
+          "line": 2,
+          "col": 1
+         }
+        ]
+       }
+      ],
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 3,
+        "col": 3
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 3,
+      "col": 3
+     }
+    ]
+   },
+   "note": "Asciidoctor reads a Markdown-style fence as a listing; the delimiter is the backtick run, the info string is not part of it."
+  },
+  {
+   "id": "block/macro/image",
+   "level": "block",
+   "adoc": "image::logo.png[Logo]\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "image",
+      "type": "block",
+      "form": "macro",
+      "target": "logo.png",
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 21
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 21
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/macro/image-with-title",
+   "level": "block",
+   "adoc": ".A logo\nimage::logo.png[]\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "image",
+      "type": "block",
+      "title": [
+       {
+        "name": "text",
+        "type": "string",
+        "value": "A logo",
+        "location": [
+         {
+          "line": 1,
+          "col": 2
+         },
+         {
+          "line": 1,
+          "col": 7
+         }
+        ]
+       }
+      ],
+      "form": "macro",
+      "target": "logo.png",
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 2,
+        "col": 17
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 17
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/macro/toc",
+   "level": "block",
+   "adoc": "toc::[]\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "toc",
+      "type": "block",
+      "form": "macro",
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 7
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 7
+     }
+    ]
+   },
+   "note": "A macro with an empty target has no `target` key."
+  },
+  {
+   "id": "block/macro/video",
+   "level": "block",
+   "adoc": "video::clip.mp4[]\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "video",
+      "type": "block",
+      "form": "macro",
+      "target": "clip.mp4",
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 17
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 17
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/macro/audio",
+   "level": "block",
+   "adoc": "audio::clip.mp3[]\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "blocks": [
+     {
+      "name": "audio",
+      "type": "block",
+      "form": "macro",
+      "target": "clip.mp3",
+      "location": [
+       {
+        "line": 1,
+        "col": 1
+       },
+       {
+        "line": 1,
+        "col": 17
+       }
+      ]
+     }
+    ],
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 1,
+      "col": 17
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/header/author-line",
+   "level": "block",
+   "adoc": "= Title\nDoc Writer <doc@example.org>\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "attributes": {},
+    "header": {
+     "title": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Title",
+       "location": [
+        {
+         "line": 1,
+         "col": 3
+        },
+        {
+         "line": 1,
+         "col": 7
+        }
+       ]
+      }
+     ],
+     "authors": [
+      {
+       "fullname": "Doc Writer",
+       "initials": "DW",
+       "firstname": "Doc",
+       "lastname": "Writer",
+       "address": "doc@example.org"
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 2,
+       "col": 28
+      }
+     ]
+    },
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 28
+     }
+    ]
+   }
+  },
+  {
+   "id": "block/header/multiple-authors",
+   "level": "block",
+   "adoc": "= Title\nAda B. Lovelace; Charles Babbage\n",
+   "config": null,
+   "asg": {
+    "name": "document",
+    "type": "block",
+    "attributes": {},
+    "header": {
+     "title": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Title",
+       "location": [
+        {
+         "line": 1,
+         "col": 3
+        },
+        {
+         "line": 1,
+         "col": 7
+        }
+       ]
+      }
+     ],
+     "authors": [
+      {
+       "fullname": "Ada B. Lovelace",
+       "initials": "ABL",
+       "firstname": "Ada",
+       "middlename": "B.",
+       "lastname": "Lovelace"
+      },
+      {
+       "fullname": "Charles Babbage",
+       "initials": "CB",
+       "firstname": "Charles",
+       "lastname": "Babbage"
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 2,
+       "col": 32
+      }
+     ]
+    },
+    "location": [
+     {
+      "line": 1,
+      "col": 1
+     },
+     {
+      "line": 2,
+      "col": 32
+     }
+    ]
+   }
+  },
+  {
+   "id": "inline/ref/bare-url",
+   "level": "inline",
+   "adoc": "see https://example.org now\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "see ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 4
+      }
+     ]
+    },
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "https://example.org",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "https://example.org",
+       "location": [
+        {
+         "line": 1,
+         "col": 5
+        },
+        {
+         "line": 1,
+         "col": 23
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 5
+      },
+      {
+       "line": 1,
+       "col": 23
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " now",
+     "location": [
+      {
+       "line": 1,
+       "col": 24
+      },
+      {
+       "line": 1,
+       "col": 27
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/url-with-text",
+   "level": "inline",
+   "adoc": "https://example.org[Example]\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "https://example.org",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Example",
+       "location": [
+        {
+         "line": 1,
+         "col": 21
+        },
+        {
+         "line": 1,
+         "col": 27
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 28
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/trailing-punctuation",
+   "level": "inline",
+   "adoc": "at https://example.org.\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "at ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 3
+      }
+     ]
+    },
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "https://example.org",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "https://example.org",
+       "location": [
+        {
+         "line": 1,
+         "col": 4
+        },
+        {
+         "line": 1,
+         "col": 22
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 4
+      },
+      {
+       "line": 1,
+       "col": 22
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": ".",
+     "location": [
+      {
+       "line": 1,
+       "col": 23
+      },
+      {
+       "line": 1,
+       "col": 23
+      }
+     ]
+    }
+   ],
+   "note": "Sentence punctuation after a bare URL is not part of it."
+  },
+  {
+   "id": "inline/ref/url-in-parentheses",
+   "level": "inline",
+   "adoc": "(https://example.org)\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "(",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 1
+      }
+     ]
+    },
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "https://example.org",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "https://example.org",
+       "location": [
+        {
+         "line": 1,
+         "col": 2
+        },
+        {
+         "line": 1,
+         "col": 20
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 2
+      },
+      {
+       "line": 1,
+       "col": 20
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": ")",
+     "location": [
+      {
+       "line": 1,
+       "col": 21
+      },
+      {
+       "line": 1,
+       "col": 21
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/link-macro",
+   "level": "inline",
+   "adoc": "link:page.html[Page]\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "page.html",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Page",
+       "location": [
+        {
+         "line": 1,
+         "col": 16
+        },
+        {
+         "line": 1,
+         "col": 19
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 20
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/link-macro-empty-text",
+   "level": "inline",
+   "adoc": "link:page.html[]\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "page.html",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "page.html",
+       "location": [
+        {
+         "line": 1,
+         "col": 6
+        },
+        {
+         "line": 1,
+         "col": 14
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 16
+      }
+     ]
+    }
+   ],
+   "note": "With no text of its own a link shows its target, located where the target is spelled."
+  },
+  {
+   "id": "inline/ref/angle-url",
+   "level": "inline",
+   "adoc": "<https://example.org>\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "https://example.org",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "https://example.org",
+       "location": [
+        {
+         "line": 1,
+         "col": 2
+        },
+        {
+         "line": 1,
+         "col": 20
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 21
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/email",
+   "level": "inline",
+   "adoc": "mail a@example.org now\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "mail ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 5
+      }
+     ]
+    },
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "mailto:a@example.org",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "a@example.org",
+       "location": [
+        {
+         "line": 1,
+         "col": 6
+        },
+        {
+         "line": 1,
+         "col": 18
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 6
+      },
+      {
+       "line": 1,
+       "col": 18
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " now",
+     "location": [
+      {
+       "line": 1,
+       "col": 19
+      },
+      {
+       "line": 1,
+       "col": 22
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/mailto-macro",
+   "level": "inline",
+   "adoc": "mailto:a@example.org[Mail]\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "link",
+     "target": "mailto:a@example.org",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Mail",
+       "location": [
+        {
+         "line": 1,
+         "col": 22
+        },
+        {
+         "line": 1,
+         "col": 25
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 26
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/xref-angle",
+   "level": "inline",
+   "adoc": "see <<sec>>\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "see ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 4
+      }
+     ]
+    },
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "xref",
+     "target": "sec",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "sec",
+       "location": [
+        {
+         "line": 1,
+         "col": 7
+        },
+        {
+         "line": 1,
+         "col": 9
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 5
+      },
+      {
+       "line": 1,
+       "col": 11
+      }
+     ]
+    }
+   ],
+   "note": "An xref with no text shows its target, as a link does."
+  },
+  {
+   "id": "inline/ref/xref-with-text",
+   "level": "inline",
+   "adoc": "<<sec,Section>>\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "xref",
+     "target": "sec",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Section",
+       "location": [
+        {
+         "line": 1,
+         "col": 7
+        },
+        {
+         "line": 1,
+         "col": 13
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 15
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/ref/xref-macro",
+   "level": "inline",
+   "adoc": "xref:sec[Section]\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "ref",
+     "type": "inline",
+     "variant": "xref",
+     "target": "sec",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "Section",
+       "location": [
+        {
+         "line": 1,
+         "col": 10
+        },
+        {
+         "line": 1,
+         "col": 16
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 17
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/span/strong-containing-link",
+   "level": "inline",
+   "adoc": "*see https://x.org[X]*\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "span",
+     "type": "inline",
+     "variant": "strong",
+     "form": "constrained",
+     "inlines": [
+      {
+       "name": "text",
+       "type": "string",
+       "value": "see ",
+       "location": [
+        {
+         "line": 1,
+         "col": 2
+        },
+        {
+         "line": 1,
+         "col": 5
+        }
+       ]
+      },
+      {
+       "name": "ref",
+       "type": "inline",
+       "variant": "link",
+       "target": "https://x.org",
+       "inlines": [
+        {
+         "name": "text",
+         "type": "string",
+         "value": "X",
+         "location": [
+          {
+           "line": 1,
+           "col": 20
+          },
+          {
+           "line": 1,
+           "col": 20
+          }
+         ]
+        }
+       ],
+       "location": [
+        {
+         "line": 1,
+         "col": 6
+        },
+        {
+         "line": 1,
+         "col": 21
+        }
+       ]
+      }
+     ],
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 22
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/charref/named",
+   "level": "inline",
+   "adoc": "a &amp; b\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 2
+      }
+     ]
+    },
+    {
+     "name": "charref",
+     "type": "string",
+     "value": "&amp;",
+     "location": [
+      {
+       "line": 1,
+       "col": 3
+      },
+      {
+       "line": 1,
+       "col": 7
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " b",
+     "location": [
+      {
+       "line": 1,
+       "col": 8
+      },
+      {
+       "line": 1,
+       "col": 9
+      }
+     ]
+    }
+   ],
+   "note": "A character reference is its own literal, valued as written."
+  },
+  {
+   "id": "inline/charref/numeric",
+   "level": "inline",
+   "adoc": "&#169; 2024\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "charref",
+     "type": "string",
+     "value": "&#169;",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 6
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " 2024",
+     "location": [
+      {
+       "line": 1,
+       "col": 7
+      },
+      {
+       "line": 1,
+       "col": 11
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/raw/triple-plus",
+   "level": "inline",
+   "adoc": "a +++<b>x</b>+++ b\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a ",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 2
+      }
+     ]
+    },
+    {
+     "name": "raw",
+     "type": "string",
+     "value": "<b>x</b>",
+     "location": [
+      {
+       "line": 1,
+       "col": 3
+      },
+      {
+       "line": 1,
+       "col": 16
+      }
+     ]
+    },
+    {
+     "name": "text",
+     "type": "string",
+     "value": " b",
+     "location": [
+      {
+       "line": 1,
+       "col": 17
+      },
+      {
+       "line": 1,
+       "col": 18
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/raw/pass-macro",
+   "level": "inline",
+   "adoc": "pass:[<u>x</u>]\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "raw",
+     "type": "string",
+     "value": "<u>x</u>",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 15
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "inline/escape/backslash-before-strong",
+   "level": "inline",
+   "adoc": "\\*not bold*\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "*not bold*",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 11
+      }
+     ]
+    }
+   ],
+   "note": "A backslash suppresses the span; the text's location still covers the backslash, which is source the text came from."
+  },
+  {
+   "id": "inline/literal/constrained-plus",
+   "level": "inline",
+   "adoc": "a +*x*+ b\n",
+   "config": null,
+   "asg": [
+    {
+     "name": "text",
+     "type": "string",
+     "value": "a *x* b",
+     "location": [
+      {
+       "line": 1,
+       "col": 1
+      },
+      {
+       "line": 1,
+       "col": 9
+      }
+     ]
+    }
+   ],
+   "note": "`+…+` is text with no substitutions applied — and adjacent text fuses into one node, so the whole line is a single text."
   }
  ]
 }

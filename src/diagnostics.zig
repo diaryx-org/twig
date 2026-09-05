@@ -230,10 +230,11 @@ fn childPath(arena: Allocator, parent: []const u8, i: usize) Allocator.Error![]c
 pub fn fidelity(target: Target, kind: Node.Kind) Fidelity {
     return switch (target) {
         // No `serializeFromAst`; `analyze` refuses before reaching the table.
-        .xml, .asciidoc => .dropped,
+        .xml => .dropped,
         .djot => djotFidelity(kind),
         .markdown => markdownFidelity(kind),
         .html => htmlFidelity(kind),
+        .asciidoc => asciidocFidelity(kind),
     };
 }
 
@@ -260,7 +261,34 @@ pub fn nodeFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
     return switch (kind) {
         .table => worst(base, tableFidelity(target, ast, id)),
         .container => worst(base, containerFidelity(target, ast, id)),
+        .section => worst(base, sectionFidelity(target, ast, id)),
+        .metadata => worst(base, metadataFidelity(target, ast, id)),
         else => base,
+    };
+}
+
+/// A metadata block's instance-level answer: whether it is the document's
+/// FIRST block. AsciiDoc's only spelling is front matter, which Asciidoctor
+/// (and twig's parser) read at the very top of a document and nowhere else;
+/// written anywhere else it comes back as a thematic break and text.
+fn metadataFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
+    if (target != .asciidoc) return .faithful;
+    return if (ast.nodes[ast.root].first_child == id) .faithful else .degraded;
+}
+
+/// A section's instance-level answer: whether its title is a LEVEL-ONE one.
+///
+/// Only AsciiDoc cares. A `= Title` line at the top of a document is the
+/// document's title — a header, not a section — so a level-one section
+/// written there comes back as the header and its body as the document's.
+/// Every deeper section is a section again. `Kind.section` carries no level
+/// (the heading child does), so the table cannot see this.
+fn sectionFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
+    if (target != .asciidoc) return .faithful;
+    const heading = ast.nodes[id].first_child orelse return .faithful;
+    return switch (ast.nodes[heading].kind) {
+        .heading => |h| if (h.level == 1) .degraded else .faithful,
+        else => .faithful,
     };
 }
 
@@ -474,6 +502,113 @@ fn markdownFidelity(kind: Node.Kind) Fidelity {
     };
 }
 
+/// AsciiDoc holds nearly the whole vocabulary — it has a native spelling for
+/// most of what djot and Markdown between them invented — and what it loses
+/// it loses to a reparse that reads the spelling as a near neighbour.
+fn asciidocFidelity(kind: Node.Kind) Fidelity {
+    return switch (kind) {
+        // Generic markup: a comment is written as a comment BLOCK, which
+        // produces no node at all; a doctype and a processing instruction
+        // have no spelling and are not written; a CDATA section's text is
+        // kept as text.
+        .markup_leaf => |l| switch (l.kind) {
+            .comment, .doctype => .dropped,
+            .cdata => .degraded,
+        },
+        .processing_instruction => .dropped,
+        // A substitution definition is a body attribute entry (`:name:
+        // value`), which reparses as the same definition, and its use as an
+        // attribute reference — the one target where both survive.
+        .substitution => .faithful,
+        // No column axis in an AsciiDoc table either (`cols` describes
+        // widths, not a node); nothing is emitted for a `column`.
+        .column => .dropped,
+        // Front matter is written as YAML front matter, which the parser
+        // reads back only at the very start of a document — `nodeFidelity`
+        // downgrades a `metadata` block that sits anywhere else.
+        .metadata => .faithful,
+        // A citation is an anchor over its body plus `<<xref>>`s at its
+        // uses: both halves survive, the citation registry does not.
+        .citation => .degraded,
+        // Written as a delimited block whose style is the container's name:
+        // an admonition, example, sidebar or open block returns as itself; any
+        // other name (a Markdown `:::box`, an HTML tag, an inline `:abbr`)
+        // comes back as an open block or a styled span classed with the name
+        // — the kind survives, the name becomes a role. An ANONYMOUS block
+        // container is the open block itself, and the parser names that one
+        // `open`: the node returns, its namelessness does not.
+        .container => |c| if (isNativeContainer(c.name)) .faithful else .degraded,
+        .inline_mark => |m| switch (m) {
+            .strong, .emph, .mark, .superscript, .subscript, .double_quoted, .single_quoted => .faithful,
+            // Asciidoctor's convention is a role its stylesheet knows; the
+            // reparse reads a styled span, not a mark.
+            .insert, .delete => .degraded,
+        },
+        .text_leaf => |l| switch (l.kind) {
+            .verbatim, .url, .email, .footnote_reference, .substitution_reference => .faithful,
+            // Math is written as `stem:[…]`, and comes back as a `stem` macro
+            // whose display/inline distinction is gone: the inline form
+            // survives as itself, the display form arrives as the inline one.
+            .inline_math => .faithful,
+            .display_math => .degraded,
+            // No shortcodes: `:name:` is text.
+            .symb => .degraded,
+            // A citation reference is written as a cross reference and reads
+            // back as a link to the citation's anchor.
+            .citation_reference => .degraded,
+        },
+        // A link-reference definition is resolved into its uses and not
+        // written; a footnote definition is written at its reference, and
+        // the reparse re-creates one from it.
+        .reference => .degraded,
+        .footnote => .faithful,
+        // A heading is a section title, and every section title opens a
+        // section: a bare `heading` (one not already in a section) comes
+        // back wrapped in one. The kind survives; the tree gains a section.
+        .heading => .faithful,
+        .doc,
+        .para,
+        .thematic_break,
+        .section,
+        .code_block,
+        .raw_block,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .line_block,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .line,
+        .row,
+        .cell,
+        .caption,
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .raw_inline,
+        .smart_punctuation,
+        .link,
+        .image,
+        => .faithful,
+    };
+}
+
+/// The container names AsciiDoc spells as their own block: the admonitions,
+/// and the three delimited parents.
+fn isNativeContainer(name: []const u8) bool {
+    inline for (.{ "note", "tip", "important", "warning", "caution", "example", "sidebar", "open", "page-break", "kbd", "abstract", "partintro" }) |n| {
+        if (std.mem.eql(u8, name, n)) return true;
+    }
+    return false;
+}
+
 /// HTML is a RENDER target, not a source syntax, and the asymmetry shows: it
 /// spells the generic-markup kinds djot and Markdown cannot, and loses the
 /// lightweight-markup semantics they keep. Everything here is measured against
@@ -596,9 +731,9 @@ const round_trippable: []const Target = blk: {
     break :blk out;
 };
 
-test "the probe covers every target that can be measured, and today that is three" {
-    try testing.expectEqual(@as(usize, 3), round_trippable.len);
-    try testing.expectEqualSlices(Target, &.{ .djot, .markdown, .html }, round_trippable);
+test "the probe covers every target that can be measured, and today that is four" {
+    try testing.expectEqual(@as(usize, 4), round_trippable.len);
+    try testing.expectEqualSlices(Target, &.{ .djot, .markdown, .html, .asciidoc }, round_trippable);
 }
 
 test "analyze refuses a target with no serializer rather than reporting every node" {
@@ -674,7 +809,7 @@ test "an HTML comment converted to djot is reported as dropped, and really is" {
     try testing.expect(std.mem.indexOf(u8, src, "secret") == null);
 }
 
-test "a substitution's body is dropped by every target, and is reported as such" {
+test "a substitution's body is dropped by every target but AsciiDoc, and is reported as such" {
     const allocator = testing.allocator;
     var b = AST.Builder.init(allocator);
     defer b.deinit();
@@ -689,8 +824,17 @@ test "a substitution's body is dropped by every target, and is reported as such"
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const warnings = try analyze(arena.allocator(), &ast, ast.root, target);
+        if (target == .asciidoc) {
+            // The one target with the construct: a body attribute entry and
+            // an attribute reference, both of which read back as themselves.
+            try testing.expectEqual(@as(usize, 0), warnings.len);
+            const src = try format.targetEntryFor(target).serializeFromAst.?(allocator, &ast);
+            defer allocator.free(src);
+            try testing.expect(std.mem.indexOf(u8, src, ":RST: reStructuredText") != null);
+            continue;
+        }
         // The definition is `dropped` and its use `degraded` — two warnings,
-        // never zero, for every target twig can write.
+        // never zero, for every other target twig can write.
         try testing.expectEqual(@as(usize, 2), warnings.len);
         try testing.expectEqual(Fidelity.degraded, warnings[0].fidelity);
         try testing.expectEqualStrings("substitution_reference", warnings[0].kind);

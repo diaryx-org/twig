@@ -1,43 +1,35 @@
-//! AsciiDoc: the conformance harness (`Asciidoc.conformance`, the vendored
-//! AsciiDoc TCK corpus), the ASG codec it compares through (`Asciidoc.asg`),
-//! and now a first-slice parser (`Asciidoc.parser`) — source bytes to twig's
-//! shared `AST`, judged by `conformance.zig`'s `parse` comparison against the
-//! same corpus the codec's `decode`/`encode` round-trip already climbed.
-//! Mirrors where `languages/rst/` went: the testing harness landed first, so
-//! the vocabulary-mapping work (`asg.zig`'s `Coverage`) had a ratchet to
-//! climb before there was a parser to climb it with.
+//! AsciiDoc: the parser (`Asciidoc.parser`) — source bytes to twig's shared
+//! `AST` — the conformance harness that judges it (`Asciidoc.conformance`:
+//! the vendored AsciiDoc TCK corpus plus twig's own authored one), and the
+//! ASG codec both compare through (`Asciidoc.asg`). Mirrors where
+//! `languages/rst/` went: the testing harness landed first, so the
+//! vocabulary-mapping work had a ratchet to climb before there was a parser
+//! to climb it with — and the parser then climbed it to the top.
 //!
-//! ── There IS a `format.zig` registry entry now, on a stated property ───────
-//! It is not a claim to implement AsciiDoc — `parser.zig`'s doc comment lists
-//! far more that is missing than present. It is a claim that the parser fails
-//! HONESTLY: every construct it doesn't implement survives as literal source
-//! text, so an unhandled `image:logo.png[Logo]` renders as those characters
-//! rather than as a mangled tree. The entry waited on that property rather
-//! than on coverage, and the unconstrained spans (`**bold**`, which used to
-//! come out as `<strong>*bold</strong>*`) were fixed to establish it. The row
-//! itself spells out the rest: no serializer, so no `-o canonical`, and no
-//! `syntax`, so no authoring gestures.
-//!
-//! ── The corpus IS the boundary, and today it is a small one ────────────────
+//! ── The corpus IS the boundary, and there are two of them ──────────────────
 //! `testdata/asciidoc-tck-corpus.json` — 13 cases hand-vendored from the
 //! Eclipse AsciiDoc Language Working Group's `asciidoc-tck`
 //! (`gitlab.eclipse.org/eclipse/asciidoc-lang/asciidoc-tck`), whose own ASG
-//! test suite is still `1.0.0-alpha.0` and growing alongside a spec
-//! (`asciidoc-lang/asciidoc-lang`) that is itself still being written section
-//! by section. Unlike rST's 713-case docutils corpus or CommonMark's 652, this
-//! is not yet a corpus whose completion means anything — conformance here
-//! means "passes what the TCK has today", full stop, and that boundary moves
-//! as the TCK grows rather than staying fixed the way rST's vendored snapshot
-//! does. See the corpus file's own `provenance` block for exactly where the
-//! 13 cases came from.
+//! test suite is still `1.0.0-alpha.0` and has stopped growing alongside a
+//! spec (`asciidoc-lang/asciidoc-lang`) that is itself still being written
+//! section by section. That is the normative ratchet, and it is small.
+//! `testdata/asciidoc-twig-corpus.json` is twig's OWN corpus, authored in
+//! `scripts/asciidoc_cases.py` against the AsciiDoc Language documentation
+//! and validated at generation time against the official ASG JSON Schema
+//! (`testdata/asg-schema.json`), so its shapes are the Working Group's even
+//! where its expectations are twig's. See `conformance.zig` for why the two
+//! are kept apart, and each corpus file's `provenance` for where it came
+//! from.
 //!
-//! Covered today: paragraphs (including multi-paragraph and hard-wrapped
-//! bodies), a document title and attribute entries, one level of sections,
-//! unordered lists, delimited listing blocks, sidebars (generic container —
-//! see `asg.zig`'s doc comment for why), and constrained `**strong**` spans.
-//! Not yet exercised by the TCK at all: ordered lists, links, images, tables,
-//! admonitions, cross references, and everything inline besides strong spans
-//! and plain text.
+//! ── What "finished" means here ─────────────────────────────────────────────
+//! The ASG schema enumerates the whole block and inline vocabulary, and the
+//! parser emits every shape in it; `parser.zig`'s doc comment lists the
+//! constructs, and the few AsciiDoc has that the ASG (draft-01) does not model
+//! yet — tables, footnotes, superscript and the like — which the parser reads
+//! anyway and `asg.zig` writes as documented extensions. The `format.zig`
+//! registry row carries the parser, the serializer (`Asciidoc.serializer`)
+//! and the surface-syntax table (`Asciidoc.syntax`) that lets the editor's
+//! authoring gestures work over an AsciiDoc document.
 
 const std = @import("std");
 
@@ -48,12 +40,19 @@ const std = @import("std");
 /// why comparison is structural rather than byte-for-byte.
 pub const asg = @import("asg.zig");
 
-/// Source bytes -> twig's shared `AST`. See its module doc comment for what
-/// this first slice covers (the document header, paragraphs, section
-/// nesting, unordered lists, listing blocks, sidebars, and four constrained
-/// spans — `*strong*`, `_emphasis_`, `` `code` `` and `#mark#`) and for what's
-/// still unimplemented.
+/// Source bytes -> twig's shared `AST`. See its module doc comment for the
+/// constructs covered and the shape each takes in the shared vocabulary.
 pub const parser = @import("parser.zig");
+
+/// Twig's shared `AST` -> AsciiDoc text: `convert -o asciidoc`, and
+/// `-o canonical` for a document that came from AsciiDoc. See its module
+/// doc comment for the spellings and what degrades.
+pub const serializer = @import("serializer.zig");
+
+/// AsciiDoc's surface spelling — the table the editor's authoring gestures
+/// consult and the serializer reads its delimiters from. See `src/syntax.zig`
+/// for the model and this file for what stays null and why.
+pub const syntax = @import("syntax.zig");
 
 /// The vendored TCK corpus runner and its ratchets. See its module doc
 /// comment for the codec round-trip and the parser comparison it now also

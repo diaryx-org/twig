@@ -159,9 +159,11 @@ def doc(*blocks, header=None, attributes=None, at=None):
     return build
 
 
-def header(*title, at=None):
+def header(*title, at=None, authors=None):
     def build(src):
         out = {"title": _seq(title, src)}
+        if authors:
+            out["authors"] = list(authors)
         if at is not None:
             out["location"] = at.resolve(src)
         return out
@@ -169,10 +171,34 @@ def header(*title, at=None):
     return build
 
 
+def meta(at, attributes=None, roles=None, options=None):
+    """A block's `metadata` object. `at` is the attribute line(s)' extent."""
+
+    def build(src):
+        out = {}
+        if attributes:
+            out["attributes"] = dict(attributes)
+        if options:
+            out["options"] = list(options)
+        if roles:
+            out["roles"] = list(roles)
+        out["location"] = at.resolve(src)
+        return out
+
+    return build
+
+
+# The keys whose source precedes a block's content — resolved first, so the
+# forward-only cursor meets a `.Title` line before the body under it.
+_LEADING = ("id", "title", "reftext", "metadata")
+
+
 def _block(name, at, **fields):
     def build(src):
         out = {"name": name, "type": "block"}
-        for key, value in fields.items():
+        ordered = [(k, fields[k]) for k in _LEADING if k in fields]
+        ordered += [(k, v) for k, v in fields.items() if k not in _LEADING]
+        for key, value in ordered:
             # An absent key and an empty one are the SAME ASG (the schema spells
             # the empty value in its `defaults` block), and the TCK's own output
             # files always take the absent spelling — a section with no body has
@@ -182,7 +208,12 @@ def _block(name, at, **fields):
             # rather than being written as an empty stub.
             if value is None or (isinstance(value, (list, tuple)) and not value):
                 continue
-            out[key] = _seq(value, src) if isinstance(value, (list, tuple)) else value
+            if isinstance(value, (list, tuple)):
+                out[key] = _seq(value, src)
+            elif callable(value):
+                out[key] = value(src)
+            else:
+                out[key] = value
         out["location"] = at.resolve(src)
         return out
 
@@ -313,6 +344,51 @@ def span(variant, *inlines, form="constrained", at=None):
     return build_ordered
 
 
+def _inline(name, at, extra, inlines):
+    """An inline parent (a `span`, a `ref`): its location is the spelling
+    `at`, scanned first; its children then scan from inside it."""
+
+    def build(src):
+        start = src.text.find(at, src.cursor)
+        if start < 0:
+            raise ValueError(f"inline spelling {at!r} not found at/after {src.cursor}")
+        end = start + len(at)
+        loc = [src.point(start), src.point(end - 1)]
+        src.cursor = start
+        children = _seq(inlines, src)
+        src.cursor = end
+        out = {"name": name, "type": "inline"}
+        out.update(extra)
+        out["inlines"] = children
+        out["location"] = loc
+        return out
+
+    return build
+
+
+def ref(variant, target, *inlines, at):
+    """A `ref` (link or xref). `at` is its full spelling."""
+    return _inline("ref", at, {"variant": variant, "target": target}, inlines)
+
+
+def charref(value):
+    """A `charref` literal, located by its own spelling (`&amp;`)."""
+
+    def build(src):
+        return {"name": "charref", "type": "string", "value": value, "location": src.scan(value)}
+
+    return build
+
+
+def raw(value, at):
+    """A `raw` literal whose spelling `at` (`+++…+++`) frames `value`."""
+
+    def build(src):
+        return {"name": "raw", "type": "string", "value": value, "location": src.scan(at)}
+
+    return build
+
+
 # ── the cases ───────────────────────────────────────────────────────────────
 
 CASES = []
@@ -330,7 +406,7 @@ define(
     doc=doc, header=header, para=para, leaf=leaf, parent=parent, section=section,
     heading=heading, ulist=ulist, olist=olist, colist=colist, item=item,
     dlist=dlist, ditem=ditem, brk=brk, macro=macro, text=text, span=span,
-    lines=lines,
+    lines=lines, meta=meta, ref=ref, charref=charref, raw=raw,
 )
 
 

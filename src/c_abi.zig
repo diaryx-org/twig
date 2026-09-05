@@ -834,7 +834,7 @@ pub export fn twig_document_query(
 /// computed on demand rather than stored: the same document converted to two
 /// targets has two different answers, and neither belongs to the document.
 ///
-/// A `format` with no serializer at all (XML, AsciiDoc) reports
+/// A `format` with no serializer at all (XML) reports
 /// TWIG_STATUS_UNSUPPORTED_FORMAT rather than warning about every node in turn:
 /// "this target cannot be written" is a capability answer, not a diagnosis.
 ///
@@ -2860,8 +2860,8 @@ pub export fn twig_format_supports(
 /// `invalid_argument` for a null `out_authorable`.
 ///
 /// The open-read-only question, and only that one: 0 for a parse-only format
-/// (XML, AsciiDoc), where every gesture refuses and an editor should not offer
-/// a toolbar at all. A 1 is a WEAKER claim than it looks — HTML answers 1 on
+/// (XML), where every gesture refuses and an editor should not offer a
+/// toolbar at all. A 1 is a WEAKER claim than it looks — HTML answers 1 on
 /// its inline marks while every block gesture over it is still unsupported —
 /// so do not drive per-button state from this. `twig_format_supports` is that
 /// question.
@@ -3981,11 +3981,7 @@ fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: tw
         // XML alone needs the positions: an absent interior span is its
         // self-closing signal (see `languages/xml/serializer.zig`).
         .xml => twig.Xml.serializeAlloc(allocator, doc),
-        // AsciiDoc has no serializer of any kind yet, so a built tree has
-        // nowhere to go. Spelled out rather than folded into an `else =>`: this
-        // dispatch's whole problem, per the doc comment above, is that its
-        // `else` arm hid a disagreement with the registry.
-        .asciidoc => error.UnsupportedFormat,
+        .asciidoc => twig.Asciidoc.serializer.serializeAstSpelledAlloc(allocator, ast, doc.node_spelling),
     };
 }
 
@@ -5370,14 +5366,14 @@ test "twig_format_supports: a kind is read in the gesture's own space, or reject
 
 test "twig_format_is_authorable: the read-only question, and its weakness" {
     var out: c_int = -1;
-    for ([_]TwigFormat{ .djot, .markdown, .html }) |fmt| {
+    for ([_]TwigFormat{ .djot, .markdown, .html, .asciidoc }) |fmt| {
         try std.testing.expectEqual(
             TwigStatus.ok,
             twig_format_is_authorable(@intFromEnum(fmt), &out),
         );
         try std.testing.expectEqual(@as(c_int, 1), out);
     }
-    for ([_]TwigFormat{ .xml, .asciidoc }) |fmt| {
+    for ([_]TwigFormat{.xml}) |fmt| {
         try std.testing.expectEqual(
             TwigStatus.ok,
             twig_format_is_authorable(@intFromEnum(fmt), &out),

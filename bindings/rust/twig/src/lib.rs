@@ -28,15 +28,16 @@ pub enum Format {
     Markdown,
     Xml,
     Html,
-    /// Parsed and rendered, but **not** serialized: `Target::Asciidoc` reports
-    /// [`Error::UnsupportedFormat`], and no [`Editor`] gesture applies to an
-    /// AsciiDoc document.
+    /// Parsed, rendered, serialized (`Target::Asciidoc`) and authored into:
+    /// every block gesture and the inline marks work over an AsciiDoc
+    /// document, while the link, image, footnote and table gestures report
+    /// [`Error::UnsupportedFormat`] — their AsciiDoc spellings have a shape
+    /// the gesture algorithms cannot write (see [`Format::supports`]).
     ///
-    /// The parser also covers a *slice* of AsciiDoc rather than all of it —
-    /// the header, paragraphs, sections, lists, delimited blocks and the inline
-    /// spans. What it does not implement survives as literal source text rather
-    /// than failing the parse, so a successful parse is not by itself a claim
-    /// that the whole document was understood.
+    /// The parser covers the language as the AsciiDoc ASG schema enumerates
+    /// it. The few constructs it leaves unmodelled (`menu:`, `icon:`,
+    /// `include::`, the CSV table forms) survive as literal source text
+    /// rather than failing the parse.
     Asciidoc,
 }
 
@@ -73,11 +74,9 @@ pub enum Target {
     Markdown,
     Xml,
     Html,
-    /// Nameable, and always [`Error::UnsupportedFormat`] at the moment of
-    /// serializing — AsciiDoc has a parser and no serializer. Present for the
-    /// reason [`From<Format> for Target`](#impl-From<Format>-for-Target) is
-    /// total: an input format Twig cannot write back is a *runtime* answer, not
-    /// an unnameable target.
+    /// AsciiDoc source, in Asciidoctor's idiomatic spellings: `= Title`,
+    /// `*strong*` where the boundaries allow and `**strong**` where they do
+    /// not, `[source,lang]` listings, `|===` tables, `footnote:[]` macros.
     Asciidoc,
 }
 
@@ -628,8 +627,9 @@ impl BlockContainerKind {
 /// [`Format::supports`] answers.
 ///
 /// Twig's formats are **ragged**: Djot spells all eight inline marks and
-/// Markdown three, HTML spells marks and nothing block-level, XML and AsciiDoc
-/// spell nothing. Every [`Editor`] method already reports that as
+/// Markdown three, HTML spells marks and nothing block-level, AsciiDoc spells
+/// everything but links, footnotes and tables, XML nothing. Every [`Editor`]
+/// method already reports that as
 /// [`Error::UnsupportedFormat`] — but only once called, which is too late for a
 /// UI that wants to *disable* the button rather than let it fail.
 ///
@@ -764,9 +764,8 @@ impl Format {
     }
 
     /// Whether this format can be authored into **at all** — `false` for a
-    /// parse-only format ([`Format::Xml`], [`Format::Asciidoc`]), where every
-    /// gesture refuses and an editor should offer no toolbar. The
-    /// open-read-only question.
+    /// parse-only format ([`Format::Xml`]), where every gesture refuses and
+    /// an editor should offer no toolbar. The open-read-only question.
     ///
     /// `true` is a **weaker** claim than it looks, and driving per-button state
     /// from it is the mistake this doc exists to prevent: [`Format::Html`]
@@ -1158,8 +1157,8 @@ impl Document {
     /// why this takes one and why nothing is cached on [`Document`] itself.
     ///
     /// [`Error::UnsupportedFormat`] for a target with no serializer at all
-    /// ([`Target::Xml`], [`Target::Asciidoc`]): "this cannot be written" is a
-    /// capability answer, not a per-node diagnosis.
+    /// ([`Target::Xml`]): "this cannot be written" is a capability answer,
+    /// not a per-node diagnosis.
     pub fn diagnostics(&mut self, target: Target) -> Result<Vec<Warning>, Error> {
         let raw = self.raw.as_ptr();
         let code = ffi::TwigFormat::from(target) as c_int;
@@ -3287,20 +3286,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_asciidoc_and_refuses_to_write_it() {
+    fn parses_renders_and_writes_asciidoc() {
         let mut doc = Document::parse_str("= Title\n\nsome *bold* text\n", Format::Asciidoc)
             .expect("parse asciidoc");
         let html = String::from_utf8_lossy(&doc.render_html().expect("render html")).into_owned();
         assert!(html.contains("<h1>Title</h1>"), "got {html:?}");
         assert!(html.contains("<strong>bold</strong>"), "got {html:?}");
 
-        // Nameable as a target, and always a runtime refusal: AsciiDoc has a
-        // parser and no serializer. This is the case `Target`'s totality
-        // exists for — the answer is `UnsupportedFormat`, not "unnameable".
-        assert_eq!(
-            doc.serialize_to(Target::Asciidoc),
-            Err(Error::UnsupportedFormat)
-        );
+        // Round-trip, and a cross-format conversion from Markdown.
+        let back = doc.serialize_to(Target::Asciidoc).expect("serialize asciidoc");
+        assert_eq!(String::from_utf8_lossy(&back), "= Title\n\nsome *bold* text\n");
+        let mut md = Document::parse_str("# Title\n\nsome **bold** text\n", Format::Markdown)
+            .expect("parse markdown");
+        let converted = md.serialize_to(Target::Asciidoc).expect("convert to asciidoc");
+        assert_eq!(String::from_utf8_lossy(&converted), "= Title\n\nsome *bold* text\n");
         assert_eq!(Target::from(Format::Asciidoc), Target::Asciidoc);
         assert_eq!(Target::Asciidoc.as_format(), Some(Format::Asciidoc));
     }
@@ -3715,10 +3714,8 @@ mod tests {
         // per-node diagnosis of every node in the document.
         let mut doc = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
         assert_eq!(doc.diagnostics(Target::Xml), Err(Error::UnsupportedFormat));
-        assert_eq!(
-            doc.diagnostics(Target::Asciidoc),
-            Err(Error::UnsupportedFormat)
-        );
+        // AsciiDoc has a serializer now, so it gets a per-node answer instead.
+        assert!(doc.diagnostics(Target::Asciidoc).is_ok());
     }
 
     #[test]
@@ -5474,12 +5471,19 @@ mod tests {
 
         // A format that spells nothing answers false everywhere, so the coarse
         // predicate agrees there — it only misleads in the middle of the range.
-        for fmt in [Format::Xml, Format::Asciidoc] {
+        for fmt in [Format::Xml] {
             assert!(!fmt.is_authorable());
             for g in all_gestures() {
                 assert!(!fmt.supports(g), "{fmt:?} claims to spell {g:?}");
             }
         }
+        // AsciiDoc is in the middle of the range the other way round from
+        // HTML: the block gestures work, the link/footnote/table shapes don't.
+        assert!(Format::Asciidoc.is_authorable());
+        assert!(Format::Asciidoc.supports(Gesture::SetBlock));
+        assert!(Format::Asciidoc.supports(Gesture::ToggleInline(InlineKind::Mark)));
+        assert!(!Format::Asciidoc.supports(Gesture::InsertLink));
+        assert!(!Format::Asciidoc.supports(Gesture::TableInsertRow));
 
         // And the two authorable formats differ from each other, which is the
         // other half of why one boolean can't serve.

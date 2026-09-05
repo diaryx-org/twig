@@ -67,11 +67,12 @@ extern "C" {
 #define TWIG_FORMAT_MARKDOWN 2
 #define TWIG_FORMAT_XML 3
 #define TWIG_FORMAT_HTML 4
-// Parses and renders, but does not serialize: twig_serialize_document with
-// TWIG_FORMAT_ASCIIDOC reports TWIG_STATUS_UNSUPPORTED_FORMAT, and no editing
-// gesture applies to an AsciiDoc document. The parser also covers a SLICE of
-// the language rather than all of it; what it doesn't implement survives as
-// literal source text. See src/format.zig's `.asciidoc` registry row.
+// Parses, renders, serializes and edits. The link, image, footnote and table
+// gestures report TWIG_STATUS_UNSUPPORTED_FORMAT over an AsciiDoc document
+// (their AsciiDoc spellings have a shape the gesture algorithms cannot write;
+// twig_format_supports says which); every other gesture works. What the parser
+// leaves unmodelled survives as literal source text. See src/format.zig's
+// `.asciidoc` registry row.
 #define TWIG_FORMAT_ASCIIDOC 5
 
 // Markdown extension flags for the `md_flags` bitmask of twig_parse_ext and
@@ -334,7 +335,7 @@ typedef struct TwigWarning {
 // computed on demand rather than stored: the same document converted to two
 // targets has two different answers and neither belongs to the document.
 //
-// A format with no serializer at all (XML, AsciiDoc) reports
+// A format with no serializer at all (XML) reports
 // TWIG_STATUS_UNSUPPORTED_FORMAT rather than warning about every node in turn.
 //
 // An empty result (*out_len == 0, *out_warnings == NULL) means the conversion
@@ -920,8 +921,9 @@ typedef enum TwigBlockContainerKind {
 
 // ── Format capability (the toolbar's gray-out question) ───────────────────────
 // Twig's formats are RAGGED: Djot spells all eight inline marks and Markdown
-// three, HTML spells marks and nothing block-level, XML and AsciiDoc spell
-// nothing. Every gesture below already reports that, as
+// three, HTML spells marks and nothing block-level, AsciiDoc everything but
+// links, footnotes and tables, XML nothing. Every gesture below already
+// reports that, as
 // TWIG_STATUS_UNSUPPORTED_FORMAT — but only once called, which is too late for a
 // UI that wants to DISABLE the button instead of letting it fail. An editor
 // building its toolbar has a format and no document yet.
@@ -1018,8 +1020,8 @@ TwigStatus twig_format_supports(
 // TWIG_STATUS_INVALID_ARGUMENT for a NULL out_authorable.
 //
 // This answers the open-read-only question and only that one: 0 for a parse-only
-// format (XML, AsciiDoc), where every gesture refuses and an editor should offer
-// no toolbar at all.
+// format (XML), where every gesture refuses and an editor should offer no
+// toolbar at all.
 //
 // A 1 is a WEAKER claim than it looks, and driving per-button state from it is
 // the mistake this comment exists to prevent. HTML answers 1 — it spells the
