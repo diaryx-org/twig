@@ -371,17 +371,21 @@ pub const Entry = struct {
     /// spelling does not move with the extensions, so `syntax` is the whole
     /// answer.
     ///
-    /// Markdown's does move: `==x==` is literal text under default options and
-    /// a `mark` under `ParseOptions.highlight`, so whether an editor may WRITE
-    /// it depends on what the editor's own reparse will read back. The
-    /// alternative — one table with `==` authorable — would mint bytes that
-    /// come back as a `str`, and a Cmd-B that cannot be undone by pressing it
-    /// again. See `languages/markdown/syntax.zig`'s `forOptions`, which owns
-    /// the choice; this field only says the row has one to make.
+    /// Markdown's does move, and in BOTH directions from its defaults: `==x==`
+    /// is literal text until `ParseOptions.highlight` is turned on, `~~x~~` is
+    /// a `delete` until `strikethrough` is turned off. Whether an editor may
+    /// WRITE either depends on what the editor's own reparse will read back,
+    /// and the alternative — one table stating a default as though it were a
+    /// property of the format — mints bytes that come back as a `str`, giving
+    /// a Cmd-B that cannot be undone by pressing it again. See
+    /// `languages/markdown/syntax.zig`'s `forOptions`, which owns the choice;
+    /// this field only says the row has one to make.
     ///
     /// `syntax` stays the DEFAULT-config table and is what a serializer reads,
     /// so a row carrying both must agree with itself under a default config —
-    /// pinned by a test below rather than by convention.
+    /// pinned by a test below rather than by convention. That agreement is by
+    /// ADDRESS: Markdown's row points into the same table set `forOptions`
+    /// indexes, so the two cannot become two answers.
     syntaxFor: ?*const fn (*const ParseConfig) *const Syntax = null,
 };
 
@@ -404,7 +408,7 @@ pub const registry = [_]Entry{
         .parseToAst = parseToAstMarkdown,
         .renderHtml = renderHtmlMarkdown,
         .serializeCanonical = serializeCanonicalMarkdown,
-        .syntax = &markdown_syntax.table,
+        .syntax = markdown_syntax.table,
         // The one row whose authorable subset moves with the parse config.
         .syntaxFor = syntaxForMarkdown,
     },
@@ -551,8 +555,10 @@ pub fn syntaxFor(fmt: Format) *const Syntax {
 /// question: converting into Markdown spells `==x==` for a `mark` whatever the
 /// config says, while a toggle that minted the same bytes without
 /// `ParseOptions.highlight` would produce text no reparse turns back into a
-/// mark. The two questions differ only for Markdown today, which is why every
-/// other row leaves `Entry.syntaxFor` null and gets the same answer from both.
+/// mark. The same holds in the other direction for `~~x~~`, which a default
+/// config DOES read back and strict CommonMark does not. The two questions
+/// differ only for Markdown today, which is why every other row leaves
+/// `Entry.syntaxFor` null and gets the same answer from both.
 pub fn syntaxForConfig(fmt: Format, cfg: *const ParseConfig) *const Syntax {
     const e = entryFor(fmt);
     const pick = e.syntaxFor orelse return e.syntax;
@@ -705,6 +711,15 @@ test "a config-varying row agrees with its own default table" {
         const pick = e.syntaxFor orelse continue;
         try std.testing.expectEqual(e.syntax, pick(&default_cfg));
     }
+    // The config moves the answer in both directions from the defaults: strict
+    // CommonMark takes strikethrough AWAY, where `highlight` below adds a mark.
+    var strict: ParseConfig = .{};
+    strict.markdown = .commonmark;
+    const strict_syntax = syntaxForConfig(.markdown, &strict);
+    strict_syntax.assertCoherent();
+    try std.testing.expect(syntaxFor(.markdown).inline_delims.get(.delete).?.authorable);
+    try std.testing.expect(!strict_syntax.inline_delims.get(.delete).?.authorable);
+
     // And the variant tables are tables like any other.
     var hi: ParseConfig = .{};
     hi.markdown.highlight = true;

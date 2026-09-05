@@ -39,6 +39,9 @@ var test_cfg: format.ParseConfig = .{};
 /// very config the splicer reparses with. Two of them, because colours are a
 /// second, narrower gate on top of highlights.
 var highlight_cfg: format.ParseConfig = .{ .markdown = .{ .highlight = true } };
+/// The other direction: strict CommonMark, where `~~x~~` is two literal tildes
+/// and the strikethrough a default-options editor may author is refused.
+var commonmark_cfg: format.ParseConfig = .{ .markdown = .commonmark };
 var highlight_colors_cfg: format.ParseConfig = .{
     .markdown = .{ .highlight = true, .highlight_colors = true },
 };
@@ -308,6 +311,38 @@ test "a range past the source is refused before it can reach the splicer's asser
     try testing.expectError(error.InvalidRange, toggleContainer(&fx, 0, 99, .block_quote));
 }
 
+test "toggleInline: GFM strikethrough is authorable under Twig's defaults" {
+    // `~~x~~` reads back as a `delete` because `ParseOptions.strikethrough`
+    // defaults ON — so unlike `==x==`, the DEFAULT editor is the one that can
+    // write it, and turning the extension off is what takes it away.
+    var md = try Fixture.init("a word b\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(2, 6), .delete);
+    try md.expectSource("a ~~word~~ b\n");
+    try testing.expect(md.find(.{ .mark = .delete }) != null);
+    try md.ed.toggleInline(Span.init(4, 8), .delete);
+    try md.expectSource("a word b\n");
+
+    // Strict CommonMark has no strikethrough, so the same gesture over a
+    // document parsed that way would mint two literal tildes. Refused.
+    var strict = try Fixture.initWith("a word b\n", .markdown, &commonmark_cfg);
+    defer strict.deinit();
+    try testing.expectError(error.UnsupportedFormat, strict.ed.toggleInline(Span.init(2, 6), .delete));
+    try testing.expectError(error.UnsupportedFormat, strict.ed.wrapRange(Span.init(2, 6), .delete));
+    try strict.expectSource("a word b\n");
+
+    // The two axes are independent: a CommonMark parse with highlights on
+    // authors `==x==` and still refuses `~~x~~`.
+    var mixed_cfg: format.ParseConfig = .{
+        .markdown = .{ .strikethrough = false, .highlight = true },
+    };
+    var mixed = try Fixture.initWith("a word b\n", .markdown, &mixed_cfg);
+    defer mixed.deinit();
+    try testing.expectError(error.UnsupportedFormat, mixed.ed.toggleInline(Span.init(2, 6), .delete));
+    try mixed.ed.toggleInline(Span.init(2, 6), .mark);
+    try mixed.expectSource("a ==word== b\n");
+}
+
 // ── highlights and their colours ───────────────────────────────────────────
 //
 // The pair of gestures whose availability is a fact about the PARSE CONFIG
@@ -456,10 +491,24 @@ test "authoring a coloured highlight is the two gestures in order" {
     try testing.expect(fx.find(.{ .mark = .mark }) == null);
 }
 
-test "Editor.supports: the highlight gates move with the parse config" {
+test "Editor.supports: the inline gates move with the parse config, in both directions" {
     const plain = format.syntaxFor(.markdown);
     const hi = format.syntaxForConfig(.markdown, &highlight_cfg);
     const colors = format.syntaxForConfig(.markdown, &highlight_colors_cfg);
+    const strict = format.syntaxForConfig(.markdown, &commonmark_cfg);
+
+    // Strikethrough defaults ON, so the DEFAULT answer is yes and turning the
+    // extension off is what makes it no — the opposite direction from the
+    // highlight below, and the reason this is a table per config rather than a
+    // list of opt-in extras.
+    try testing.expect(Editor.supports(plain, .{ .toggle_inline = .delete }));
+    try testing.expect(Editor.supports(plain, .{ .wrap_range = .delete }));
+    try testing.expect(!Editor.supports(strict, .{ .toggle_inline = .delete }));
+    try testing.expect(!Editor.supports(strict, .{ .wrap_range = .delete }));
+    // And what neither flag touches is untouched.
+    try testing.expect(Editor.supports(strict, .{ .toggle_inline = .strong }));
+    try testing.expect(!Editor.supports(strict, .{ .toggle_inline = .superscript }));
+    try testing.expect(!Editor.supports(plain, .{ .toggle_inline = .superscript }));
 
     try testing.expect(!Editor.supports(plain, .{ .toggle_inline = .mark }));
     try testing.expect(Editor.supports(hi, .{ .toggle_inline = .mark }));

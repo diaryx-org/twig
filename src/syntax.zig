@@ -5,7 +5,7 @@
 //! ── Why this is a table and not a switch ───────────────────────────────────
 //! Twig's formats are RAGGED: every one of them parses and renders, but they
 //! author wildly different subsets — djot spells all eight inline marks,
-//! Markdown only three (`**`/`*`/`` ` ``, plus `==…==` where the parse config
+//! Markdown four (`**`/`*`/`` ` ``/`~~`, and `==…==` where the parse config
 //! reads it back), HTML spells seven as tag pairs and nothing block-level,
 //! AsciiDoc everything but a link, a footnote and a table, XML none at all. A `?Delims` per (format, kind)
 //! makes that raggedness DATA. The alternative — a `switch (format)` per op,
@@ -75,10 +75,11 @@ pub const Delims = struct {
     ///
     /// It is a fact about a TABLE, not about a format: whether a spelling
     /// reparses can depend on the extensions the document is parsed with, and
-    /// `==x==` is exactly that case — literal text under default options, a
-    /// `mark` under `highlight`. A format whose authorable subset moves with
-    /// its parse config carries one table per answer and picks between them in
-    /// `format.zig`'s `syntaxForConfig`; nothing here has to know that
+    /// Markdown's two extension marks are that case in both directions —
+    /// `==x==` is literal text until `highlight` is on, `~~x~~` is a `delete`
+    /// until `strikethrough` is off. A format whose authorable subset moves
+    /// with its parse config carries one table per answer and picks between
+    /// them in `format.zig`'s `syntaxForConfig`; nothing here has to know that
     /// happened.
     authorable: bool = true,
 };

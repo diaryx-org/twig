@@ -898,9 +898,10 @@ TwigStatus twig_editor_query(
 );
 
 // Inline mark kinds for twig_editor_wrap_range / twig_editor_toggle_inline.
-// Markdown spells only STRONG / EMPH / VERBATIM — plus MARK, but only for an
-// editor created with TWIG_MD_HIGHLIGHT, since `==x==` is otherwise text the
-// reparse hands back unchanged. Djot spells all of them.
+// Markdown spells STRONG / EMPH / VERBATIM, plus DELETE — GFM strikethrough is
+// on for every editor this ABI creates — plus MARK for an editor created with
+// TWIG_MD_HIGHLIGHT, since `==x==` is otherwise text the reparse hands back
+// unchanged. Djot spells all of them.
 // (The integer values are the wire contract — do not renumber.)
 typedef enum TwigInlineKind {
     TWIG_INLINE_STRONG = 0,
@@ -1030,7 +1031,9 @@ TwigStatus twig_format_supports(
 // question asked of the table the EDITOR actually holds.
 //
 // A Markdown extension can WIDEN what may be authored, which is why the format
-// code alone is not always the whole answer. `==x==` is literal text under
+// code alone is not always the whole answer. (It can narrow it too — strict
+// CommonMark has no `~~x~~` — but no flag here turns an on-by-default extension
+// off, so every editor this ABI creates authors strikethrough.) `==x==` is literal text under
 // default options and a mark under TWIG_MD_HIGHLIGHT, so a highlight toggle
 // that wrote it without the flag would produce bytes the reparse hands back as
 // plain text — one press that cannot be undone by a second. So

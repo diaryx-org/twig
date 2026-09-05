@@ -2895,10 +2895,12 @@ fn gestureOf(gesture: TwigGesture, kind: c_int) ?twig.Editor.Gesture {
 /// It is NOT a promise the call succeeds — the caret still decides, and
 /// `not_found`/`invalid_argument` remain possible. Gray out on 0.
 ///
-/// Answers for a DEFAULT parse config. Where a Markdown extension widens what
-/// may be authored — `TWIG_MD_HIGHLIGHT` makes `==x==` a mark a toggle can
-/// write and unwrite — ask `twig_format_supports_ext` with the flags the
-/// editor holds.
+/// Answers for a DEFAULT parse config, which is what every editor this ABI
+/// creates has except where `md_flags` says otherwise — so for Markdown this
+/// already reports `TWIG_INLINE_DELETE` as authorable: GFM strikethrough is on
+/// by default and no flag here turns it off. Where a flag WIDENS what may be
+/// authored — `TWIG_MD_HIGHLIGHT` makes `==x==` a mark a toggle can write and
+/// unwrite — ask `twig_format_supports_ext` with the flags the editor holds.
 pub export fn twig_format_supports(
     format: c_int,
     gesture: c_int,
@@ -5411,6 +5413,46 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
         &supported,
     ));
     try std.testing.expectEqual(@as(c_int, 1), supported);
+}
+
+test "twig_editor_toggle_inline: markdown authors GFM strikethrough with no flags at all" {
+    // The other half of `Delims.authorable` moving with the parse config, and
+    // the half a C caller gets for free: `strikethrough` is on in the default
+    // options every editor here is created with, so `~~x~~` is written, read
+    // back as a `delete`, and stripped again.
+    var fx = try EditorFixture.initFmt("a word b\n", .markdown);
+    defer fx.deinit();
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_toggle_inline(fx.ed, 2, 6, @intFromEnum(TwigInlineKind.delete), null),
+    );
+    try fx.expectSource("a ~~word~~ b\n");
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_toggle_inline(fx.ed, 4, 8, @intFromEnum(TwigInlineKind.delete), null),
+    );
+    try fx.expectSource("a word b\n");
+
+    // And the capability query says so without a document, for every flag set,
+    // since no flag turns strikethrough off.
+    var out: c_int = -1;
+    inline for (.{ @as(u32, 0), TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS }) |flags| {
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(
+            @intFromEnum(TwigFormat.markdown),
+            flags,
+            @intFromEnum(TwigGesture.toggle_inline),
+            @intFromEnum(TwigInlineKind.delete),
+            &out,
+        ));
+        try std.testing.expectEqual(@as(c_int, 1), out);
+    }
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        @intFromEnum(TwigFormat.markdown),
+        @intFromEnum(TwigGesture.toggle_inline),
+        @intFromEnum(TwigInlineKind.delete),
+        &out,
+    ));
+    try std.testing.expectEqual(@as(c_int, 1), out);
 }
 
 test "twig_format_supports_ext: the Markdown flags widen what may be authored" {

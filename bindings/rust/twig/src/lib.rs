@@ -553,9 +553,14 @@ pub struct LinePrefix {
 }
 
 /// An inline mark for [`Editor::wrap_range`] / [`Editor::toggle_inline`] — a
-/// rich editor's Bold / Italic / Code / … buttons. Markdown spells only
-/// [`InlineKind::Strong`], [`InlineKind::Emph`], and [`InlineKind::Verbatim`];
-/// Djot spells all of them. An unsupported kind yields [`Error::UnsupportedFormat`].
+/// rich editor's Bold / Italic / Code / … buttons. Djot spells all of them;
+/// Markdown spells [`InlineKind::Strong`], [`InlineKind::Emph`],
+/// [`InlineKind::Verbatim`] and [`InlineKind::Delete`] — GFM strikethrough is
+/// parsed by default, so every editor this crate creates authors it — plus
+/// [`InlineKind::Mark`] once [`MarkdownExtensions::highlight`] is set, since
+/// `==x==` is otherwise text the reparse hands back unchanged. An unsupported
+/// kind yields [`Error::UnsupportedFormat`]; [`Format::supports_with`] is the
+/// question asked ahead of the call.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InlineKind {
     Strong,
@@ -681,8 +686,9 @@ impl MarkColor {
 /// [`Format::supports`] answers.
 ///
 /// Twig's formats are **ragged**: Djot spells all eight inline marks and
-/// Markdown three, HTML spells marks and nothing block-level, AsciiDoc spells
-/// everything but links, footnotes and tables, XML nothing. Every [`Editor`]
+/// Markdown four (a fifth with [`MarkdownExtensions::highlight`]), HTML spells
+/// marks and nothing block-level, AsciiDoc spells everything but links,
+/// footnotes and tables, XML nothing. Every [`Editor`]
 /// method already reports that as
 /// [`Error::UnsupportedFormat`] — but only once called, which is too late for a
 /// UI that wants to *disable* the button rather than let it fail.
@@ -4695,6 +4701,19 @@ mod tests {
         let mut dj = Editor::new_str("a word b\n", Format::Djot).expect("editor");
         dj.wrap_range(2, 6, InlineKind::Mark).expect("djot mark");
         assert_eq!(dj.source_str().unwrap(), "a {=word=} b\n");
+    }
+
+    #[test]
+    fn editor_authors_gfm_strikethrough_out_of_the_box() {
+        // The extension that defaults ON, so the default editor is the one
+        // that can write it — the opposite direction from `highlight` below,
+        // and no flag on this side turns it off.
+        assert!(Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Delete)));
+        let mut ed = Editor::new_str("a word b\n", Format::Markdown).expect("editor");
+        ed.toggle_inline(2, 6, InlineKind::Delete).expect("strike");
+        assert_eq!(ed.source_str().unwrap(), "a ~~word~~ b\n");
+        ed.toggle_inline(4, 8, InlineKind::Delete).expect("unstrike");
+        assert_eq!(ed.source_str().unwrap(), "a word b\n");
     }
 
     #[test]

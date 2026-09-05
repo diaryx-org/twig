@@ -155,7 +155,7 @@ comments in `c_abi.zig`. The tier numbers are only a priority label; they
 don't imply anything beyond "what got built in what order."
 
 **A toolbar needs the answer before the call.** Twig's formats are ragged —
-djot spells all eight inline marks, Markdown three, HTML spells marks and
+djot spells all eight inline marks, Markdown four, HTML spells marks and
 nothing block-level, AsciiDoc everything but links, footnotes and tables, XML
 nothing — and every gesture already
 reports that, as `TWIG_STATUS_UNSUPPORTED_FORMAT`. But that arrives *after* the
@@ -171,16 +171,17 @@ the reason its doc comment gives: HTML answers yes on its inline marks alone.
 
 **What may be authored is not always a fact about the format alone.** A gesture
 may only mint bytes the editor's own reparse reads back the same way, and a
-Markdown extension can move that line: `==x==` is literal text under default
-options and a `mark` under `ParseOptions.highlight`, so a highlight toggle is
-refused in the first case and reversible in the second. Markdown's spelling is
-therefore not one table but one per parse config — `languages/markdown/
-syntax.zig`'s `forOptions`, selected by `format.zig`'s `syntaxForConfig` from
-the very `ParseConfig` the editor reparses with, so the two can never disagree.
-Every other format leaves `Entry.syntaxFor` null and answers the same either
-way. `twig_format_supports_ext(format, md_flags, …)` is the toolbar query for
-that table; `twig_format_supports` is it under default options, and stays the
-right call for a toolbar built before any document exists.
+Markdown extension moves that line in both directions: `==x==` is literal text
+until `ParseOptions.highlight` is turned on, and `~~x~~` is a `delete` until
+`strikethrough` is turned off. Markdown's spelling is therefore not one table
+but one per parse config — `languages/markdown/syntax.zig` derives the set from
+a single literal and `forOptions` indexes it, selected by `format.zig`'s
+`syntaxForConfig` from the very `ParseConfig` the editor reparses with, so the
+two can never disagree. Every other format leaves `Entry.syntaxFor` null and
+answers the same either way. `twig_format_supports_ext(format, md_flags, …)` is
+the toolbar query for that table; `twig_format_supports` is it under default
+options — which, since no `TWIG_MD_*` flag turns an on-by-default extension
+off, is the true answer for every editor the C ABI creates.
 
 A colour on a highlight is a second, narrower gate on top of that one
 (`TWIG_MD_HIGHLIGHT_COLORS`, `twig_editor_set_mark_color`): the circle emoji in
