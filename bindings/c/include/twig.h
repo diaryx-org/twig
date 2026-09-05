@@ -766,6 +766,14 @@ TwigStatus twig_editor_create(
 // these flags after every edit, so a directive-bearing document stays
 // parseable — required before twig_editor_filter can match `directive[...]`
 // selectors.
+//
+// The flags also decide what the AUTHORING gestures may write, because a
+// gesture may only mint bytes this editor's own reparse reads back:
+// TWIG_MD_HIGHLIGHT makes `==x==` a highlight twig_editor_toggle_inline can add
+// and remove, and TWIG_MD_HIGHLIGHT_COLORS makes twig_editor_set_mark_color
+// available on top of it. Without them those calls are
+// TWIG_STATUS_UNSUPPORTED_FORMAT — see twig_format_supports_ext, which answers
+// for the flags rather than for the format alone.
 TwigStatus twig_editor_create_ext(
     const uint8_t *input,
     size_t input_len,
@@ -890,7 +898,9 @@ TwigStatus twig_editor_query(
 );
 
 // Inline mark kinds for twig_editor_wrap_range / twig_editor_toggle_inline.
-// Markdown spells only STRONG / EMPH / VERBATIM; Djot spells all of them.
+// Markdown spells only STRONG / EMPH / VERBATIM — plus MARK, but only for an
+// editor created with TWIG_MD_HIGHLIGHT, since `==x==` is otherwise text the
+// reparse hands back unchanged. Djot spells all of them.
 // (The integer values are the wire contract — do not renumber.)
 typedef enum TwigInlineKind {
     TWIG_INLINE_STRONG = 0,
@@ -980,6 +990,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_TABLE_SET_ALIGNMENT = 21,
     TWIG_GESTURE_TABLE_MOVE_ROW = 22,
     TWIG_GESTURE_TABLE_MOVE_COLUMN = 23,
+    TWIG_GESTURE_SET_MARK_COLOR = 24,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1010,6 +1021,33 @@ typedef enum TwigGesture {
 // for an enabled/disabled button.
 TwigStatus twig_format_supports(
     int format,
+    int gesture,
+    int kind,
+    int *out_supported
+);
+
+// twig_format_supports for a document parsed with `md_flags` — the same
+// question asked of the table the EDITOR actually holds.
+//
+// A Markdown extension can WIDEN what may be authored, which is why the format
+// code alone is not always the whole answer. `==x==` is literal text under
+// default options and a mark under TWIG_MD_HIGHLIGHT, so a highlight toggle
+// that wrote it without the flag would produce bytes the reparse hands back as
+// plain text — one press that cannot be undone by a second. So
+// TWIG_GESTURE_TOGGLE_INLINE with TWIG_INLINE_MARK answers 0 for Markdown here
+// with md_flags 0 and 1 with TWIG_MD_HIGHLIGHT, and TWIG_GESTURE_SET_MARK_COLOR
+// needs TWIG_MD_HIGHLIGHT_COLORS on top of it.
+//
+// Pass the flags the editor was (or will be) created with in
+// twig_editor_create_ext; anything else answers a question about a document you
+// do not have. md_flags is ignored for every non-Markdown format, exactly as it
+// is at creation. Statuses are twig_format_supports's, unchanged.
+//
+// twig_format_supports is this with md_flags == 0, and stays the right call for
+// a toolbar built before any document exists.
+TwigStatus twig_format_supports_ext(
+    int format,
+    uint32_t md_flags,
     int gesture,
     int kind,
     int *out_supported
@@ -1262,6 +1300,51 @@ TwigStatus twig_editor_toggle_inline(
     size_t start,
     size_t end,
     int kind,
+    TwigChange *out_change
+);
+
+// Set — or CLEAR — the colour of the highlight (a `mark` node) the caret at
+// `offset` is inside: the second half of an authorable coloured highlight, and
+// the only gesture that writes a mark's colour rather than its delimiters.
+//
+// Markdown only, and only with TWIG_MD_HIGHLIGHT_COLORS (which implies
+// TWIG_MD_HIGHLIGHT) passed to twig_editor_create_ext — else
+// TWIG_STATUS_UNSUPPORTED_FORMAT. Ask twig_format_supports_ext with
+// TWIG_GESTURE_SET_MARK_COLOR and the same flags. The spelling is Obsidian's: a
+// large-circle emoji right after the opening `==`, which is SPELLING rather than
+// text — it is stripped from the highlight's content and reported as the mark's
+// `data-color` attribute.
+//
+// `color` is an optional string in this ABI's (ptr, len, has_*) spelling.
+// has_color == 0 clears the colour and leaves an ordinary highlight; otherwise
+// color[0..color_len] is one of `red`, `orange`, `yellow`, `green`, `blue`,
+// `purple`, `brown` — the values of that attribute. Any other name is
+// TWIG_STATUS_INVALID_ARGUMENT rather than a prefix written blind: an emoji the
+// parser does not read as a colour is content, and writing one would edit the
+// author's text.
+//
+// Setting a colour on an uncoloured highlight inserts the prefix, setting one on
+// a coloured highlight replaces it, and clearing removes it — with the space
+// after the emoji, which is part of the spelling. An existing prefix KEEPS its
+// own spacing (`==🔴text==` recolours tight), because that is what the author
+// wrote and what the serializer puts back.
+//
+// TWIG_STATUS_NOT_EDITABLE when the caret is not inside a highlight, or when the
+// bytes behind the opening `==` are not a colour prefix this build spells.
+// Clearing a colour a highlight does not have is a no-op that returns
+// TWIG_STATUS_OK — out_change then reports the most recent PRIOR edit, or is left
+// untouched when there is none, so OK here is not proof the source moved.
+//
+// To author a coloured highlight from nothing, it is two calls:
+// twig_editor_toggle_inline with TWIG_INLINE_MARK over the range, then this at an
+// offset inside the new mark — `start + 2` for a range wrapped at `start`, the
+// `==` being two bytes.
+TwigStatus twig_editor_set_mark_color(
+    TwigEditor *editor,
+    size_t offset,
+    const uint8_t *color,
+    size_t color_len,
+    int has_color,
     TwigChange *out_change
 );
 

@@ -5,9 +5,9 @@
 //! ── Why this is a table and not a switch ───────────────────────────────────
 //! Twig's formats are RAGGED: every one of them parses and renders, but they
 //! author wildly different subsets — djot spells all eight inline marks,
-//! Markdown only three (`**`/`*`/`` ` ``), HTML spells seven as tag pairs and
-//! nothing block-level, AsciiDoc everything but a link, a footnote and a
-//! table, XML none at all. A `?Delims` per (format, kind)
+//! Markdown only three (`**`/`*`/`` ` ``, plus `==…==` where the parse config
+//! reads it back), HTML spells seven as tag pairs and nothing block-level,
+//! AsciiDoc everything but a link, a footnote and a table, XML none at all. A `?Delims` per (format, kind)
 //! makes that raggedness DATA. The alternative — a `switch (format)` per op,
 //! with an `else => unsupported_format` arm — is what the C ABI grew instead,
 //! and it put the spelling of djot's `{=mark=}` behind an `extern` boundary
@@ -72,7 +72,81 @@ pub const Delims = struct {
     /// `error.UnsupportedFormat`. Before this flag the two answers lived in two
     /// places — a `null` here and a hand-written arm in the serializer — and
     /// nothing kept them honest.
+    ///
+    /// It is a fact about a TABLE, not about a format: whether a spelling
+    /// reparses can depend on the extensions the document is parsed with, and
+    /// `==x==` is exactly that case — literal text under default options, a
+    /// `mark` under `highlight`. A format whose authorable subset moves with
+    /// its parse config carries one table per answer and picks between them in
+    /// `format.zig`'s `syntaxForConfig`; nothing here has to know that
+    /// happened.
     authorable: bool = true,
+};
+
+/// How a format spells a COLOUR on an inline `mark` — the prefix that sits
+/// between the mark's opening delimiter and its content, naming the colour the
+/// node carries as an attribute.
+///
+/// Markdown's coloured highlights are the motivating spelling: `==🔴 text==`
+/// is a `mark` whose content is `text` and whose `data-color` is `red`, with
+/// the emoji stripped as SPELLING (see `languages/markdown/highlight.zig`,
+/// which owns the vocabulary; this table is only how an editor writes it).
+///
+/// `null` = this format has no colour spelling for a mark, so
+/// `Editor.setMarkColor` over it is `error.UnsupportedFormat`. That is every
+/// format but Markdown-with-coloured-highlights today, and it is the honest
+/// answer for two different reasons: djot and HTML spell a colour as an
+/// ordinary attribute rather than a prefix (`{=x=}{.red}`, `<mark
+/// class="red">`), which is a different gesture, and Markdown itself spells
+/// none unless the parse config asks for one — the emoji is literal content
+/// without `highlight_colors`, so an editor that wrote it would silently
+/// change the text rather than colour it.
+pub const MarkColors = struct {
+    /// The attribute the colour rides in on the node — `data-color`. What
+    /// `Editor` reads to know a mark's current colour, and what a caller names
+    /// a colour by is the `Color.name` below, never this.
+    attr_key: []const u8,
+    /// Every colour this format spells, in the order a picker should offer
+    /// them. A name outside this list is `error.InvalidColor` rather than a
+    /// prefix written blind: an unknown emoji is content, and writing one
+    /// would edit the highlighted text.
+    colors: []const Color,
+    /// Written between the prefix and the content. The parser absorbs at most
+    /// one, and a tight `==🔴text==` means the same thing, so this is what a
+    /// gesture WRITES rather than what it requires — an existing prefix keeps
+    /// whatever spacing its author gave it.
+    space: []const u8 = " ",
+
+    /// One colour: the attribute value, and the bytes that spell it.
+    pub const Color = struct {
+        /// The value stored in `attr_key` — `red`. The name a caller passes.
+        name: []const u8,
+        /// The source bytes written after the opening delimiter — `🔴`.
+        prefix: []const u8,
+    };
+
+    /// The bytes that spell `name`, or `null` when this format has no colour
+    /// by that name.
+    pub fn prefixFor(self: *const MarkColors, name: []const u8) ?[]const u8 {
+        for (self.colors) |c| {
+            if (std.mem.eql(u8, c.name, name)) return c.prefix;
+        }
+        return null;
+    }
+
+    /// The colour whose prefix opens `s`, if any — the read half, used to
+    /// recognize a prefix already in the source. Matches the LONGEST prefix,
+    /// so a vocabulary where one spelling extends another still reads back the
+    /// spelling that was written.
+    pub fn prefixAt(self: *const MarkColors, s: []const u8) ?Color {
+        var found: ?Color = null;
+        for (self.colors) |c| {
+            if (c.prefix.len == 0) continue;
+            if (!std.mem.startsWith(u8, s, c.prefix)) continue;
+            if (found == null or c.prefix.len > found.?.prefix.len) found = c;
+        }
+        return found;
+    }
 };
 
 /// How a format spells a container's per-line prefix.
@@ -273,6 +347,11 @@ pub const Syntax = struct {
     /// Delimiters per delimited text leaf — a `` `code` `` span, `$math$`, a
     /// `:shortcode:`. Same contract as `inline_delims`, for the other family.
     text_leaf_delims: std.EnumArray(AST.TextLeafKind, ?Delims) = .initFill(null),
+
+    /// How a colour is spelled on an inline `mark`. `null` = this format has
+    /// no colour spelling, so `Editor.setMarkColor` is unsupported. See
+    /// `MarkColors`.
+    mark_colors: ?MarkColors = null,
 
     /// Per-line prefixes per container kind.
     container_spelling: std.EnumArray(ContainerKind, ?ContainerSpelling) = .initFill(null),
@@ -485,6 +564,33 @@ pub const Syntax = struct {
             // Ticking a box overwrites it in place, so the two spellings must
             // be the same width or the item's text would shift.
             std.debug.assert(tm.checked.len == tm.unchecked.len);
+        }
+        // A colour prefix is written INSIDE a mark, so a format that spells one
+        // must spell the mark itself — and must be able to author it, since a
+        // table where the colour gesture worked and the highlight gesture did
+        // not would offer a palette for a construct its own editor cannot
+        // make. (Markdown's two tables are exactly this pair moving together:
+        // `highlight` makes the mark authorable, `highlight_colors` adds the
+        // palette on top.)
+        if (self.mark_colors) |mc| {
+            std.debug.assert(mc.attr_key.len > 0);
+            std.debug.assert(mc.colors.len > 0);
+            std.debug.assert(mc.space.len > 0);
+            const d = self.inline_delims.get(.mark);
+            std.debug.assert(d != null and d.?.authorable);
+            for (mc.colors, 0..) |c, i| {
+                std.debug.assert(c.name.len > 0);
+                std.debug.assert(c.prefix.len > 0);
+                // A prefix that began with the space would make the written
+                // form and the tight form indistinguishable on the way back in.
+                std.debug.assert(!std.mem.startsWith(u8, c.prefix, mc.space));
+                // Two colours spelled or named the same way would make
+                // `prefixAt`/`prefixFor` depend on table order.
+                for (mc.colors[i + 1 ..]) |o| {
+                    std.debug.assert(!std.mem.eql(u8, c.prefix, o.prefix));
+                    std.debug.assert(!std.mem.eql(u8, c.name, o.name));
+                }
+            }
         }
         // The reference half of a footnote is spelled TWICE — here, for the
         // gesture, and in `text_leaf_delims` for the serializer. Neither is

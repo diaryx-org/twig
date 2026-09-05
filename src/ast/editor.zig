@@ -108,6 +108,10 @@ pub const Editor = struct {
         /// line end, the fence byte itself, or (where the format ends its info
         /// string at whitespace) a space.
         InvalidLanguage,
+        /// A colour name outside `Syntax.MarkColors.colors` — a colour this
+        /// format has no spelling for, which is not one an editor may write:
+        /// the bytes would be content, not a colour.
+        InvalidColor,
         /// A footnote label this format cannot hold: empty, or carrying a line
         /// end or a reference bracket.
         InvalidLabel,
@@ -215,6 +219,7 @@ pub const Editor = struct {
     pub const Gesture = union(enum) {
         wrap_range: InlineKind,
         toggle_inline: InlineKind,
+        set_mark_color,
         set_block,
         toggle_block_container: ContainerKind,
         insert_thematic_break,
@@ -274,6 +279,14 @@ pub const Editor = struct {
             // conversion. That asymmetry is `Delims.authorable`'s reason to
             // exist, so the query has to ask the same way the gesture does.
             .wrap_range, .toggle_inline => |k| syntax.authorableDelimsFor(kindRef(k)) != null,
+            // A separate gate from `.toggle_inline = .mark`, and a strictly
+            // narrower one: Markdown authors a highlight under
+            // `ParseOptions.highlight` and can only COLOUR one under
+            // `highlight_colors` on top, so a toolbar grays the palette while
+            // the highlight button stays live. `assertCoherent` pins the
+            // implication (a palette implies an authorable mark), not the
+            // converse.
+            .set_mark_color => syntax.mark_colors != null,
             .set_block => syntax.heading_marker != null,
             .toggle_block_container => |k| syntax.container_spelling.get(k) != null,
             .insert_thematic_break => syntax.thematic_break != null,
@@ -344,6 +357,110 @@ pub const Editor = struct {
             error.NoNodeSpan, error.NoContentSpan => return error.NotEditable,
             else => return error.EditConflict,
         };
+    }
+
+    /// Set — or clear — the COLOUR of the `mark` the caret at `offset` is in:
+    /// the second half of an authorable highlight, and the only gesture that
+    /// writes a mark's colour rather than its delimiters.
+    ///
+    /// `color` is a name from `Syntax.MarkColors.colors` (`"red"`), or `null`
+    /// to leave the highlight uncoloured. Setting one on a mark that has none
+    /// inserts the prefix, setting one on a mark that has another REPLACES it,
+    /// and clearing removes it — so the gesture is total over the palette plus
+    /// "no colour", the way a colour picker asks it.
+    ///
+    /// ── Why this is not part of `toggleInline` ─────────────────────────────
+    /// A colour is a property of a mark that already exists, and every gesture
+    /// here is one splice: giving the toggle a colour parameter would make
+    /// "highlight this" and "recolour that" the same call with two different
+    /// answers to "what if there is no mark?". Authoring a coloured highlight
+    /// from scratch is the two gestures in order — `toggleInline(.mark)`, then
+    /// this at any offset inside the new mark, which is `start + open.len` for
+    /// a range wrapped at `start`.
+    ///
+    /// ── What "the prefix" is ───────────────────────────────────────────────
+    /// The bytes between the mark's opening delimiter and its content span,
+    /// read from the SOURCE rather than from the node's attributes. That keeps
+    /// the edit honest about what it is overwriting: a mark whose interior
+    /// starts right after its opener has no prefix to replace, one whose
+    /// interior starts later has exactly those bytes, and anything there that
+    /// the palette does not spell is `error.NotEditable` rather than a splice
+    /// that eats a character of the author's text.
+    ///
+    /// An existing prefix keeps its own SPACING — `==🔴text==` recolours tight,
+    /// `==🔴 text==` recolours spaced — because that is spelling the author
+    /// chose and the parser preserves. A prefix being written for the first
+    /// time gets `MarkColors.space`.
+    ///
+    /// `error.UnsupportedFormat` where the format (or the parse config behind
+    /// this editor — see `format.zig`'s `syntaxForConfig`) spells no colour,
+    /// `error.InvalidColor` for a name outside the palette, `error.NotEditable`
+    /// when the caret is not inside a mark. Clearing a colour a mark does not
+    /// have is a no-op that reports success.
+    pub fn setMarkColor(self: *Editor, offset: usize, color: ?[]const u8) Error!void {
+        const mc = self.syntax.mark_colors orelse return error.UnsupportedFormat;
+        // The mark's own delimiters, which the prefix sits behind. Pinned
+        // non-null beside `mark_colors` by `Syntax.assertCoherent`.
+        const d = self.syntax.delimsFor(.{ .mark = .mark }).?;
+        const new_prefix: ?[]const u8 = if (color) |name|
+            (mc.prefixFor(name) orelse return error.InvalidColor)
+        else
+            null;
+
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const doc = &self.splicer.doc;
+        const allocator = self.splicer.allocator;
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.caretChain(allocator, doc, offset, &chain);
+
+        // The innermost `mark`, so a highlight nested in emphasis (or in
+        // another mark) recolours the one the caret is actually in.
+        var found: ?AST.Node.Id = null;
+        var i = chain.items.len;
+        while (i > 0) {
+            i -= 1;
+            const kind = doc.ast.nodes[chain.items[i]].kind;
+            if (kind == .inline_mark and kind.inline_mark == .mark) {
+                found = chain.items[i];
+                break;
+            }
+        }
+        const id = found orelse return error.NotEditable;
+
+        const node_span = doc.span(id);
+        const cs = doc.contentSpan(id) orelse return error.NotEditable;
+        const prefix_start = node_span.start + d.open.len;
+        if (prefix_start > cs.start or cs.start > src.len) return error.NotEditable;
+
+        // What is there now, and whether this editor recognizes it. A prefix it
+        // cannot read is text as far as it knows, and text is not ours to
+        // overwrite.
+        const existing = src[prefix_start..cs.start];
+        var spaced = false;
+        if (existing.len > 0) {
+            const c = mc.prefixAt(existing) orelse return error.NotEditable;
+            const rest = existing[c.prefix.len..];
+            if (std.mem.eql(u8, rest, mc.space)) {
+                spaced = true;
+            } else if (rest.len != 0) return error.NotEditable;
+        }
+
+        const prefix = new_prefix orelse
+            // Clearing: the prefix goes, and the space it absorbed goes with it
+            // — it was part of the spelling, not of the text.
+            return if (existing.len == 0) {} else self.commitSplice(prefix_start, cs.start, "");
+
+        // A first colour is written spaced; a replacement keeps the spacing the
+        // source already had.
+        const write_space = if (existing.len == 0) true else spaced;
+        const buf = try allocator.alloc(u8, prefix.len + if (write_space) mc.space.len else 0);
+        defer allocator.free(buf);
+        @memcpy(buf[0..prefix.len], prefix);
+        if (write_space) @memcpy(buf[prefix.len..], mc.space);
+        return self.commitSplice(prefix_start, cs.start, buf);
     }
 
     // ── Block kind ─────────────────────────────────────────────────────────

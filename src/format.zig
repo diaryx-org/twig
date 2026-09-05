@@ -63,6 +63,10 @@ const Splicer = @import("ast/splicer.zig").Splicer;
 const syntax_mod = @import("syntax.zig");
 const Syntax = syntax_mod.Syntax;
 
+/// Markdown's spelling tables — plural, because Markdown's authorable subset
+/// depends on its parse config. See `Entry.syntaxFor`.
+const markdown_syntax = @import("languages/markdown/syntax.zig");
+
 const djot_serializer = Djot.serializer;
 const markdown_serializer = Markdown.serializer;
 const asciidoc_serializer = Asciidoc.serializer;
@@ -362,6 +366,23 @@ pub const Entry = struct {
     /// it reports unsupported by finding the same `null` in the same table any
     /// other unspellable kind would. See `syntax.zig`.
     syntax: *const Syntax = &syntax_mod.none,
+    /// This format's surface spelling for a PARSE CONFIG, where the two are not
+    /// the same question. `null` — every row but Markdown's — means the
+    /// spelling does not move with the extensions, so `syntax` is the whole
+    /// answer.
+    ///
+    /// Markdown's does move: `==x==` is literal text under default options and
+    /// a `mark` under `ParseOptions.highlight`, so whether an editor may WRITE
+    /// it depends on what the editor's own reparse will read back. The
+    /// alternative — one table with `==` authorable — would mint bytes that
+    /// come back as a `str`, and a Cmd-B that cannot be undone by pressing it
+    /// again. See `languages/markdown/syntax.zig`'s `forOptions`, which owns
+    /// the choice; this field only says the row has one to make.
+    ///
+    /// `syntax` stays the DEFAULT-config table and is what a serializer reads,
+    /// so a row carrying both must agree with itself under a default config —
+    /// pinned by a test below rather than by convention.
+    syntaxFor: ?*const fn (*const ParseConfig) *const Syntax = null,
 };
 
 pub const registry = [_]Entry{
@@ -383,7 +404,9 @@ pub const registry = [_]Entry{
         .parseToAst = parseToAstMarkdown,
         .renderHtml = renderHtmlMarkdown,
         .serializeCanonical = serializeCanonicalMarkdown,
-        .syntax = &@import("languages/markdown/syntax.zig").table,
+        .syntax = &markdown_syntax.table,
+        // The one row whose authorable subset moves with the parse config.
+        .syntaxFor = syntaxForMarkdown,
     },
     .{
         .id = .xml,
@@ -508,10 +531,32 @@ pub fn targetEntryFor(t: Target) *const TargetEntry {
     unreachable;
 }
 
+/// The `Entry.syntaxFor` for Markdown: the parse config decides whether
+/// `==x==` reads back as a `mark`, and so whether an editor may write one.
+fn syntaxForMarkdown(cfg: *const ParseConfig) *const Syntax {
+    return markdown_syntax.forOptions(cfg.markdown);
+}
+
 /// `fmt`'s surface spelling — `Syntax.none` for a parse-only language, never
 /// `null`. Ask `.authorable()` if you need to know which.
 pub fn syntaxFor(fmt: Format) *const Syntax {
     return entryFor(fmt).syntax;
+}
+
+/// `fmt`'s surface spelling for a document parsed with `cfg` — what an EDITOR
+/// must consult, because a gesture may only write bytes the reparse behind it
+/// reads back the same way.
+///
+/// `syntaxFor` above is this under a default config, and stays the serializer's
+/// question: converting into Markdown spells `==x==` for a `mark` whatever the
+/// config says, while a toggle that minted the same bytes without
+/// `ParseOptions.highlight` would produce text no reparse turns back into a
+/// mark. The two questions differ only for Markdown today, which is why every
+/// other row leaves `Entry.syntaxFor` null and gets the same answer from both.
+pub fn syntaxForConfig(fmt: Format, cfg: *const ParseConfig) *const Syntax {
+    const e = entryFor(fmt);
+    const pick = e.syntaxFor orelse return e.syntax;
+    return pick(cfg);
 }
 
 /// The entry for whichever language produced `doc`. `ParsedDoc` is
@@ -649,6 +694,36 @@ test "the write half is keyed on the target, not on what parsed it" {
     try std.testing.expectEqual(Target.djot, parseTargetName("dj").?);
     try std.testing.expectEqual(Target.markdown, parseTargetName("markdown").?);
     try std.testing.expect(parseTargetName("nope") == null);
+}
+
+test "a config-varying row agrees with its own default table" {
+    // `Entry.syntax` and `Entry.syntaxFor` are two spellings of one fact, so
+    // the pair has to meet under a default config or the serializer and the
+    // editor would be reading different tables for the same document.
+    const default_cfg: ParseConfig = .{};
+    for (&registry) |*e| {
+        const pick = e.syntaxFor orelse continue;
+        try std.testing.expectEqual(e.syntax, pick(&default_cfg));
+    }
+    // And the variant tables are tables like any other.
+    var hi: ParseConfig = .{};
+    hi.markdown.highlight = true;
+    const hi_syntax = syntaxForConfig(.markdown, &hi);
+    hi_syntax.assertCoherent();
+    try std.testing.expect(hi_syntax != syntaxFor(.markdown));
+    try std.testing.expect(hi_syntax.inline_delims.get(.mark).?.authorable);
+    try std.testing.expect(hi_syntax.mark_colors == null);
+
+    var colors = hi;
+    colors.markdown.highlight_colors = true;
+    const color_syntax = syntaxForConfig(.markdown, &colors);
+    color_syntax.assertCoherent();
+    try std.testing.expect(color_syntax.mark_colors != null);
+
+    // A row with no `syntaxFor` answers the same either way — the raggedness
+    // stated as a `null`, exactly like every other optional in these tables.
+    try std.testing.expectEqual(syntaxFor(.djot), syntaxForConfig(.djot, &colors));
+    try std.testing.expectEqual(syntaxFor(.xml), syntaxForConfig(.xml, &colors));
 }
 
 test "every syntax table in the registry is coherent" {

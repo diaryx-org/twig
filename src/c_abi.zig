@@ -1670,6 +1670,7 @@ fn statusOfEditorError(err: twig.Editor.Error) TwigStatus {
         error.InvalidDestination,
         error.InvalidLanguage,
         error.InvalidLabel,
+        error.InvalidColor,
         => .invalid_argument,
         error.UnsupportedFormat => .unsupported_format,
         error.NoBlock => .not_found,
@@ -1740,14 +1741,17 @@ pub export fn twig_editor_create_ext(
         .editor = undefined,
         .parse_config = .{ .markdown = markdownOptionsFromFlags(md_flags) },
     };
-    // `parseToAst` and `syntax` come from the same registry row, so the parser
-    // and the spelling can never be crossed.
+    // `parseToAst` and the spelling come from the same registry row, so the
+    // parser and the spelling can never be crossed — and the spelling is taken
+    // for THIS parse config, so a gesture may write exactly what the editor's
+    // own reparse reads back. `md_flags` carrying `TWIG_MD_HIGHLIGHT` is what
+    // makes `==x==` authorable here; see `twig.format.syntaxForConfig`.
     handle.editor = twig.Editor.init(
         allocator,
         source,
         &handle.parse_config,
         entry.parseToAst,
-        entry.syntax,
+        twig.format.syntaxForConfig(target, &handle.parse_config),
     ) catch |err| {
         allocator.destroy(handle);
         return switch (err) {
@@ -2639,6 +2643,54 @@ pub export fn twig_editor_toggle_inline(
     return .ok;
 }
 
+/// Set — or clear — the COLOUR of the `mark` the caret at `offset` is in. See
+/// `twig.Editor.setMarkColor`.
+///
+/// `color_ptr`/`color_len` name a colour (`"red"`) when `has_color` is
+/// non-zero, and are ignored when it is 0 — which CLEARS the colour, leaving an
+/// ordinary highlight. The names are the values of the mark's `data-color`
+/// attribute: `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`.
+///
+/// `unsupported_format` where the format and its parse flags spell no colour —
+/// Markdown needs `TWIG_MD_HIGHLIGHT_COLORS` (and the `TWIG_MD_HIGHLIGHT` it
+/// implies) at `twig_editor_create_ext`; ask `twig_format_supports_ext` with
+/// `TWIG_GESTURE_SET_MARK_COLOR`. `invalid_argument` for a colour name the
+/// format does not spell, `not_editable` when the caret is not inside a
+/// highlight. Clearing a colour a highlight does not have is a no-op that
+/// returns `ok`; `out_change` then reports the most recent prior edit (or is
+/// left untouched when there is none), so a `ok` here is not proof the source
+/// moved.
+///
+/// To author a coloured highlight from nothing: `twig_editor_toggle_inline`
+/// with `TWIG_INLINE_MARK` over the range, then this at an offset inside the
+/// new mark — `start + 2` for a range wrapped at `start`, the `==` being two
+/// bytes.
+pub export fn twig_editor_set_mark_color(
+    ed: ?*TwigEditor,
+    offset: usize,
+    color_ptr: ?[*]const u8,
+    color_len: usize,
+    has_color: c_int,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const color: ?[]const u8 = if (has_color != 0)
+        (sliceOf(color_ptr, color_len) orelse return .invalid_argument)
+    else
+        null;
+
+    handle.editor.setMarkColor(offset, color) catch |err|
+        return statusOfEditorError(err);
+    // Clearing a colour that was never there edits nothing, so there may be no
+    // change to report at all — the same shape `twig_editor_renumber_ordered_lists`
+    // has, and the reason this does not unwrap.
+    if (out_change) |slot| {
+        if (handle.editor.lastChange()) |c| slot.* = changeC(c);
+    }
+    return .ok;
+}
+
 /// Convert the block at `offset` to `block_kind` (a `level`-N heading, or a
 /// paragraph) — the block half of the toolbar (H1 / Body).
 ///
@@ -2772,6 +2824,7 @@ const TwigGesture = enum(c_int) {
     table_set_alignment = 21,
     table_move_row = 22,
     table_move_column = 23,
+    set_mark_color = 24,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2801,6 +2854,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         21 => .table_set_alignment,
         22 => .table_move_row,
         23 => .table_move_column,
+        24 => .set_mark_color,
         else => null,
     };
 }
@@ -2840,6 +2894,11 @@ fn gestureOf(gesture: TwigGesture, kind: c_int) ?twig.Editor.Gesture {
 /// A 1 means the gesture will not fail with `TWIG_STATUS_UNSUPPORTED_FORMAT`.
 /// It is NOT a promise the call succeeds — the caret still decides, and
 /// `not_found`/`invalid_argument` remain possible. Gray out on 0.
+///
+/// Answers for a DEFAULT parse config. Where a Markdown extension widens what
+/// may be authored — `TWIG_MD_HIGHLIGHT` makes `==x==` a mark a toggle can
+/// write and unwrite — ask `twig_format_supports_ext` with the flags the
+/// editor holds.
 pub export fn twig_format_supports(
     format: c_int,
     gesture: c_int,
@@ -2852,6 +2911,36 @@ pub export fn twig_format_supports(
     const decoded = gestureOf(g, kind) orelse return .invalid_argument;
 
     slot.* = @intFromBool(twig.Editor.supports(twig.format.syntaxFor(fmt), decoded));
+    return .ok;
+}
+
+/// `twig_format_supports` for a format parsed with `md_flags` — the same
+/// question asked of the table the EDITOR will actually hold.
+///
+/// A Markdown extension can widen what an editor may write: `==x==` is literal
+/// text under default options and a `mark` under `TWIG_MD_HIGHLIGHT`, so
+/// `TWIG_GESTURE_TOGGLE_INLINE` with `TWIG_INLINE_MARK` answers 0 there and 1
+/// here, and `TWIG_GESTURE_SET_MARK_COLOR` needs `TWIG_MD_HIGHLIGHT_COLORS` on
+/// top. Pass the flags the editor was (or will be) created with — anything
+/// else answers a question about a document you do not have. `md_flags` is
+/// ignored for every non-Markdown format, exactly as it is at creation.
+///
+/// `twig_format_supports` is this with `md_flags == 0`, and stays the right
+/// call for a toolbar built before any document exists.
+pub export fn twig_format_supports_ext(
+    format: c_int,
+    md_flags: u32,
+    gesture: c_int,
+    kind: c_int,
+    out_supported: ?*c_int,
+) TwigStatus {
+    const slot = out_supported orelse return .invalid_argument;
+    const fmt = intToFormat(format) orelse return .unsupported_format;
+    const g = gestureFromInt(gesture) orelse return .invalid_argument;
+    const decoded = gestureOf(g, kind) orelse return .invalid_argument;
+
+    const cfg: twig.format.ParseConfig = .{ .markdown = markdownOptionsFromFlags(md_flags) };
+    slot.* = @intFromBool(twig.Editor.supports(twig.format.syntaxForConfig(fmt, &cfg), decoded));
     return .ok;
 }
 
@@ -4748,6 +4837,18 @@ const EditorFixture = struct {
         return .{ .ed = ed.? };
     }
 
+    /// `initFmt` with Markdown extension flags — the only way to get an editor
+    /// whose gestures may write extension syntax, since the flags decide both
+    /// what the reparse reads and what the spelling table allows.
+    fn initFlags(source: [:0]const u8, format: TwigFormat, md_flags: u32) !EditorFixture {
+        var ed: ?*TwigEditor = null;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_editor_create_ext(source.ptr, source.len, @intFromEnum(format), md_flags, &ed),
+        );
+        return .{ .ed = ed.? };
+    }
+
     fn deinit(self: *EditorFixture) void {
         twig_editor_destroy(self.ed);
     }
@@ -5310,6 +5411,154 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
         &supported,
     ));
     try std.testing.expectEqual(@as(c_int, 1), supported);
+}
+
+test "twig_format_supports_ext: the Markdown flags widen what may be authored" {
+    var out: c_int = -1;
+    const md = @intFromEnum(TwigFormat.markdown);
+    const toggle = @intFromEnum(TwigGesture.toggle_inline);
+    const mark = @intFromEnum(TwigInlineKind.mark);
+    const color = @intFromEnum(TwigGesture.set_mark_color);
+
+    // The pair of gates, flag by flag: a highlight needs HIGHLIGHT, a colour
+    // needs COLORS on top, and COLORS alone is inert exactly as it is in the
+    // parser.
+    inline for (.{
+        .{ @as(u32, 0), @as(c_int, 0), @as(c_int, 0) },
+        .{ TWIG_MD_HIGHLIGHT, @as(c_int, 1), @as(c_int, 0) },
+        .{ TWIG_MD_HIGHLIGHT_COLORS, @as(c_int, 0), @as(c_int, 0) },
+        .{ TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS, @as(c_int, 1), @as(c_int, 1) },
+    }) |case| {
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_format_supports_ext(md, case[0], toggle, mark, &out),
+        );
+        try std.testing.expectEqual(case[1], out);
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_format_supports_ext(md, case[0], color, 0, &out),
+        );
+        try std.testing.expectEqual(case[2], out);
+
+        // And the editor created with those very flags agrees — the claim the
+        // query exists to make.
+        const src = "a ==b== c\n";
+        var ed: ?*TwigEditor = null;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_editor_create_ext(src.ptr, src.len, md, case[0], &ed),
+        );
+        defer twig_editor_destroy(ed);
+        const c_name = "red";
+        const got = twig_editor_set_mark_color(ed, 5, c_name.ptr, c_name.len, 1, null);
+        try std.testing.expectEqual(case[2] == 1, got != .unsupported_format);
+    }
+
+    // A flag bitmask is ignored for a format that has no Markdown extensions,
+    // exactly as it is at creation.
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(
+        @intFromEnum(TwigFormat.djot),
+        TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS,
+        toggle,
+        mark,
+        &out,
+    ));
+    try std.testing.expectEqual(@as(c_int, 1), out);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(
+        @intFromEnum(TwigFormat.djot),
+        TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS,
+        color,
+        0,
+        &out,
+    ));
+    try std.testing.expectEqual(@as(c_int, 0), out);
+
+    // Flags aside, it decodes like its older sibling.
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_format_supports_ext(9999, 0, toggle, mark, &out),
+    );
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_format_supports_ext(md, 0, color, mark, &out),
+    );
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_format_supports_ext(md, 0, toggle, mark, null),
+    );
+}
+
+test "twig_editor_set_mark_color: colours, recolours and clears a highlight" {
+    const flags = TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS;
+    var fx = try EditorFixture.initFlags("a ==word== b\n", .markdown, flags);
+    defer fx.deinit();
+
+    const red = "red";
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_set_mark_color(fx.ed, 6, red.ptr, red.len, 1, &change),
+    );
+    try fx.expectSource("a ==\u{1F534} word== b\n");
+
+    const blue = "blue";
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_set_mark_color(fx.ed, 9, blue.ptr, blue.len, 1, null),
+    );
+    try fx.expectSource("a ==\u{1F535} word== b\n");
+
+    // has_color == 0 clears, and the pointer is ignored.
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_set_mark_color(fx.ed, 9, null, 0, 0, null),
+    );
+    try fx.expectSource("a ==word== b\n");
+
+    // A colour this build does not spell, and a caret outside any highlight.
+    const pink = "pink";
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_editor_set_mark_color(fx.ed, 5, pink.ptr, pink.len, 1, null),
+    );
+    try std.testing.expectEqual(
+        TwigStatus.not_editable,
+        twig_editor_set_mark_color(fx.ed, 0, red.ptr, red.len, 1, null),
+    );
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_editor_set_mark_color(null, 0, red.ptr, red.len, 1, null),
+    );
+    try fx.expectSource("a ==word== b\n");
+}
+
+test "twig_editor: a coloured highlight is two gestures over a flagged editor" {
+    const flags = TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS;
+    var fx = try EditorFixture.initFlags("a word b\n", .markdown, flags);
+    defer fx.deinit();
+
+    // The composition the header documents: wrap, then colour at `start + 2`.
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_toggle_inline(fx.ed, 2, 6, @intFromEnum(TwigInlineKind.mark), null),
+    );
+    try fx.expectSource("a ==word== b\n");
+    const green = "green";
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_set_mark_color(fx.ed, 4, green.ptr, green.len, 1, null),
+    );
+    try fx.expectSource("a ==\u{1F7E2} word== b\n");
+
+    // The same editor without the flags refuses the first step, so the second
+    // never arises — the property `twig_format_supports_ext` reports up front.
+    var plain = try EditorFixture.initFlags("a word b\n", .markdown, 0);
+    defer plain.deinit();
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_editor_toggle_inline(plain.ed, 2, 6, @intFromEnum(TwigInlineKind.mark), null),
+    );
+    try plain.expectSource("a word b\n");
 }
 
 test "twig_format_supports: a kind is read in the gesture's own space, or rejected" {

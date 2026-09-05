@@ -626,6 +626,18 @@ unsafe extern "C" {
         kind: c_int,
         out_supported: *mut c_int,
     ) -> TwigStatus;
+    /// `twig_format_supports` for a document parsed with `md_flags` — the
+    /// question asked of the table the editor actually holds. A Markdown
+    /// extension can widen what may be authored: `==x==` is text under default
+    /// options and a `mark` under `TWIG_MD_HIGHLIGHT`, and
+    /// `TWIG_GESTURE_SET_MARK_COLOR` needs `TWIG_MD_HIGHLIGHT_COLORS` on top.
+    pub fn twig_format_supports_ext(
+        format: c_int,
+        md_flags: u32,
+        gesture: c_int,
+        kind: c_int,
+        out_supported: *mut c_int,
+    ) -> TwigStatus;
     /// Whether `format` can be authored into at all — 0 for a parse-only
     /// format. A weaker claim than it looks; see `twig_format_supports`.
     pub fn twig_format_is_authorable(format: c_int, out_authorable: *mut c_int) -> TwigStatus;
@@ -696,6 +708,17 @@ unsafe extern "C" {
         language: *const u8,
         language_len: usize,
         has_language: c_int,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    /// Set — or clear, with `has_color == 0` — the colour of the highlight the
+    /// caret at `offset` is inside. Markdown with `TWIG_MD_HIGHLIGHT_COLORS`
+    /// only; the name is a `data-color` value (`red`, `blue`, …).
+    pub fn twig_editor_set_mark_color(
+        editor: *mut TwigEditor,
+        offset: usize,
+        color: *const u8,
+        color_len: usize,
+        has_color: c_int,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
     pub fn twig_editor_toggle_task_item(

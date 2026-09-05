@@ -5,10 +5,19 @@
 //! eight. That gap is the whole reason `Syntax.inline_delims` is a table of
 //! optionals — `Editor.toggleInline(.mark)` has to be a clean
 //! `error.UnsupportedFormat` here while it works one file over.
+//!
+//! And it is the reason this file holds MORE than one table. `==x==` is
+//! literal text under default options and a `mark` under
+//! `ParseOptions.highlight`, so what an editor may author here depends on how
+//! the document is being read; `forOptions` at the foot of the file is that
+//! choice, and `format.zig`'s `syntaxForConfig` makes it from the parse config
+//! the editor reparses with.
 
 const std = @import("std");
 const syntax = @import("../../syntax.zig");
 const markdown = @import("markdown.zig");
+const highlight = @import("highlight.zig");
+const Options = @import("options.zig");
 
 /// Defers to the parser's own autolink scanner: Markdown wants an absolute URI
 /// or a CommonMark email and silently reads anything else as RAW HTML, so a
@@ -28,7 +37,9 @@ pub const table: syntax.Syntax = .{
         .emph = .{ .open = "*", .close = "*" },
         // `==mark==`: parsed back only with the `highlight` extension on
         // (`ParseOptions.highlight`, off by default), so, like `delete` below,
-        // not something a toggle may assume.
+        // not something a toggle may assume HERE. With the extension on it is
+        // authorable and this table is not the one an editor gets — see
+        // `forOptions` at the foot of the file.
         .mark = .{ .open = "==", .close = "==", .authorable = false },
         .superscript = .{ .open = "^", .close = "^", .authorable = false },
         .subscript = .{ .open = "~", .close = "~", .authorable = false },
@@ -133,6 +144,63 @@ pub const table: syntax.Syntax = .{
     .cell_line_break = "<br>",
 };
 
+// ── One table per parse config ─────────────────────────────────────────────
+//
+// Markdown is the only format whose AUTHORABLE subset moves with how the
+// document is being read. `==x==` is literal text under default options and a
+// `mark` under `ParseOptions.highlight`, so "may a toggle write it?" has two
+// answers and neither is wrong. The tables below are those answers, one apiece,
+// and `format.zig`'s `syntaxForConfig` picks between them from the very
+// `ParseConfig` the editor reparses with — so the spelling an editor may write
+// and the spelling its own reparse reads back cannot disagree.
+//
+// `table` stays the default-options answer and the one the SERIALIZER reads:
+// converting a djot `mark` down to Markdown spells `==x==` whatever the parse
+// config said, because the alternative is dropping the node. That asymmetry is
+// `Delims.authorable`'s whole reason to exist, and it is why these are extra
+// tables rather than an edit to that one.
+
+/// Every colour `highlight.zig` knows, as an editor's palette: the attribute
+/// value beside the bytes that spell it. Derived from that enum rather than
+/// re-listed, so a colour added there is offered here without a second edit.
+const color_spellings = blk: {
+    const values = std.enums.values(highlight.Color);
+    var out: [values.len]syntax.MarkColors.Color = undefined;
+    for (values, 0..) |c, i| out[i] = .{ .name = c.name(), .prefix = c.emoji() };
+    const frozen = out;
+    break :blk frozen;
+};
+
+/// `table` with an authorable `==mark==` — the table for a document parsed
+/// with `ParseOptions.highlight`, where the bytes a highlight toggle writes are
+/// read back as the `mark` they were meant to be.
+pub const table_highlight: syntax.Syntax = blk: {
+    var t = table;
+    var d = t.inline_delims.get(.mark).?;
+    d.authorable = true;
+    t.inline_delims.set(.mark, d);
+    break :blk t;
+};
+
+/// `table_highlight` plus the colour palette — the table for a document parsed
+/// with `ParseOptions.highlight_colors`, where a circle emoji after the opening
+/// `==` is that highlight's colour rather than the first character of its text.
+pub const table_highlight_colors: syntax.Syntax = blk: {
+    var t = table_highlight;
+    t.mark_colors = .{ .attr_key = highlight.attr_key, .colors = &color_spellings };
+    break :blk t;
+};
+
+/// The table an editor over a document parsed with `opts` should consult.
+///
+/// `highlight_colors` without `highlight` is inert here exactly as it is in the
+/// parser: there is no highlight to colour, so the palette would offer a
+/// gesture whose bytes stayed literal text.
+pub fn forOptions(opts: Options) *const syntax.Syntax {
+    if (!opts.highlight) return &table;
+    return if (opts.highlight_colors) &table_highlight_colors else &table_highlight;
+}
+
 test "markdown SPELLS every mark but AUTHORS only three" {
     // The distinction `Delims.authorable` exists for. The serializer needs a
     // spelling for every mark so a djot document converts without losing
@@ -154,6 +222,49 @@ test "markdown SPELLS every mark but AUTHORS only three" {
 
     table.assertCoherent();
     try std.testing.expect(table.authorable());
+}
+
+test "the highlight tables make ==mark== authorable, and only it" {
+    const AST = @import("../../ast/ast.zig");
+    // The one difference from `table`, checked mark by mark so a future edit
+    // to the derivation cannot quietly promote a second spelling.
+    for (std.enums.values(AST.InlineMark)) |m| {
+        const base = table.inline_delims.get(m).?;
+        const hi = table_highlight.inline_delims.get(m).?;
+        try std.testing.expectEqualStrings(base.open, hi.open);
+        try std.testing.expectEqualStrings(base.close, hi.close);
+        try std.testing.expectEqual(if (m == .mark) true else base.authorable, hi.authorable);
+    }
+    try std.testing.expect(table.mark_colors == null);
+    try std.testing.expect(table_highlight.mark_colors == null);
+    table_highlight.assertCoherent();
+    table_highlight_colors.assertCoherent();
+}
+
+test "the colour table offers every circle highlight.zig knows" {
+    const mc = table_highlight_colors.mark_colors.?;
+    try std.testing.expectEqualStrings(highlight.attr_key, mc.attr_key);
+    try std.testing.expectEqual(std.enums.values(highlight.Color).len, mc.colors.len);
+    for (std.enums.values(highlight.Color)) |c| {
+        try std.testing.expectEqualStrings(c.emoji(), mc.prefixFor(c.name()).?);
+        try std.testing.expectEqualStrings(c.name(), mc.prefixAt(c.emoji()).?.name);
+    }
+    // A colour the parser would not read back is not one the editor may write.
+    try std.testing.expect(mc.prefixFor("pink") == null);
+    try std.testing.expect(mc.prefixAt("x") == null);
+}
+
+test "forOptions: the parse config picks the table, and colours need highlight" {
+    try std.testing.expectEqual(&table, forOptions(.{}));
+    try std.testing.expectEqual(&table_highlight, forOptions(.{ .highlight = true }));
+    try std.testing.expectEqual(
+        &table_highlight_colors,
+        forOptions(.{ .highlight = true, .highlight_colors = true }),
+    );
+    // Inert without `highlight`, as in the parser: nothing to colour.
+    try std.testing.expectEqual(&table, forOptions(.{ .highlight_colors = true }));
+    try std.testing.expectEqual(&table, forOptions(Options.commonmark));
+    try std.testing.expectEqual(&table, forOptions(Options.gfm));
 }
 
 test "markdown pads its delimiter row and grows the dash run for alignment" {

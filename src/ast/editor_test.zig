@@ -33,6 +33,16 @@ const Editor = editor.Editor;
 /// never vary it, so one file-scope value serves them all.
 var test_cfg: format.ParseConfig = .{};
 
+/// The one parse config these tests do vary, and the reason it has to exist:
+/// Markdown's `==x==` is authorable only where the reparse behind the editor
+/// reads it back as a `mark`, so a highlight test needs the extension ON in the
+/// very config the splicer reparses with. Two of them, because colours are a
+/// second, narrower gate on top of highlights.
+var highlight_cfg: format.ParseConfig = .{ .markdown = .{ .highlight = true } };
+var highlight_colors_cfg: format.ParseConfig = .{
+    .markdown = .{ .highlight = true, .highlight_colors = true },
+};
+
 const KindTag = std.meta.Tag(AST.Node.Kind);
 
 const Fixture = struct {
@@ -46,6 +56,21 @@ const Fixture = struct {
             &test_cfg,
             entry.parseToAst,
             entry.syntax,
+        ) };
+    }
+
+    /// `init` for a document parsed with something other than the defaults.
+    /// The spelling comes from `syntaxForConfig` rather than the row's default
+    /// table — the same pairing `twig_editor_create_ext` makes, so what these
+    /// tests exercise is what a C caller gets.
+    fn initWith(source: []const u8, fmt: format.Format, cfg: *format.ParseConfig) !Fixture {
+        const entry = format.entryFor(fmt);
+        return .{ .ed = try Editor.init(
+            testing.allocator,
+            source,
+            cfg,
+            entry.parseToAst,
+            format.syntaxForConfig(fmt, cfg),
         ) };
     }
 
@@ -281,6 +306,177 @@ test "a range past the source is refused before it can reach the splicer's asser
     try testing.expectError(error.InvalidRange, fx.ed.toggleInline(Span.init(0, 99), .strong));
     try testing.expectError(error.InvalidRange, fx.ed.wrapRange(Span.init(2, 1), .strong));
     try testing.expectError(error.InvalidRange, toggleContainer(&fx, 0, 99, .block_quote));
+}
+
+// ── highlights and their colours ───────────────────────────────────────────
+//
+// The pair of gestures whose availability is a fact about the PARSE CONFIG
+// rather than about the format: `==x==` is literal text under default options
+// (so a toggle that wrote it could not unwrite it) and a `mark` under
+// `ParseOptions.highlight`, and the colour prefix is content until
+// `highlight_colors` says otherwise. Every fixture here therefore goes through
+// `initWith`, and the assertions are on the reparsed KIND — the only thing that
+// proves the bytes came back as what they were meant to be.
+
+/// The `data-color` of the first `mark` in the reparsed tree, or null.
+fn markColor(fx: *Fixture) ?[]const u8 {
+    const id = fx.find(.{ .mark = .mark }) orelse return null;
+    return fx.ed.astView().attrsOf(id).get("data-color");
+}
+
+test "toggleInline: a highlight is authorable exactly where the reparse reads it back" {
+    // Default options: `==x==` is emit-only, and the toggle refuses rather than
+    // minting bytes that come back as a `str`.
+    var off = try Fixture.init("a word b\n", .markdown);
+    defer off.deinit();
+    try testing.expectError(error.UnsupportedFormat, off.ed.toggleInline(Span.init(2, 6), .mark));
+    try off.expectSource("a word b\n");
+
+    // Same format, same gesture, `highlight` on: written, reparsed as a mark,
+    // and reversible — which is the whole of what `authorable` claims.
+    var on = try Fixture.initWith("a word b\n", .markdown, &highlight_cfg);
+    defer on.deinit();
+    try on.ed.toggleInline(Span.init(2, 6), .mark);
+    try on.expectSource("a ==word== b\n");
+    try testing.expect(on.find(.{ .mark = .mark }) != null);
+    try on.ed.toggleInline(Span.init(4, 8), .mark);
+    try on.expectSource("a word b\n");
+}
+
+test "setMarkColor: colours a highlight, recolours it, and clears it" {
+    var fx = try Fixture.initWith("a ==word== b\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    try testing.expect(markColor(&fx) == null);
+
+    // A first colour is written spaced, and lands INSIDE the delimiters.
+    try fx.ed.setMarkColor(6, "red");
+    try fx.expectSource("a ==\u{1F534} word== b\n");
+    try testing.expectEqualStrings("red", markColor(&fx).?);
+
+    // Recolouring replaces the prefix rather than stacking a second one.
+    try fx.ed.setMarkColor(9, "blue");
+    try fx.expectSource("a ==\u{1F535} word== b\n");
+    try testing.expectEqualStrings("blue", markColor(&fx).?);
+
+    // Clearing takes the space the prefix absorbed with it: it was spelling.
+    try fx.ed.setMarkColor(9, null);
+    try fx.expectSource("a ==word== b\n");
+    try testing.expect(fx.find(.{ .mark = .mark }) != null);
+    try testing.expect(markColor(&fx) == null);
+}
+
+test "setMarkColor: a tight prefix stays tight, because that spacing is the author's" {
+    var fx = try Fixture.initWith("==\u{1F534}word==\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    try testing.expectEqualStrings("red", markColor(&fx).?);
+    try fx.ed.setMarkColor(7, "green");
+    try fx.expectSource("==\u{1F7E2}word==\n");
+    try testing.expectEqualStrings("green", markColor(&fx).?);
+
+    // And clearing a tight one leaves the text alone.
+    try fx.ed.setMarkColor(7, null);
+    try fx.expectSource("==word==\n");
+}
+
+test "setMarkColor: clearing a colourless highlight is a no-op that succeeds" {
+    var fx = try Fixture.initWith("==word==\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    try fx.ed.setMarkColor(3, null);
+    try fx.expectSource("==word==\n");
+    // Nothing was spliced, so there is no change to report.
+    try testing.expect(fx.ed.lastChange() == null);
+}
+
+test "setMarkColor: the caret picks the INNERMOST highlight" {
+    var fx = try Fixture.initWith("*a ==b== c*\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    // Inside the emphasis but outside the mark: nothing to colour.
+    try testing.expectError(error.NotEditable, fx.ed.setMarkColor(2, "red"));
+    try fx.ed.setMarkColor(6, "red");
+    try fx.expectSource("*a ==\u{1F534} b== c*\n");
+    try testing.expectEqualStrings("red", markColor(&fx).?);
+}
+
+test "setMarkColor: a colour the format cannot spell is refused, not written" {
+    var fx = try Fixture.initWith("==word==\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    // Obsidian's palette is the circle emoji, and `pink` is not one of them —
+    // writing something for it would edit the highlighted TEXT.
+    try testing.expectError(error.InvalidColor, fx.ed.setMarkColor(3, "pink"));
+    try fx.expectSource("==word==\n");
+    try testing.expectError(error.InvalidColor, fx.ed.setMarkColor(3, ""));
+    try fx.expectSource("==word==\n");
+}
+
+test "setMarkColor: unsupported where the config spells no colour, or the format doesn't" {
+    // `highlight` alone: the mark is authorable, the colour is not — the emoji
+    // would be the first character of the highlighted text.
+    var hi = try Fixture.initWith("==word==\n", .markdown, &highlight_cfg);
+    defer hi.deinit();
+    try testing.expectError(error.UnsupportedFormat, hi.ed.setMarkColor(3, "red"));
+    try hi.expectSource("==word==\n");
+
+    // Djot authors a mark but spells its colour as an attribute, not a prefix.
+    var dj = try Fixture.init("{=word=}\n", .djot);
+    defer dj.deinit();
+    try testing.expectError(error.UnsupportedFormat, dj.ed.setMarkColor(3, "red"));
+
+    // And clearing is refused the same way: an unsupported format is not a
+    // format where the answer happens to be "no colour".
+    try testing.expectError(error.UnsupportedFormat, dj.ed.setMarkColor(3, null));
+}
+
+test "setMarkColor: a caret outside any highlight edits nothing" {
+    var fx = try Fixture.initWith("a ==b== c\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.setMarkColor(0, "red"));
+    try testing.expectError(error.NotEditable, fx.ed.setMarkColor(9, "red"));
+    try fx.expectSource("a ==b== c\n");
+    // Past the end is a range error, as everywhere else.
+    try testing.expectError(error.InvalidRange, fx.ed.setMarkColor(99, "red"));
+}
+
+test "authoring a coloured highlight is the two gestures in order" {
+    // The composition the API promises instead of a colour parameter on
+    // `toggleInline`: wrap, then colour at an offset inside the new mark —
+    // `start + 2`, the `==` being two bytes.
+    var fx = try Fixture.initWith("a word b\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    try fx.ed.toggleInline(Span.init(2, 6), .mark);
+    try fx.expectSource("a ==word== b\n");
+    try fx.ed.setMarkColor(4, "purple");
+    try fx.expectSource("a ==\u{1F7E3} word== b\n");
+    try testing.expectEqualStrings("purple", markColor(&fx).?);
+
+    // And un-highlighting takes the colour with it: the emoji was never text.
+    // The interior now starts after the prefix — `a ` + `==` + the four-byte
+    // emoji + its space — which is where the reparse reports the content.
+    try fx.ed.toggleInline(Span.init(9, 13), .mark);
+    try fx.expectSource("a word b\n");
+    try testing.expect(fx.find(.{ .mark = .mark }) == null);
+}
+
+test "Editor.supports: the highlight gates move with the parse config" {
+    const plain = format.syntaxFor(.markdown);
+    const hi = format.syntaxForConfig(.markdown, &highlight_cfg);
+    const colors = format.syntaxForConfig(.markdown, &highlight_colors_cfg);
+
+    try testing.expect(!Editor.supports(plain, .{ .toggle_inline = .mark }));
+    try testing.expect(Editor.supports(hi, .{ .toggle_inline = .mark }));
+    try testing.expect(Editor.supports(colors, .{ .toggle_inline = .mark }));
+
+    // The palette is the narrower gate: a toolbar grays it while the highlight
+    // button beside it stays live.
+    try testing.expect(!Editor.supports(plain, .set_mark_color));
+    try testing.expect(!Editor.supports(hi, .set_mark_color));
+    try testing.expect(Editor.supports(colors, .set_mark_color));
+
+    // No other format spells a colour prefix, including the one that spells
+    // every mark.
+    try testing.expect(!Editor.supports(format.syntaxFor(.djot), .set_mark_color));
+    try testing.expect(!Editor.supports(format.syntaxFor(.html), .set_mark_color));
+    try testing.expect(!Editor.supports(format.syntaxFor(.asciidoc), .set_mark_color));
+    try testing.expect(!Editor.supports(format.syntaxFor(.xml), .set_mark_color));
 }
 
 // ── block kind ─────────────────────────────────────────────────────────────
@@ -2303,6 +2499,7 @@ const all_gestures = blk: {
         list = list ++ &[_]Editor.Gesture{.{ .toggle_block_container = k }};
     }
     break :blk list ++ &[_]Editor.Gesture{
+        .set_mark_color,
         .set_block,
         .insert_thematic_break,
         .toggle_code_block,
@@ -2348,6 +2545,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
     return switch (g) {
         .wrap_range => |k| ed.wrapRange(whole, k),
         .toggle_inline => |k| ed.toggleInline(whole, k),
+        .set_mark_color => ed.setMarkColor(0, "red"),
         .set_block => ed.setBlock(0, .heading, 1),
         .toggle_block_container => |k| ed.toggleBlockContainer(whole, k),
         .insert_thematic_break => ed.insertThematicBreak(0),

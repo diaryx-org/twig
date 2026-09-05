@@ -623,6 +623,60 @@ impl BlockContainerKind {
     }
 }
 
+/// The colour of a highlight — the palette [`Editor::set_mark_color`] writes.
+///
+/// Obsidian's spelling, which is what Twig reads and writes: a large-circle
+/// emoji immediately after the opening `==`, so `==🔴 text==` is a highlight
+/// whose text is `text` and whose colour is [`MarkColor::Red`]. The emoji is
+/// **spelling**, not content — it is stripped from the highlighted text and
+/// carried as the mark's `data-color` attribute, which is where a
+/// [`Document::query`] for `mark[data-color=red]` finds it.
+///
+/// An enum rather than a string because the palette is closed: a name Twig has
+/// no emoji for is not a colour it can write, and an emoji it does not read
+/// back is text. The C ABI takes the name — [`MarkColor::as_str`] is it, and is
+/// exactly the attribute value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Brown,
+}
+
+impl MarkColor {
+    /// The `data-color` value — `"red"` — and what the C ABI is handed.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MarkColor::Red => "red",
+            MarkColor::Orange => "orange",
+            MarkColor::Yellow => "yellow",
+            MarkColor::Green => "green",
+            MarkColor::Blue => "blue",
+            MarkColor::Purple => "purple",
+            MarkColor::Brown => "brown",
+        }
+    }
+
+    /// The colour a `data-color` attribute names, or `None` for a value this
+    /// build has no spelling for.
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "red" => MarkColor::Red,
+            "orange" => MarkColor::Orange,
+            "yellow" => MarkColor::Yellow,
+            "green" => MarkColor::Green,
+            "blue" => MarkColor::Blue,
+            "purple" => MarkColor::Purple,
+            "brown" => MarkColor::Brown,
+            _ => return None,
+        })
+    }
+}
+
 /// One authoring gesture, named with whatever kind it takes — the question
 /// [`Format::supports`] answers.
 ///
@@ -688,6 +742,14 @@ pub enum Gesture {
     TableSetAlignment,
     TableMoveRow,
     TableMoveColumn,
+    /// Colour the highlight the caret is in — [`Editor::set_mark_color`].
+    ///
+    /// The one gesture whose support is a fact about the **parse extensions**
+    /// rather than about the format: it needs
+    /// [`MarkdownExtensions::highlight_colors`], so ask
+    /// [`Format::supports_with`] rather than [`Format::supports`], which
+    /// answers for default options and so always answers `false` here.
+    SetMarkColor,
 }
 
 impl Gesture {
@@ -721,6 +783,7 @@ impl Gesture {
             Gesture::TableSetAlignment => (21, 0),
             Gesture::TableMoveRow => (22, 0),
             Gesture::TableMoveColumn => (23, 0),
+            Gesture::SetMarkColor => (24, 0),
         }
     }
 }
@@ -759,6 +822,48 @@ impl Format {
         debug_assert!(
             Error::from_status(status).is_ok(),
             "twig_format_supports rejected a combination the Rust types make unrepresentable",
+        );
+        supported == 1
+    }
+
+    /// [`Format::supports`] for a document parsed with `extensions` — the same
+    /// question asked of the table an [`Editor`] created with them actually
+    /// holds.
+    ///
+    /// A Markdown extension can **widen** what may be authored, which is why
+    /// the format alone is not always the whole answer. `==x==` is literal text
+    /// under default options and a `mark` under
+    /// [`MarkdownExtensions::highlight`], so a toggle that wrote it without the
+    /// extension would mint bytes the reparse hands back as plain text — one
+    /// press that a second press cannot undo. [`Gesture::SetMarkColor`] needs
+    /// [`MarkdownExtensions::highlight_colors`] on top of that.
+    ///
+    /// ```no_run
+    /// # use twig::{Format, Gesture, InlineKind, MarkdownExtensions};
+    /// let exts = MarkdownExtensions { highlight: true, ..Default::default() };
+    /// assert!(!Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Mark)));
+    /// assert!(Format::Markdown.supports_with(exts, Gesture::ToggleInline(InlineKind::Mark)));
+    /// ```
+    ///
+    /// Pass the extensions the editor was (or will be) created with in
+    /// [`Editor::new_ext`]; anything else answers a question about a
+    /// document you do not have. `extensions` is ignored for every
+    /// non-Markdown format, exactly as it is at creation.
+    pub fn supports_with(self, extensions: MarkdownExtensions, gesture: Gesture) -> bool {
+        let (g, k) = gesture.to_c();
+        let mut supported: c_int = 0;
+        let status = unsafe {
+            ffi::twig_format_supports_ext(
+                ffi::TwigFormat::from(self) as c_int,
+                extensions.to_flags(),
+                g,
+                k,
+                &mut supported,
+            )
+        };
+        debug_assert!(
+            Error::from_status(status).is_ok(),
+            "twig_format_supports_ext rejected a combination the Rust types make unrepresentable",
         );
         supported == 1
     }
@@ -1405,6 +1510,15 @@ impl Editor {
     /// other formats). The editor reparses with these after every edit, so a
     /// directive-bearing document stays parseable — needed before
     /// [`Editor::filter`] can match `directive[...]` selectors.
+    ///
+    /// They also decide what the authoring gestures may **write**, since a
+    /// gesture may only mint bytes this editor's own reparse reads back:
+    /// [`MarkdownExtensions::highlight`] makes `==x==` a highlight
+    /// [`Editor::toggle_inline`] can add and remove, and
+    /// [`MarkdownExtensions::highlight_colors`] makes
+    /// [`Editor::set_mark_color`] available on top of it. Without them those
+    /// calls are [`Error::UnsupportedFormat`] — see [`Format::supports_with`],
+    /// which answers for the extensions rather than for the format alone.
     pub fn new_ext(
         input: &[u8],
         format: Format,
@@ -1855,6 +1969,55 @@ impl Editor {
     ) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_toggle_inline(ed, start, end, kind.to_c(), out)
+        })
+    }
+
+    /// Set — or clear, with `None` — the colour of the highlight (a `mark`) the
+    /// caret at `offset` is inside.
+    ///
+    /// Markdown only, and only for an editor created with
+    /// [`MarkdownExtensions::highlight_colors`] (which needs
+    /// [`MarkdownExtensions::highlight`] with it) — else
+    /// [`Error::UnsupportedFormat`]. Ask [`Format::supports_with`] with
+    /// [`Gesture::SetMarkColor`] and the same extensions.
+    ///
+    /// Setting a colour on an uncoloured highlight inserts the prefix, setting
+    /// one on a coloured highlight replaces it, and `None` removes it — with
+    /// the space after the emoji, which is part of the spelling. An existing
+    /// prefix keeps its own spacing: `==🔴text==` recolours tight, because that
+    /// is what its author wrote.
+    ///
+    /// [`Error::NotEditable`] when the caret is not inside a highlight.
+    /// Clearing a colour a highlight does not have is a no-op that succeeds,
+    /// and the [`Change`] it returns then describes the most recent **prior**
+    /// edit (or an empty one), so it is not proof the source moved.
+    ///
+    /// Authoring a coloured highlight from nothing is two gestures — a colour
+    /// is a property of a highlight that already exists:
+    ///
+    /// ```no_run
+    /// # use twig::{Editor, Format, MarkColor, MarkdownExtensions};
+    /// # fn main() -> Result<(), twig::Error> {
+    /// let exts = MarkdownExtensions {
+    ///     highlight: true,
+    ///     highlight_colors: true,
+    ///     ..Default::default()
+    /// };
+    /// let mut ed = Editor::new_ext(b"a word b\n", Format::Markdown, exts)?;
+    /// ed.toggle_inline(2, 6, twig::InlineKind::Mark)?; // a ==word== b
+    /// ed.set_mark_color(4, Some(MarkColor::Red))?;     // a ==🔴 word== b
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_mark_color(
+        &mut self,
+        offset: usize,
+        color: Option<MarkColor>,
+    ) -> Result<Change, Error> {
+        let name = color.map(MarkColor::as_str);
+        let (ptr, len, has) = opt_str(name);
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_set_mark_color(ed, offset, ptr, len, has, out)
         })
     }
 
@@ -4535,6 +4698,81 @@ mod tests {
     }
 
     #[test]
+    fn editor_highlight_is_authorable_with_the_extension_on() {
+        let exts = MarkdownExtensions {
+            highlight: true,
+            ..Default::default()
+        };
+        // The same format and the same gesture, answered two ways: `==x==` is
+        // text under default options and a mark under `highlight`, so the
+        // toggle refuses in one and reverses in the other.
+        assert!(!Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Mark)));
+        assert!(Format::Markdown.supports_with(exts, Gesture::ToggleInline(InlineKind::Mark)));
+
+        let mut ed =
+            Editor::new_ext(b"a word b\n", Format::Markdown, exts).expect("editor");
+        ed.toggle_inline(2, 6, InlineKind::Mark).expect("highlight");
+        assert_eq!(ed.source_str().unwrap(), "a ==word== b\n");
+        ed.toggle_inline(4, 8, InlineKind::Mark).expect("unhighlight");
+        assert_eq!(ed.source_str().unwrap(), "a word b\n");
+    }
+
+    #[test]
+    fn editor_set_mark_color_writes_reads_and_clears_the_colour() {
+        let exts = MarkdownExtensions {
+            highlight: true,
+            highlight_colors: true,
+            ..Default::default()
+        };
+        assert!(Format::Markdown.supports_with(exts, Gesture::SetMarkColor));
+        // The narrower gate: highlights alone do not buy a palette.
+        let hi_only = MarkdownExtensions {
+            highlight: true,
+            ..Default::default()
+        };
+        assert!(!Format::Markdown.supports_with(hi_only, Gesture::SetMarkColor));
+        assert!(!Format::Markdown.supports(Gesture::SetMarkColor));
+        assert!(!Format::Djot.supports_with(exts, Gesture::SetMarkColor));
+
+        let mut ed =
+            Editor::new_ext("a ==word== b\n".as_bytes(), Format::Markdown, exts).expect("editor");
+        ed.set_mark_color(6, Some(MarkColor::Red)).expect("colour");
+        assert_eq!(ed.source_str().unwrap(), "a ==\u{1F534} word== b\n");
+
+        // And it is queryable as the attribute it is, not as text.
+        let mut doc =
+            Document::parse_with(ed.source_str().unwrap().as_bytes(), Format::Markdown, exts)
+                .expect("parse");
+        assert_eq!(doc.query("mark[data-color=red]").expect("query").len(), 1);
+
+        ed.set_mark_color(9, Some(MarkColor::Blue)).expect("recolour");
+        assert_eq!(ed.source_str().unwrap(), "a ==\u{1F535} word== b\n");
+        ed.set_mark_color(9, None).expect("clear");
+        assert_eq!(ed.source_str().unwrap(), "a ==word== b\n");
+
+        // A caret outside any highlight edits nothing.
+        assert_eq!(
+            ed.set_mark_color(0, Some(MarkColor::Red)),
+            Err(Error::NotEditable)
+        );
+        assert_eq!(ed.source_str().unwrap(), "a ==word== b\n");
+
+        // The names are the attribute values, both ways.
+        for c in [
+            MarkColor::Red,
+            MarkColor::Orange,
+            MarkColor::Yellow,
+            MarkColor::Green,
+            MarkColor::Blue,
+            MarkColor::Purple,
+            MarkColor::Brown,
+        ] {
+            assert_eq!(MarkColor::from_str(c.as_str()), Some(c));
+        }
+        assert_eq!(MarkColor::from_str("pink"), None);
+    }
+
+    #[test]
     fn editor_toggle_strips_verbatim_via_content_span() {
         let mut ed = Editor::new_str("a `code` b\n", Format::Markdown).expect("editor");
         // The verbatim node [2,8) reports content_span [3,7); toggle peels it.
@@ -5384,6 +5622,7 @@ mod tests {
             all.push(Gesture::ToggleBlockContainer(k));
         }
         all.extend([
+            Gesture::SetMarkColor,
             Gesture::SetBlock,
             Gesture::InsertThematicBreak,
             Gesture::ToggleCodeBlock,
@@ -5419,7 +5658,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=23).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=24).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -5437,7 +5676,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                24,
+                25,
                 0,
                 &mut supported,
             )

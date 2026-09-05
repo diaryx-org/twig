@@ -169,13 +169,34 @@ button that would be refused. `twig_format_is_authorable` is the coarser
 open-read-only question beside it — deliberately *not* the per-button one, for
 the reason its doc comment gives: HTML answers yes on its inline marks alone.
 
+**What may be authored is not always a fact about the format alone.** A gesture
+may only mint bytes the editor's own reparse reads back the same way, and a
+Markdown extension can move that line: `==x==` is literal text under default
+options and a `mark` under `ParseOptions.highlight`, so a highlight toggle is
+refused in the first case and reversible in the second. Markdown's spelling is
+therefore not one table but one per parse config — `languages/markdown/
+syntax.zig`'s `forOptions`, selected by `format.zig`'s `syntaxForConfig` from
+the very `ParseConfig` the editor reparses with, so the two can never disagree.
+Every other format leaves `Entry.syntaxFor` null and answers the same either
+way. `twig_format_supports_ext(format, md_flags, …)` is the toolbar query for
+that table; `twig_format_supports` is it under default options, and stays the
+right call for a toolbar built before any document exists.
+
+A colour on a highlight is a second, narrower gate on top of that one
+(`TWIG_MD_HIGHLIGHT_COLORS`, `twig_editor_set_mark_color`): the circle emoji in
+`==🔴 text==` is spelling rather than content, so writing one without the
+extension that reads it back would edit the highlighted text instead of
+colouring it. It is a separate gesture rather than a parameter on the toggle
+because a colour is a property of a highlight that already exists — authoring a
+coloured one is the two gestures in order.
+
 That query is one of three neighbouring questions this codebase keeps
 separate on purpose, because conflating them gives wrong answers in both
 directions:
 
 | Question | Where it lives | What it is for |
 |----------|----------------|----------------|
-| May an editor gesture *mint* this spelling? | `Syntax`'s per-gesture fields, read by `Editor.supports` | Toolbar enable/disable |
+| May an editor gesture *mint* this spelling? | `Syntax`'s per-gesture fields, read by `Editor.supports` — for the table this document's parse config selects | Toolbar enable/disable |
 | Is there any door into this format at all? | `Syntax.authorable()` | Open read-only, hide the toolbar |
 | What survives a *conversion* to this target? | `diagnostics.zig`'s measured `fidelity` table | Save-as / convert warnings |
 
