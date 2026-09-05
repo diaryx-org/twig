@@ -596,8 +596,8 @@ pub export fn twig_parse(
 }
 
 /// Like `twig_parse`, plus `md_flags` — a bitmask of `TWIG_MD_*` Markdown
-/// extensions (`TWIG_MD_DIRECTIVES`, `TWIG_MD_MATH`, `TWIG_MD_HTML_ELEMENTS`) to
-/// enable for a Markdown parse (ignored for other formats). Opens the read/query
+/// extensions (`TWIG_MD_DIRECTIVES`, `TWIG_MD_MATH`, `TWIG_MD_HTML_ELEMENTS`,
+/// `TWIG_MD_HIGHLIGHT`) to enable for a Markdown parse (ignored for other formats). Opens the read/query
 /// surface to the same opt-in extensions `twig_editor_create_ext` gives the edit
 /// surface — needed to, e.g., `twig_document_query` for `image` nodes that only
 /// exist once `TWIG_MD_HTML_ELEMENTS` promotes raw `<img>` tags. A `0` mask is
@@ -1641,12 +1641,14 @@ const EditOp = enum { replace, replace_content, insert_before, insert_after, ins
 const TWIG_MD_DIRECTIVES: u32 = 1 << 0;
 const TWIG_MD_MATH: u32 = 1 << 1;
 const TWIG_MD_HTML_ELEMENTS: u32 = 1 << 2;
+const TWIG_MD_HIGHLIGHT: u32 = 1 << 3;
 
 fn markdownOptionsFromFlags(flags: u32) twig.Markdown.ParseOptions {
     var opts: twig.Markdown.ParseOptions = .{};
     opts.directives = (flags & TWIG_MD_DIRECTIVES) != 0;
     opts.math = (flags & TWIG_MD_MATH) != 0;
     opts.html_elements = (flags & TWIG_MD_HTML_ELEMENTS) != 0;
+    opts.highlight = (flags & TWIG_MD_HIGHLIGHT) != 0;
     return opts;
 }
 
@@ -1705,7 +1707,7 @@ pub export fn twig_editor_create(
 
 /// Like `twig_editor_create`, plus `md_flags` — a bitmask of `TWIG_MD_*`
 /// Markdown extensions (`TWIG_MD_DIRECTIVES`, `TWIG_MD_MATH`,
-/// `TWIG_MD_HTML_ELEMENTS`) to enable for a Markdown parse (ignored for other
+/// `TWIG_MD_HTML_ELEMENTS`, `TWIG_MD_HIGHLIGHT`) to enable for a Markdown parse (ignored for other
 /// formats). The editor reparses with the
 /// same flags after every edit, so a directive-bearing document stays
 /// parseable — required before `twig_editor_filter` can match `directive[…]`
@@ -4152,6 +4154,28 @@ test "twig_parse_ext with TWIG_MD_HTML_ELEMENTS makes an embedded <img> queryabl
         defer twig_document_destroy(doc);
 
         const selector = "image";
+        var ptr: ?[*]const TwigQueryMatch = null;
+        var len: usize = 0;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_document_query(doc, selector.ptr, selector.len, &ptr, &len),
+        );
+        try std.testing.expectEqual(case[1], len);
+    }
+}
+
+test "twig_parse_ext with TWIG_MD_HIGHLIGHT makes ==text== a queryable mark" {
+    const source = "some ==lit== text\n";
+
+    inline for (.{ .{ @as(u32, 0), @as(usize, 0) }, .{ TWIG_MD_HIGHLIGHT, @as(usize, 1) } }) |case| {
+        var doc: ?*TwigDocument = null;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_parse_ext(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), case[0], &doc),
+        );
+        defer twig_document_destroy(doc);
+
+        const selector = "mark";
         var ptr: ?[*]const TwigQueryMatch = null;
         var len: usize = 0;
         try std.testing.expectEqual(

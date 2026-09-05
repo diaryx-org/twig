@@ -5,8 +5,9 @@
 //! here is live as of Phase 3; `dialect` is the one deliberate exception (it
 //! is a RENDER-time fact — see its own doc comment).
 //!
-//! Defaults follow GFM-ish expectations (most extensions on) except `math`
-//! and `directives`, which aren't part of GFM and stay opt-in.
+//! Defaults follow GFM-ish expectations (most extensions on) except `math`,
+//! `directives`, `html_elements`, and `highlight`, which aren't part of GFM and
+//! stay opt-in.
 //!
 //! Two presets name the dialects twig renders distinctly — `commonmark` and
 //! `gfm` — and both are composable: `args.zig` applies a preset first and
@@ -28,6 +29,12 @@ math: bool = false,
 /// inline `:name[x]{attrs}`, leaf `::name[x]{attrs}`, container
 /// `:::name{attrs}` ... `:::`). Not part of GFM; off by default, like `math`.
 directives: bool = false,
+/// `==text==` highlight (the markdown-it-mark / Obsidian / Typora extension):
+/// a run of EXACTLY two `=` opens or closes a `mark` node, matched by the
+/// same flanking rules as GFM strikethrough. A lone `=` or a run of three or
+/// more stays literal, so `a == b` and a setext-looking `===` are untouched.
+/// Not part of CommonMark or GFM; off by default, like `math`.
+highlight: bool = false,
 /// Parse recognized HTML into the shared AST vocabulary — an `<img>` becomes
 /// an `image` node, `<h1>` a `heading`, and anything without a semantic
 /// mapping (`<picture>`, `<source>`, ...) a generic `element` — instead of a
@@ -88,6 +95,7 @@ pub const commonmark: Options = .{
     .frontmatter = false,
     .math = false,
     .directives = false,
+    .highlight = false,
     .html_elements = false,
     .dialect = .commonmark,
 };
@@ -107,6 +115,7 @@ pub const gfm: Options = .{
     .frontmatter = false,
     .math = false,
     .directives = false,
+    .highlight = false,
     .html_elements = false,
     .dialect = .gfm,
 };

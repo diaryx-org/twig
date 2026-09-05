@@ -26,6 +26,9 @@ pub const table: syntax.Syntax = .{
     .inline_delims = .init(.{
         .strong = .{ .open = "**", .close = "**" },
         .emph = .{ .open = "*", .close = "*" },
+        // `==mark==`: parsed back only with the `highlight` extension on
+        // (`ParseOptions.highlight`, off by default), so, like `delete` below,
+        // not something a toggle may assume.
         .mark = .{ .open = "==", .close = "==", .authorable = false },
         .superscript = .{ .open = "^", .close = "^", .authorable = false },
         .subscript = .{ .open = "~", .close = "~", .authorable = false },

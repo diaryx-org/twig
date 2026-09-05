@@ -21,7 +21,7 @@
 //!     boundary and documented simplifications/approximations.
 //!   - Phase 3 (later): GFM extensions and other options `ParseOptions`
 //!     already declares (tables, strikethrough, task lists, footnotes,
-//!     definition lists, frontmatter, math), plus GFM's *extended*
+//!     definition lists, frontmatter, math, highlight), plus GFM's *extended*
 //!     autolinks (bare `www.`/`http` URLs in text, as opposed to Phase 2's
 //!     CommonMark-core `<scheme:...>` form).
 //! Do not read the presence of `ParseOptions` fields as "already

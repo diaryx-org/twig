@@ -82,8 +82,8 @@ phases. This roadmap is documented in full in
 - **Phase 2** — the rest of CommonMark's inline grammar (emphasis/strong,
   links, images, autolinks, raw inline HTML), resolved at parse time.
 - **Phase 3** — GFM and other `ParseOptions` extensions (tables,
-  strikethrough, task lists, footnotes, definition lists, frontmatter, math)
-  plus GFM's extended autolinks.
+  strikethrough, task lists, footnotes, definition lists, frontmatter, math,
+  `==highlight==`) plus GFM's extended autolinks.
 
 Comments across `languages/markdown/` reference these phase numbers; they are
 all anchored by the `markdown.zig` doc comment above.

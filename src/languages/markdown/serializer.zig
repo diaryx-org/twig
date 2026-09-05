@@ -998,6 +998,12 @@ fn serializeWith(source: []const u8, options: markdown.ParseOptions) ![]u8 {
     return serializeAlloc(testing.allocator, &doc);
 }
 
+test "highlight round-trips: ==text== parses to a mark and prints back as ==text==" {
+    const out = try serializeWith("some ==lit== *and ==more==*\n", .{ .highlight = true });
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("some ==lit== *and ==more==*\n", out);
+}
+
 test "container directive serializes back to :::name{attrs}" {
     const out = try serializeWith(":::note{#n .box}\nHello\n:::\n", directives_on);
     defer testing.allocator.free(out);

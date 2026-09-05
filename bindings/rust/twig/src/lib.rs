@@ -1341,6 +1341,9 @@ pub struct MarkdownExtensions {
     /// it is addressable by [`Document::query`] and the tree read paths. Only
     /// tags that map verbatim onto the source are promoted; the rest stay raw.
     pub html_elements: bool,
+    /// `==text==` highlight, parsed as a `mark` node (the markdown-it-mark /
+    /// Obsidian extension). Only a run of exactly two `=` delimits.
+    pub highlight: bool,
 }
 
 impl MarkdownExtensions {
@@ -1354,6 +1357,9 @@ impl MarkdownExtensions {
         }
         if self.html_elements {
             flags |= ffi::TWIG_MD_HTML_ELEMENTS;
+        }
+        if self.highlight {
+            flags |= ffi::TWIG_MD_HIGHLIGHT;
         }
         flags
     }
@@ -3595,6 +3601,7 @@ mod tests {
                     directives: false,
                     math: false,
                     html_elements: false,
+                    highlight: false,
                 },
             ),
             (
@@ -3603,12 +3610,13 @@ mod tests {
                 MarkdownExtensions::default(),
             ),
             (
-                ":::note\nbody\n:::\n\n:role[x]\n\n$a+b$\n",
+                ":::note\nbody\n:::\n\n:role[x]\n\n$a+b$ ==h==\n",
                 Format::Markdown,
                 MarkdownExtensions {
                     directives: true,
                     math: true,
                     html_elements: false,
+                    highlight: true,
                 },
             ),
             (

@@ -111,6 +111,7 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\markdown extension flags (convert/query/edit; ignored for other inputs):
         \\  --directives           enable generic directives (:name, ::name, :::name)
         \\  --math                 enable $…$ / $$…$$ math
+        \\  --highlight            enable ==…== highlight (a `mark` node)
         \\  --commonmark           strict CommonMark (all extensions off)
         \\  --gfm                  the GFM dialect (extensions + GFM's HTML output)
         \\

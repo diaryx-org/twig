@@ -60,8 +60,9 @@ pub const ConvertOptions = struct {
     /// `format.OutputSelection`'s doc comment. `null` for the ordinary
     /// `-o canonical` ("round-trip back to `input`") case.
     output_target: ?format.Target = null,
-    /// Markdown extension flags (`--directives`, `--math`, `--commonmark`,
-    /// `--gfm`); ignored for non-Markdown inputs. See `applyExtFlag`.
+    /// Markdown extension flags (`--directives`, `--math`, `--html-elements`,
+    /// `--highlight`, `--commonmark`, `--gfm`); ignored for non-Markdown
+    /// inputs. See `applyExtFlag`.
     parse_config: format.ParseConfig = .{},
     /// `--warn`: report to stderr what this conversion will silently lose.
     ///
@@ -216,6 +217,7 @@ fn argFail(
 ///   --directives / --no-directives   the generic-directives extension
 ///   --math / --no-math                `$…$`/`$$…$$` math
 ///   --html-elements / --no-…          parse raw HTML into semantic AST nodes
+///   --highlight / --no-highlight      `==…==` highlight (a `mark` node)
 ///   --commonmark                      strict CommonMark (every extension off)
 ///   --gfm                             the GFM dialect
 /// A preset (`--commonmark`/`--gfm`) followed by an individual flag composes
@@ -238,6 +240,10 @@ fn applyExtFlag(arg: []const u8, cfg: *format.ParseConfig) bool {
         cfg.markdown.html_elements = true;
     } else if (std.mem.eql(u8, arg, "--no-html-elements")) {
         cfg.markdown.html_elements = false;
+    } else if (std.mem.eql(u8, arg, "--highlight")) {
+        cfg.markdown.highlight = true;
+    } else if (std.mem.eql(u8, arg, "--no-highlight")) {
+        cfg.markdown.highlight = false;
     } else if (std.mem.eql(u8, arg, "--commonmark")) {
         cfg.markdown = .commonmark;
     } else if (std.mem.eql(u8, arg, "--gfm")) {
@@ -701,18 +707,25 @@ test "parseConfig: query takes a file and a selector, plus -i override" {
     try testing.expectError(error.MissingSelector, parseConfig(&no_sel, &w2));
 }
 
-test "parseConfig: convert --directives / --math set the markdown parse config" {
+test "parseConfig: convert --directives / --math / --highlight set the markdown parse config" {
     var buf: [256]u8 = undefined;
     var w = scratchWriter(&buf);
-    var a = TestArgs{ .items = &.{ "twig", "convert", "-i", "md", "--directives", "--math", "doc.md" } };
+    var a = TestArgs{ .items = &.{ "twig", "convert", "-i", "md", "--directives", "--math", "--highlight", "doc.md" } };
     const c = try parseConfig(&a, &w);
     try testing.expect(c.options.convert.parse_config.markdown.directives);
     try testing.expect(c.options.convert.parse_config.markdown.math);
-    // A default parse leaves both off.
+    try testing.expect(c.options.convert.parse_config.markdown.highlight);
+    // A default parse leaves them all off.
     var w2 = scratchWriter(&buf);
     var a2 = TestArgs{ .items = &.{ "twig", "convert", "doc.md" } };
     const c2 = try parseConfig(&a2, &w2);
     try testing.expect(!c2.options.convert.parse_config.markdown.directives);
+    try testing.expect(!c2.options.convert.parse_config.markdown.highlight);
+    // `--no-highlight` after `--highlight` wins, left to right.
+    var w3 = scratchWriter(&buf);
+    var a3 = TestArgs{ .items = &.{ "twig", "convert", "--highlight", "--no-highlight", "doc.md" } };
+    const c3 = try parseConfig(&a3, &w3);
+    try testing.expect(!c3.options.convert.parse_config.markdown.highlight);
 }
 
 test "parseConfig: --commonmark and --gfm presets, and left-to-right composition" {

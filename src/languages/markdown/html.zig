@@ -133,6 +133,20 @@ test "dialect: tagfilter is GFM-only, so default markdown passes raw <title> thr
     try testing.expect(std.mem.indexOf(u8, gfm_out, "<strong>") != null);
 }
 
+test "highlight: ==text== renders as <mark> with the extension on, literal text off" {
+    var on = try markdown.parse(testing.allocator, "a ==b== c\n", .{ .highlight = true });
+    defer on.deinit();
+    const html_on = try renderAlloc(testing.allocator, &on, .{});
+    defer testing.allocator.free(html_on);
+    try testing.expectEqualStrings("<p>a <mark>b</mark> c</p>\n", html_on);
+
+    var off = try markdown.parse(testing.allocator, "a ==b== c\n", .{});
+    defer off.deinit();
+    const html_off = try renderAlloc(testing.allocator, &off, .{});
+    defer testing.allocator.free(html_off);
+    try testing.expectEqualStrings("<p>a ==b== c</p>\n", html_off);
+}
+
 test "renders a simple paragraph with emphasis" {
     var doc = try markdown.parse(testing.allocator, "hello *world*\n", .{});
     defer doc.deinit();

@@ -430,6 +430,39 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                 }
                 i = run_end;
             },
+            '=' => {
+                // `==text==` highlight (`self.options.highlight`, OFF by
+                // default -- not CommonMark or GFM): the same shape as
+                // strikethrough above, on the same stack, but only a run of
+                // EXACTLY two `=` is ever a delimiter. A lone `=` is far too
+                // common in prose (`a = b`) to be markup, and a run of 3+
+                // stays literal so a setext-looking `===` inside a paragraph
+                // doesn't sprout an empty `mark`. `processEmphasis` pairs
+                // `==` with `==` only (same `char`), so a `~~` never closes
+                // a `==`.
+                var run_end = i;
+                while (run_end < text.len and text[run_end] == '=') run_end += 1;
+                const run_len = run_end - i;
+                const flank = if (sc.options.highlight and run_len == 2) computeFlanking(text, i, run_end, '=') else Flank{ .can_open = false, .can_close = false };
+                if (flank.can_open or flank.can_close) {
+                    try sc.flushBuf(i);
+                    const run_id = try b.addLeaf(.{ .str = text[i..run_end] });
+                    sc.setSpanIfMapped(run_id, i, run_end);
+                    const item_idx = try sc.appendItem(run_id);
+                    try sc.delims.append(b.allocator, .{
+                        .item = item_idx,
+                        .char = '=',
+                        .count = run_len,
+                        .can_open = flank.can_open,
+                        .can_close = flank.can_close,
+                        .range_start = i,
+                        .range_end = run_end,
+                    });
+                } else {
+                    try sc.buf.appendSlice(b.allocator, text[i..run_end]);
+                }
+                i = run_end;
+            },
             '$' => {
                 // Twig's inline/display math extension (`self.options.math`,
                 // OFF by default — not part of CommonMark or GFM). `$$...$$`
@@ -525,8 +558,8 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
         }
     }
     try sc.flushBuf(text.len);
-    // Resolve whatever emphasis/strikethrough delimiters are left over the
-    // WHOLE stack.
+    // Resolve whatever emphasis/strikethrough/highlight delimiters are left
+    // over the WHOLE stack.
     try sc.processEmphasis(0);
 
     var out = std.ArrayList(Node.Id).empty;
@@ -601,22 +634,27 @@ const Item = struct {
 /// from the stack once its count reaches 0 (see `removeDelimRange`).
 /// Whether `ch` is an EXTENSION delimiter on the emphasis stack — one whose
 /// runs pair whole, equal-length, with no rule of 3 (see `processEmphasis`).
+/// `'~'` is GFM strikethrough and `'='` the `==highlight==` extension;
 /// `'*'`/`'_'` are CommonMark emphasis and answer false.
 fn isExtDelimChar(ch: u8) bool {
-    return ch == '~';
+    return ch == '~' or ch == '=';
 }
 
 /// The mark an extension delimiter pair produces.
 fn extDelimMark(ch: u8) AST.InlineMark {
-    std.debug.assert(isExtDelimChar(ch));
-    return .delete;
+    return switch (ch) {
+        '~' => .delete,
+        '=' => .mark,
+        else => unreachable,
+    };
 }
 
 const Delim = struct {
     item: ItemIdx,
-    /// `'*'`/`'_'` (CommonMark emphasis) or `'~'` (GFM strikethrough). A
-    /// closer only ever pairs with an opener of the same `char`, and
-    /// `processEmphasis` picks the matching rules by it.
+    /// `'*'`/`'_'` (CommonMark emphasis), `'~'` (GFM strikethrough), or
+    /// `'='` (`==highlight==`). A closer only ever pairs with an opener of
+    /// the same `char`, and `processEmphasis` picks the matching rules by
+    /// it.
     char: u8,
     count: usize,
     can_open: bool,
@@ -982,8 +1020,9 @@ pub const Scanner = struct {
                     k -= 1;
                     const cand = self.delims.items[k];
                     if (cand.can_open and cand.char == closer.char) {
-                        // Strikethrough pairs only EQUAL-length runs and has
-                        // no rule of 3 (see the `'~'` case in `parseInline`).
+                        // Strikethrough and highlight pair only EQUAL-length
+                        // runs and have no rule of 3 (see the `'~'` and `'='`
+                        // cases in `parseInline`).
                         if (isExtDelimChar(closer.char)) {
                             if (cand.count != closer.count) continue;
                             opener_idx = k;
@@ -1006,8 +1045,9 @@ pub const Scanner = struct {
 
             if (opener_idx) |oi| {
                 // Emphasis consumes 1 or 2 of each run and may leave a
-                // remainder; strikethrough consumes both runs whole (they are
-                // equal-length by construction, see the opener search).
+                // remainder; strikethrough/highlight consume both runs whole
+                // (they are equal-length by construction, see the opener
+                // search).
                 const use_delims: usize = if (isExtDelimChar(closer.char)) closer.count else if (self.delims.items[oi].count >= 2 and closer.count >= 2) 2 else 1;
                 const ch = closer.char;
                 const opener_item = self.delims.items[oi].item;
@@ -3342,6 +3382,149 @@ test "strikethrough inside a link's text nests under the link" {
     const x = ast.ast.nodes[link].first_child.?;
     const del = ast.ast.nodes[x].next_sibling.?;
     try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+}
+
+// ── highlight (==text==) ─────────────────────────────────────────────────
+
+fn expectMark(ast: *const Document, id: Node.Id) !void {
+    try testing.expect(ast.ast.nodes[id].kind == .inline_mark and ast.ast.nodes[id].kind.inline_mark == .mark);
+}
+
+/// The block's inline text with every node flattened -- for asserting that a
+/// construct stayed literal regardless of how many `str` leaves it split into
+/// (an unmatched delimiter run is its own leaf).
+fn flatTextOf(ast: *const Document) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(testing.allocator);
+    try inlineTextOf(ast, ast.ast.root, &buf);
+    return buf.toOwnedSlice(testing.allocator);
+}
+
+fn expectAllStr(ast: *const Document, parent: Node.Id) !void {
+    var kid = ast.ast.nodes[parent].first_child;
+    while (kid) |k| : (kid = ast.ast.nodes[k].next_sibling) try testing.expect(ast.ast.nodes[k].kind == .str);
+}
+
+test "highlight: ==text== becomes a mark node when the flag is on" {
+    var ast = try parseAndFinishWithOptionsDoc("==lit==", .{ .highlight = true });
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectMark(&ast, mark);
+    try testing.expectEqualStrings("lit", ast.ast.nodes[ast.ast.nodes[mark].first_child.?].kind.str);
+    try testing.expect(ast.ast.nodes[mark].next_sibling == null);
+}
+
+test "highlight OFF (the default): ==text== parses as plain literal text" {
+    var ast = try parseAndFinishWithOptionsDoc("==lit==", .{});
+    defer ast.deinit();
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("==lit==", ast.ast.nodes[child].kind.str);
+    try testing.expect(ast.ast.nodes[child].next_sibling == null);
+}
+
+test "highlight: a single = is never a delimiter (prose `a = b` is untouched)" {
+    var ast = try parseAndFinishWithOptionsDoc("=a= and x = y", .{ .highlight = true });
+    defer ast.deinit();
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("=a= and x = y", ast.ast.nodes[child].kind.str);
+    try testing.expect(ast.ast.nodes[child].next_sibling == null);
+}
+
+test "highlight: a run of 3+ equals is never a delimiter, stays literal" {
+    var ast = try parseAndFinishWithOptionsDoc("===not===", .{ .highlight = true });
+    defer ast.deinit();
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("===not===", ast.ast.nodes[child].kind.str);
+    try testing.expect(ast.ast.nodes[child].next_sibling == null);
+}
+
+test "highlight: an unclosed == stays literal" {
+    var ast = try parseAndFinishWithOptionsDoc("==open and done", .{ .highlight = true });
+    defer ast.deinit();
+    try expectAllStr(&ast, ast.ast.root);
+    const flat = try flatTextOf(&ast);
+    defer testing.allocator.free(flat);
+    try testing.expectEqualStrings("==open and done", flat);
+}
+
+test "highlight: a backslash-escaped == is literal" {
+    var ast = try parseAndFinishWithOptionsDoc("\\==not==", .{ .highlight = true });
+    defer ast.deinit();
+    try expectAllStr(&ast, ast.ast.root);
+    const flat = try flatTextOf(&ast);
+    defer testing.allocator.free(flat);
+    try testing.expectEqualStrings("==not==", flat);
+}
+
+test "highlight: nests inside emphasis and wraps it" {
+    var ast = try parseAndFinishWithOptionsDoc("*a ==b== c* ==*d*==", .{ .highlight = true });
+    defer ast.deinit();
+    // `*a ==b== c*` -> emph[ "a ", mark["b"], " c" ]
+    const emph = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[emph].kind == .inline_mark and ast.ast.nodes[emph].kind.inline_mark == .emph);
+    const a = ast.ast.nodes[emph].first_child.?;
+    try testing.expectEqualStrings("a ", ast.ast.nodes[a].kind.str);
+    const inner_mark = ast.ast.nodes[a].next_sibling.?;
+    try expectMark(&ast, inner_mark);
+    try testing.expectEqualStrings("b", ast.ast.nodes[ast.ast.nodes[inner_mark].first_child.?].kind.str);
+    try testing.expectEqualStrings(" c", ast.ast.nodes[ast.ast.nodes[inner_mark].next_sibling.?].kind.str);
+    // ` ` then `==*d*==` -> mark[ emph["d"] ]
+    const space = ast.ast.nodes[emph].next_sibling.?;
+    try testing.expectEqualStrings(" ", ast.ast.nodes[space].kind.str);
+    const outer_mark = ast.ast.nodes[space].next_sibling.?;
+    try expectMark(&ast, outer_mark);
+    const inner_emph = ast.ast.nodes[outer_mark].first_child.?;
+    try testing.expect(ast.ast.nodes[inner_emph].kind == .inline_mark and ast.ast.nodes[inner_emph].kind.inline_mark == .emph);
+    try testing.expect(ast.ast.nodes[outer_mark].next_sibling == null);
+}
+
+test "highlight: a ~~ never closes a == and vice versa" {
+    var ast = try parseAndFinishWithOptionsDoc("==a~~ ~~b== ~~c~~", .{ .highlight = true, .strikethrough = true });
+    defer ast.deinit();
+    // The `==` closer pairs first (bottom-up) and drops the `~~` opener
+    // between the pair, so the next `~~` has no opener and is literal. The
+    // trailing `~~c~~` is a clean strikethrough.
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectMark(&ast, mark);
+    try expectAllStr(&ast, mark);
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(testing.allocator);
+    try inlineTextOf(&ast, mark, &buf);
+    try testing.expectEqualStrings("a~~ ~~b", buf.items);
+    const space = ast.ast.nodes[mark].next_sibling.?;
+    const del = ast.ast.nodes[space].next_sibling.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+    try testing.expectEqualStrings("c", ast.ast.nodes[ast.ast.nodes[del].first_child.?].kind.str);
+}
+
+test "highlight: inside a link's text nests under the link" {
+    var ast = try parseAndFinishWithOptionsDoc("[x ==y==](/u)", .{ .highlight = true });
+    defer ast.deinit();
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
+    const x = ast.ast.nodes[link].first_child.?;
+    try expectMark(&ast, ast.ast.nodes[x].next_sibling.?);
+}
+
+test "highlight: intraword ==x== is allowed, like strikethrough" {
+    var ast = try parseAndFinishWithOptionsDoc("foo==bar==baz", .{ .highlight = true });
+    defer ast.deinit();
+    const foo = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("foo", ast.ast.nodes[foo].kind.str);
+    const mark = ast.ast.nodes[foo].next_sibling.?;
+    try expectMark(&ast, mark);
+    try testing.expectEqualStrings("bar", ast.ast.nodes[ast.ast.nodes[mark].first_child.?].kind.str);
+    try testing.expectEqualStrings("baz", ast.ast.nodes[ast.ast.nodes[mark].next_sibling.?].kind.str);
+}
+
+test "span: a highlight mark node covers '==text=='" {
+    var ast = try parseAndFinishMappedDoc("==lit==", .{ .highlight = true });
+    defer ast.deinit();
+    const s = "==lit==";
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectMark(&ast, mark);
+    try testing.expectEqualStrings("==lit==", Span.of(u8, ast.span(mark), s));
+    try testing.expectEqualStrings("lit", Span.of(u8, ast.contentSpan(mark).?, s));
 }
 
 // ── Phase 3: math ────────────────────────────────────────────────────────
