@@ -67,6 +67,7 @@ const Span = @import("../../span.zig");
 /// avoid colliding with this module's Markdown-specific `Document`.
 const TwigDocument = @import("../../document.zig");
 pub const ParseOptions = @import("options.zig");
+pub const highlight = @import("highlight.zig");
 pub const html = @import("html.zig");
 pub const serializer = @import("serializer.zig");
 
@@ -231,6 +232,7 @@ test {
     _ = inline_mod;
     _ = block;
     _ = @import("html.zig");
+    _ = @import("highlight.zig");
     _ = @import("conformance.zig");
     _ = @import("gfm_conformance.zig");
 }

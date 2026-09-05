@@ -119,6 +119,7 @@ pub const TWIG_MD_DIRECTIVES: u32 = 1 << 0;
 pub const TWIG_MD_MATH: u32 = 1 << 1;
 pub const TWIG_MD_HTML_ELEMENTS: u32 = 1 << 2;
 pub const TWIG_MD_HIGHLIGHT: u32 = 1 << 3;
+pub const TWIG_MD_HIGHLIGHT_COLORS: u32 = 1 << 4;
 
 pub enum TwigDocument {}
 

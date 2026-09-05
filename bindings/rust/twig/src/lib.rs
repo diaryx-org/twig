@@ -1344,6 +1344,12 @@ pub struct MarkdownExtensions {
     /// `==text==` highlight, parsed as a `mark` node (the markdown-it-mark /
     /// Obsidian extension). Only a run of exactly two `=` delimits.
     pub highlight: bool,
+    /// Coloured highlights on top of `highlight` (Obsidian 1.14): a circle
+    /// emoji right after the opening `==` — `==🔴 text==` — is stripped from
+    /// the content and recorded as the mark's `data-color` attribute
+    /// (`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`). Inert
+    /// unless `highlight` is also set.
+    pub highlight_colors: bool,
 }
 
 impl MarkdownExtensions {
@@ -1360,6 +1366,9 @@ impl MarkdownExtensions {
         }
         if self.highlight {
             flags |= ffi::TWIG_MD_HIGHLIGHT;
+        }
+        if self.highlight_colors {
+            flags |= ffi::TWIG_MD_HIGHLIGHT_COLORS;
         }
         flags
     }
@@ -3602,6 +3611,7 @@ mod tests {
                     math: false,
                     html_elements: false,
                     highlight: false,
+                    highlight_colors: false,
                 },
             ),
             (
@@ -3610,13 +3620,14 @@ mod tests {
                 MarkdownExtensions::default(),
             ),
             (
-                ":::note\nbody\n:::\n\n:role[x]\n\n$a+b$ ==h==\n",
+                ":::note\nbody\n:::\n\n:role[x]\n\n$a+b$ ==h== ==🔴 r==\n",
                 Format::Markdown,
                 MarkdownExtensions {
                     directives: true,
                     math: true,
                     html_elements: false,
                     highlight: true,
+                    highlight_colors: true,
                 },
             ),
             (

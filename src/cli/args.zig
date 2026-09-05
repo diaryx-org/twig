@@ -61,8 +61,8 @@ pub const ConvertOptions = struct {
     /// `-o canonical` ("round-trip back to `input`") case.
     output_target: ?format.Target = null,
     /// Markdown extension flags (`--directives`, `--math`, `--html-elements`,
-    /// `--highlight`, `--commonmark`, `--gfm`); ignored for non-Markdown
-    /// inputs. See `applyExtFlag`.
+    /// `--highlight`, `--highlight-colors`, `--commonmark`, `--gfm`); ignored
+    /// for non-Markdown inputs. See `applyExtFlag`.
     parse_config: format.ParseConfig = .{},
     /// `--warn`: report to stderr what this conversion will silently lose.
     ///
@@ -218,6 +218,9 @@ fn argFail(
 ///   --math / --no-math                `$…$`/`$$…$$` math
 ///   --html-elements / --no-…          parse raw HTML into semantic AST nodes
 ///   --highlight / --no-highlight      `==…==` highlight (a `mark` node)
+///   --highlight-colors / --no-…       `==🔴 …==` coloured highlights; the
+///                                     positive form turns `--highlight` on
+///                                     too, since colours need a highlight
 ///   --commonmark                      strict CommonMark (every extension off)
 ///   --gfm                             the GFM dialect
 /// A preset (`--commonmark`/`--gfm`) followed by an individual flag composes
@@ -244,6 +247,11 @@ fn applyExtFlag(arg: []const u8, cfg: *format.ParseConfig) bool {
         cfg.markdown.highlight = true;
     } else if (std.mem.eql(u8, arg, "--no-highlight")) {
         cfg.markdown.highlight = false;
+    } else if (std.mem.eql(u8, arg, "--highlight-colors")) {
+        cfg.markdown.highlight = true;
+        cfg.markdown.highlight_colors = true;
+    } else if (std.mem.eql(u8, arg, "--no-highlight-colors")) {
+        cfg.markdown.highlight_colors = false;
     } else if (std.mem.eql(u8, arg, "--commonmark")) {
         cfg.markdown = .commonmark;
     } else if (std.mem.eql(u8, arg, "--gfm")) {
@@ -726,6 +734,21 @@ test "parseConfig: convert --directives / --math / --highlight set the markdown 
     var a3 = TestArgs{ .items = &.{ "twig", "convert", "--highlight", "--no-highlight", "doc.md" } };
     const c3 = try parseConfig(&a3, &w3);
     try testing.expect(!c3.options.convert.parse_config.markdown.highlight);
+}
+
+test "parseConfig: --highlight-colors turns highlight on with it; --no-highlight-colors takes only the colours off" {
+    var buf: [256]u8 = undefined;
+    var w = scratchWriter(&buf);
+    var a = TestArgs{ .items = &.{ "twig", "convert", "--highlight-colors", "doc.md" } };
+    const c = try parseConfig(&a, &w);
+    try testing.expect(c.options.convert.parse_config.markdown.highlight);
+    try testing.expect(c.options.convert.parse_config.markdown.highlight_colors);
+
+    var w2 = scratchWriter(&buf);
+    var a2 = TestArgs{ .items = &.{ "twig", "convert", "--highlight-colors", "--no-highlight-colors", "doc.md" } };
+    const c2 = try parseConfig(&a2, &w2);
+    try testing.expect(c2.options.convert.parse_config.markdown.highlight);
+    try testing.expect(!c2.options.convert.parse_config.markdown.highlight_colors);
 }
 
 test "parseConfig: --commonmark and --gfm presets, and left-to-right composition" {

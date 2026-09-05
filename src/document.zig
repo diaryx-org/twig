@@ -180,8 +180,15 @@ pub const Spelling = union(enum) {
     ordered_delim: OrderedDelim,
     /// Which syntax family a `container` was written in. See `ContainerOrigin`.
     container_origin: ContainerOrigin,
+    /// Whether a coloured Markdown highlight's emoji was followed by a space:
+    /// `==🔴 text==` (`spaced`) versus `==🔴text==` (`tight`). Both parse to
+    /// the same `mark` with the same `data-color` and content, so this is
+    /// spelling by this file's own criterion; the serializer reads it to put
+    /// the space back. See `languages/markdown/highlight.zig`.
+    highlight_prefix: HighlightPrefix,
 
     pub const Bullet = enum { dash, plus, star };
+    pub const HighlightPrefix = enum { tight, spaced };
     pub const OrderedDelim = enum { period, paren_after, paren_both };
 
     /// Whether a `container` was written as a TAG or as a DIRECTIVE — the axis
@@ -271,7 +278,7 @@ pub fn containerOrigin(self: *const Document, id: AST.Node.Id) ?Spelling.Contain
     const sp = self.spelling(id) orelse return null;
     return switch (sp) {
         .container_origin => |o| o,
-        .bullet, .ordered_delim => null,
+        .bullet, .ordered_delim, .highlight_prefix => null,
     };
 }
 

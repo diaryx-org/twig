@@ -133,6 +133,14 @@ test "dialect: tagfilter is GFM-only, so default markdown passes raw <title> thr
     try testing.expect(std.mem.indexOf(u8, gfm_out, "<strong>") != null);
 }
 
+test "highlight colors: ==🔴 text== renders as <mark data-color=\"red\"> with the emoji gone" {
+    var doc = try markdown.parse(testing.allocator, "a ==\u{1F534} b== c\n", .{ .highlight = true, .highlight_colors = true });
+    defer doc.deinit();
+    const html = try renderAlloc(testing.allocator, &doc, .{});
+    defer testing.allocator.free(html);
+    try testing.expectEqualStrings("<p>a <mark data-color=\"red\">b</mark> c</p>\n", html);
+}
+
 test "highlight: ==text== renders as <mark> with the extension on, literal text off" {
     var on = try markdown.parse(testing.allocator, "a ==b== c\n", .{ .highlight = true });
     defer on.deinit();

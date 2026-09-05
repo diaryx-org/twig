@@ -595,6 +595,21 @@ const Renderer = struct {
             .inline_mark => |m| {
                 const d = md_syntax.table.delimsFor(.{ .mark = m }) orelse return;
                 try self.writer.writeAll(d.open);
+                // A coloured highlight (`highlight.zig`): the colour attribute
+                // spells back as its circle emoji right after the opening
+                // `==`, with the space the source had (`Spelling
+                // .highlight_prefix`; a node with no recorded spelling —
+                // converted from another format — prints tight). A colour
+                // name the table doesn't know prints nothing, exactly as every
+                // other attribute on a mark always has.
+                if (m == .mark) {
+                    if (self.ast.attrsOf(id).get(markdown.highlight.attr_key)) |name| {
+                        if (markdown.highlight.Color.fromName(name)) |c| {
+                            try self.writer.writeAll(c.emoji());
+                            if (highlightPrefixOf(self.doc.spelling(id)) == .spaced) try self.writer.writeByte(' ');
+                        }
+                    }
+                }
                 try self.renderInlineChildren(id, ctx);
                 try self.writer.writeAll(d.close);
             },
@@ -701,6 +716,16 @@ const Renderer = struct {
 
 /// A `bullet_list`'s recorded marker character, canonical `-` when the
 /// spelling table has nothing (or something else) for the node.
+/// A coloured highlight's recorded prefix form, `tight` when the spelling
+/// table has nothing (or something else) for the node.
+fn highlightPrefixOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.HighlightPrefix {
+    const s = sp orelse return .tight;
+    return switch (s) {
+        .highlight_prefix => |p| p,
+        else => .tight,
+    };
+}
+
 fn bulletOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.Bullet {
     const s = sp orelse return .dash;
     return switch (s) {
@@ -1002,6 +1027,37 @@ test "highlight round-trips: ==text== parses to a mark and prints back as ==text
     const out = try serializeWith("some ==lit== *and ==more==*\n", .{ .highlight = true });
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("some ==lit== *and ==more==*\n", out);
+}
+
+test "highlight colors round-trip: the emoji and its spacing come back as written" {
+    const colors_on: markdown.ParseOptions = .{ .highlight = true, .highlight_colors = true };
+    const cases = [_][]const u8{
+        "a ==\u{1F534} red== b\n",
+        "a ==\u{1F7E2}green== b\n",
+        "==\u{1F535} *blue* and ==\u{1F7E3}purple==\n",
+    };
+    for (cases) |src| {
+        const out = try serializeWith(src, colors_on);
+        defer testing.allocator.free(out);
+        try testing.expectEqualStrings(src, out);
+    }
+}
+
+test "highlight colors: a mark converted from elsewhere with data-color prints tight" {
+    // Build the tree by hand: a `mark` with `data-color=blue` and no spelling
+    // record, as a djot `{=x=}{data-color=blue}` would arrive.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const x = try b.addLeaf(.{ .str = "x" });
+    const mark = try b.addContainer(.{ .inline_mark = .mark }, &.{x});
+    try b.setAttrs(mark, .{ .entries = &.{.{ .key = "data-color", .value = "blue" }} });
+    const para = try b.addContainer(.para, &.{mark});
+    const root = try b.addContainer(.doc, &.{para});
+    var ast = try b.finish(root);
+    defer ast.deinit();
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("==\u{1F535}x==\n", out);
 }
 
 test "container directive serializes back to :::name{attrs}" {

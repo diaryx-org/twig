@@ -35,6 +35,14 @@ directives: bool = false,
 /// more stays literal, so `a == b` and a setext-looking `===` are untouched.
 /// Not part of CommonMark or GFM; off by default, like `math`.
 highlight: bool = false,
+/// Coloured highlights, on top of `highlight` (Obsidian 1.14): a large-circle
+/// emoji right after the opening `==` — `==🔴 text==` — names the colour. The
+/// emoji is stripped from the content and recorded as `data-color="red"` on
+/// the `mark` (see `highlight.zig` for the vocabulary and the optional-space
+/// rule). Inert unless `highlight` is on, since there is no highlight to
+/// colour otherwise; the CLI's `--highlight-colors` turns both on for that
+/// reason. Off by default.
+highlight_colors: bool = false,
 /// Parse recognized HTML into the shared AST vocabulary — an `<img>` becomes
 /// an `image` node, `<h1>` a `heading`, and anything without a semantic
 /// mapping (`<picture>`, `<source>`, ...) a generic `element` — instead of a
@@ -96,6 +104,7 @@ pub const commonmark: Options = .{
     .math = false,
     .directives = false,
     .highlight = false,
+    .highlight_colors = false,
     .html_elements = false,
     .dialect = .commonmark,
 };
@@ -116,6 +125,7 @@ pub const gfm: Options = .{
     .math = false,
     .directives = false,
     .highlight = false,
+    .highlight_colors = false,
     .html_elements = false,
     .dialect = .gfm,
 };

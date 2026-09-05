@@ -112,6 +112,7 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\  --directives           enable generic directives (:name, ::name, :::name)
         \\  --math                 enable $…$ / $$…$$ math
         \\  --highlight            enable ==…== highlight (a `mark` node)
+        \\  --highlight-colors     enable ==🔴 …== coloured highlights (implies --highlight)
         \\  --commonmark           strict CommonMark (all extensions off)
         \\  --gfm                  the GFM dialect (extensions + GFM's HTML output)
         \\

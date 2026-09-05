@@ -67,6 +67,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("../../ast/ast.zig");
+const highlight = @import("highlight.zig");
 const Document = @import("../../document.zig");
 const Node = AST.Node;
 const Builder = AST.Builder;
@@ -449,6 +450,26 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                     const run_id = try b.addLeaf(.{ .str = text[i..run_end] });
                     sc.setSpanIfMapped(run_id, i, run_end);
                     const item_idx = try sc.appendItem(run_id);
+                    // Coloured highlights (`self.options.highlight_colors`):
+                    // a circle emoji right after an OPENING `==` is the
+                    // highlight's colour, not its text. It gets its own
+                    // placeholder item, so that if this run does open a
+                    // `mark` the prefix can be dropped from the content
+                    // without touching the `str` that follows it (see
+                    // `Delim.color`). The emoji is not Unicode punctuation
+                    // (`isUnicodePunctuationCp`), so it never changes the
+                    // run's flanking.
+                    var color: ?ColorPrefix = null;
+                    if (sc.options.highlight_colors and flank.can_open) {
+                        if (highlight.parsePrefix(text[run_end..])) |p| {
+                            const pfx_end = run_end + p.len;
+                            const pfx_id = try b.addLeaf(.{ .str = text[run_end..pfx_end] });
+                            sc.setSpanIfMapped(pfx_id, run_end, pfx_end);
+                            const pfx_item = try sc.appendItem(pfx_id);
+                            color = .{ .item = pfx_item, .color = p.color, .spaced = p.spaced, .start = run_end, .end = pfx_end };
+                            run_end = pfx_end;
+                        }
+                    }
                     try sc.delims.append(b.allocator, .{
                         .item = item_idx,
                         .char = '=',
@@ -456,7 +477,8 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                         .can_open = flank.can_open,
                         .can_close = flank.can_close,
                         .range_start = i,
-                        .range_end = run_end,
+                        .range_end = i + run_len,
+                        .color = color,
                     });
                 } else {
                     try sc.buf.appendSlice(b.allocator, text[i..run_end]);
@@ -657,6 +679,13 @@ const Delim = struct {
     /// it.
     char: u8,
     count: usize,
+    /// `'='` only, with `options.highlight_colors`: the colour emoji (and
+    /// its optional space) read off the front of this run's content, held
+    /// in its own placeholder `str` item right after the run's. If this run
+    /// opens a `mark`, the item is dropped and the colour becomes the mark's
+    /// `data-color`; if it never opens one (it closes, or stays literal) the
+    /// item is left in the sequence as the literal text it always was.
+    color: ?ColorPrefix = null,
     can_open: bool,
     can_close: bool,
     /// The CURRENT remaining sub-range, in `text` coordinates, of this
@@ -670,6 +699,17 @@ const Delim = struct {
     /// leftover placeholder run `spliceEmphasis` creates) an accurate span.
     range_start: usize,
     range_end: usize,
+};
+
+/// See `Delim.color`.
+const ColorPrefix = struct {
+    /// The placeholder item holding the prefix bytes.
+    item: ItemIdx,
+    color: highlight.Color,
+    spaced: bool,
+    /// The prefix's `text` bounds — `start` is the run's `range_end`.
+    start: usize,
+    end: usize,
 };
 
 /// One `[`/`![` opener currently eligible to close into a link/image,
@@ -880,6 +920,10 @@ pub const Scanner = struct {
         if (self.mapSpan(local_start, local_end)) |sp| self.b.setContentSpan(id, sp);
     }
 
+    fn setMarkerSpanIfMapped(self: *Scanner, id: Node.Id, local_start: usize, local_end: usize) void {
+        if (self.mapSpan(local_start, local_end)) |sp| self.b.setMarkerSpan(id, sp);
+    }
+
     /// `options.html_elements`: try to promote a raw inline HTML tag
     /// (`text[tag_start..tag_end]`, already validated by `scanHtmlTag`) into a
     /// real AST node instead of a `raw_inline`. Appends the promoted node and
@@ -1053,9 +1097,13 @@ pub const Scanner = struct {
                 const opener_item = self.delims.items[oi].item;
                 const closer_item = self.delims.items[closer_idx].item;
 
+                // A coloured highlight's emoji prefix sits in the item right
+                // after the opener; it is spelling, not content, so the
+                // children start after it and it goes out with the opener.
+                const color = if (ch == '=') self.delims.items[oi].color else null;
                 var kids = std.ArrayList(Node.Id).empty;
                 defer kids.deinit(self.b.allocator);
-                var cur = self.items.items[opener_item].next;
+                var cur = if (color) |c| self.items.items[c.item].next else self.items.items[opener_item].next;
                 while (cur) |ci| {
                     if (ci == closer_item) break;
                     try kids.append(self.b.allocator, self.items.items[ci].node);
@@ -1063,6 +1111,11 @@ pub const Scanner = struct {
                 }
                 const kind: AST.InlineMark = if (isExtDelimChar(ch)) extDelimMark(ch) else if (use_delims == 2) .strong else .emph;
                 const new_node = try self.b.addContainer(.{ .inline_mark = kind }, kids.items);
+                if (color) |c| {
+                    try self.b.setAttrs(new_node, .{ .entries = &.{.{ .key = highlight.attr_key, .value = c.color.name() }} });
+                    self.b.setSpelling(new_node, .{ .highlight_prefix = if (c.spaced) .spaced else .tight });
+                    self.setMarkerSpanIfMapped(new_node, c.start, c.end);
+                }
 
                 // The exact source bytes THIS match consumes: the opener's
                 // innermost (content-adjacent, i.e. rightmost) `use_delims`
@@ -1072,7 +1125,7 @@ pub const Scanner = struct {
                 // (between the matched delimiters); `match_*` extends that
                 // by `use_delims` on each side to cover the delimiters
                 // themselves too.
-                const content_start = self.delims.items[oi].range_end;
+                const content_start = if (color) |c| c.end else self.delims.items[oi].range_end;
                 const content_end = self.delims.items[closer_idx].range_start;
 
                 self.delims.items[oi].count -= use_delims;
@@ -3515,6 +3568,128 @@ test "highlight: intraword ==x== is allowed, like strikethrough" {
     try expectMark(&ast, mark);
     try testing.expectEqualStrings("bar", ast.ast.nodes[ast.ast.nodes[mark].first_child.?].kind.str);
     try testing.expectEqualStrings("baz", ast.ast.nodes[ast.ast.nodes[mark].next_sibling.?].kind.str);
+}
+
+// ── coloured highlights (==🔴 text==) ───────────────────────────────────
+
+const colors_on: Options = .{ .highlight = true, .highlight_colors = true };
+
+fn expectColoredMark(ast: *const Document, id: Node.Id, color: []const u8, inner: []const u8) !void {
+    try expectMark(ast, id);
+    try testing.expectEqualStrings(color, ast.ast.attrsOf(id).get(highlight.attr_key).?);
+    try testing.expectEqualStrings(inner, ast.ast.nodes[ast.ast.nodes[id].first_child.?].kind.str);
+    try testing.expect(ast.ast.nodes[ast.ast.nodes[id].first_child.?].next_sibling == null);
+}
+
+test "highlight colors: ==🔴 text== is a red mark whose content is just the text" {
+    var ast = try parseAndFinishWithOptionsDoc("==\u{1F534} lit==", colors_on);
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectColoredMark(&ast, mark, "red", "lit");
+    try testing.expect(ast.ast.nodes[mark].next_sibling == null);
+    try testing.expectEqual(Document.Spelling{ .highlight_prefix = .spaced }, ast.spelling(mark).?);
+}
+
+test "highlight colors: the tight form ==🔴text== parses the same, spelled tight" {
+    var ast = try parseAndFinishWithOptionsDoc("==\u{1F534}lit==", colors_on);
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectColoredMark(&ast, mark, "red", "lit");
+    try testing.expectEqual(Document.Spelling{ .highlight_prefix = .tight }, ast.spelling(mark).?);
+}
+
+test "highlight colors: every circle maps to its colour name" {
+    for (std.enums.values(highlight.Color)) |c| {
+        var buf: [32]u8 = undefined;
+        const src = try std.fmt.bufPrint(&buf, "=={s} x==", .{c.emoji()});
+        var ast = try parseAndFinishWithOptionsDoc(src, colors_on);
+        defer ast.deinit();
+        try expectColoredMark(&ast, ast.ast.nodes[ast.ast.root].first_child.?, c.name(), "x");
+    }
+}
+
+test "highlight colors OFF: the emoji is ordinary highlighted text" {
+    var ast = try parseAndFinishWithOptionsDoc("==\u{1F534} lit==", .{ .highlight = true });
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectMark(&ast, mark);
+    try testing.expect(ast.ast.nodes[mark].attrs == null);
+    try testing.expectEqualStrings("\u{1F534} lit", ast.ast.nodes[ast.ast.nodes[mark].first_child.?].kind.str);
+    try testing.expect(ast.spelling(mark) == null);
+}
+
+test "highlight colors without highlight: inert, == stays literal" {
+    var ast = try parseAndFinishWithOptionsDoc("==\u{1F534} lit==", .{ .highlight_colors = true });
+    defer ast.deinit();
+    const child = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expectEqualStrings("==\u{1F534} lit==", ast.ast.nodes[child].kind.str);
+    try testing.expect(ast.ast.nodes[child].next_sibling == null);
+}
+
+test "highlight colors: an emoji that is not a circle stays content" {
+    var ast = try parseAndFinishWithOptionsDoc("==\u{1F34E} lit==", colors_on);
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectMark(&ast, mark);
+    try testing.expect(ast.ast.nodes[mark].attrs == null);
+    try testing.expectEqualStrings("\u{1F34E} lit", ast.ast.nodes[ast.ast.nodes[mark].first_child.?].kind.str);
+}
+
+test "highlight colors: only the START of a highlight takes a colour" {
+    var ast = try parseAndFinishWithOptionsDoc("==lit \u{1F534}==", colors_on);
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectMark(&ast, mark);
+    try testing.expect(ast.ast.nodes[mark].attrs == null);
+    try testing.expectEqualStrings("lit \u{1F534}", ast.ast.nodes[ast.ast.nodes[mark].first_child.?].kind.str);
+}
+
+test "highlight colors: a prefix on a run that ends up CLOSING stays literal text" {
+    // The middle `==` could open (it is followed by 🔴) but closes the first
+    // highlight instead; its prefix item is left in place as plain text.
+    var ast = try parseAndFinishWithOptionsDoc("==a==\u{1F534} b==", colors_on);
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectMark(&ast, mark);
+    try testing.expect(ast.ast.nodes[mark].attrs == null);
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(testing.allocator);
+    var kid = ast.ast.nodes[mark].next_sibling;
+    while (kid) |k| : (kid = ast.ast.nodes[k].next_sibling) {
+        try testing.expect(ast.ast.nodes[k].kind == .str);
+        try buf.appendSlice(testing.allocator, ast.ast.nodes[k].kind.str);
+    }
+    try testing.expectEqualStrings("\u{1F534} b==", buf.items);
+}
+
+test "highlight colors: an unclosed coloured opener leaves the emoji as literal text" {
+    var ast = try parseAndFinishWithOptionsDoc("==\u{1F534} open", colors_on);
+    defer ast.deinit();
+    try expectAllStr(&ast, ast.ast.root);
+    const flat = try flatTextOf(&ast);
+    defer testing.allocator.free(flat);
+    try testing.expectEqualStrings("==\u{1F534} open", flat);
+}
+
+test "highlight colors: the colour survives nesting inside emphasis" {
+    var ast = try parseAndFinishWithOptionsDoc("*a ==\u{1F7E2} b== c*", colors_on);
+    defer ast.deinit();
+    const emph = ast.ast.nodes[ast.ast.root].first_child.?;
+    const a = ast.ast.nodes[emph].first_child.?;
+    try expectColoredMark(&ast, ast.ast.nodes[a].next_sibling.?, "green", "b");
+}
+
+test "span: a coloured highlight's span covers the whole construct, its content span only the text, and its marker span the prefix" {
+    const s = "==\u{1F534} lit==";
+    var ast = try parseAndFinishMappedDoc(s, colors_on);
+    defer ast.deinit();
+    const mark = ast.ast.nodes[ast.ast.root].first_child.?;
+    try expectColoredMark(&ast, mark, "red", "lit");
+    try testing.expectEqualStrings(s, Span.of(u8, ast.span(mark), s));
+    try testing.expectEqualStrings("lit", Span.of(u8, ast.contentSpan(mark).?, s));
+    try testing.expectEqualStrings("\u{1F534} ", Span.of(u8, ast.markerSpan(mark).?, s));
+    const lit = ast.ast.nodes[mark].first_child.?;
+    try testing.expectEqualStrings("lit", Span.of(u8, ast.span(lit), s));
 }
 
 test "span: a highlight mark node covers '==text=='" {
