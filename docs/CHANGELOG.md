@@ -86,6 +86,24 @@ a later `--write` cannot reach back into a released section. See
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## 3.3.0
+
+### Added
+
+- **markdown** — add the ==highlight== extension behind ParseOptions.highlight ([`5cb01e3`](https://github.com/diaryx-org/twig/commit/5cb01e3eee0bf4f182ac9a8e0fa027b23eb0b353))
+- **markdown** — coloured highlights, ==🔴 text==, behind ParseOptions.highlight_colors ([`96d7234`](https://github.com/diaryx-org/twig/commit/96d7234d0aac888d89350e710c986a0789062fb3))
+- **asciidoc** — the rest of the language, judged against the whole ASG schema ([`a9c3fb2`](https://github.com/diaryx-org/twig/commit/a9c3fb27c0745c414aa9577fdedb313dc3ca36f7))
+- **asciidoc** — the serializer and the syntax table, so AsciiDoc is written and authored as well as read ([`e82d1d6`](https://github.com/diaryx-org/twig/commit/e82d1d6bf863da784ec2837c0daffb2d4a5e995a))
+
+### Fixed
+
+- **editor** — gate the table, split and renumber gestures on the format's spelling ([`6de1c4f`](https://github.com/diaryx-org/twig/commit/6de1c4f99385d513a2e120c41e7f93cc04829c67))
+- **markdown** — match strikethrough on the emphasis delimiter stack so it nests ([`42f6471`](https://github.com/diaryx-org/twig/commit/42f6471921e00ff066bca9179b5f7980a7971839))
+
 ### Changed
 
 - **build** — cut releases with the shared tooling, not a sixth copy ([`860cb13`](https://github.com/diaryx-org/twig/commit/860cb13a62c0486d7735d4491b82b72f805e5d97))
@@ -107,7 +125,83 @@ a later `--write` cannot reach back into a released section. See
 - `tag_pattern` is anchored, `^v[0-9]`. A tag with a `v`
   somewhere in it no longer ends the unreleased range.
 
-<!-- git-cliff:end -->
+- The seven table gestures (`Editor.table*`,
+  `twig_editor_table_edit`, `Editor::table_*` in Rust) now return
+  `UnsupportedFormat` for a format with no pipe-table spelling — HTML, XML
+  and AsciiDoc. They previously spliced GFM pipe text over the region the
+  table occupied and returned success; over an HTML `<table>` that reparsed
+  as a paragraph and destroyed the table. Ask
+  `twig_format_supports`/`Format::supports` with the matching
+  `TWIG_GESTURE_TABLE_*` code before offering the gesture.
+
+- `Editor.splitBlock` / `twig_editor_split_block` now
+  returns `UnsupportedFormat` for a format that does not separate blocks
+  with a blank line (HTML, XML, AsciiDoc). It previously returned success
+  having inserted whitespace that HTML reads as insignificant, leaving the
+  document with the same one block it started with.
+
+- `Editor.renumberOrderedLists` /
+  `twig_editor_renumber_ordered_lists` now returns `UnsupportedFormat` for a
+  format that does not spell an ordered item as a numbered line marker
+  (HTML, XML, AsciiDoc). It previously returned success having changed
+  nothing, since an `<ol>` carries its numbering in the tag.
+
+- A table edit on a DJOT document now writes djot's own
+  delimiter row rather than Markdown's. `| --- |` becomes `|---|` and
+  `| :---: |` becomes `|:-:|`; data rows are unchanged. The old output was
+  read back as an ordinary data row, so an edited djot table lost its header
+  row. Markdown output is byte-for-byte unchanged.
+
+- A Markdown `delete` node now nests correctly inside and
+  around emphasis, links, and images. `*a ~~b~~ c*` used to yield an `emph`
+  holding `"a "`, `"~~"`, `"b"` and lose the rest of the text; it now yields
+  `emph[ "a ", delete["b"], " c" ]`. `~~a *b~~ c*` used to yield
+  `delete[ "a ", emph["b~~ c*"] ]`; it now yields `delete["a *b"]` followed
+  by literal ` c*`, matching cmark-gfm. Documents with no `~` inside or
+  across an emphasis pair are unaffected.
+
+- An AsciiDoc `++++` pass block is now a `raw_block`
+  (format `html`) rather than a `code_block`, so its interior renders
+  raw instead of as escaped code.
+
+- An AsciiDoc list item whose marker differs from the
+  current list's (`* one` then `- two`, or `. sub` under `* item`) now
+  opens a NESTED list inside the item instead of a sibling list after it.
+
+- AsciiDoc constructs that used to survive as literal
+  paragraph text now parse into their own nodes: block metadata lines
+  (`[source,ruby]`, `.Title`, `[[id]]`) attach to the block below them,
+  `NOTE: ` paragraphs become a `note` container, indented paragraphs a
+  `code_block`, `|===` a `table`, `> ` lines a `block_quote`, `---` a
+  `thematic_break`, `term:: desc` a `definition_list`, ordered markers
+  an `ordered_list`; and inline URLs, `<<xrefs>>`, macros, `{attrs}`,
+  `&amp;`, `^sup^`, `(C)`, `--` and `...` are their own inline nodes.
+
+- An AsciiDoc section or document title's text is now
+  parsed for inline markup (`== A *bold* title` yields a `strong`) where
+  it used to be one `str`; a `[[anchor]]` at the end of the title line
+  becomes the section's `id` attribute rather than title text.
+
+- The AsciiDoc `document-attributes` marker now also
+  carries the author line's implicit attributes (`author`, `firstname`,
+  `email`, `author_2`, …) and the revision line's (`revnumber`,
+  `revdate`, `revremark`), and the header heading's span covers those
+  lines.
+
+- `twig convert -o asciidoc` and `-o canonical` on
+  an AsciiDoc input now produce output; `twig_document_serialize`,
+  `twig_builder_serialize` and the Rust `serialize_to` with the
+  AsciiDoc target used to report `UNSUPPORTED_FORMAT` and now succeed.
+
+- `twig_document_diagnostics` and the Rust
+  `diagnostics` with the AsciiDoc target now return per-node warnings
+  instead of `UNSUPPORTED_FORMAT`.
+
+- `twig_format_is_authorable(TWIG_FORMAT_ASCIIDOC)`
+  now reports 1, `twig_format_supports` answers per gesture, and every
+  editor gesture but the link, image, footnote and table ones now
+  edits an AsciiDoc document where all of them used to refuse.
+
 
 ## 3.2.1
 
