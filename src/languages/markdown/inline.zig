@@ -362,7 +362,6 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                     .open_start = i,
                     .content_start = i + 1,
                     .delim_stack_len = sc.delims.items.len,
-                    .tilde_stack_len = sc.tilde_delims.items.len,
                 });
                 i += 1;
             },
@@ -379,7 +378,6 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                         .open_start = i,
                         .content_start = i + 2,
                         .delim_stack_len = sc.delims.items.len,
-                        .tilde_stack_len = sc.tilde_delims.items.len,
                     });
                     i += 2;
                 } else {
@@ -395,12 +393,18 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                 // GFM strikethrough (`self.options.strikethrough`): a `~`/`~~`
                 // delimiter run, reusing the SAME flanking classification as
                 // `*`/`_` (no intraword restriction, since `computeFlanking`
-                // only special-cases `ch == '_'`) but its OWN delimiter stack
-                // and matching pass (`tilde_delims`/`processStrikethrough`)
-                // rather than folding into `delims`/`processEmphasis` — GFM
-                // strikethrough has NO "rule of 3" and only ever matches
-                // EQUAL-length runs of 1 or 2, both of which would be wrong if
-                // it shared CommonMark emphasis's matching algorithm. A run
+                // only special-cases `ch == '_'`) and the SAME delimiter stack
+                // and matching pass (`delims`/`processEmphasis`), exactly as
+                // cmark-gfm's strikethrough extension does. Sharing the stack
+                // is what makes the two nest: `*a ~~b~~ c*` needs the `~~`
+                // pair resolved as part of the `*` pair's contents, and
+                // `~~a *b~~ c*` needs the `~~` closer to swallow the `*`
+                // opener between them, both of which a separate stack
+                // resolved after emphasis gets wrong (it built a `delete`
+                // over items emphasis had already captured, detaching them).
+                // The matching rules differ from `*`/`_` — no "rule of 3",
+                // and only EQUAL-length runs of 1 or 2 pair, consumed whole —
+                // and `processEmphasis` applies them per `Delim.char`. A run
                 // longer than 2 is never eligible (GFM requires "one or two
                 // tildes"), so it always falls back to literal text.
                 var run_end = i;
@@ -412,8 +416,9 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                     const run_id = try b.addLeaf(.{ .str = text[i..run_end] });
                     sc.setSpanIfMapped(run_id, i, run_end);
                     const item_idx = try sc.appendItem(run_id);
-                    try sc.tilde_delims.append(b.allocator, .{
+                    try sc.delims.append(b.allocator, .{
                         .item = item_idx,
+                        .char = '~',
                         .count = run_len,
                         .can_open = flank.can_open,
                         .can_close = flank.can_close,
@@ -523,7 +528,6 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
     // Resolve whatever emphasis/strikethrough delimiters are left over the
     // WHOLE stack.
     try sc.processEmphasis(0);
-    try sc.processStrikethrough(0);
 
     var out = std.ArrayList(Node.Id).empty;
     errdefer out.deinit(b.allocator);
@@ -595,8 +599,24 @@ const Item = struct {
 /// text. `count` starts as the run's length and shrinks by 1 or 2 each time
 /// `process_emphasis` consumes it as an opener/closer; the entry is dropped
 /// from the stack once its count reaches 0 (see `removeDelimRange`).
+/// Whether `ch` is an EXTENSION delimiter on the emphasis stack — one whose
+/// runs pair whole, equal-length, with no rule of 3 (see `processEmphasis`).
+/// `'*'`/`'_'` are CommonMark emphasis and answer false.
+fn isExtDelimChar(ch: u8) bool {
+    return ch == '~';
+}
+
+/// The mark an extension delimiter pair produces.
+fn extDelimMark(ch: u8) AST.InlineMark {
+    std.debug.assert(isExtDelimChar(ch));
+    return .delete;
+}
+
 const Delim = struct {
     item: ItemIdx,
+    /// `'*'`/`'_'` (CommonMark emphasis) or `'~'` (GFM strikethrough). A
+    /// closer only ever pairs with an opener of the same `char`, and
+    /// `processEmphasis` picks the matching rules by it.
     char: u8,
     count: usize,
     can_open: bool,
@@ -641,27 +661,6 @@ const Bracket = struct {
     /// for THIS bracket's contents never reaches back past delimiters that
     /// existed before it opened.
     delim_stack_len: usize,
-    /// `Scanner.tilde_delims.items.len` at the moment this bracket was
-    /// pushed -- the strikethrough analog of `delim_stack_len`, same
-    /// rationale (see `processStrikethrough`).
-    tilde_stack_len: usize = 0,
-};
-
-/// One `~`/`~~` strikethrough delimiter run (`self.options.strikethrough`) --
-/// the GFM analog of `Delim`, but on its OWN stack/matching pass
-/// (`processStrikethrough`) rather than sharing CommonMark emphasis's rule-
-/// of-3 matching -- see the `'~'` case in `parseInline`'s doc comment for why.
-const StrikeDelim = struct {
-    item: ItemIdx,
-    count: usize,
-    can_open: bool,
-    can_close: bool,
-    /// The whole run's `text` bounds -- see `Delim.range_start`/`.range_end`'s
-    /// doc comment; unlike CommonMark emphasis, GFM strikethrough never
-    /// partially consumes a run (`processStrikethrough`), so, unlike
-    /// `Delim`'s, this never shrinks.
-    range_start: usize,
-    range_end: usize,
 };
 
 pub const Scanner = struct {
@@ -716,7 +715,6 @@ pub const Scanner = struct {
     head: ?ItemIdx = null,
     tail: ?ItemIdx = null,
     delims: std.ArrayList(Delim) = .empty,
-    tilde_delims: std.ArrayList(StrikeDelim) = .empty,
     brackets: std.ArrayList(Bracket) = .empty,
 
     /// Every `email` node this block's EXTENDED autolink path
@@ -730,7 +728,6 @@ pub const Scanner = struct {
         self.buf.deinit(self.b.allocator);
         self.items.deinit(self.b.allocator);
         self.delims.deinit(self.b.allocator);
-        self.tilde_delims.deinit(self.b.allocator);
         self.brackets.deinit(self.b.allocator);
         self.ext_emails.deinit(self.b.allocator);
     }
@@ -743,7 +740,6 @@ pub const Scanner = struct {
         self.buf.clearRetainingCapacity();
         self.items.clearRetainingCapacity();
         self.delims.clearRetainingCapacity();
-        self.tilde_delims.clearRetainingCapacity();
         self.brackets.clearRetainingCapacity();
         self.ext_emails.clearRetainingCapacity();
         self.buf_start = 0;
@@ -986,6 +982,13 @@ pub const Scanner = struct {
                     k -= 1;
                     const cand = self.delims.items[k];
                     if (cand.can_open and cand.char == closer.char) {
+                        // Strikethrough pairs only EQUAL-length runs and has
+                        // no rule of 3 (see the `'~'` case in `parseInline`).
+                        if (isExtDelimChar(closer.char)) {
+                            if (cand.count != closer.count) continue;
+                            opener_idx = k;
+                            break;
+                        }
                         if ((cand.can_open and cand.can_close) or (closer.can_open and closer.can_close)) {
                             const sum = cand.count + closer.count;
                             if (sum % 3 == 0 and !(cand.count % 3 == 0 and closer.count % 3 == 0)) {
@@ -1002,7 +1005,10 @@ pub const Scanner = struct {
             }
 
             if (opener_idx) |oi| {
-                const use_delims: usize = if (self.delims.items[oi].count >= 2 and closer.count >= 2) 2 else 1;
+                // Emphasis consumes 1 or 2 of each run and may leave a
+                // remainder; strikethrough consumes both runs whole (they are
+                // equal-length by construction, see the opener search).
+                const use_delims: usize = if (isExtDelimChar(closer.char)) closer.count else if (self.delims.items[oi].count >= 2 and closer.count >= 2) 2 else 1;
                 const ch = closer.char;
                 const opener_item = self.delims.items[oi].item;
                 const closer_item = self.delims.items[closer_idx].item;
@@ -1015,7 +1021,8 @@ pub const Scanner = struct {
                     try kids.append(self.b.allocator, self.items.items[ci].node);
                     cur = self.items.items[ci].next;
                 }
-                const new_node = try self.b.addContainer(if (use_delims == 2) AST.Node.Kind{ .inline_mark = .strong } else AST.Node.Kind{ .inline_mark = .emph }, kids.items);
+                const kind: AST.InlineMark = if (isExtDelimChar(ch)) extDelimMark(ch) else if (use_delims == 2) .strong else .emph;
+                const new_node = try self.b.addContainer(.{ .inline_mark = kind }, kids.items);
 
                 // The exact source bytes THIS match consumes: the opener's
                 // innermost (content-adjacent, i.e. rightmost) `use_delims`
@@ -1080,74 +1087,6 @@ pub const Scanner = struct {
         self.delims.items.len = stack_bottom;
     }
 
-    /// GFM strikethrough's matching pass: bottom-up, over `tilde_delims`,
-    /// pairing each closer with the NEAREST still-open opener of the SAME
-    /// run length (1 matches 1, 2 matches 2 -- unlike `processEmphasis`,
-    /// there's no partial consumption and no rule-of-3, since GFM
-    /// strikethrough only ever recognizes whole "1 or 2 tildes" runs). A
-    /// matched pair is entirely consumed (both placeholder items dropped
-    /// from the sequence, replaced by one spliced-in `delete` node);
-    /// unmatched delimiters are simply left as literal text, exactly like
-    /// `processEmphasis`.
-    fn processStrikethrough(self: *Scanner, stack_bottom: usize) Allocator.Error!void {
-        var closer_idx = stack_bottom;
-        while (closer_idx < self.tilde_delims.items.len) {
-            const closer = self.tilde_delims.items[closer_idx];
-            if (!closer.can_close) {
-                closer_idx += 1;
-                continue;
-            }
-            var opener_idx: ?usize = null;
-            if (closer_idx > stack_bottom) {
-                var k = closer_idx;
-                while (k > stack_bottom) {
-                    k -= 1;
-                    const cand = self.tilde_delims.items[k];
-                    if (cand.can_open and cand.count == closer.count) {
-                        opener_idx = k;
-                        break;
-                    }
-                }
-            }
-            if (opener_idx) |oi| {
-                const opener_item = self.tilde_delims.items[oi].item;
-                const closer_item = self.tilde_delims.items[closer_idx].item;
-                var kids = std.ArrayList(Node.Id).empty;
-                defer kids.deinit(self.b.allocator);
-                var cur = self.items.items[opener_item].next;
-                while (cur) |ci| {
-                    if (ci == closer_item) break;
-                    try kids.append(self.b.allocator, self.items.items[ci].node);
-                    cur = self.items.items[ci].next;
-                }
-                const new_node = try self.b.addContainer(.{ .inline_mark = .delete }, kids.items);
-                // Unlike emphasis, strikethrough always consumes a matched
-                // pair's runs WHOLE (see this function's doc comment), so
-                // the span is simply the two runs' own (never-shrunk)
-                // bounds, with the interior between them as `content_span`.
-                self.setSpanIfMapped(new_node, self.tilde_delims.items[oi].range_start, self.tilde_delims.items[closer_idx].range_end);
-                self.setContentSpanIfMapped(new_node, self.tilde_delims.items[oi].range_end, self.tilde_delims.items[closer_idx].range_start);
-                const left = self.items.items[opener_item].prev;
-                const right = self.items.items[closer_item].next;
-                _ = try self.insertItemBetween(left, right, new_node);
-                self.removeTildeDelimRange(oi, closer_idx + 1);
-                closer_idx = oi;
-            } else if (!closer.can_open) {
-                self.removeTildeDelimRange(closer_idx, closer_idx + 1);
-            } else {
-                closer_idx += 1;
-            }
-        }
-        self.tilde_delims.items.len = stack_bottom;
-    }
-
-    fn removeTildeDelimRange(self: *Scanner, start: usize, end: usize) void {
-        if (end <= start) return;
-        const tail = self.tilde_delims.items[end..];
-        std.mem.copyForwards(StrikeDelim, self.tilde_delims.items[start..][0..tail.len], tail);
-        self.tilde_delims.items.len -= (end - start);
-    }
-
     /// Insert the `emph`/`strong` node `new_node` (already built from
     /// `use_delims` delimiters' worth of content) in place of the matched
     /// portion of the opener/closer runs. If either run has leftover
@@ -1203,7 +1142,6 @@ pub const Scanner = struct {
     /// span, and applies the "links cannot contain links" deactivation.
     fn finishLinkOrImage(self: *Scanner, br: Bracket, dest: []const u8, title: ?[]const u8, close_i: usize, end: usize) Allocator.Error!void {
         try self.processEmphasis(br.delim_stack_len);
-        try self.processStrikethrough(br.tilde_stack_len);
 
         var kids = std.ArrayList(Node.Id).empty;
         defer kids.deinit(self.b.allocator);
@@ -3330,6 +3268,80 @@ test "strikethrough OFF: ~~text~~ parses as plain CommonMark literal text" {
     defer ast.deinit();
     const child = ast.ast.nodes[ast.ast.root].first_child.?;
     try testing.expectEqualStrings("~~gone~~", ast.ast.nodes[child].kind.str);
+}
+
+fn inlineTextOf(ast: *const Document, parent: Node.Id, buf: *std.ArrayList(u8)) !void {
+    var kid = ast.ast.nodes[parent].first_child;
+    while (kid) |k| : (kid = ast.ast.nodes[k].next_sibling) {
+        switch (ast.ast.nodes[k].kind) {
+            .str => |t| try buf.appendSlice(testing.allocator, t),
+            else => try inlineTextOf(ast, k, buf),
+        }
+    }
+}
+
+test "strikethrough nests inside emphasis: *a ~~b~~ c* keeps every byte" {
+    // Regression: the `~~` pair used to be matched on its own stack AFTER
+    // emphasis had already captured the placeholder runs as its children, so
+    // the `delete` was built over detached items and `~~ c` vanished from the
+    // tree.
+    var ast = try parseAndFinishWithOptionsDoc("*a ~~b~~ c*", .{ .strikethrough = true });
+    defer ast.deinit();
+    const emph = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[emph].kind == .inline_mark and ast.ast.nodes[emph].kind.inline_mark == .emph);
+    try testing.expect(ast.ast.nodes[emph].next_sibling == null);
+    const a = ast.ast.nodes[emph].first_child.?;
+    try testing.expectEqualStrings("a ", ast.ast.nodes[a].kind.str);
+    const del = ast.ast.nodes[a].next_sibling.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+    try testing.expectEqualStrings("b", ast.ast.nodes[ast.ast.nodes[del].first_child.?].kind.str);
+    const c = ast.ast.nodes[del].next_sibling.?;
+    try testing.expectEqualStrings(" c", ast.ast.nodes[c].kind.str);
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(testing.allocator);
+    try inlineTextOf(&ast, ast.ast.root, &buf);
+    try testing.expectEqualStrings("a b c", buf.items);
+}
+
+test "strikethrough wraps emphasis: ~~*a*~~" {
+    var ast = try parseAndFinishWithOptionsDoc("~~*a*~~", .{ .strikethrough = true });
+    defer ast.deinit();
+    const del = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+    const emph = ast.ast.nodes[del].first_child.?;
+    try testing.expect(ast.ast.nodes[emph].kind == .inline_mark and ast.ast.nodes[emph].kind.inline_mark == .emph);
+    try testing.expectEqualStrings("a", ast.ast.nodes[ast.ast.nodes[emph].first_child.?].kind.str);
+}
+
+test "strikethrough interleaved with emphasis resolves like cmark-gfm: ~~a *b~~ c*" {
+    // The `~~` closer pairs first and drops the `*` opener between them, so the
+    // trailing `*` is literal: `<del>a *b</del> c*`.
+    var ast = try parseAndFinishWithOptionsDoc("~~a *b~~ c*", .{ .strikethrough = true });
+    defer ast.deinit();
+    const del = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(testing.allocator);
+    try inlineTextOf(&ast, del, &buf);
+    try testing.expectEqualStrings("a *b", buf.items);
+    try testing.expect(ast.ast.nodes[ast.ast.nodes[del].first_child.?].kind == .str);
+    buf.clearRetainingCapacity();
+    var kid = ast.ast.nodes[del].next_sibling;
+    while (kid) |k| : (kid = ast.ast.nodes[k].next_sibling) {
+        try testing.expect(ast.ast.nodes[k].kind == .str);
+        try buf.appendSlice(testing.allocator, ast.ast.nodes[k].kind.str);
+    }
+    try testing.expectEqualStrings(" c*", buf.items);
+}
+
+test "strikethrough inside a link's text nests under the link" {
+    var ast = try parseAndFinishWithOptionsDoc("[x ~~y~~](/u)", .{ .strikethrough = true });
+    defer ast.deinit();
+    const link = ast.ast.nodes[ast.ast.root].first_child.?;
+    try testing.expect(ast.ast.nodes[link].kind == .link);
+    const x = ast.ast.nodes[link].first_child.?;
+    const del = ast.ast.nodes[x].next_sibling.?;
+    try testing.expect(ast.ast.nodes[del].kind == .inline_mark and ast.ast.nodes[del].kind.inline_mark == .delete);
 }
 
 // ── Phase 3: math ────────────────────────────────────────────────────────
