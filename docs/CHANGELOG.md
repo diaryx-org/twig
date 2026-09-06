@@ -90,6 +90,35 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.3.1
+
+### Added
+
+- **editor** — highlights and their colours are authorable, per parse config ([`c10f02d`](https://github.com/diaryx-org/twig/commit/c10f02de30f3adcce2623290a295ae5aac6a10c1))
+- **editor** — GFM strikethrough is authorable, and the table set says which extensions decide ([`a2a4c5a`](https://github.com/diaryx-org/twig/commit/a2a4c5a746a9f9e01db25c4b308b0d7906df54f5))
+
+### Behavioural changes
+
+- A Markdown editor created with `TWIG_MD_HIGHLIGHT`
+  (`MarkdownExtensions::highlight`) now authors highlights.
+  `twig_editor_toggle_inline` / `_wrap_range` with `TWIG_INLINE_MARK` returned
+  `TWIG_STATUS_UNSUPPORTED_FORMAT` for Markdown whatever the flags, and now
+  succeeds when that flag is on — writing `==x==` and stripping it again.
+  Without the flag it still refuses, and `twig_format_supports` (which answers
+  for default options) still reports 0; ask `twig_format_supports_ext` with the
+  editor's own flags.
+
+- Markdown now authors GFM strikethrough.
+  `twig_editor_toggle_inline` / `_wrap_range` with `TWIG_INLINE_DELETE`
+  returned `TWIG_STATUS_UNSUPPORTED_FORMAT` for Markdown and now writes
+  `~~x~~` — and strips it again — for any editor parsed with
+  `ParseOptions.strikethrough` on, which is the default and is every editor the
+  C ABI creates. `twig_format_supports(TWIG_FORMAT_MARKDOWN,
+  TWIG_GESTURE_TOGGLE_INLINE, TWIG_INLINE_DELETE)` reported 0 and now reports 1.
+  A Zig caller parsing with `ParseOptions.commonmark` (or `strikethrough =
+  false`) still gets the refusal, since `~~x~~` is two literal tildes there.
+
+
 ## 3.3.0
 
 ### Added
