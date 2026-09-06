@@ -607,6 +607,12 @@ pub const Splicer = struct {
     // imports a language module. The format→delimiter table lives at the C-ABI
     // boundary. `wrapRange` always adds; `toggleInline` adds or removes based on
     // whether the range already *is* a node of that kind.
+    //
+    // Each is ONE range and one splice, and deliberately says nothing about
+    // blocks: a pair opened in one paragraph and closed in the next is a
+    // question about document structure, and the layer that has an opinion on
+    // it is `Editor.applyInline`, which cuts a selection at its block
+    // boundaries and drives these decisions once per piece.
 
     /// The tag half of `Node.Kind` — a plain enum of kind names, what a caller
     /// names an inline kind by (`.strong`, `.emph`, …) without its payload.
@@ -634,27 +640,59 @@ pub const Splicer = struct {
     /// `span` is wrapped with `open`/`close`. Mirrors a rich editor's Cmd-B:
     /// select a word, bold it; select it again, un-bold it.
     pub fn toggleInline(self: *Splicer, span: Span, kind: AST.KindRef, open: []const u8, close: []const u8) !void {
-        const id = self.inlineNodeCovering(span, kind) orelse
+        const strip = (try self.inlineStrip(span, kind, open, close)) orelse
             return self.wrapRange(span, open, close);
+        // `strip.interior` aliases `self.source`, which `replaceAtSpan` copies
+        // before retiring the old buffer — safe.
+        try self.replaceAtSpan(strip.span, strip.interior);
+    }
+
+    /// What a removal replaces, and with what — `Strip.span` is the range that
+    /// goes, `interior` the bytes that take its place. `interior` aliases the
+    /// current source and is valid until the next successful splice.
+    pub const Strip = struct { span: Span, interior: []const u8 };
+
+    /// The half of `toggleInline` that DECIDES: whether `span` is already a
+    /// mark of `kind`, and if so what removing it would write. `null` means it
+    /// is not, so a toggle wraps it instead.
+    ///
+    /// Split out from the splice so a caller applying one toggle to SEVERAL
+    /// ranges — `Editor`'s block-by-block wrap, which is one splice over all of
+    /// them — can ask about every range before it writes the first byte. That
+    /// matters because the two spans are not the same span: `span` is the
+    /// selection that TRIGGERS the removal, `Strip.span` is what the removal
+    /// covers, and they differ whenever the caller selected a mark's interior
+    /// rather than the whole node. Un-bolding `**word**` from a selection of
+    /// `word` takes the delimiters with it, so the edit reaches OUTSIDE the
+    /// range it was handed — and a caller assembling several of these has to
+    /// know how far before it can know which region it is splicing.
+    ///
+    /// `error.NoContentSpan` where `span` matched a node of `kind` whose
+    /// interior can't be recovered either way below — a mark that exists but
+    /// cannot be cleanly removed.
+    pub fn inlineStrip(
+        self: *Splicer,
+        span: Span,
+        kind: AST.KindRef,
+        open: []const u8,
+        close: []const u8,
+    ) error{NoContentSpan}!?Strip {
+        const id = self.inlineNodeCovering(span, kind) orelse return null;
 
         const node = self.doc.ast.nodes[id];
         // Prefer the parser's interior (correct regardless of delimiter width —
         // e.g. a multi-backtick `verbatim` whose interior the fixed-width
         // delimiters below can't strip); fall back to stripping the supplied
-        // delimiters for a kind the parser leaves without a `content_span`. Both
-        // replacement slices alias `self.source`, which `replaceAtSpan` copies
-        // before retiring the old buffer — safe.
+        // delimiters for a kind the parser leaves without a `content_span`.
         const node_span = self.doc.span(node.id);
         if (self.doc.contentSpan(node.id)) |cs| {
-            try self.replaceAtSpan(node_span, self.source.items[cs.start..cs.end]);
-            return;
+            return .{ .span = node_span, .interior = self.source.items[cs.start..cs.end] };
         }
         const s = self.source.items[node_span.start..node_span.end];
         if (s.len >= open.len + close.len and
             std.mem.startsWith(u8, s, open) and std.mem.endsWith(u8, s, close))
         {
-            try self.replaceAtSpan(node_span, s[open.len .. s.len - close.len]);
-            return;
+            return .{ .span = node_span, .interior = s[open.len .. s.len - close.len] };
         }
         // Matched a node of this kind but can't cleanly recover its interior.
         return error.NoContentSpan;

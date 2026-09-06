@@ -1286,6 +1286,16 @@ TwigStatus twig_editor_nodes_at(
 // start <= end <= source length, else TWIG_STATUS_INVALID_ARGUMENT; a kind the
 // format can't spell is TWIG_STATUS_UNSUPPORTED_FORMAT; a reparse-breaking result
 // rolls back to TWIG_STATUS_EDIT_CONFLICT. Fills out_change on success if non-NULL.
+//
+// A range crossing a BLOCK BOUNDARY gets one pair per block, in a single splice
+// (so one undo step, one out_change): `one two\n\nthree four` becomes
+// `**one two**\n\n**three four**`, not one pair straddling the blank line —
+// which reparses as literal asterisks and no mark. Block markers stay outside
+// the pair (a heading keeps its `# `, a list item its `- `), and a code block
+// inside the range is stepped over: `**` there is two characters of someone's
+// program. A range with no inline content in it at all — one wholly inside a
+// fence — is TWIG_STATUS_NOT_EDITABLE. A zero-width range is exempt: it crosses
+// nothing, and inserting an empty pair to type between is the point.
 TwigStatus twig_editor_wrap_range(
     TwigEditor *editor,
     size_t start,
@@ -1296,8 +1306,11 @@ TwigStatus twig_editor_wrap_range(
 
 // Toggle `kind` over [start, end): strip the mark if the range already is a node
 // of `kind` (its whole span or its interior), else wrap it — a rich editor's
-// Cmd-B. Same argument/format/rollback rules as twig_editor_wrap_range; a
-// matched-but-unrecoverable mark is TWIG_STATUS_NOT_EDITABLE.
+// Cmd-B. Same argument/format/rollback rules as twig_editor_wrap_range,
+// including its per-block cutting: the strip-or-wrap question is asked once per
+// block the range touches, so a second press over a multi-block selection
+// removes every mark the first one wrote instead of nesting a pair around each.
+// A matched-but-unrecoverable mark is TWIG_STATUS_NOT_EDITABLE.
 TwigStatus twig_editor_toggle_inline(
     TwigEditor *editor,
     size_t start,

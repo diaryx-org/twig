@@ -303,6 +303,135 @@ test "wrapRange always adds, even over an existing mark" {
     try fx.expectSource("a *_word_* b\n");
 }
 
+// ── inline marks across block boundaries ───────────────────────────────────
+
+test "toggleInline: a range crossing a blank line marks each block, not the gap" {
+    // The bug this replaced: one pair around the whole range put the opener in
+    // the first paragraph and the closer in the second, which reparses fine —
+    // as two paragraphs carrying four literal asterisks and no mark at all.
+    var md = try Fixture.init("one two\n\nthree four\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(0, 19), .strong);
+    try md.expectSource("**one two**\n\n**three four**\n");
+
+    // Two marks, not one — and the pin is the reparsed tree, because the point
+    // is what the parser reads back rather than what the bytes look like.
+    var strongs: usize = 0;
+    for (md.ed.astView().nodes) |n| {
+        if ((AST.KindRef{ .mark = .strong }).matches(n.kind)) strongs += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), strongs);
+
+    // And the second press removes BOTH, because each piece is decided on its
+    // own: it finds a mark around each and strips it, rather than nesting a
+    // second pair around the first.
+    try md.ed.toggleInline(Span.init(0, 27), .strong);
+    try md.expectSource("one two\n\nthree four\n");
+}
+
+test "toggleInline: djot cuts at the same boundaries with its own delimiters" {
+    var dj = try Fixture.init("one two\n\nthree four\n", .djot);
+    defer dj.deinit();
+    try dj.ed.toggleInline(Span.init(0, 19), .emph);
+    try dj.expectSource("_one two_\n\n_three four_\n");
+    try dj.ed.toggleInline(Span.init(0, 23), .emph);
+    try dj.expectSource("one two\n\nthree four\n");
+}
+
+test "toggleInline: each list item is its own block, and its marker is not in it" {
+    // The bytes between the pieces — the newline and the next item's `- ` — are
+    // copied through untouched, which is what keeps this a list rather than one
+    // paragraph with a stray bullet in the middle of a bold run.
+    var md = try Fixture.init("- alpha\n- beta\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(2, 14), .strong);
+    try md.expectSource("- **alpha**\n- **beta**\n");
+    try testing.expect(md.find(.{ .tag = .bullet_list }) != null);
+}
+
+test "toggleInline: out of a quote and into the paragraph after it" {
+    // Djot and Markdown disagree about where a quoted block STARTS (Djot at its
+    // text, Markdown at column zero), which is exactly the kind of span
+    // difference a rule derived from one format gets wrong on the other. Both
+    // are pinned because the piece comes from the paragraph's interior, which
+    // is the one thing they agree on.
+    var md = try Fixture.init("> one\n\ntwo\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(2, 10), .strong);
+    try md.expectSource("> **one**\n\n**two**\n");
+    try testing.expect(md.find(.{ .tag = .block_quote }) != null);
+
+    var dj = try Fixture.init("> one\n\ntwo\n", .djot);
+    defer dj.deinit();
+    try dj.ed.toggleInline(Span.init(2, 10), .emph);
+    try dj.expectSource("> _one_\n\n_two_\n");
+    try testing.expect(dj.find(.{ .tag = .block_quote }) != null);
+}
+
+test "toggleInline: a heading's marker stays outside the mark" {
+    // The selection is the whole line, `# ` included. The piece is the
+    // heading's `content_span`, so the marker is not what gets wrapped —
+    // `**# Title**` is a bold paragraph, not a bold heading.
+    var md = try Fixture.init("# Title\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(0, 7), .strong);
+    try md.expectSource("# **Title**\n");
+    try testing.expect(md.find(.{ .tag = .heading }) != null);
+}
+
+test "toggleInline: a code block inside the range is stepped over, not marked" {
+    var md = try Fixture.init("a\n\n```\nx\n```\n\nb\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(0, 15), .emph);
+    try md.expectSource("*a*\n\n```\nx\n```\n\n*b*\n");
+    // Still a fence, and its body is byte-for-byte what it was: an asterisk
+    // in a program is an asterisk.
+    const fence = md.find(.{ .tag = .code_block }) orelse return error.NoCodeBlock;
+    try testing.expectEqualStrings("x\n", md.ed.astView().nodes[fence].kind.code_block.text);
+}
+
+test "toggleInline: a range with nowhere to put a mark is refused, not mis-spelled" {
+    // Wholly inside the fence. There is no inline host in the range, so there
+    // is no honest place for a delimiter — and reporting success after writing
+    // two asterisks into someone's program is the failure `NotEditable` exists
+    // to prevent.
+    var md = try Fixture.init("```\nx y\n```\n", .markdown);
+    defer md.deinit();
+    try testing.expectError(error.NotEditable, md.ed.toggleInline(Span.init(4, 7), .strong));
+    try testing.expectError(error.NotEditable, md.ed.wrapRange(Span.init(4, 7), .strong));
+    try md.expectSource("```\nx y\n```\n");
+}
+
+test "wrapRange: a caret is not a range, and still opens an empty pair" {
+    // Zero-width: it crosses no boundary, and clipping it to a host would find
+    // a zero-width share and drop it. "Turn bold on, then type" survives.
+    var md = try Fixture.init("ab\n", .markdown);
+    defer md.deinit();
+    try md.ed.wrapRange(Span.init(1, 1), .strong);
+    try md.expectSource("a****b\n");
+}
+
+test "wrapRange: a crossing range gets one pair per block too" {
+    // `wrapRange` always adds — but "adds" still has to mean a mark, so it cuts
+    // at the same boundaries the toggle does.
+    var md = try Fixture.init("one\n\ntwo\n", .markdown);
+    defer md.deinit();
+    try md.ed.wrapRange(Span.init(0, 8), .emph);
+    try md.expectSource("*one*\n\n*two*\n");
+}
+
+test "toggleInline: one splice, so one undo step, however many blocks it touched" {
+    // The reason the pieces are assembled into a single buffer rather than
+    // spliced one at a time: a three-paragraph selection is one Cmd-Z, not
+    // three, and one `Change` for the host to re-anchor its caret against.
+    var md = try Fixture.init("a\n\nb\n\nc\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(0, 7), .strong);
+    try md.expectSource("**a**\n\n**b**\n\n**c**\n");
+    _ = try md.ed.splicer.undo();
+    try md.expectSource("a\n\nb\n\nc\n");
+}
+
 test "a range past the source is refused before it can reach the splicer's assert" {
     var fx = try Fixture.init("ab\n", .djot);
     defer fx.deinit();
@@ -441,6 +570,26 @@ test "setMarkColor: a colour the format cannot spell is refused, not written" {
     try fx.expectSource("==word==\n");
     try testing.expectError(error.InvalidColor, fx.ed.setMarkColor(3, ""));
     try fx.expectSource("==word==\n");
+}
+
+test "a highlight across two blocks becomes two highlights the palette can reach" {
+    // The observation this whole per-block cut came from. A selection crossing
+    // a blank line used to produce `==one two\n\nthree four==`, which is not a
+    // highlight — so `setMarkColor` correctly refused, because there was no
+    // mark for it to colour. Now there are two, and each one is a caret away.
+    var fx = try Fixture.initWith("one two\n\nthree four\n", .markdown, &highlight_colors_cfg);
+    defer fx.deinit();
+    try fx.ed.toggleInline(Span.init(0, 19), .mark);
+    try fx.expectSource("==one two==\n\n==three four==\n");
+
+    // Inside the first: `start + 2`, the `==` being two bytes.
+    try fx.ed.setMarkColor(2, "red");
+    try fx.expectSource("==\u{1F534} one two==\n\n==three four==\n");
+
+    // And inside the second, whose start the first colour has moved along by
+    // the four-byte emoji and its space.
+    try fx.ed.setMarkColor(20, "purple");
+    try fx.expectSource("==\u{1F534} one two==\n\n==\u{1F7E3} three four==\n");
 }
 
 test "setMarkColor: unsupported where the config spells no colour, or the format doesn't" {

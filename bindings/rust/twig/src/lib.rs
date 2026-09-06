@@ -1952,6 +1952,22 @@ impl Editor {
     /// [`Error::UnsupportedFormat`] if the document's format can't spell `kind`
     /// (e.g. a Markdown [`InlineKind::Mark`]); [`Error::InvalidArgument`] for a
     /// bad range; [`Error::EditConflict`] if the result doesn't reparse.
+    ///
+    /// A range crossing a **block boundary** gets one pair per block, in a
+    /// single splice — so one undo step and one [`Change`]:
+    ///
+    /// ```text
+    /// one two\n\nthree four   ->   **one two**\n\n**three four**
+    /// ```
+    ///
+    /// rather than one pair straddling the blank line, which reparses as four
+    /// literal asterisks and no mark at all. A block's own marker stays outside
+    /// the pair (a heading keeps its `# `, a list item its `- `), and a code
+    /// block inside the range is stepped over — `**` in a program is two
+    /// asterisks. A range with no inline content anywhere in it, one wholly
+    /// inside a fence, is [`Error::NotEditable`]. A zero-width range is exempt
+    /// from all of this: it crosses nothing, and opening an empty pair for the
+    /// caret to type between is the gesture.
     pub fn wrap_range(
         &mut self,
         start: usize,
@@ -1966,7 +1982,10 @@ impl Editor {
     /// Toggle `kind` over `[start, end)`: remove the mark if the range already
     /// *is* a node of `kind` (its whole span or its rendered interior), else
     /// wrap it — a rich editor's Cmd-B. Same error rules as
-    /// [`Editor::wrap_range`].
+    /// [`Editor::wrap_range`], and the same per-block cutting: remove-or-wrap
+    /// is decided once per block the range touches, so a second press over a
+    /// multi-block selection takes off every mark the first one put on instead
+    /// of nesting a second pair around each.
     pub fn toggle_inline(
         &mut self,
         start: usize,
@@ -4686,6 +4705,38 @@ mod tests {
         // Toggle emphasis on when the range isn't already marked.
         ed.toggle_inline(2, 6, InlineKind::Emph).expect("toggle on");
         assert_eq!(ed.source_str().unwrap(), "a *word* b\n");
+    }
+
+    #[test]
+    fn editor_inline_marks_cut_at_block_boundaries() {
+        // One pair per block, not one pair straddling the blank line — which
+        // would reparse as four literal asterisks and no mark.
+        let mut ed = Editor::new_str("one two\n\nthree four\n", Format::Markdown)
+            .expect("editor");
+        let c = ed.toggle_inline(0, 19, InlineKind::Strong).expect("toggle on");
+        assert_eq!(
+            ed.source_str().unwrap(),
+            "**one two**\n\n**three four**\n"
+        );
+
+        // One splice, so one Change spanning the lot and one undo step — the
+        // whole reason the pieces are assembled before anything is written.
+        assert_eq!(&ed.source_str().unwrap()[c.new.clone()], "**one two**\n\n**three four**");
+        ed.undo().expect("undo");
+        assert_eq!(ed.source_str().unwrap(), "one two\n\nthree four\n");
+
+        // And the second press removes both, rather than nesting a second pair
+        // around each.
+        ed.toggle_inline(0, 19, InlineKind::Strong).expect("toggle on");
+        ed.toggle_inline(0, 27, InlineKind::Strong).expect("toggle off");
+        assert_eq!(ed.source_str().unwrap(), "one two\n\nthree four\n");
+
+        // A range with nowhere in it to put a mark says so.
+        let mut fenced = Editor::new_str("```\nx y\n```\n", Format::Markdown).expect("editor");
+        assert_eq!(
+            fenced.toggle_inline(4, 7, InlineKind::Strong),
+            Err(Error::NotEditable)
+        );
     }
 
     #[test]

@@ -336,27 +336,131 @@ pub const Editor = struct {
     // ── Inline marks ───────────────────────────────────────────────────────
 
     /// Wrap `[start, end)` in `kind`'s delimiters — the unconditional half of
-    /// the inline toolbar (always adds a mark).
+    /// the inline toolbar (always adds a mark). One pair per block the range
+    /// touches; see `applyInline`.
     pub fn wrapRange(self: *Editor, span: Span, kind: InlineKind) Error!void {
-        try self.checkRange(span.start, span.end);
-        const d = self.syntax.authorableDelimsFor(kindRef(kind)) orelse return error.UnsupportedFormat;
-        self.splicer.wrapRange(span, d.open, d.close) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.EditConflict,
-        };
+        return self.applyInline(span, kind, .wrap);
     }
 
-    /// Toggle `kind` over `[start, end)`: strip the mark if the range already
+    /// Toggle `kind` over `[start, end)`: strip the mark where the range already
     /// IS a node of `kind` (its whole span or its interior), else wrap it — a
-    /// rich editor's Cmd-B.
+    /// rich editor's Cmd-B. One decision per block the range touches; see
+    /// `applyInline`.
     pub fn toggleInline(self: *Editor, span: Span, kind: InlineKind) Error!void {
+        return self.applyInline(span, kind, .toggle);
+    }
+
+    /// Whether the gesture may REMOVE a mark it finds, or only ever adds one —
+    /// the single difference between `toggleInline` and `wrapRange`, which
+    /// otherwise cut the range up and reassemble it identically.
+    const InlineMode = enum { wrap, toggle };
+
+    /// One replacement inside the assembled region: `span` goes, and either
+    /// `interior` takes its place (a mark being removed) or `span`'s own bytes
+    /// come back wrapped in delimiters (a mark being added).
+    ///
+    /// `interior` aliases the pre-edit source, so an `Edit` is valid only until
+    /// the splice that consumes it.
+    const Edit = struct { span: Span, interior: ?[]const u8 };
+
+    /// Both inline gestures, in one pass: cut `span` at its block boundaries,
+    /// decide per piece, and splice the lot once.
+    ///
+    /// ── Why per block ──────────────────────────────────────────────────────
+    /// A selection is a byte range; a mark is not. Wrapping the range whole put
+    /// the opening delimiter in one block and the closing one in the next
+    /// (`**one two\n\nthree four**`), which reparses perfectly well as two
+    /// paragraphs carrying four literal asterisks — so nothing failed, and the
+    /// document simply did not gain the mark the gesture reported writing.
+    /// `locate.inlineHostPieces` is where the boundaries come from; the bytes
+    /// between the pieces (the blank line, the next block's `- ` or `> `) are
+    /// copied through untouched, so what comes out is `**one two**` and
+    /// `**three four**` and a document that still says what it said.
+    ///
+    /// This is what every rich editor does with a multi-block selection, and it
+    /// is also what makes the SECOND press work: each piece is decided on its
+    /// own, so pressing Cmd-B again over the same selection finds a mark around
+    /// each piece and removes both, instead of nesting a second pair around the
+    /// first.
+    ///
+    /// ── Why still ONE splice ───────────────────────────────────────────────
+    /// Every gesture here is one `commitSplice`, and that is not a stylistic
+    /// preference: a splice is a reparse, an undo step, and a `Splicer.Change`
+    /// the host re-anchors its caret against. N pieces spliced separately would
+    /// be N reparses, N undo steps to press Cmd-Z through, and N changes whose
+    /// offsets each invalidate the next piece's span. So the pieces are decided
+    /// against ONE document state, assembled into one buffer, and written once
+    /// — the same shape `renumberOrderedLists` uses over a whole list.
+    ///
+    /// The region that buffer covers is the selection UNION every mark being
+    /// removed, because a removal takes its delimiters with it and those sit
+    /// outside a selection of the mark's interior (see `Splicer.inlineStrip`).
+    /// That is why nothing can be written until every piece has been asked.
+    ///
+    /// `error.NotEditable` when the range holds no inline host at all — a
+    /// selection inside a code block, where `**` would be two asterisks of
+    /// someone's program rather than a mark. A zero-width range is exempt from
+    /// the whole business: it crosses no boundary, and inserting an empty pair
+    /// for the caret to type between is a gesture in its own right.
+    fn applyInline(self: *Editor, span: Span, kind: InlineKind, mode: InlineMode) Error!void {
         try self.checkRange(span.start, span.end);
         const d = self.syntax.authorableDelimsFor(kindRef(kind)) orelse return error.UnsupportedFormat;
-        self.splicer.toggleInline(span, kindRef(kind), d.open, d.close) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.NoNodeSpan, error.NoContentSpan => return error.NotEditable,
-            else => return error.EditConflict,
-        };
+        const allocator = self.splicer.allocator;
+
+        var pieces: std.ArrayList(Span) = .empty;
+        defer pieces.deinit(allocator);
+        if (span.len() == 0) {
+            // A caret spans no block, and clipping it to a host would find a
+            // zero-width share and drop it — losing "open a pair here".
+            try pieces.append(allocator, span);
+        } else {
+            try locate.inlineHostPieces(allocator, &self.splicer.doc, span, &pieces);
+            if (pieces.items.len == 0) return error.NotEditable;
+        }
+
+        // Decide everything first: a removal expands its piece to the whole
+        // mark, so the region being spliced is not known until the last piece
+        // has answered.
+        var edits: std.ArrayList(Edit) = .empty;
+        defer edits.deinit(allocator);
+        var region = span;
+        for (pieces.items) |p| {
+            const strip = if (mode == .toggle)
+                self.splicer.inlineStrip(p, kindRef(kind), d.open, d.close) catch
+                    return error.NotEditable
+            else
+                null;
+            if (strip) |s| {
+                region.start = @min(region.start, s.span.start);
+                region.end = @max(region.end, s.span.end);
+                try edits.append(allocator, .{ .span = s.span, .interior = s.interior });
+            } else {
+                try edits.append(allocator, .{ .span = p, .interior = null });
+            }
+        }
+
+        const src = self.sourceBytes();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+        var cursor = region.start;
+        for (edits.items) |e| {
+            // Ascending and disjoint by construction — one piece per host, and
+            // hosts do not overlap — but a removal grows its piece leftward, so
+            // refuse rather than slice backwards if that ever stops holding.
+            if (e.span.start < cursor) return error.EditConflict;
+            try out.appendSlice(allocator, src[cursor..e.span.start]);
+            if (e.interior) |interior| {
+                try out.appendSlice(allocator, interior);
+            } else {
+                try out.appendSlice(allocator, d.open);
+                try out.appendSlice(allocator, src[e.span.start..e.span.end]);
+                try out.appendSlice(allocator, d.close);
+            }
+            cursor = e.span.end;
+        }
+        try out.appendSlice(allocator, src[cursor..region.end]);
+
+        return self.commitSplice(region.start, region.end, out.items);
     }
 
     /// Set — or clear — the COLOUR of the `mark` the caret at `offset` is in:

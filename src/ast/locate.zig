@@ -486,6 +486,115 @@ pub fn innermostCovering(
     return null;
 }
 
+// ── Inline hosts ───────────────────────────────────────────────────────────
+// WHERE in a document an inline mark may be written. A selection is a byte
+// range and knows nothing about blocks, so a gesture that wraps one in
+// delimiters has to be told where the block boundaries inside it fall — a pair
+// opened in one paragraph and closed in the next is two literal delimiters and
+// no mark at all.
+
+/// The source range inside `id` where inline content lives, or `null` when
+/// `id` is not a place an inline mark may be written.
+///
+/// Non-null for exactly two shapes, and nothing else:
+///
+///   * A node that HOLDS inlines by its content model — a `para`, a `heading`,
+///     a `caption`, a `line`, a generic block-leaf container.
+///   * A node whose model admits BLOCKS but which holds inlines directly: the
+///     elided-`<p>` case, which every format produces for a table `cell` and
+///     HTML produces for an unclassified element wrapping bare text.
+///
+/// Everything else answers `null`, and each for its own reason. A `code_block`
+/// or a `raw_block` holds opaque TEXT, where `**` is two asterisks and not a
+/// mark. A `thematic_break` holds nothing. A `block_quote` or a `list_item`
+/// holds BLOCKS, and it is the blocks inside it that answer — asking the
+/// container would hand back a range spanning the blank lines between its
+/// children, which is the boundary this whole idea exists to respect.
+///
+/// The range is the node's `content_span` where the parser recorded one, so a
+/// heading's `# ` and a list item's `- ` stay OUTSIDE it: a mark written around
+/// a block's own marker is not a mark, it is a corrupted block. Where there is
+/// no recorded interior (AsciiDoc records none for a paragraph) the whole span
+/// is the fallback — the same range for a paragraph, and one marker too wide
+/// for a heading, which is no worse than what a caller had before it asked.
+///
+/// INLINE-LEVEL nodes are excluded outright, `link`, `image` and `inline_mark`
+/// among them. A mark may of course be written inside a link's text, but the
+/// host that BOUNDS it is the paragraph around the link, not the link: a host
+/// is a block boundary, and an inline is not one.
+pub fn inlineHostRegion(doc: *const Document, id: AST.Node.Id) ?Span {
+    const kind = doc.ast.nodes[id].kind;
+    if (kind.level() == .@"inline") return null;
+    const holds = switch (kind.contentModel()) {
+        .inlines => true,
+        .blocks => holdsInlinesDirectly(doc, id),
+        .text, .empty => false,
+    };
+    if (!holds) return null;
+    const region = doc.contentSpan(id) orelse doc.span(id);
+    return if (region.len() == 0) null else region;
+}
+
+/// True when `id` has children and every one of them is inline — the elided
+/// `<p>` of a tight table cell.
+///
+/// An EMPTY node answers false rather than vacuously true, which matters: a
+/// Markdown `cell` spans its whole ROW and only `content_span` narrows it to
+/// the cell, so an empty cell admitted here would contribute a range covering
+/// its neighbours. There is nothing in it to mark either way.
+fn holdsInlinesDirectly(doc: *const Document, id: AST.Node.Id) bool {
+    var it = doc.children(id);
+    var any = false;
+    while (it.next()) |child| {
+        if (child.kind.level() != .@"inline") return false;
+        any = true;
+    }
+    return any;
+}
+
+/// `span` cut into the share of it belonging to each inline host it touches —
+/// ascending, disjoint, and each one a range a delimiter pair may safely be
+/// written around. Appends to `out`, which the caller owns.
+///
+/// A selection wholly inside one paragraph yields exactly one piece equal to
+/// the selection, so a caller that runs this unconditionally is unchanged in
+/// the ordinary case. A selection crossing a blank line yields one piece per
+/// paragraph, with the bytes BETWEEN them (the blank line, the next block's
+/// marker) belonging to no piece — the caller copies those through untouched.
+/// A selection covering only a code block yields NONE, which is the honest
+/// answer that there is nowhere in it to write a mark.
+pub fn inlineHostPieces(
+    allocator: Allocator,
+    doc: *const Document,
+    span: Span,
+    out: *std.ArrayList(Span),
+) Allocator.Error!void {
+    for (doc.ast.nodes, 0..) |_, i| {
+        const region = inlineHostRegion(doc, @intCast(i)) orelse continue;
+        const start = @max(region.start, span.start);
+        const end = @min(region.end, span.end);
+        if (start >= end) continue;
+        try out.append(allocator, Span.init(start, end));
+    }
+    std.mem.sort(Span, out.items, {}, spanStartsBefore);
+
+    // Hosts do not nest, so the sort is normally the whole of it. A parser that
+    // records no interior can still hand back two overlapping WHOLE-node spans,
+    // and a delimiter opened inside another pair's range is a corrupted
+    // document rather than a mark: keep the first piece, drop what runs into it.
+    var kept: usize = 0;
+    for (out.items) |p| {
+        if (kept > 0 and p.start < out.items[kept - 1].end) continue;
+        out.items[kept] = p;
+        kept += 1;
+    }
+    out.shrinkRetainingCapacity(kept);
+}
+
+fn spanStartsBefore(_: void, a: Span, b: Span) bool {
+    return a.start < b.start;
+}
+
 // ── Line scanning ──────────────────────────────────────────────────────────
 // A block container prefixes every LINE it covers, so its gestures work in
 // lines rather than spans. Pure byte scanning over the source.
