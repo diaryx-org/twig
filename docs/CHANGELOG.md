@@ -90,6 +90,33 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.3.2
+
+### Fixed
+
+- **editor** — an inline mark is cut at the block boundaries the selection crosses ([`8feafb0`](https://github.com/diaryx-org/twig/commit/8feafb03176cf32d0826e7927a2d09d3c80864f9))
+
+### Behavioural changes
+
+- An inline mark written across a block boundary is now one
+  mark per block. `twig_editor_toggle_inline` / `wrap_range` over
+  `"one two\n\nthree four"` wrote `**one two\n\nthree four**` (two paragraphs,
+  four literal asterisks, no mark) and now writes
+  `**one two**\n\n**three four**`. A second toggle over the result removes both
+  marks; before, it wrapped the range again.
+
+- A block's own marker is no longer swept into an inline
+  mark. A range covering the whole of `"# Title"` wrote `**# Title**` — a bold
+  paragraph, not a bold heading — and now writes `# **Title**`; the same holds
+  for a list item's `- ` and a quoted paragraph's `> `. The mark now covers the
+  block's `content_span` clipped to the range, not the range itself.
+
+- A non-empty range with no inline content in it — one wholly
+  inside a code fence — is now `TWIG_STATUS_NOT_EDITABLE` (`Error::NotEditable`)
+  rather than a success that spliced delimiters into the fence body. A
+  zero-width range is unaffected and still inserts an empty pair.
+
+
 ## 3.3.1
 
 ### Added
