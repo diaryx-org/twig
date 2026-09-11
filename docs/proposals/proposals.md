@@ -6,6 +6,8 @@ updated: 2026-09-09
 contents:
 - '[A twig-native document markup language](twig-native-language.md)'
 - '[Editable HTML block elements](editable-html-block-elements.md)'
+- '[Proposal: hard line breaks inside table cells](in-cell-line-breaks.md)'
+- '[Proposal: format-correct literal text insertion](literal-text-insertion.md)'
 ---
 # Proposals
 
@@ -15,9 +17,10 @@ and the record of the argument *after*, so a proposal that lost is still worth
 keeping — the reasoning is the value, and the outcome is part of it.
 
 Each carries `status` in its frontmatter — `draft`, `accepted`, `implemented`,
-`deferred`, `rejected` — which `dx tasks` reads. A proposal leaves the list
-above only by reaching `implemented` or `rejected`; `accepted` and `deferred`
-are decisions made and not yet built, and stay visible. Closing one is an edit
+`deferred`, `rejected` — which `dx tasks` reads. The list above holds every
+proposal, resolved or not: the index is the spine, and what is unresolved is a
+view of it (`dx tasks`); `accepted` and `deferred` are decisions made and not
+yet built, and count as unresolved. Closing one is an edit
 that names the release or commit that resolved it, with the outcome in a
 **Status** section at the top and the body left as argued.
 
