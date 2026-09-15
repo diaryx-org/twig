@@ -3,6 +3,7 @@ title: "Proposal: a twig-native document markup language"
 status: deferred
 author: adammharris
 created: 2026-08-03
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
 # A twig-native document markup language

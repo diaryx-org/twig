@@ -3,6 +3,7 @@ title: "Proposal: format-correct literal text insertion"
 status: implemented
 author: adammharris
 created: 2026-07-19
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
 # Format-correct literal text insertion

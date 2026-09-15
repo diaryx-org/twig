@@ -3,6 +3,7 @@ title: "Proposal: hard line breaks inside table cells"
 status: implemented
 author: adammharris
 created: 2026-07-19
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
 # Hard line breaks inside table cells

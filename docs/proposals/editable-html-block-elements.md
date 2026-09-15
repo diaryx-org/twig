@@ -4,6 +4,7 @@ status: draft
 author: adammharris
 created: 2026-09-09
 updated: 2026-09-09
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
 # Editable HTML block elements

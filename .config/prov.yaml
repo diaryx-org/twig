@@ -18,3 +18,34 @@ history: off
 about: off
 workspace_id: twig
 root: README.md
+fields:
+  status:
+  - under: '[[Tasks]]'
+    values: closed
+    vocabulary: '[Task statuses](/vocab/task-statuses.yaml)'
+    default: open
+  - under: '[[Proposals]]'
+    values: closed
+    vocabulary: '[Proposal statuses](/vocab/proposal-statuses.yaml)'
+    default: draft
+  created:
+    type: datetime
+  updated:
+    type: datetime
+views:
+  open-tasks:
+    label: Open tasks
+    group: status
+    under: '[[Tasks]]'
+    where:
+      not:
+        equals: { status: [done, dropped] }
+  proposals:
+    label: Proposals
+    group: status
+    under: '[[Proposals]]'
+    where: { has: status }
+  work:
+    label: All work
+    group: status
+    where: { has: status }

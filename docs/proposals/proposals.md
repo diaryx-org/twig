@@ -2,7 +2,8 @@
 title: Proposals
 description: Arguments for a change to twig, one file each — a case that may lose
 created: 2026-09-09
-updated: 2026-09-09
+updated: 2026-09-15
+part_of: '[Twig](/README.md)'
 contents:
 - '[A twig-native document markup language](twig-native-language.md)'
 - '[Editable HTML block elements](editable-html-block-elements.md)'
