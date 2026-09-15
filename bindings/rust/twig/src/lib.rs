@@ -3721,6 +3721,18 @@ mod tests {
         kinds.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         assert_eq!(kinds, vec![Kind::Footnote, Kind::Reference]);
 
+        // Each one knows where it stands. A link reference definition used
+        // to answer `0..0`, which left an editor unable to tell its lines
+        // from blank ones.
+        for d in &defs {
+            let want = match d.kind {
+                Kind::Footnote => 17..27,
+                Kind::Reference => 29..36,
+                _ => unreachable!(),
+            };
+            assert_eq!(d.span, want, "{} stands on its own bytes", d.kind);
+        }
+
         // None of them is reachable from the root — the property that made a
         // whole-arena rescan the only way to find them.
         let all = doc.nodes().expect("nodes");

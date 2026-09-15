@@ -1412,7 +1412,7 @@ pub const Parser = struct {
         while (lf.text.items.len > 0 and (lf.text.items[lf.text.items.len - 1] == ' ' or lf.text.items[lf.text.items.len - 1] == '\t')) {
             lf.text.items.len -= 1;
         }
-        const remaining = try self.stripLinkReferenceDefinitions(lf.text.items);
+        const remaining = try self.stripLinkReferenceDefinitions(lf.text.items, lf.text_segs.items);
         const trimmed = std.mem.trim(u8, remaining, " \t\r\n");
         if (trimmed.len == 0) return;
         const segs = try rebaseSegments(self.allocator, lf.text_segs.items, lf.text.items, trimmed);
@@ -1816,7 +1816,7 @@ pub const Parser = struct {
         var lf = self.leaf.?;
         self.leaf = null;
         defer lf.deinit(self.allocator);
-        const remaining = try self.stripLinkReferenceDefinitions(lf.text.items);
+        const remaining = try self.stripLinkReferenceDefinitions(lf.text.items, lf.text_segs.items);
         const trimmed = std.mem.trim(u8, remaining, " \t\r\n");
         if (trimmed.len == 0) return false;
         const segs = try rebaseSegments(self.allocator, lf.text_segs.items, lf.text.items, trimmed);
@@ -3042,23 +3042,64 @@ pub const Parser = struct {
     /// text), registering each in `self.link_references`. Returns whatever
     /// text is left (possibly all of it, if none matched, or empty, if the
     /// whole thing was definitions).
-    fn stripLinkReferenceDefinitions(self: *Parser, raw: []const u8) Allocator.Error![]const u8 {
+    ///
+    /// Each `reference` node gets the span of the bytes it was parsed from,
+    /// mapped back through `segs` (`raw`'s source mapping -- see `Segment`).
+    /// A definition is resolved by label, not position, so nothing in the
+    /// tree hangs off it and a renderer walking from the root never meets
+    /// it; but it still occupies lines, and an editor laying the document
+    /// out has to know which. Without a span, a definition standing alone --
+    /// the `[links]: ...` block that closes a README -- was indistinguishable
+    /// from blank lines. A definition whose bytes the mapping can't place
+    /// (an endpoint on a synthetic join byte) keeps the unset `(0,0)`, as an
+    /// inline node does.
+    fn stripLinkReferenceDefinitions(self: *Parser, raw: []const u8, segs: []const Segment) Allocator.Error![]const u8 {
         var text = raw;
         while (true) {
-            const consumed = try self.tryParseLinkRefDef(text);
-            if (consumed == 0) break;
-            text = text[consumed..];
+            const def = try self.tryParseLinkRefDef(text) orelse break;
+            const start = @intFromPtr(text.ptr) - @intFromPtr(raw.ptr);
+            if (mapBufRange(segs, start, start + def.consumed)) |sp| self.builder.setSpan(def.id, sp);
+            text = text[def.consumed..];
             if (text.len > 0 and text[0] == '\n') text = text[1..];
         }
         return text;
     }
 
-    /// Returns the number of bytes consumed from the front of `text` on a
-    /// successful parse (0 = no definition there).
-    fn tryParseLinkRefDef(self: *Parser, text: []const u8) Allocator.Error!usize {
+    /// `buf[start..end)`'s absolute source span through `segs`, or `null` if
+    /// either endpoint is a synthetic byte no segment maps. The block-side
+    /// twin of `inline.zig`'s `Scanner.mapSpan`, with the same endpoint bias:
+    /// a start belongs to the segment it opens, an end to the one it closes.
+    fn mapBufRange(segs: []const Segment, start: usize, end: usize) ?Span {
+        const src_start = mapBufPoint(segs, start, false) orelse return null;
+        const src_end = mapBufPoint(segs, end, true) orelse return null;
+        if (src_end < src_start) return null;
+        return Span.init(src_start, src_end);
+    }
+
+    fn mapBufPoint(segs: []const Segment, local: usize, comptime is_end: bool) ?usize {
+        for (segs) |seg| {
+            const lo = seg.buf_offset;
+            const hi = seg.buf_offset + seg.len;
+            const hit = if (is_end) (local > lo and local <= hi) else (local >= lo and local < hi);
+            if (hit) return seg.src_offset + (local - lo);
+        }
+        for (segs) |seg| {
+            if (local >= seg.buf_offset and local <= seg.buf_offset + seg.len) {
+                return seg.src_offset + (local - seg.buf_offset);
+            }
+        }
+        return null;
+    }
+
+    const LinkRefDef = struct { consumed: usize, id: Node.Id };
+
+    /// The definition at the front of `text` -- the `reference` node it
+    /// became and the number of bytes it took -- or `null` when there is
+    /// none there.
+    fn tryParseLinkRefDef(self: *Parser, text: []const u8) Allocator.Error!?LinkRefDef {
         var i: usize = 0;
         while (i < text.len and (text[i] == ' ' or text[i] == '\t')) i += 1;
-        if (i >= text.len or text[i] != '[') return 0;
+        if (i >= text.len or text[i] != '[') return null;
         i += 1;
         const label_start = i;
         var escaped = false;
@@ -3072,20 +3113,20 @@ pub const Parser = struct {
                 escaped = true;
                 continue;
             }
-            if (c == '[') return 0;
+            if (c == '[') return null;
             if (c == ']') break;
         }
-        if (i >= text.len or text[i] != ']') return 0;
+        if (i >= text.len or text[i] != ']') return null;
         const label = text[label_start..i];
         // A label needs at least one non-whitespace character -- `[]: /uri`
         // is not a link reference definition at all (CommonMark: "at least
         // one character other than blank space").
-        if (std.mem.trim(u8, label, " \t\r\n").len == 0) return 0;
+        if (std.mem.trim(u8, label, " \t\r\n").len == 0) return null;
         i += 1;
-        if (i >= text.len or text[i] != ':') return 0;
+        if (i >= text.len or text[i] != ':') return null;
         i += 1;
         i = skipLrdWs(text, i);
-        if (i >= text.len) return 0;
+        if (i >= text.len) return null;
 
         var dest: []const u8 = undefined;
         if (text[i] == '<') {
@@ -3094,7 +3135,7 @@ pub const Parser = struct {
             while (j < text.len and text[j] != '>' and text[j] != '\n') : (j += 1) {
                 if (text[j] == '\\' and j + 1 < text.len) j += 1;
             }
-            if (j >= text.len or text[j] != '>') return 0;
+            if (j >= text.len or text[j] != '>') return null;
             dest = text[start..j];
             i = j + 1;
         } else {
@@ -3114,7 +3155,7 @@ pub const Parser = struct {
                     depth -= 1;
                 }
             }
-            if (j == start) return 0;
+            if (j == start) return null;
             dest = text[start..j];
             i = j;
         }
@@ -3163,10 +3204,10 @@ pub const Parser = struct {
             if (malformed) {
                 if (title_on_new_line and dest_line_blank) {
                     end = dest_line_end;
-                } else return 0;
+                } else return null;
             }
         } else {
-            if (!dest_line_blank) return 0;
+            if (!dest_line_blank) return null;
             end = dest_line_end;
         }
 
@@ -3185,7 +3226,7 @@ pub const Parser = struct {
             const key = self.builder.nodes.items[ref_id].kind.reference.label;
             try self.link_references.put(self.allocator, key, ref_id);
         }
-        return end;
+        return .{ .consumed = end, .id = ref_id };
     }
 
     fn skipLrdWs(text: []const u8, start: usize) usize {
@@ -3706,6 +3747,25 @@ test "a link reference definition is stripped and recorded in the table" {
     const ref_id = r.link_references.get("foo") orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("/url", r.ast.nodes[ref_id].kind.reference.destination);
     try testing.expectEqualStrings("title", r.ast.attrsOf(ref_id).get("title").?);
+}
+
+test "span: a link reference definition covers its own line" {
+    // A definition hangs off nothing, but it still occupies lines, and an
+    // editor laying the document out has to know which -- a definition with
+    // no span read as blank lines. Two standing alone, one glued above a
+    // paragraph (its line is the paragraph's raw text until stripped), and
+    // one whose title continues onto a second line.
+    const src = "intro\n\n[a]: /a\n[b]: /b \"bee\"\n\n[c]: /c\ntext\n\n[d]: /d\n  \"dee\"\n";
+    var r = try parse(testing.allocator, src, .{});
+    defer r.deinit(testing.allocator);
+    const a = r.link_references.get("a") orelse return error.TestExpectedNonNull;
+    const b = r.link_references.get("b") orelse return error.TestExpectedNonNull;
+    const c = r.link_references.get("c") orelse return error.TestExpectedNonNull;
+    const d = r.link_references.get("d") orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("[a]: /a", Span.of(u8, r.span(a), src));
+    try testing.expectEqualStrings("[b]: /b \"bee\"", Span.of(u8, r.span(b), src));
+    try testing.expectEqualStrings("[c]: /c", Span.of(u8, r.span(c), src));
+    try testing.expectEqualStrings("[d]: /d\n  \"dee\"", Span.of(u8, r.span(d), src));
 }
 
 // ── Phase 3: GFM tables ─────────────────────────────────────────────────
