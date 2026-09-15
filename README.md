@@ -1,10 +1,13 @@
 ---
+part_of: id:org/kv2bv2m
 title: Twig
 author: adammharris
 created: 2026-07-08T22:39:41-07:00
 updated: 2026-08-13T15:50:04-07:00
 contents: ['[DESIGN](/docs/DESIGN.md)', '[AST-KINDS](/docs/AST-KINDS.md)', '[COOKBOOK](/docs/COOKBOOK.md)', '[CHANGELOG](/docs/CHANGELOG.md)', '[AGENTS](/docs/CONTRIBUTING.md)', '[RELEASING](/docs/RELEASING.md)']
 config: .config/prov.yaml
+registry: registry.yaml
+id: 9tz497d
 ---
 
 # Twig
