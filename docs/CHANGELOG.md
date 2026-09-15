@@ -90,6 +90,21 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.3.3
+
+### Fixed
+
+- **markdown** — a link reference definition's span is the bytes it was parsed from ([`dc0106f`](https://github.com/diaryx-org/twig/commit/dc0106f0dd3361b6a446269f4b96280a7cd4b71d))
+
+### Behavioural changes
+
+- A Markdown `reference` node (a link reference
+  definition, `[label]: /url "title"`) now carries the span of its own
+  source bytes, from the `[` to the end of the destination or the title,
+  where it used to report `0..0`. `Document::definitions()` and every
+  `FlatNode` for one reflect it. `content_span` stays unset.
+
+
 ## 3.3.2
 
 ### Fixed
