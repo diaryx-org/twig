@@ -304,13 +304,13 @@ const rss_sample =
 ;
 
 test "round trip (tree level): parse -> serialize -> parse yields a structurally equal tree" {
-    const samples = [_][]const u8{
+    const cases = [_][]const u8{
         "<a/>",
         "<a x=\"1\"><b/><c>text</c></a>",
         "<root xmlns=\"urn:x\"><!-- c --><![CDATA[raw]]><?pi d?></root>",
         rss_sample,
     };
-    for (samples) |src| {
+    for (cases) |src| {
         var ast1 = try parse(testing.allocator, src);
         defer ast1.deinit();
 
@@ -325,7 +325,7 @@ test "round trip (tree level): parse -> serialize -> parse yields a structurally
 }
 
 test "round trip (byte level): canonical-style input serializes byte-identically" {
-    const samples = [_][]const u8{
+    const cases = [_][]const u8{
         "<a/>",
         "<a b=\"1\" c=\"two\"></a>",
         "<root><child>hello world</child><child2 x=\"y\"/></root>",
@@ -333,7 +333,7 @@ test "round trip (byte level): canonical-style input serializes byte-identically
         "<root>\n  <child/>\n</root>",
         rss_sample,
     };
-    for (samples) |src| {
+    for (cases) |src| {
         var ast = try parse(testing.allocator, src);
         defer ast.deinit();
         const out = try serializeAlloc(testing.allocator, &ast);
@@ -341,3 +341,10 @@ test "round trip (byte level): canonical-style input serializes byte-identically
         try testing.expectEqualStrings(src, out);
     }
 }
+
+/// Small documents exercising the shared engine contract; not a conformance corpus.
+pub const samples: []const []const u8 = &.{
+    "<root/>",
+    "<root key=\"value\">Text <child>inside</child>.</root>",
+    "<?xml version=\"1.0\"?><root><!-- comment --><![CDATA[a < b]]></root>",
+};

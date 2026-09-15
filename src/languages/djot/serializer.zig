@@ -233,8 +233,9 @@ const Renderer = struct {
             switch (n.kind) {
                 .reference => |r| {
                     const in_refs = if (self.doc.labels.references.get(r.label)) |id| id == n.id else false;
-                    const in_auto = if (self.doc.labels.auto_references.get(r.label)) |id| id == n.id else false;
-                    if (!in_refs and !in_auto) continue;
+                    // Headings recreate their implicit references on reparse.
+                    // Printing those too would add explicit duplicate nodes.
+                    if (!in_refs) continue;
                     if (wrote_any) try self.writer.writeByte('\n');
                     try self.writer.print("[{s}]: {s}", .{ r.label, r.destination });
                     try self.writeDjotAttrs(n.id);
@@ -299,9 +300,13 @@ const Renderer = struct {
             .doc => try self.renderBlocks(id, ctx, true),
             .section => try self.renderBlocks(id, ctx, true),
             .para => {
+                if (self.ast.attrsOf(id).entries.len > 0) {
+                    try self.writePrefix(ctx);
+                    try self.writeDjotAttrs(id);
+                    try self.writer.writeByte('\n');
+                }
                 try self.writePrefix(ctx);
                 try self.renderInlineChildren(id, ctx);
-                try self.writeDjotAttrs(id);
                 try self.writer.writeByte('\n');
             },
             .heading => |h| {
@@ -723,9 +728,8 @@ pub fn serializeAlloc(allocator: Allocator, doc: *const Document) Allocator.Erro
 /// throwaway one over `Document.Labels.index` — every `reference`/`footnote`
 /// node in the arena keyed by its own `.label`, the same label -> id shape
 /// `Djot.parse` would have produced, just without djot's auto-reference
-/// bookkeeping (irrelevant here: `renderDetachedDefinitions` only needs SOME
-/// map that contains a definition node to print it, and
-/// `references`/`auto_references` are checked with `or`). `ast` itself is
+/// bookkeeping: without that provenance all references are printed explicitly.
+/// `ast` itself is
 /// only shallow-copied into the temporary `Document` (never `deinit`'d
 /// through it) — the caller keeps owning it.
 pub fn serializeAstAlloc(allocator: Allocator, ast: *const AST) Allocator.Error![]u8 {

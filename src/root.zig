@@ -142,6 +142,7 @@ pub const Filter = @import("ast/filter.zig");
 pub const ast_json = @import("ast/json.zig");
 
 test {
+    _ = @import("languages/harness.zig");
     _ = AST;
     _ = Djot;
     _ = Xml;

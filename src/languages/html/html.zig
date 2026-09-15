@@ -109,3 +109,12 @@ test {
     _ = parser_mod;
     _ = @import("conformance.zig");
 }
+
+/// Small documents exercising the shared engine contract; not a conformance corpus.
+// Block samples include the printer's trailing newline: HTML preserves whitespace nodes.
+pub const samples: []const []const u8 = &.{
+    "",
+    "<p>A paragraph with <em>emphasis</em> and <strong>strong</strong> text.</p>\n",
+    "<h1>Heading</h1>\n",
+    "<p id=\"intro\" class=\"note\">Text &amp; more.</p>\n",
+};

@@ -4,11 +4,25 @@ description: The registry's tests check the tables are coherent; nothing checks,
 author: adammharris
 created: 2026-09-15
 updated: 2026-09-15
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A per-format harness states what the engine assumes of every format
+
+## Resolution
+
+Completed in the commit `fix(languages): enforce per-format engine contracts`.
+Every registry row declares samples in its language module; the shared harness
+checks parsing, canonical `AST.eql` round trips, editor no-op splices, and
+Document column bounds and ownership. Missing samples fail the test.
+
+The marker criterion below predates heading, quote, and AsciiDoc admonition
+markers; the harness checks those current supported kinds as well as list items.
+HTML samples include canonical block whitespace, which its parser preserves.
+The samples also caught and now guard Djot's borrowed-source lifetime without a
+final newline, duplicate serialized automatic references, and paragraph attrs
+being serialized as inline attrs.
 
 **Where.** `src/format.zig`'s tests walk `registry` to check the *tables*:
 every `Syntax` is coherent, a config-varying row agrees with its default

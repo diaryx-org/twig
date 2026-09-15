@@ -43,7 +43,28 @@ pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Document 
     defer allocator.free(events);
 
     var tree_builder = parser.TreeBuilder.init(allocator, block_parser.subject);
-    return tree_builder.build(events);
+    var doc = try tree_builder.build(events);
+    // The scanner may own a temporary trailing newline. The Document borrows
+    // the caller's bytes, and positions must not include that synthetic byte.
+    doc.source = source;
+    if (block_parser.owns_subject) {
+        for (@constCast(doc.node_spans)) |*span| clampSpan(span, source.len);
+        for (@constCast(doc.node_content_spans)) |*maybe| {
+            if (maybe.*) |*span| clampSpan(span, source.len);
+        }
+        for (@constCast(doc.node_marker_spans)) |*maybe| {
+            if (maybe.*) |*span| clampSpan(span, source.len);
+        }
+        for (@constCast(doc.attrs_spans)) |*maybe| {
+            if (maybe.*) |*span| clampSpan(span, source.len);
+        }
+    }
+    return doc;
+}
+
+fn clampSpan(span: *@import("../../span.zig"), len: usize) void {
+    span.start = @min(span.start, len);
+    span.end = @min(span.end, len);
 }
 
 // ── block/inline classification ─────────────────────────────────────────
@@ -251,3 +272,14 @@ test "table: a later caption replaces an earlier one (djot.js issue #57)" {
     try testing.expect(ast.nodes[str].kind == .str);
     try testing.expectEqualStrings("cap2", ast.nodes[str].kind.str);
 }
+
+/// Small documents exercising the shared engine contract; not a conformance corpus.
+pub const samples: []const []const u8 = &.{
+    "# Heading without a final newline",
+    "A paragraph without a final newline",
+    "",
+    "A paragraph with _emphasis_ and *strong* text.\n",
+    "# Heading\n\n> Quote\n\n- first\n- second\n",
+    "{#intro .note}\nA paragraph.\n",
+    "``` zig\nconst x = 1;\n```\n",
+};

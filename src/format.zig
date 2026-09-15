@@ -319,6 +319,9 @@ fn serializeFromAstAsciidoc(allocator: Allocator, ast: *const AST) anyerror![]u8
 /// per-language switch of their own.
 pub const Entry = struct {
     id: Format,
+    /// Small source documents checked by the shared language harness.
+    /// An empty declaration fails the harness; corpora belong to conformance tests.
+    samples: []const []const u8 = &.{},
     /// Lowercase, dot-less extensions that infer this format (checked
     /// case-insensitively against a path's last `.`-separated segment).
     extensions: []const []const u8,
@@ -380,6 +383,7 @@ pub const Entry = struct {
 pub const registry = [_]Entry{
     .{
         .id = .djot,
+        .samples = Djot.samples,
         .extensions = &.{ "dj", "djot" },
         .aliases = &.{"dj"},
         .parse = parseDjot,
@@ -390,6 +394,7 @@ pub const registry = [_]Entry{
     },
     .{
         .id = .markdown,
+        .samples = Markdown.samples,
         .extensions = &.{ "md", "markdown" },
         .aliases = &.{"md"},
         .parse = parseMarkdown,
@@ -402,6 +407,7 @@ pub const registry = [_]Entry{
     },
     .{
         .id = .xml,
+        .samples = Xml.samples,
         .extensions = &.{"xml"},
         .parse = parseXml,
         .parseToAst = parseToAstXml,
@@ -415,6 +421,7 @@ pub const registry = [_]Entry{
     },
     .{
         .id = .html,
+        .samples = Html.samples,
         .extensions = &.{ "html", "htm" },
         .parse = parseHtml,
         .parseToAst = parseToAstHtml,
@@ -433,6 +440,7 @@ pub const registry = [_]Entry{
     },
     .{
         .id = .asciidoc,
+        .samples = Asciidoc.samples,
         .extensions = &.{ "adoc", "asciidoc" },
         .aliases = &.{"adoc"},
         .parse = parseAsciidoc,

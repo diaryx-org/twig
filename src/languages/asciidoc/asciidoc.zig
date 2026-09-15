@@ -62,3 +62,12 @@ pub const conformance = @import("conformance.zig");
 test {
     std.testing.refAllDecls(@This());
 }
+
+/// Small documents exercising the shared engine contract; not a conformance corpus.
+pub const samples: []const []const u8 = &.{
+    "NOTE: An admonition.\n",
+    "",
+    "A paragraph with _emphasis_ and *strong* text.\n",
+    "== Heading\n\n* first\n* second\n",
+    "[source,zig]\n----\nconst x = 1;\n----\n",
+};

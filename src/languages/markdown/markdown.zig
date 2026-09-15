@@ -133,3 +133,12 @@ test "headings are flat -- no section wrapper, no auto id (unlike djot)" {
     const para_id = ast.nodes[heading_id].next_sibling orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[para_id].kind == .para);
 }
+
+/// Small documents exercising the shared engine contract; not a conformance corpus.
+pub const samples: []const []const u8 = &.{
+    "",
+    "A paragraph with *emphasis* and **strong** text.\n",
+    "# Heading\n\n> Quote\n\n- first\n- second\n",
+    "- [x] done\n- [ ] pending\n",
+    "``` zig\nconst x = 1;\n```\n",
+};
