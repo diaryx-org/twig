@@ -17,20 +17,22 @@
 //!
 //! ── Reference/footnote resolution without importing djot ──────────────────
 //! Djot defers `link`/`image`/`footnote_reference` resolution to render time
-//! against side tables that live on djot's `Document`, not on the shared
-//! `AST` (see `djot.zig`'s `Document` doc comment: XML/HTML have nothing
-//! like them, so they don't belong on `AST` itself). This module can't
-//! import djot — that would invert the shared-vocabulary/language-module
-//! layering — so instead it defines its own `Context`, shaped identically to
-//! `Document`'s three tables, that a caller (djot, or anyone else with
-//! label/footnote side tables) fills in from whatever source it has. `ctx ==
-//! null` means "no side tables" — the natural shape for a future plain
-//! HTML/XML parse, where `link`/`image` nodes carry a literal `destination`
-//! and never a `reference` label, and `footnote_reference` simply doesn't
-//! occur. See `renderLinkOrImage`/`renderNotes` for how the render degrades
-//! gracefully in that case (unresolved references warn and fall back to no
-//! `href`/`src`; an empty footnote table yields an empty, but structurally
-//! valid, endnotes section for any stray `footnote_reference`).
+//! against the label -> definition tables in `Document.labels`, not against
+//! anything on the shared `AST` (XML/HTML have nothing like them, so they
+//! don't belong on `AST` itself). This module can't import djot — that would
+//! invert the shared-vocabulary/language-module layering — and it takes a
+//! `*const AST` rather than a `*const Document` so that a printer cannot
+//! reach a byte offset (see `src/document.zig`'s header). So the tables come
+//! in on their own as `Context`, which IS `Document.Labels`: a caller with a
+//! parsed `Document` passes `&doc.labels`; one with a bare tree builds a
+//! `Labels.index` or passes nothing. `ctx == null` means "no tables" — the
+//! natural shape for a plain HTML/XML parse, where `link`/`image` nodes carry
+//! a literal `destination` and never a `reference` label, and
+//! `footnote_reference` simply doesn't occur. See
+//! `renderLinkOrImage`/`renderNotes` for how the render degrades gracefully
+//! in that case (unresolved references warn and fall back to no `href`/`src`;
+//! an empty footnote table yields an empty, but structurally valid, endnotes
+//! section for any stray `footnote_reference`).
 //!
 //! ── Generic markup kinds (new here; not in `djot/html.zig`) ────────────────
 //! `element`/`comment`/`doctype`/`processing_instruction`/`cdata` come from
@@ -77,6 +79,7 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const AST = @import("../../ast/ast.zig");
 const Node = AST.Node;
+const Document = @import("../../document.zig");
 
 pub const RenderOptions = struct {
     warn: ?*const fn (message: []const u8) void = null,
@@ -149,21 +152,12 @@ pub const RenderOptions = struct {
     tagfilter: bool = false,
 };
 
-/// Djot-shaped render-time side tables, supplied by whatever language module
-/// has them (djot's `Document`, today) so this printer can resolve
-/// `link`/`image` reference labels and number `footnote_reference`s without
-/// importing that module. See this file's module doc comment for the
-/// layering rationale and the `ctx == null` degrade-gracefully behavior.
-pub const Context = struct {
-    /// Label (normalized) -> the `reference` definition node with that
-    /// label. Mirrors `Djot.Document.references`.
-    references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-    /// Mirrors `Djot.Document.auto_references`.
-    auto_references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-    /// Label -> the `footnote` definition node with that label. Mirrors
-    /// `Djot.Document.footnotes`.
-    footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-};
+/// The render-time label tables — `Document.labels`, passed on its own so
+/// this printer can resolve `link`/`image` reference labels and number
+/// `footnote_reference`s while still taking only a `*const AST`. See this
+/// file's module doc comment for the layering rationale and the `ctx == null`
+/// degrade-gracefully behavior.
+pub const Context = Document.Labels;
 
 /// One `key="value"` pair to render ahead of a node's own attributes (used
 /// for e.g. `href`/`src`/`class="task-list"` that a tag contributes itself).
@@ -255,12 +249,8 @@ pub const Renderer = struct {
     ast: *const AST,
     writer: *Writer,
     /// Borrowed from `ctx` at `init` time (or left at the empty default when
-    /// `ctx == null`) so the rest of this struct can read `self.references`
-    /// etc. directly, exactly as `djot/html.zig`'s `Renderer` reads
-    /// `self.doc.references` — see this file's module doc comment.
-    references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-    auto_references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-    footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
+    /// `ctx == null`) — see this file's module doc comment.
+    labels: Context = .{},
     tight: bool = false,
     footnote_index: std.StringHashMapUnmanaged(usize) = .empty,
     next_footnote_index: usize = 1,
@@ -272,16 +262,13 @@ pub const Renderer = struct {
             .allocator = allocator,
             .ast = ast,
             .writer = writer,
-            .references = if (ctx) |c| c.references else .empty,
-            .auto_references = if (ctx) |c| c.auto_references else .empty,
-            .footnotes = if (ctx) |c| c.footnotes else .empty,
+            .labels = if (ctx) |c| c.* else .{},
             .options = options,
         };
     }
 
     /// Only frees render-owned scratch state (footnote index/id tracking);
-    /// `references`/`auto_references`/`footnotes` are borrowed from `ctx`
-    /// and stay owned by whoever built it.
+    /// `labels` is borrowed from `ctx` and stays owned by whoever built it.
     pub fn deinit(self: *Renderer) void {
         self.footnote_index.deinit(self.allocator);
         self.fnref_id_emitted.deinit(self.allocator);
@@ -632,7 +619,7 @@ pub const Renderer = struct {
         const Entry = struct { key: []const u8, id: Node.Id };
         var entries = std.ArrayList(Entry).empty;
         defer entries.deinit(self.allocator);
-        var kit = self.footnotes.iterator();
+        var kit = self.labels.footnotes.iterator();
         while (kit.next()) |entry| try entries.append(self.allocator, .{ .key = entry.key_ptr.*, .id = entry.value_ptr.* });
         std.mem.sort(Entry, entries.items, {}, struct {
             fn lessThan(_: void, a: Entry, b: Entry) bool {
@@ -1212,7 +1199,7 @@ pub const Renderer = struct {
         defer if (href_buf) |b| self.allocator.free(b);
 
         if (v.reference) |ref| {
-            const resolved = self.references.get(ref) orelse self.auto_references.get(ref);
+            const resolved = self.labels.reference(ref);
             if (resolved) |ref_id| {
                 const ref_attrs = self.ast.attrsOf(ref_id);
                 dest = self.ast.nodes[ref_id].kind.reference.destination;
@@ -1276,10 +1263,9 @@ pub const Renderer = struct {
     }
 };
 
-/// Write `id` (and its descendants) as HTML text to `writer`. `ctx`
-/// supplies djot-style reference/footnote side tables when the tree needs
-/// them (pass `null` for a tree that has none — see this file's module doc
-/// comment).
+/// Write `id` (and its descendants) as HTML text to `writer`. `ctx` is the
+/// document's `labels` when the tree resolves anything by label (pass `null`
+/// for a tree that has none — see this file's module doc comment).
 pub fn serializeNode(allocator: Allocator, ast: *const AST, id: Node.Id, writer: *Writer, ctx: ?*const Context) RenderError!void {
     try serializeNodeOpts(allocator, ast, id, writer, ctx, .{});
 }

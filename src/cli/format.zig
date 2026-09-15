@@ -101,7 +101,7 @@ pub fn printSupportedInputFormats(w: *Writer) Writer.Error!void {
 /// A target whose name is already an `OutputMode` word is skipped rather than
 /// listed twice. `html` is the case: `parseOutputSelection` tries the modes
 /// first, so `-o html` always means the RENDER mode (which resolves djot's and
-/// Markdown's side tables) and can never reach the html target's bare-AST
+/// Markdown's label tables) and can never reach the html target's bare-AST
 /// serializer. Listing it under both would advertise a spelling that does not
 /// exist.
 pub fn printSupportedOutputTargets(w: *Writer) Writer.Error!void {

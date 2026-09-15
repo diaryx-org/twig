@@ -34,14 +34,16 @@
 //! reference definition and a djot/Markdown footnote definition are live nodes
 //! that are deliberately not attached anywhere in the tree — they are pure
 //! side-table entries, resolved by label rather than by position (see
-//! `languages/markdown/markdown.zig`'s `Document.link_references`). Sweeping
-//! by tree reachability alone would delete every one of them.
+//! `Document.labels`). Sweeping by tree reachability alone would delete every
+//! one of them.
 //!
-//! So `extra_roots` exists, and every caller with a side table must pass its
-//! node ids. `run` returns the old→new id `map` precisely so those tables can
-//! be repointed afterward; forgetting to apply it leaves a table indexing the
-//! wrong nodes, which is why the map is a required return rather than an
-//! optional out-parameter.
+//! So the values of `doc.labels` are roots too, and this pass repoints them
+//! onto the new ids itself. It used to take them as an `extra_roots` argument
+//! and hand back an old→new map for the caller to apply, back when each
+//! language kept the tables on a wrapper of its own; now that they are a
+//! column of the shared `Document`, the one place that renumbers nodes is the
+//! one place that knows every table indexed by them, and a caller cannot
+//! forget to apply a map it never sees.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -51,44 +53,27 @@ const Node = AST.Node;
 const Span = @import("../span.zig");
 const Document = @import("../document.zig");
 
-/// A compacted parse plus the id remapping that produced it.
-pub const Compacted = struct {
-    doc: Document,
-    /// Indexed by OLD node id: the node's new id, or `null` if it was dropped.
-    /// A caller holding node ids across the pass (a language `Document`'s
-    /// label -> definition-node tables) must rewrite them through this.
-    /// Owned by the caller; free with `freeMap`.
-    map: []const ?Node.Id,
-
-    pub fn freeMap(self: Compacted, allocator: Allocator) void {
-        allocator.free(self.map);
-    }
-};
-
-/// Compact `doc`, keeping everything reachable from its root or from any of
-/// `extra_roots`, and dropping the rest.
+/// Compact `doc`, keeping everything reachable from its root or held by
+/// `doc.labels`, and dropping the rest.
 ///
 /// CONSUMES `doc`: its `nodes` and position tables are freed here and replaced
 /// by fresh, tightly-sized ones. `owned_strings` and the `attrs` side-table
 /// pass through untouched — a dropped node's string stays in `owned_strings`
 /// until `deinit` (it is a few bytes per abandoned delimiter run, and freeing
 /// it would mean scanning for aliases), and `Node.attrs` indices stay valid
-/// because the attrs table is not renumbered.
+/// because the attrs table is not renumbered. `labels` moves onto the result
+/// with every value rewritten to its new id.
 ///
 /// New ids are assigned in PRE-ORDER from the root, so id order is document
 /// order — a stronger and more useful invariant than the build order it
-/// replaces. `extra_roots` are swept afterward in ascending old-id order, so
-/// the result does not depend on a caller's hash-map iteration order.
-pub fn run(
-    allocator: Allocator,
-    doc: Document,
-    extra_roots: []const Node.Id,
-) Allocator.Error!Compacted {
+/// replaces. The label tables' nodes are swept afterward in ascending old-id
+/// order, so the result does not depend on hash-map iteration order.
+pub fn run(allocator: Allocator, doc: Document) Allocator.Error!Document {
     const old = doc.ast;
     const n = old.nodes.len;
 
     const map = try allocator.alloc(?Node.Id, n);
-    errdefer allocator.free(map);
+    defer allocator.free(map);
     @memset(map, null);
 
     var nodes = try std.ArrayList(Node).initCapacity(allocator, n);
@@ -109,16 +94,27 @@ pub fn run(
     defer kids.deinit(allocator);
 
     // The tree proper, then each unattached side-table definition. Sorting the
-    // extra roots keeps the output canonical no matter what order the caller's
-    // map iterated in.
-    const sorted_extra = try allocator.dupe(Node.Id, extra_roots);
-    defer allocator.free(sorted_extra);
-    std.mem.sort(Node.Id, sorted_extra, {}, std.sort.asc(Node.Id));
+    // extra roots keeps the output canonical no matter what order the maps
+    // iterated in.
+    var labels = doc.labels;
+    var sorted_extra: std.ArrayList(Node.Id) = .empty;
+    defer sorted_extra.deinit(allocator);
+    for (labels.maps()) |t| {
+        var it = t.valueIterator();
+        while (it.next()) |v| try sorted_extra.append(allocator, v.*);
+    }
+    std.mem.sort(Node.Id, sorted_extra.items, {}, std.sort.asc(Node.Id));
 
     try visit(allocator, old, old.root, map, &nodes, &spans, &content_spans, &spellings, &marker_spans, &stack, &kids, doc);
-    for (sorted_extra) |r| {
+    for (sorted_extra.items) |r| {
         if (r >= n or map[r] != null) continue;
         try visit(allocator, old, r, map, &nodes, &spans, &content_spans, &spellings, &marker_spans, &stack, &kids, doc);
+    }
+
+    // Every label value was a root, so each survived and `.?` cannot fire.
+    for (labels.maps()) |t| {
+        var it = t.valueIterator();
+        while (it.next()) |v| v.* = map[v.*].?;
     }
 
     // Second pass: every child/sibling link still points into the OLD id space.
@@ -140,20 +136,19 @@ pub fn run(
     allocator.free(doc.node_marker_spans);
 
     return .{
-        .doc = .{
-            .source = doc.source,
-            .ast = new_ast,
-            .node_spans = try spans.toOwnedSlice(allocator),
-            .node_content_spans = try content_spans.toOwnedSlice(allocator),
-            .node_spelling = try spellings.toOwnedSlice(allocator),
-            .node_marker_spans = try marker_spans.toOwnedSlice(allocator),
-            // Keyed by `Attrs.Id`, not by node id, and the attrs table is not
-            // renumbered here (see this function's doc) — so unlike every
-            // table above, this one needs no rebuild and is simply carried
-            // over. Ownership moves with it; the caller's `doc` is consumed.
-            .attrs_spans = doc.attrs_spans,
-        },
-        .map = map,
+        .source = doc.source,
+        .ast = new_ast,
+        .node_spans = try spans.toOwnedSlice(allocator),
+        .node_content_spans = try content_spans.toOwnedSlice(allocator),
+        .node_spelling = try spellings.toOwnedSlice(allocator),
+        .node_marker_spans = try marker_spans.toOwnedSlice(allocator),
+        // Keyed by `Attrs.Id`, not by node id, and the attrs table is not
+        // renumbered here (see this function's doc) — so unlike every table
+        // above, this one needs no rebuild and is simply carried over.
+        // Ownership moves with it; the caller's `doc` is consumed.
+        .attrs_spans = doc.attrs_spans,
+        // Keyed by label; the values were repointed above.
+        .labels = labels,
     };
 }
 
@@ -224,9 +219,7 @@ test "drops an unreferenced node and renumbers the survivors" {
     const para = try b.addContainer(.para, &.{kept});
 
     const doc = try b.finishDocument("**x", para);
-    const c = try run(testing.allocator, doc, &.{});
-    defer c.freeMap(testing.allocator);
-    var out = c.doc;
+    var out = try run(testing.allocator, doc);
     defer out.deinit();
 
     try testing.expectEqual(@as(usize, 2), out.ast.nodes.len);
@@ -236,30 +229,27 @@ test "drops an unreferenced node and renumbers the survivors" {
     try testing.expectEqualStrings("x", out.ast.nodes[1].kind.str);
     // Positions travelled with their nodes.
     try testing.expect(out.span(1).eql(Span.init(2, 3)));
-    // The map reports both the survivor's new id and the casualty.
-    try testing.expectEqual(@as(?Node.Id, 1), c.map[kept]);
-    try testing.expectEqual(@as(?Node.Id, null), c.map[orphan]);
 }
 
-test "an extra root keeps a node that hangs off no tree" {
+test "a labelled definition keeps a node that hangs off no tree" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
 
+    _ = try b.addLeaf(.{ .str = "__" }); // orphan, so the ids below shift
     const para = try b.addContainer(.para, &.{});
     // A link reference definition: live, but deliberately unattached.
     const def = try b.addLeaf(.{ .reference = .{ .label = "ref", .destination = "/url" } });
-    const orphan = try b.addLeaf(.{ .str = "__" });
 
-    const doc = try b.finishDocument("", para);
-    const c = try run(testing.allocator, doc, &.{def});
-    defer c.freeMap(testing.allocator);
-    var out = c.doc;
+    var doc = try b.finishDocument("", para);
+    try doc.labels.references.put(testing.allocator, "ref", def);
+    var out = try run(testing.allocator, doc);
     defer out.deinit();
 
-    // The definition survived; the abandoned delimiter run did not.
+    // The definition survived; the abandoned delimiter run did not. The
+    // label table came through pointing at the definition's NEW id.
     try testing.expectEqual(@as(usize, 2), out.ast.nodes.len);
-    try testing.expectEqual(@as(?Node.Id, null), c.map[orphan]);
-    const new_def = c.map[def] orelse return error.TestExpectedNonNull;
+    const new_def = out.labels.reference("ref") orelse return error.TestExpectedNonNull;
+    try testing.expect(new_def != def);
     try testing.expectEqualStrings("ref", out.ast.nodes[new_def].kind.reference.label);
 }
 
@@ -275,9 +265,7 @@ test "ids come out in document order, not build order" {
     const root = try b.addContainer(.doc, &.{para});
 
     const doc = try b.finishDocument("a _c_", root);
-    const c = try run(testing.allocator, doc, &.{});
-    defer c.freeMap(testing.allocator);
-    var out = c.doc;
+    var out = try run(testing.allocator, doc);
     defer out.deinit();
 
     // doc, para, "a", emph, "c" — a pre-order walk of the tree.
@@ -309,14 +297,10 @@ test "compaction preserves meaning" {
     const em2 = try b2.addContainer(.{ .inline_mark = .strong }, &.{t2});
     const para2 = try b2.addContainer(.para, &.{em2});
     const clean_raw = try b2.finishDocument("**x**", para2);
-    const c2 = try run(testing.allocator, clean_raw, &.{});
-    defer c2.freeMap(testing.allocator);
-    var clean = c2.doc;
+    var clean = try run(testing.allocator, clean_raw);
     defer clean.deinit();
 
-    const c = try run(testing.allocator, doc, &.{});
-    defer c.freeMap(testing.allocator);
-    var out = c.doc;
+    var out = try run(testing.allocator, doc);
     defer out.deinit();
 
     try testing.expect(out.ast.eql(clean.ast));
@@ -325,8 +309,10 @@ test "compaction preserves meaning" {
 
 // ── the invariant, per language ────────────────────────────────────────────
 
-/// Count nodes reachable from `root`, plus any of `extra` not already counted.
-fn liveCount(allocator: Allocator, ast: AST, extra: []const Node.Id) !usize {
+/// Count nodes reachable from the root, plus any `labels` value not already
+/// counted.
+fn liveCount(allocator: Allocator, doc: *const Document) !usize {
+    const ast = doc.ast;
     const seen = try allocator.alloc(bool, ast.nodes.len);
     defer allocator.free(seen);
     @memset(seen, false);
@@ -334,7 +320,11 @@ fn liveCount(allocator: Allocator, ast: AST, extra: []const Node.Id) !usize {
     var stack: std.ArrayList(Node.Id) = .empty;
     defer stack.deinit(allocator);
     try stack.append(allocator, ast.root);
-    for (extra) |e| try stack.append(allocator, e);
+    var labels = doc.labels;
+    for (labels.maps()) |t| {
+        var it = t.valueIterator();
+        while (it.next()) |v| try stack.append(allocator, v.*);
+    }
     while (stack.pop()) |id| {
         if (seen[id]) continue;
         seen[id] = true;
@@ -369,30 +359,13 @@ test "every parser leaves an arena that is exactly the live document" {
         var d = try Markdown.parse(a, src, .{ .footnotes = true, .tables = true });
         defer d.deinit();
 
-        var extra: std.ArrayList(Node.Id) = .empty;
-        defer extra.deinit(a);
-        var it = d.link_references.valueIterator();
-        while (it.next()) |v| try extra.append(a, v.*);
-        var fit = d.footnotes.valueIterator();
-        while (fit.next()) |v| try extra.append(a, v.*);
-
-        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, d.ast, extra.items));
+        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, &d));
     }
 
     {
         var d = try Djot.parse(a, "a _b_ c\n\n[ref]: /u\n\nsee[^a]\n\n[^a]: note\n\n::: note\nx\n:::\n");
         defer d.deinit();
-
-        var extra: std.ArrayList(Node.Id) = .empty;
-        defer extra.deinit(a);
-        for ([_]*const std.StringHashMapUnmanaged(Node.Id){
-            &d.references, &d.auto_references, &d.footnotes,
-        }) |t| {
-            var it = t.valueIterator();
-            while (it.next()) |v| try extra.append(a, v.*);
-        }
-
-        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, d.ast, extra.items));
+        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, &d));
     }
 
     // XML and HTML never speculated (their grammars are decidable the way
@@ -401,12 +374,12 @@ test "every parser leaves an arena that is exactly the live document" {
     {
         var d = try Xml.parse(a, "<a x=\"1\"><b/>hi<!--c--></a>");
         defer d.deinit();
-        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, d.ast, &.{}));
+        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, &d));
     }
     {
         var d = try Html.parse(a, "<p>a <b>c</b></p><ul><li>x</li></ul>");
         defer d.deinit();
-        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, d.ast, &.{}));
+        try testing.expectEqual(d.ast.nodes.len, try liveCount(a, &d));
     }
 }
 

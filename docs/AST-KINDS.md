@@ -157,8 +157,8 @@ so for `[a][r]` the destination lives only on that unattached `reference`
 node: two djot documents whose definitions differ (`[r]: /XXX` versus
 `[r]: /YYY`) have identical reachable trees and render to different HTML, and
 a tree walk calls them equal. Comparing the arena catches it, because
-`ast/compact.zig` keeps those definitions (they are passed in as extra roots)
-and orders them deterministically. That compaction pass is also what makes
+`ast/compact.zig` keeps those definitions (it sweeps from `Document.labels` as
+well as the root) and orders them deterministically. That compaction pass is also what makes
 slot-by-slot comparison legal at all: Twig's inline grammars are not decidable
 left to right, so the parsers speculate and abandon nodes, and without
 compaction the arena would hold orphaned delimiter runs whose payloads record

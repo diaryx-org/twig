@@ -801,12 +801,7 @@ fn parseXml(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Documen
 fn parseMarkdown(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Document {
     _ = ctx;
     const Markdown = @import("../languages/markdown/markdown.zig");
-    var doc = try Markdown.parse(a, s, .{});
-    doc.link_references.deinit(a);
-    doc.footnotes.deinit(a);
-    // Hand over the tree AND its id-indexed side tables (spans, spelling); the
-    // language label tables above are what this test vehicle does not need.
-    return doc.document();
+    return Markdown.parse(a, s, .{});
 }
 
 /// Third test vehicle: Djot, the one format that writes a block's attributes
@@ -814,11 +809,7 @@ fn parseMarkdown(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Do
 fn parseDjot(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Document {
     _ = ctx;
     const Djot = @import("../languages/djot/djot.zig");
-    var doc = try Djot.parse(a, s);
-    doc.references.deinit(a);
-    doc.auto_references.deinit(a);
-    doc.footnotes.deinit(a);
-    return doc.document();
+    return Djot.parse(a, s);
 }
 
 /// A throwaway context for the tests below, which use `parseXml` (which

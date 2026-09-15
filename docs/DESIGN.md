@@ -102,23 +102,24 @@ for each:
 
 Every `Format` is also a `Target`, so today the two lists have the same five
 names. They are separate types because only one of them can grow freely. A
-`Format` variant is `ParsedDoc`'s tag: it must have a parser, a bare-AST reparse
-adapter for the `Splicer`, and a document type to hold. A `Target` needs none of
-that — it needs somewhere for bytes to go.
+`Format` variant is what `ParsedDoc.format` records: it must have a parser and
+a `Document` reparse adapter for the `Splicer`. A `Target` needs none of that —
+it needs somewhere for bytes to go.
 
 That difference is what makes an **export-only target** expressible: a format
 Twig can write and no parser can read back. PDF is the motivating case. Such a
 target appends to `Target` and gets a `targets` row with `reads_back_as = null`;
-it gets no `Format` variant, no `registry` row, no `ParsedDoc` variant and no
-`Syntax`, none of which it could honestly fill in. Before the split there was
+it gets no `Format` variant, no `registry` row and no `Syntax`, none of which
+it could honestly fill in. Before the split there was
 nowhere to put one that did not also claim Twig could parse it.
 
 Two consequences worth knowing before adding a target:
 
 - **`serializeFromAst` belongs to the output row.** It is keyed by where the
   bytes are going, not by what parsed them. `serializeCanonical` stayed on the
-  input row, because it takes a `ParsedDoc` variant and so can only serialize a
-  document that very entry parsed.
+  input row: it takes the parsed `Document` whole — its `labels`, its spelling,
+  XML's interior spans — where the output row's serializer is handed a bare
+  `AST` and rebuilds what it can.
 - **`Fidelity` is defined by a round-trip**, so it cannot describe an
   export-only target. `diagnostics.zig`'s probe derives the targets it measures
   from the `targets` table (`serializeFromAst != null` and `reads_back_as !=
@@ -216,6 +217,6 @@ through `twig_editor_document`, a borrowed `TwigDocument` over its live tree.
 The `twig_editor_*` spellings remain as aliases onto exactly that code and
 those buffers. The two document functions the borrowed view cannot serve are
 `twig_document_render_html` and `twig_document_serialize`: both are chosen by
-the document's own format and read its language side tables, and an editor
-holds a bare-AST reparse with neither. That asymmetry is the reason the split
-is a *view* rather than one merged handle type.
+the format and parse config a `ParsedDoc` records, and an editor's view is the
+bare `Document`. That asymmetry is the reason the split is a *view* rather than
+one merged handle type.

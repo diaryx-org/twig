@@ -8,10 +8,9 @@
 //! `languages/djot/conformance.zig`; both the format-parsing helpers and the
 //! file list are duplicated here rather than imported because
 //! `djot/conformance.zig` keeps them private (this module has no business
-//! reaching into djot's internals for anything beyond the public `Document`
-//! fields `references`/`auto_references`/`footnotes`, which is exactly the
-//! shape `Context` mirrors). See that file's doc comment for the fixture
-//! syntax itself.
+//! reaching into djot's internals; the `Document.labels` it hands the printer
+//! is the shared type, and `Context` IS it). See that file's doc comment for
+//! the fixture syntax itself.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -192,16 +191,10 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
             };
             defer doc.deinit();
 
-            // Build a `Context` straight from the `Document`'s public side
-            // tables -- a test-only use of djot internals; `serializer.zig`
-            // itself never imports djot (see this file's module doc comment
-            // and `serializer.zig`'s module doc comment).
-            const ctx: html.Context = .{
-                .references = doc.references,
-                .auto_references = doc.auto_references,
-                .footnotes = doc.footnotes,
-            };
-            const rendered = try html.serializeAlloc(allocator, &doc.ast, &ctx);
+            // The parsed document's own label tables are the `Context`;
+            // `serializer.zig` itself never imports djot (see this file's
+            // module doc comment and `serializer.zig`'s module doc comment).
+            const rendered = try html.serializeAlloc(allocator, &doc.ast, &doc.labels);
             if (std.mem.eql(u8, rendered, c.expected)) {
                 summary.passed += 1;
                 allocator.free(rendered);

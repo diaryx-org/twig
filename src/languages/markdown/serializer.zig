@@ -1,4 +1,4 @@
-//! `Markdown.Document` -> canonical-ish Markdown text.
+//! `Document` (a Markdown parse) -> canonical-ish Markdown text.
 //!
 //! This is a structural printer from the shared `AST`, not a source-preserving
 //! re-emitter: it writes one stable representation for each node kind.
@@ -9,8 +9,7 @@ const Writer = std.Io.Writer;
 const markdown = @import("markdown.zig");
 const md_syntax = @import("syntax.zig");
 const attrs_writer = @import("../../attrs_writer.zig");
-const Document = markdown.Document;
-const TwigDocument = @import("../../document.zig");
+const Document = @import("../../document.zig");
 const AST = markdown.AST;
 const Node = AST.Node;
 
@@ -237,7 +236,7 @@ const Renderer = struct {
         for (self.ast.nodes) |n| {
             if (n.kind != .reference) continue;
             const lab = n.kind.reference.label;
-            const id = self.doc.link_references.get(lab) orelse continue;
+            const id = self.doc.labels.references.get(lab) orelse continue;
             if (id != n.id) continue;
             if (!saw_any) saw_any = true else try self.writer.writeByte('\n');
             try self.writer.print("[{s}]: {s}", .{ lab, n.kind.reference.destination });
@@ -261,7 +260,7 @@ const Renderer = struct {
                 .footnote => |f| lab: {
                     // Picks ONE definition when several share a label; built
                     // from `.footnote` nodes, so citations are not in it.
-                    const id = self.doc.footnotes.get(f.label) orelse continue;
+                    const id = self.doc.labels.footnote(f.label) orelse continue;
                     if (id != n.id) continue;
                     break :lab f.label;
                 },
@@ -718,7 +717,7 @@ const Renderer = struct {
 /// spelling table has nothing (or something else) for the node.
 /// A coloured highlight's recorded prefix form, `tight` when the spelling
 /// table has nothing (or something else) for the node.
-fn highlightPrefixOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.HighlightPrefix {
+fn highlightPrefixOf(sp: ?Document.Spelling) Document.Spelling.HighlightPrefix {
     const s = sp orelse return .tight;
     return switch (s) {
         .highlight_prefix => |p| p,
@@ -726,7 +725,7 @@ fn highlightPrefixOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.Highlight
     };
 }
 
-fn bulletOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.Bullet {
+fn bulletOf(sp: ?Document.Spelling) Document.Spelling.Bullet {
     const s = sp orelse return .dash;
     return switch (s) {
         .bullet => |b| b,
@@ -736,7 +735,7 @@ fn bulletOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.Bullet {
 
 /// An `ordered_list`'s recorded marker punctuation, canonical `1.` when the
 /// spelling table has nothing (or something else) for the node.
-fn delimOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.OrderedDelim {
+fn delimOf(sp: ?Document.Spelling) Document.Spelling.OrderedDelim {
     const s = sp orelse return .period;
     return switch (s) {
         .ordered_delim => |d| d,
@@ -772,10 +771,10 @@ pub fn serializeAlloc(allocator: Allocator, doc: *const Document) Allocator.Erro
 /// Serialize a bare, language-agnostic `AST` (e.g. one produced by a
 /// DIFFERENT format's parser, for `twig convert -o markdown` cross-format
 /// conversion) as Markdown text. Mirrors `djot/serializer.zig`'s
-/// `serializeAstAlloc`: no `Document` with Markdown's side tables to
-/// consult, so this builds a throwaway one by scanning `ast` directly for
-/// `reference`/`footnote`-kind nodes and keying them by their own `.label`
-/// payload. `ast` is only shallow-copied into the temporary `Document`
+/// `serializeAstAlloc`: no parsed `Document` whose `labels` name the winning
+/// definitions, so this builds a throwaway one over `Document.Labels.index`
+/// — every `reference`/`footnote` node in the arena keyed by its own
+/// `.label`. `ast` is only shallow-copied into the temporary `Document`
 /// (never `deinit`'d through it) — the caller keeps owning it.
 pub fn serializeAstAlloc(allocator: Allocator, ast: *const AST) Allocator.Error![]u8 {
     return serializeAstSpelledAlloc(allocator, ast, &.{});
@@ -789,26 +788,18 @@ pub fn serializeAstAlloc(allocator: Allocator, ast: *const AST) Allocator.Error!
 pub fn serializeAstSpelledAlloc(
     allocator: Allocator,
     ast: *const AST,
-    node_spelling: []const ?TwigDocument.Spelling,
+    node_spelling: []const ?Document.Spelling,
 ) Allocator.Error![]u8 {
-    var link_references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty;
-    defer link_references.deinit(allocator);
-    var footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty;
-    defer footnotes.deinit(allocator);
-
-    for (ast.nodes) |n| {
-        switch (n.kind) {
-            .reference => |r| try link_references.put(allocator, r.label, n.id),
-            .footnote => |f| try footnotes.put(allocator, f.label, n.id),
-            else => {},
-        }
-    }
+    var labels = try Document.Labels.index(allocator, ast);
+    defer labels.deinit(allocator);
 
     const doc: Document = .{
+        .source = "",
         .ast = ast.*,
+        .node_spans = &.{},
+        .node_content_spans = &.{},
         .node_spelling = node_spelling,
-        .link_references = link_references,
-        .footnotes = footnotes,
+        .labels = labels,
     };
     return serializeAlloc(allocator, &doc);
 }

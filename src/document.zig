@@ -31,6 +31,12 @@
 //! `languages/html/serializer.zig`, so it is meaning, and it stays on `Kind` —
 //! as does an ordered list's `numbering` (`<ol type="a">`). Apply this test
 //! before adding a field here.
+//!
+//! `labels` is the one table here that is not a fact of its own but an INDEX
+//! over the tree — label -> definition node — and it passes the criterion by
+//! being derived: two documents with equal trees carry equal labels, up to the
+//! parser's say on which definition wins. See its doc comment for why an
+//! index still lives beside the tree rather than being rebuilt by every reader.
 
 const Document = @This();
 const std = @import("std");
@@ -171,6 +177,111 @@ node_marker_spans: []const ?Span = &.{},
 /// than `ast.attrs`, including empty. Read it through `attrsSpan`.
 attrs_spans: []const ?Span = &.{},
 
+/// Label -> definition node, for the constructs a document resolves BY NAME
+/// rather than by position: a `[label]: dest` reference definition and a
+/// `[^label]: …` footnote definition. Three maps, one per registry, because
+/// the registries are distinct namespaces — `[x]` and `[^x]` never collide —
+/// and a synthesized reference must lose to an author-written one (see
+/// `Labels.auto_references`).
+///
+/// ── Why an index lives beside the tree ─────────────────────────────────────
+/// Every entry is recoverable from the arena: a `reference` node carries its
+/// own label and destination, a `footnote` node its label. What is NOT
+/// recoverable is which definition WINS when several share a label — the
+/// first in document order for djot and CommonMark alike, and an explicit
+/// definition over a heading's implicit one in djot — and the walk to
+/// rebuild it is one every reader of a reference would repeat: the HTML
+/// printer per link, a serializer per definition. So the parser that knows
+/// the rule states the answer once, here, and `ast/compact.zig` keeps it
+/// pointing at the right nodes.
+///
+/// A definition is deliberately NOT attached in the tree in Markdown, and a
+/// djot footnote is not either: they are resolved by label, never rendered in
+/// place. The values of these maps are therefore the live nodes tree
+/// reachability cannot see, which is what `ast/compact.zig` sweeps from.
+///
+/// Empty for a format with no labelled definitions (XML, HTML), and for a
+/// `Document` assembled around a bare `AST`; `Labels.index` builds one from
+/// the arena for the serializers that take such a tree. Keys are slices of
+/// `ast.owned_strings` — the very string the definition node's own `.label`
+/// holds — so `deinit` frees only the map structures.
+labels: Labels = .{},
+
+/// The label -> definition-node index a parser fills for the constructs it
+/// resolves by name. See `labels` for why it exists and what it holds.
+pub const Labels = struct {
+    /// Normalized label -> the `reference` node an author wrote with that
+    /// label: djot's and Markdown's `[label]: destination`, the first to
+    /// appear winning. Markdown resolves a `link`/`image` against this at
+    /// PARSE time and never reads it again; djot resolves at RENDER time, so
+    /// its HTML printer reads it per link.
+    references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
+
+    /// Same shape as `references`, for `reference` nodes the PARSER
+    /// synthesized rather than the author wrote — djot's implicit heading
+    /// targets, `[Section Title]` resolving to `#section-title`. Kept apart
+    /// so an explicit definition beats an implicit one whatever order they
+    /// appeared in; `reference()` applies that precedence.
+    auto_references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
+
+    /// Normalized label -> the `footnote` definition node with that label,
+    /// the first to appear winning. Resolved, numbered and backlinked at
+    /// RENDER time in both djot and Markdown.
+    footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
+
+    /// The `reference` node `label` resolves to: an author-written definition
+    /// first, a synthesized one otherwise, `null` when neither exists.
+    pub fn reference(self: *const Labels, label: []const u8) ?AST.Node.Id {
+        return self.references.get(label) orelse self.auto_references.get(label);
+    }
+
+    /// The `footnote` definition `label` resolves to, or `null`.
+    pub fn footnote(self: *const Labels, label: []const u8) ?AST.Node.Id {
+        return self.footnotes.get(label);
+    }
+
+    /// Index a BARE tree: every `reference` and `footnote` node in the arena,
+    /// by its own `.label`. For the serializers handed an `AST` no parser's
+    /// tables came with — a cross-format conversion, the C ABI's builder. The
+    /// arena carries no record of which reference was synthesized, so
+    /// everything lands in `references`; `reference()` finds it either way.
+    ///
+    /// Where several nodes share a label the HIGHEST id wins, and that is a
+    /// choice, not an accident. A parsed tree only ever carries one such pair:
+    /// djot's implicit heading target beside an explicit definition of the
+    /// same label, minted in that order — the parser never mints the implicit
+    /// one when the explicit came first — so the later node is the one the
+    /// parse's own tables would have resolved to. A hand-built tree with two
+    /// explicit definitions gets the same rule for want of a better one.
+    ///
+    /// Keys borrow the nodes' own label strings, so the result is valid only
+    /// as long as `ast` is, and `deinit` frees only the map structures.
+    pub fn index(allocator: Allocator, ast: *const AST) Allocator.Error!Labels {
+        var self: Labels = .{};
+        errdefer self.deinit(allocator);
+        for (ast.nodes) |n| {
+            switch (n.kind) {
+                .reference => |r| try self.references.put(allocator, r.label, n.id),
+                .footnote => |f| try self.footnotes.put(allocator, f.label, n.id),
+                else => {},
+            }
+        }
+        return self;
+    }
+
+    /// The three maps, for a caller that treats them uniformly — compaction
+    /// sweeping their values as roots and repointing them afterward.
+    pub fn maps(self: *Labels) [3]*std.StringHashMapUnmanaged(AST.Node.Id) {
+        return .{ &self.references, &self.auto_references, &self.footnotes };
+    }
+
+    pub fn deinit(self: *Labels, allocator: Allocator) void {
+        self.references.deinit(allocator);
+        self.auto_references.deinit(allocator);
+        self.footnotes.deinit(allocator);
+    }
+};
+
 /// One recorded spelling. The variant says which kind of node it annotates;
 /// a slot whose variant doesn't match its node's kind is ignored.
 pub const Spelling = union(enum) {
@@ -233,6 +344,7 @@ pub fn deinit(self: *Document) void {
     allocator.free(self.node_spelling);
     allocator.free(self.node_marker_spans);
     allocator.free(self.attrs_spans);
+    self.labels.deinit(allocator);
 }
 
 /// The source span of `id`. Panics on an out-of-range id, like `ast.nodes[id]`
@@ -444,14 +556,11 @@ test "the same document in two formats has the same AST but different spans" {
     var md = try Markdown.parse(testing.allocator, md_src, .{});
     defer md.deinit();
 
-    const dj_doc = dj.document();
-    const md_doc = md.document();
-
     // Same meaning...
-    try testing.expect(dj_doc.ast.eql(md_doc.ast));
+    try testing.expect(dj.ast.eql(md.ast));
     // ...written differently. `spansEql` is the separate layer, so a test can
     // assert either half without the other.
-    try testing.expect(!std.mem.eql(u8, dj_doc.source, md_doc.source));
+    try testing.expect(!std.mem.eql(u8, dj.source, md.source));
 }
 
 test "a spelling difference alone does not change the AST" {
@@ -481,9 +590,8 @@ test "an attribute block's source span rides in the Document layer" {
         \\::warn[label]{key=val}
         \\
     ;
-    var parsed = try Markdown.parse(testing.allocator, src, .{ .directives = true });
-    defer parsed.deinit();
-    const doc = parsed.document();
+    var doc = try Markdown.parse(testing.allocator, src, .{ .directives = true });
+    defer doc.deinit();
 
     const note = doc.ast.nodes[doc.ast.root].first_child.?;
     const warn = doc.ast.nodes[note].next_sibling.?;
@@ -512,7 +620,7 @@ test "attrs spans are a Document layer, so they never affect AST.eql" {
     defer b.deinit();
 
     try testing.expect(a.ast.eql(b.ast));
-    try testing.expect(!a.document().spansEql(b.document()));
+    try testing.expect(!a.spansEql(b));
 }
 
 test "Builder: an attrs span defaults to null and shifts with a graft" {
@@ -549,6 +657,56 @@ test "Builder: an attrs span defaults to null and shifts with a graft" {
     try testing.expectEqual(@as(?Span, null), d3.attrsSpan(n3));
 }
 
+test "labels: an explicit reference beats a synthesized one, whichever came first" {
+    const testing = std.testing;
+    const Djot = @import("languages/djot/djot.zig");
+
+    // The heading mints an implicit `[Intro]` target first; the author's own
+    // definition of the same label comes later and still wins.
+    var doc = try Djot.parse(testing.allocator, "# Intro\n\n[Intro]: /elsewhere\n");
+    defer doc.deinit();
+
+    const winner = doc.labels.reference("Intro") orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("/elsewhere", doc.ast.nodes[winner].kind.reference.destination);
+    try testing.expect(doc.labels.auto_references.get("Intro") != null);
+    try testing.expect(doc.labels.auto_references.get("Intro").? != winner);
+}
+
+test "labels: index over a bare tree keys every definition by its own label" {
+    const testing = std.testing;
+
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    _ = try b.addLeaf(.{ .reference = .{ .label = "r", .destination = "/one" } });
+    const later = try b.addLeaf(.{ .reference = .{ .label = "r", .destination = "/two" } });
+    const note = try b.addContainer(.{ .footnote = .{ .label = "n" } }, &.{});
+    const para = try b.addContainer(.para, &.{});
+    var ast = try b.finish(para);
+    defer ast.deinit();
+
+    var labels = try Labels.index(testing.allocator, &ast);
+    defer labels.deinit(testing.allocator);
+    // The later of two same-labelled definitions — see `index` for why.
+    try testing.expectEqual(@as(?AST.Node.Id, later), labels.reference("r"));
+    try testing.expectEqual(@as(?AST.Node.Id, note), labels.footnote("n"));
+    try testing.expectEqual(@as(?AST.Node.Id, null), labels.reference("n"));
+}
+
+test "labels: a djot implicit target loses to the explicit definition on a bare-tree leg too" {
+    const testing = std.testing;
+    const Djot = @import("languages/djot/djot.zig");
+    const Markdown = @import("languages/markdown/markdown.zig");
+
+    // Both `reference` nodes survive the parse; a cross-format serializer
+    // sees only the arena, and must still write the author's definition.
+    var doc = try Djot.parse(testing.allocator, "# Intro\n\n[Intro]: /elsewhere\n");
+    defer doc.deinit();
+    const md = try Markdown.serializer.serializeAstAlloc(testing.allocator, &doc.ast);
+    defer testing.allocator.free(md);
+    try testing.expect(std.mem.indexOf(u8, md, "[Intro]: /elsewhere") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "#Intro") == null);
+}
+
 test "a list marker difference lives in the spelling layer, not the AST" {
     const testing = std.testing;
     const Markdown = @import("languages/markdown/markdown.zig");
@@ -562,12 +720,12 @@ test "a list marker difference lives in the spelling layer, not the AST" {
     defer b.deinit();
 
     try testing.expect(a.ast.eql(b.ast));
-    try testing.expect(!a.document().spellingEql(b.document()));
-    try testing.expect(a.document().spellingEql(a.document()));
+    try testing.expect(!a.spellingEql(b));
+    try testing.expect(a.spellingEql(a));
 
     // The recorded spelling is readable per node: the list is the root's
     // first child.
     const list = a.ast.nodes[a.ast.root].first_child.?;
-    try testing.expectEqual(Spelling.Bullet.dash, a.document().spelling(list).?.bullet);
-    try testing.expectEqual(Spelling.Bullet.star, b.document().spelling(list).?.bullet);
+    try testing.expectEqual(Spelling.Bullet.dash, a.spelling(list).?.bullet);
+    try testing.expectEqual(Spelling.Bullet.star, b.spelling(list).?.bullet);
 }

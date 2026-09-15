@@ -6,16 +6,15 @@
 //! conformance corpus.
 //!
 //! The split exists because reference/footnote resolution is deferred
-//! entirely to render time (see `Document`'s doc comment in `djot.zig`): a
+//! entirely to render time (see `Document.labels` in `src/document.zig`): a
 //! `link`/`image`'s `reference` label and a `footnote_reference`'s label are
-//! resolved against side tables that live on djot's `Document`, not on the
+//! resolved against label tables that live beside the tree, not on the
 //! shared `AST` itself — XML/HTML have nothing like them, so they can't live
 //! in `AST` without leaking djot-only baggage into a language-neutral type.
-//! `Html`'s printer stays entirely djot-agnostic by taking those side tables
-//! as an optional, generically-shaped `Html.Context` instead of importing
-//! djot; this module's whole job is building that `Context` from a
-//! `Document`'s public `references`/`auto_references`/`footnotes` fields and
-//! handing it, plus the render-time `warn` hook, to `Html.Renderer`.
+//! `Html`'s printer stays entirely djot-agnostic by taking those tables as an
+//! optional `Html.Context` (which IS `Document.Labels`) instead of a
+//! `Document`; this module's whole job is handing it `&doc.labels`, plus the
+//! render-time `warn` hook.
 //!
 //! Used both as a genuinely useful output format and — via `conformance.zig`
 //! — as the parser's main correctness oracle: djot.js's own test suite is
@@ -26,7 +25,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
-const Document = djot.Document;
+const Document = @import("../../document.zig");
 const Html = @import("../html/html.zig");
 
 pub const RenderOptions = struct {
@@ -38,25 +37,13 @@ pub const RenderOptions = struct {
 /// extraction all need to allocate).
 pub const RenderError = Html.RenderError;
 
-/// Build the shared printer's reference/footnote side tables straight from
-/// `doc`'s public fields -- same pattern `languages/html/conformance.zig`
-/// uses to drive `Html` against the djot.js corpus directly.
-fn contextFor(doc: *const Document) Html.Context {
-    return .{
-        .references = doc.references,
-        .auto_references = doc.auto_references,
-        .footnotes = doc.footnotes,
-    };
-}
-
 /// Render `doc` (rooted at `doc.ast.root`, normally a `doc` node) to HTML,
 /// writing to `writer`. Delegates to `Html.Renderer` directly (rather than
 /// `Html.serialize`) so `options.warn` can be threaded through to the
 /// printer's own `RenderOptions`, which `Html.serialize`'s convenience
 /// signature doesn't expose.
 pub fn render(allocator: Allocator, doc: *const Document, writer: *Writer, options: RenderOptions) RenderError!void {
-    const ctx = contextFor(doc);
-    var r = Html.Renderer.init(allocator, &doc.ast, writer, &ctx, .{ .warn = options.warn });
+    var r = Html.Renderer.init(allocator, &doc.ast, writer, &doc.labels, .{ .warn = options.warn });
     defer r.deinit();
     try r.renderNode(doc.ast.root);
 }
@@ -104,8 +91,8 @@ test "tight list renders without <p> wrappers" {
 
 test "a bare (null-value) attribute renders as just its key" {
     // Djot can't produce a bare attribute, so build the tree by hand (the
-    // way an XML/HTML parser would) and wrap it in a side-table-less
-    // `Document` to reach the shared attr-rendering path.
+    // way an XML/HTML parser would) and wrap it in a label-less `Document`
+    // to reach the shared attr-rendering path.
     const AST = Html.AST;
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
@@ -113,7 +100,7 @@ test "a bare (null-value) attribute renders as just its key" {
     const para = try b.addContainer(.para, &.{text});
     try b.setAttrs(para, .{ .entries = &.{ .{ .key = "disabled", .value = null }, .{ .key = "id", .value = "y" } } });
 
-    var doc: Document = .{ .ast = try b.finish(para) };
+    var doc: Document = .{ .source = "", .ast = try b.finish(para), .node_spans = &.{}, .node_content_spans = &.{} };
     defer doc.deinit();
 
     const html = try renderAlloc(testing.allocator, &doc, .{});

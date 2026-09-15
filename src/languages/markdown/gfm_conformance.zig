@@ -32,12 +32,12 @@
 //!
 //! It renders through `Markdown.html.renderAlloc` — the real, user-facing
 //! path — rather than calling the shared printer with `gfm_render_options`
-//! hardcoded. So it covers the DIALECT PLUMBING end to end (`Options.gfm` ->
-//! `Document.options.dialect` -> `Html.gfm_render_options`), not just the
-//! printer's behavior once it's handed the right flags. A refactor that
-//! silently renders GFM documents with CommonMark's conventions fails here,
-//! which is precisely the bug class this suite exists to prevent: twig prints
-//! djot, markdown, and GFM DISTINCTLY (see `languages/html/html.zig`'s
+//! hardcoded. So it covers the DIALECT PLUMBING end to end (`Options.gfm`'s
+//! `.dialect` -> `RenderOptions.dialect` -> `Html.gfm_render_options`), not
+//! just the printer's behavior once it's handed the right flags. A refactor
+//! that silently renders GFM documents with CommonMark's conventions fails
+//! here, which is precisely the bug class this suite exists to prevent: twig
+//! prints djot, markdown, and GFM DISTINCTLY (see `languages/html/html.zig`'s
 //! preset block), and only an end-to-end assertion can hold that line.
 
 const std = @import("std");
@@ -178,7 +178,7 @@ pub fn run(allocator: Allocator, max_failures: usize, failures: *std.ArrayList(F
         // Deliberately the real render path, NOT `Html.serializeAllocOpts`
         // with `gfm_render_options` passed by hand: the dialect mapping is
         // part of what this suite pins. See the module doc comment.
-        const rendered = try md_html.renderAlloc(allocator, &doc, .{});
+        const rendered = try md_html.renderAlloc(allocator, &doc, .{ .dialect = options_mod.gfm.dialect });
         if (std.mem.eql(u8, rendered, ex.html)) {
             summary.passed += 1;
             sec.passed += 1;

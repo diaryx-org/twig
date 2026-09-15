@@ -153,8 +153,8 @@ pub fn subtreeIds(self: *const AST, gpa: std.mem.Allocator, root: Node.Id) std.m
 ///
 /// A parsed document is not one tree. Footnote definitions and link-reference
 /// definitions are resolved by LABEL rather than by position, so the parsers
-/// attach them to nothing and leave them in the arena as extra roots (see
-/// `languages/markdown/block.zig`'s `finish`). A walk from `root` therefore
+/// attach them to nothing and leave them in the arena, reachable only through
+/// `Document.labels` (see `ast/compact.zig`). A walk from `root` therefore
 /// does not reach them, and a consumer that wants them has no choice but to
 /// scan the whole arena for parentless nodes — which is what this is, done
 /// once and named, rather than re-derived by every caller.

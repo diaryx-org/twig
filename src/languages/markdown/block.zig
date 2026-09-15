@@ -26,8 +26,8 @@
 //! block quotes (with lazy continuation), bullet/ordered lists (marker
 //! parsing, start number, tight/loose detection), paragraphs, the 7 HTML
 //! block start conditions, and link reference definitions (parsed, stripped
-//! from the block stream, and recorded in `link_references` — never
-//! rendered as nodes themselves). Inline content is delegated to
+//! from the block stream, and recorded in `Document.labels.references` —
+//! never rendered as nodes themselves). Inline content is delegated to
 //! `inline.zig`'s deliberately minimal Phase 1 subset.
 //!
 //! ── Documented simplifications ───────────────────────────────────────────
@@ -90,7 +90,7 @@ const AST = @import("../../ast/ast.zig");
 const Node = AST.Node;
 const Builder = AST.Builder;
 const Span = @import("../../span.zig");
-const TwigDocument = @import("../../document.zig");
+const Document = @import("../../document.zig");
 const compact = @import("../../ast/compact.zig");
 const Options = @import("options.zig");
 const inline_mod = @import("inline.zig");
@@ -101,55 +101,6 @@ const html_lang = @import("../html/html.zig");
 /// `inline_mod.Segment`'s doc comment for what it means and this file's
 /// module doc comment section on inline spans for how it's built here.
 const Segment = inline_mod.Segment;
-
-pub const BlockResult = struct {
-    ast: AST,
-    /// The source and the id-indexed position tables — see
-    /// `src/document.zig`. Carried alongside the tree rather than on its
-    /// nodes; `markdown.zig`'s `Document` takes ownership of these verbatim.
-    source: []const u8 = "",
-    node_spans: []const Span = &.{},
-    node_content_spans: []const ?Span = &.{},
-    node_spelling: []const ?TwigDocument.Spelling = &.{},
-    node_marker_spans: []const ?Span = &.{},
-    /// Indexed by `AST.Attrs.Id`, not by node id — see
-    /// `TwigDocument.attrs_spans`.
-    attrs_spans: []const ?Span = &.{},
-    link_references: std.StringHashMapUnmanaged(Node.Id),
-    /// Label (normalized via `normalizeLabel`, same as `link_references`) ->
-    /// the `footnote` definition node with that label (`self.options
-    /// .footnotes`; see this file's "footnote definitions" section). Mirrors
-    /// `link_references`'s shape and lifetime: keys are slices of the
-    /// `footnote` node's own owned `.label` string, not separately
-    /// allocated.
-    footnotes: std.StringHashMapUnmanaged(Node.Id),
-
-    /// Free everything this result owns: the tree, the position tables, and
-    /// the two label side-tables. `markdown.zig`'s `parse` moves all of these
-    /// into its own `Document` instead of calling this, so this is the
-    /// direct-caller (test) path.
-    pub fn deinit(self: *BlockResult, allocator: std.mem.Allocator) void {
-        self.link_references.deinit(allocator);
-        self.footnotes.deinit(allocator);
-        allocator.free(self.node_spans);
-        allocator.free(self.node_content_spans);
-        allocator.free(self.node_spelling);
-        allocator.free(self.node_marker_spans);
-        allocator.free(self.attrs_spans);
-        self.ast.deinit();
-    }
-
-    /// Node `id`'s source span — the tests' accessor, mirroring
-    /// `markdown.zig`'s `Document.span`.
-    pub fn span(self: *const BlockResult, id: Node.Id) Span {
-        return self.node_spans[id];
-    }
-
-    /// Node `id`'s interior span, or `null`.
-    pub fn contentSpan(self: *const BlockResult, id: Node.Id) ?Span {
-        return self.node_content_spans[id];
-    }
-};
 
 // ── low-level line/column helpers ───────────────────────────────────────
 
@@ -374,7 +325,7 @@ fn isFenceClose(s: []const u8, fence_char: u8, fence_len: usize) bool {
 const ListMarker = struct {
     ordered: bool,
     bullet_char: u8 = 0,
-    delim: TwigDocument.Spelling.OrderedDelim = .period,
+    delim: Document.Spelling.OrderedDelim = .period,
     start: ?u32 = null,
     marker_len: usize,
 };
@@ -809,7 +760,7 @@ const Container = struct {
     // .list
     ordered: bool = false,
     bullet_char: u8 = 0,
-    delim: TwigDocument.Spelling.OrderedDelim = .period,
+    delim: Document.Spelling.OrderedDelim = .period,
     start_num: ?u32 = null,
     tight: bool = true,
     blank_pending: bool = false,
@@ -923,8 +874,15 @@ pub const Parser = struct {
     builder: Builder,
     stack: std.ArrayList(Container),
     leaf: ?Leaf = null,
+    /// Label (normalized via `normalizeLabel`) -> the `reference` node
+    /// holding that link reference definition. Becomes
+    /// `Document.labels.references`; keys are slices of the node's own owned
+    /// `.label` string, not separately allocated.
     link_references: std.StringHashMapUnmanaged(Node.Id) = .empty,
-    /// See `BlockResult.footnotes`'s doc comment.
+    /// Label (normalized the same way) -> the `footnote` definition node
+    /// with that label (`self.options.footnotes`; see this file's "footnote
+    /// definitions" section). Becomes `Document.labels.footnotes`; same
+    /// shape and lifetime as `link_references`.
     footnotes: std.StringHashMapUnmanaged(Node.Id) = .empty,
     pending_inline: std.ArrayList(PendingInline) = .empty,
     options: Options,
@@ -1005,17 +963,16 @@ pub const Parser = struct {
         self.pending_inline.deinit(self.allocator);
         self.builder.deinit();
         // Keys are slices into the builder's `owned_strings` (see
-        // `tryParseLinkRefDef`), not separately allocated, so — mirroring
-        // djot's `Document.references` — only the map structure itself is
-        // freed here; `self.builder.deinit()` above (on a failure path) or
-        // the finished `AST`'s `deinit` (on success, via `Document.deinit`)
-        // owns the actual bytes.
+        // `tryParseLinkRefDef`), not separately allocated, so only the map
+        // structure itself is freed here; `self.builder.deinit()` above (on a
+        // failure path) or the finished `AST`'s `deinit` (on success, via
+        // `Document.deinit`) owns the actual bytes.
         self.link_references.deinit(self.allocator);
         // Same story as `link_references` above, one line up.
         self.footnotes.deinit(self.allocator);
     }
 
-    pub fn parse(self: *Parser) Allocator.Error!BlockResult {
+    pub fn parse(self: *Parser) Allocator.Error!Document {
         if (self.options.frontmatter) {
             try self.tryConsumeFrontmatter();
             try self.tryConsumeEndmatter();
@@ -1050,44 +1007,17 @@ pub const Parser = struct {
         self.builder.setSpan(doc_id, Span.init(0, self.source.len));
         setContentSpanFromChildren(&self.builder, doc_id);
 
-        const raw = try self.builder.finishDocument(self.source, doc_id);
-        var refs = self.link_references;
+        var raw = try self.builder.finishDocument(self.source, doc_id);
+        // Link reference definitions and footnote definitions are attached to
+        // no parent (they are resolved by label, not by position); the label
+        // tables are where they live, and compaction reads them as roots.
+        raw.labels = .{ .references = self.link_references, .footnotes = self.footnotes };
         self.link_references = .empty;
-        var fns = self.footnotes;
         self.footnotes = .empty;
 
         // Drop the delimiter runs `inline.zig` emitted speculatively and then
         // abandoned when the run resolved into a mark — see `ast/compact.zig`.
-        // Link reference definitions and footnote definitions are attached to
-        // no parent (they are resolved by label, not by position), so both
-        // tables' nodes go in as extra roots and are repointed afterward.
-        var roots: std.ArrayList(Node.Id) = .empty;
-        defer roots.deinit(self.allocator);
-        var rit = refs.valueIterator();
-        while (rit.next()) |v| try roots.append(self.allocator, v.*);
-        var fit = fns.valueIterator();
-        while (fit.next()) |v| try roots.append(self.allocator, v.*);
-
-        const c = try compact.run(self.allocator, raw, roots.items);
-        defer c.freeMap(self.allocator);
-        // Every table value was a root, so each survived and `.?` cannot fire.
-        var rit2 = refs.valueIterator();
-        while (rit2.next()) |v| v.* = c.map[v.*].?;
-        var fit2 = fns.valueIterator();
-        while (fit2.next()) |v| v.* = c.map[v.*].?;
-
-        const doc = c.doc;
-        return .{
-            .ast = doc.ast,
-            .source = doc.source,
-            .node_spans = doc.node_spans,
-            .node_content_spans = doc.node_content_spans,
-            .node_spelling = doc.node_spelling,
-            .node_marker_spans = doc.node_marker_spans,
-            .attrs_spans = doc.attrs_spans,
-            .link_references = refs,
-            .footnotes = fns,
-        };
+        return compact.run(self.allocator, raw);
     }
 
     /// Parse every deferred leaf text block's inline content (see
@@ -1377,7 +1307,7 @@ pub const Parser = struct {
         try self.appendToTop(id);
     }
 
-    fn bulletStyle(c: u8) TwigDocument.Spelling.Bullet {
+    fn bulletStyle(c: u8) Document.Spelling.Bullet {
         return switch (c) {
             '+' => .plus,
             '*' => .star,
@@ -2946,11 +2876,11 @@ pub const Parser = struct {
     /// same story as link reference definitions.
     ///
     /// Like a link reference definition (and like djot's own footnotes --
-    /// see `Djot.Document.footnotes`'s doc comment), the finished `footnote`
-    /// node is NEVER appended into the enclosing container's children: it is
-    /// collected into `self.footnotes` only, to be resolved/numbered/
-    /// backlinked entirely at RENDER time by the shared HTML printer (see
-    /// `markdown/html.zig`) via `Markdown.Document.footnotes`.
+    /// see `Document.labels`), the finished `footnote` node is NEVER appended
+    /// into the enclosing container's children: it is collected into
+    /// `self.footnotes` only, to be resolved/numbered/backlinked entirely at
+    /// RENDER time by the shared HTML printer (see `markdown/html.zig`) via
+    /// `Document.labels.footnotes`.
     fn tryStartFootnoteDef(self: *Parser, line: []const u8, cur: Cursor, idx: usize) Allocator.Error!bool {
         const remainder = line[cur.pos..];
         const s = stripUpTo3Indent(remainder);
@@ -3245,7 +3175,7 @@ pub const Parser = struct {
     }
 };
 
-pub fn parse(allocator: Allocator, source: []const u8, options: Options) Allocator.Error!BlockResult {
+pub fn parse(allocator: Allocator, source: []const u8, options: Options) Allocator.Error!Document {
     var p = try Parser.init(allocator, source, options);
     defer p.deinit();
     return p.parse();
@@ -3256,13 +3186,13 @@ const Html = @import("../html/html.zig");
 
 fn renderHtml(source: []const u8, options: Options) ![]u8 {
     var r = try parse(testing.allocator, source, options);
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     return Html.serializeAlloc(testing.allocator, &r.ast, null);
 }
 
 test "ATX heading" {
     var r = try parse(testing.allocator, "## Hello\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const h = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[h].kind.heading.level == 2);
     const text = r.ast.nodes[h].first_child.?;
@@ -3280,7 +3210,7 @@ test "ATX heading" {
 test "span: a link in a single-line paragraph covers '[x](url)', content_span the link text" {
     const src = "see [x](http://a.co) now\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "see "
     const link = r.ast.nodes[first].next_sibling.?;
@@ -3292,7 +3222,7 @@ test "span: a link in a single-line paragraph covers '[x](url)', content_span th
 test "span: a link inside a heading is byte-accurate" {
     const src = "## see [x](http://a.co) now\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const h = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[h].first_child.?; // "see "
     const link = r.ast.nodes[first].next_sibling.?;
@@ -3303,7 +3233,7 @@ test "span: a link inside a heading is byte-accurate" {
 test "span: emphasis in a single-line paragraph covers its own delimiters" {
     const src = "hi *abc* there\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "hi "
     const em = r.ast.nodes[first].next_sibling.?;
@@ -3315,7 +3245,7 @@ test "span: emphasis in a single-line paragraph covers its own delimiters" {
 test "span: a code span includes its own backticks" {
     const src = "x `code` y\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "x "
     const code = r.ast.nodes[first].next_sibling.?;
@@ -3326,7 +3256,7 @@ test "span: a code span includes its own backticks" {
 test "span: a str leaf's span is its own exact source bytes, even nested in a block quote" {
     const src = "> hello world\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const bq = r.ast.nodes[r.ast.root].first_child.?;
     const para = r.ast.nodes[bq].first_child.?;
     const str = r.ast.nodes[para].first_child.?;
@@ -3344,7 +3274,7 @@ test "span: an inline node straddling a line-join gets the accurate source range
     // an unset `(0,0)` one is not.
     const src = "a *b\nc* d\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "a "
     try testing.expectEqualStrings("a ", Span.of(u8, r.span(first), src));
@@ -3363,7 +3293,7 @@ test "span: a text directive's label is mapped even when it straddles a line-joi
     // own offset.
     const src = "x :abbr[a *b*\nc] y\n";
     var r = try parse(testing.allocator, src, .{ .directives = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const lead = r.ast.nodes[para].first_child.?; // "x "
     const dir = r.ast.nodes[lead].next_sibling.?;
@@ -3390,7 +3320,7 @@ test "span/content_span: a verbatim code span broken across two lines is mapped"
     // straddle the line-join accurately.
     const src = "x `a\nb` y\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     const first = r.ast.nodes[para].first_child.?; // "x "
     const v = r.ast.nodes[first].next_sibling.?;
@@ -3401,7 +3331,7 @@ test "span/content_span: a verbatim code span broken across two lines is mapped"
 
 test "fenced code block with a language" {
     var r = try parse(testing.allocator, "```zig\nconst x = 1;\n```\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expectEqualStrings("zig", r.ast.nodes[cb].kind.code_block.lang.?);
     try testing.expectEqualStrings("const x = 1;\n", r.ast.nodes[cb].kind.code_block.text);
@@ -3410,7 +3340,7 @@ test "fenced code block with a language" {
 test "content_span: fenced code interior excludes both fence lines" {
     const src = "```zig\nconst x = 1;\n```\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[cb].kind == .code_block);
     // span covers the fences; content_span is the body only.
@@ -3424,7 +3354,7 @@ test "content_span: fenced code interior excludes both fence lines" {
 test "content_span: multi-line fenced body spans first to last body line" {
     const src = "```\nline1\nline2\n```\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expectEqualStrings("line1\nline2", Span.of(u8, r.contentSpan(cb).?, src));
 }
@@ -3432,7 +3362,7 @@ test "content_span: multi-line fenced body spans first to last body line" {
 test "content_span: empty fenced block has no interior" {
     const src = "```\n```\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[cb].kind == .code_block);
     try testing.expect(r.contentSpan(cb) == null);
@@ -3441,7 +3371,7 @@ test "content_span: empty fenced block has no interior" {
 test "content_span: frontmatter interior excludes both fence lines (raw body, not payload)" {
     const src = "---\ntitle: Hi\nx: 1\n---\n\nbody\n";
     var r = try parse(testing.allocator, src, .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const fm = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[fm].kind == .metadata);
     // content_span is the raw body between the `---` fences, both excluded.
@@ -3453,7 +3383,7 @@ test "content_span: frontmatter interior excludes both fence lines (raw body, no
 test "content_span: empty frontmatter has no interior" {
     const src = "---\n---\nbody\n";
     var r = try parse(testing.allocator, src, .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const fm = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[fm].kind == .metadata);
     try testing.expect(r.contentSpan(fm) == null);
@@ -3462,7 +3392,7 @@ test "content_span: empty frontmatter has no interior" {
 test "content_span: endmatter interior excludes both fence lines" {
     const src = "body\n\n---toml\nx = 1\n---\n";
     var r = try parse(testing.allocator, src, .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     // Endmatter is appended as the doc's LAST child.
     var last = r.ast.nodes[r.ast.root].first_child.?;
     while (r.ast.nodes[last].next_sibling) |n| last = n;
@@ -3473,7 +3403,7 @@ test "content_span: endmatter interior excludes both fence lines" {
 test "content_span: unterminated fence (EOF) ends at the last body line" {
     const src = "```\ncode\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expectEqualStrings("code", Span.of(u8, r.contentSpan(cb).?, src));
 }
@@ -3481,7 +3411,7 @@ test "content_span: unterminated fence (EOF) ends at the last body line" {
 test "content_span: indented code interior is the whole block (indent included)" {
     const src = "    abc\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[cb].kind == .code_block);
     // No fences to strip: content_span == span, indentation and all.
@@ -3497,7 +3427,7 @@ test "span: indented code stops at its last content line, not the blanks after i
     // `source[content_span]` disagreed with `text` about where the block ends.
     const src = "    code\n\n\n\nafter\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[cb].kind == .code_block);
@@ -3511,7 +3441,7 @@ test "span: an indented code block keeps a blank line INSIDE it" {
     // indented lines is body text, in the span and in the text alike.
     const src = "    a\n\n    b\n\nafter\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[cb].kind == .code_block);
@@ -3525,7 +3455,7 @@ test "span: an indented code block inside a list item does not stretch the item"
     // item's too.
     const src = "- a\n\n      code\n\nafter\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const list = r.ast.nodes[r.ast.root].first_child.?;
     const item = r.ast.nodes[list].first_child.?;
@@ -3535,7 +3465,7 @@ test "span: an indented code block inside a list item does not stretch the item"
 
 test "tight bullet list with two items" {
     var r = try parse(testing.allocator, "- a\n- b\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const list = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[list].kind.bullet_list.tight);
     const item1 = r.ast.nodes[list].first_child.?;
@@ -3545,7 +3475,7 @@ test "tight bullet list with two items" {
 
 test "block quote" {
     var r = try parse(testing.allocator, "> foo\n> bar\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const bq = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[bq].kind == .block_quote);
     const para = r.ast.nodes[bq].first_child.?;
@@ -3554,7 +3484,7 @@ test "block quote" {
 
 test "HTML block" {
     var r = try parse(testing.allocator, "<div>\n  <p>hi</p>\n</div>\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const rb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[rb].kind == .raw_block);
     try testing.expectEqualStrings("html", r.ast.nodes[rb].kind.raw_block.format);
@@ -3590,7 +3520,7 @@ test "html_elements OFF: an HTML block stays one opaque raw_block (the default)"
     // below promote must, by default, still be the single raw HTML node
     // CommonMark specifies.
     var r = try parse(testing.allocator, "<img src=\"a.svg\" alt=\"x\">\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const rb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[rb].kind == .raw_block);
 }
@@ -3598,7 +3528,7 @@ test "html_elements OFF: an HTML block stays one opaque raw_block (the default)"
 test "html_elements: an <img> block promotes to an image node, no raw_block" {
     const src = "<img src=\"a.svg\" alt=\"x\">\n";
     var r = try parse(testing.allocator, src, .{ .html_elements = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     // No opaque node survives.
     try testing.expect(findFirstKind(&r.ast, r.ast.root, .raw_block) == null);
     const img = findFirstKind(&r.ast, r.ast.root, .image).?;
@@ -3617,7 +3547,7 @@ test "html_elements: a promoted <img>'s span addresses the true source bytes" {
         \\
     ;
     var r = try parse(testing.allocator, src, .{ .html_elements = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const img = findFirstKind(&r.ast, r.ast.root, .image).?;
     const span = r.span(img);
     try testing.expectEqualStrings(
@@ -3641,7 +3571,7 @@ test "html_elements: the fig.md <picture> block parses into heading > picture > 
         \\
     ;
     var r = try parse(testing.allocator, src, .{ .html_elements = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const heading = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[heading].kind.heading.level == 1);
@@ -3667,7 +3597,7 @@ test "html_elements: a one-line <video> is a block, not a paragraph of raw HTML"
     // element node at all. `html_media_tags` is what makes it a block.
     const src = "<video src=\"clip.mp4\" poster=\"still.png\" controls></video>\n";
     var r = try parse(testing.allocator, src, .{ .html_elements = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const video = findFirstKind(&r.ast, r.ast.root, .container).?;
     try testing.expectEqualStrings("video", r.ast.nodes[video].kind.container.name);
@@ -3678,7 +3608,7 @@ test "html_elements: a one-line <video> is a block, not a paragraph of raw HTML"
 test "html_elements: a one-line <audio> is a block too" {
     const src = "<audio src=\"take.mp3\" controls></audio>\n";
     var r = try parse(testing.allocator, src, .{ .html_elements = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const audio = findFirstKind(&r.ast, r.ast.root, .container).?;
     try testing.expectEqualStrings("audio", r.ast.nodes[audio].kind.container.name);
@@ -3691,7 +3621,7 @@ test "html_elements: a one-line <picture> is a block, with its source and img" {
     const src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\">" ++
         "<img src=\"l.svg\" alt=\"banner\"></picture>\n";
     var r = try parse(testing.allocator, src, .{ .html_elements = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const picture2 = findFirstKind(&r.ast, r.ast.root, .container).?;
     try testing.expectEqualStrings("picture", r.ast.nodes[picture2].kind.container.name);
@@ -3706,7 +3636,7 @@ test "html_elements OFF: a one-line <video> keeps stock CommonMark parsing" {
     // this stays what CommonMark says it is -- a paragraph, not a block.
     const src = "<video src=\"clip.mp4\" controls></video>\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const first = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[first].kind == .para);
@@ -3720,7 +3650,7 @@ test "html_elements: an <img> amid prose stays an inline image" {
     // already open a type-7 block, so adding it buys nothing and risks this.
     const src = "see <img src=\"a.svg\" alt=\"x\"> here\n";
     var r = try parse(testing.allocator, src, .{ .html_elements = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const para2 = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[para2].kind == .para);
@@ -3729,7 +3659,7 @@ test "html_elements: an <img> amid prose stays an inline image" {
 
 test "paragraph with a code span and a hard break" {
     var r = try parse(testing.allocator, "foo `bar`  \nbaz\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[para].kind == .para);
     var it = r.ast.children(para);
@@ -3742,9 +3672,9 @@ test "paragraph with a code span and a hard break" {
 
 test "a link reference definition is stripped and recorded in the table" {
     var r = try parse(testing.allocator, "[foo]: /url \"title\"\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[r.ast.root].first_child);
-    const ref_id = r.link_references.get("foo") orelse return error.TestExpectedNonNull;
+    const ref_id = r.labels.references.get("foo") orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("/url", r.ast.nodes[ref_id].kind.reference.destination);
     try testing.expectEqualStrings("title", r.ast.attrsOf(ref_id).get("title").?);
 }
@@ -3757,11 +3687,11 @@ test "span: a link reference definition covers its own line" {
     // one whose title continues onto a second line.
     const src = "intro\n\n[a]: /a\n[b]: /b \"bee\"\n\n[c]: /c\ntext\n\n[d]: /d\n  \"dee\"\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
-    const a = r.link_references.get("a") orelse return error.TestExpectedNonNull;
-    const b = r.link_references.get("b") orelse return error.TestExpectedNonNull;
-    const c = r.link_references.get("c") orelse return error.TestExpectedNonNull;
-    const d = r.link_references.get("d") orelse return error.TestExpectedNonNull;
+    defer r.deinit();
+    const a = r.labels.references.get("a") orelse return error.TestExpectedNonNull;
+    const b = r.labels.references.get("b") orelse return error.TestExpectedNonNull;
+    const c = r.labels.references.get("c") orelse return error.TestExpectedNonNull;
+    const d = r.labels.references.get("d") orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("[a]: /a", Span.of(u8, r.span(a), src));
     try testing.expectEqualStrings("[b]: /b \"bee\"", Span.of(u8, r.span(b), src));
     try testing.expectEqualStrings("[c]: /c", Span.of(u8, r.span(c), src));
@@ -3777,7 +3707,7 @@ test "table: header/delimiter/body with per-column alignment" {
         \\| 1 | 2 | 3 |
         \\
     , .{ .tables = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const table = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[table].kind == .table);
@@ -3809,7 +3739,7 @@ test "table: ragged rows are padded/truncated to the header's column count" {
         \\| 1 | 2 | 3 |
         \\
     , .{ .tables = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const table = r.ast.nodes[r.ast.root].first_child.?;
     const caption = r.ast.nodes[table].first_child.?;
@@ -3836,7 +3766,7 @@ test "table: renders through the shared HTML printer with an empty caption" {
 
 test "table OFF: a pipe 'table' parses as an ordinary CommonMark paragraph" {
     var r = try parse(testing.allocator, "| a | b |\n| - | - |\n", .{ .tables = false });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[para].kind == .para);
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[para].next_sibling);
@@ -3846,7 +3776,7 @@ test "table OFF: a pipe 'table' parses as an ordinary CommonMark paragraph" {
 
 test "task list: unchecked and checked (case-insensitive) items" {
     var r = try parse(testing.allocator, "- [ ] todo\n- [x] done\n- [X] also done\n", .{ .task_lists = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const list = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[list].kind == .task_list);
@@ -3874,7 +3804,7 @@ test "task list: renders an <input type=checkbox> via the shared HTML printer" {
 
 test "task lists OFF: '- [ ] x' is a plain bullet list item with literal text" {
     var r = try parse(testing.allocator, "- [ ] x\n", .{ .task_lists = false });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const list = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[list].kind == .bullet_list);
     const item = r.ast.nodes[list].first_child.?;
@@ -3920,7 +3850,7 @@ test "definition list: a term with two definitions" {
         \\: Second definition
         \\
     , .{ .definition_lists = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const dl = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[dl].kind == .definition_list);
@@ -3954,7 +3884,7 @@ test "definition list: two adjacent term groups merge into one definition_list" 
         \\: def b
         \\
     , .{ .definition_lists = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const dl = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[dl].kind == .definition_list);
@@ -3974,7 +3904,7 @@ test "span: a definition_list contains its own first term" {
     // deleting a one-item definition list left it orphaned.
     const src = "Term\n: def\n\nafter\n";
     var r = try parse(testing.allocator, src, .{ .definition_lists = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const dl = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[dl].kind == .definition_list);
@@ -3989,7 +3919,7 @@ test "span: a definition_list contains its own first term" {
 test "span: a multi-term definition_list still runs first term to last definition" {
     const src = "A\n: one\n\nB\n: two\n\nafter\n";
     var r = try parse(testing.allocator, src, .{ .definition_lists = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const dl = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[dl].kind == .definition_list);
@@ -4004,7 +3934,7 @@ test "definition list: renders as <dl><dt>...<dd>... via the shared HTML printer
 
 test "definition lists OFF: 'Term\\n: def' lazily continues one CommonMark paragraph" {
     var r = try parse(testing.allocator, "Term\n: def\n", .{ .definition_lists = false });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[para].kind == .para);
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[para].next_sibling);
@@ -4012,9 +3942,9 @@ test "definition lists OFF: 'Term\\n: def' lazily continues one CommonMark parag
 
 // ── Phase 3: footnote definitions ────────────────────────────────────────
 
-test "footnote definition: collected into r.footnotes, NOT emitted into the main flow" {
+test "footnote definition: collected into r.labels.footnotes, NOT emitted into the main flow" {
     var r = try parse(testing.allocator, "para\n\n[^a]: the note\n", .{ .footnotes = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const para = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[para].kind == .para);
@@ -4022,7 +3952,7 @@ test "footnote definition: collected into r.footnotes, NOT emitted into the main
     // source, and it must not show up as a sibling block.
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[para].next_sibling);
 
-    const fn_id = r.footnotes.get("a") orelse return error.TestExpectedNonNull;
+    const fn_id = r.labels.footnotes.get("a") orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("a", r.ast.nodes[fn_id].kind.footnote.label);
     const body = r.ast.nodes[fn_id].first_child.?;
     try testing.expect(r.ast.nodes[body].kind == .para);
@@ -4030,8 +3960,8 @@ test "footnote definition: collected into r.footnotes, NOT emitted into the main
 
 test "footnote definition: the label is normalized (trim/collapse ws/lowercase)" {
     var r = try parse(testing.allocator, "[^ A  B ]: note\n", .{ .footnotes = true });
-    defer r.deinit(testing.allocator);
-    try testing.expect(r.footnotes.contains("a b"));
+    defer r.deinit();
+    try testing.expect(r.labels.footnotes.contains("a b"));
 }
 
 test "footnote definition: a continuation line indented to line up with the first line's content joins the same note body" {
@@ -4040,9 +3970,9 @@ test "footnote definition: a continuation line indented to line up with the firs
     // indented to line up with the first line of the note". "[^a]: " is 6
     // columns wide, so the continuation must be indented 6 columns to join.
     var r = try parse(testing.allocator, "[^a]: first line\n      second line\n", .{ .footnotes = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
-    const fn_id = r.footnotes.get("a") orelse return error.TestExpectedNonNull;
+    const fn_id = r.labels.footnotes.get("a") orelse return error.TestExpectedNonNull;
     const body = r.ast.nodes[fn_id].first_child.?;
     try testing.expect(r.ast.nodes[body].kind == .para);
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[body].next_sibling);
@@ -4061,10 +3991,10 @@ test "footnote definition: a continuation line indented to line up with the firs
 
 test "footnote definitions: back-to-back definitions with no blank line between them each get their own node" {
     var r = try parse(testing.allocator, "[^a]: first\n[^b]: second\n", .{ .footnotes = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
-    const a_id = r.footnotes.get("a") orelse return error.TestExpectedNonNull;
-    const b_id = r.footnotes.get("b") orelse return error.TestExpectedNonNull;
+    const a_id = r.labels.footnotes.get("a") orelse return error.TestExpectedNonNull;
+    const b_id = r.labels.footnotes.get("b") orelse return error.TestExpectedNonNull;
     const a_body = r.ast.nodes[a_id].first_child.?; // the note's `para`
     const b_body = r.ast.nodes[b_id].first_child.?;
     try testing.expectEqualStrings("first", r.ast.nodes[r.ast.nodes[a_body].first_child.?].kind.str);
@@ -4075,16 +4005,16 @@ test "footnote definitions: back-to-back definitions with no blank line between 
 
 test "footnotes OFF: '[^a]:' is an ordinary link reference definition, not collected as a footnote" {
     var r = try parse(testing.allocator, "[^a]: /url\n", .{ .footnotes = false });
-    defer r.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 0), r.footnotes.count());
-    try testing.expect(r.link_references.contains("^a"));
+    defer r.deinit();
+    try testing.expectEqual(@as(usize, 0), r.labels.footnotes.count());
+    try testing.expect(r.labels.references.contains("^a"));
 }
 
 // ── Phase 3: frontmatter ──────────────────────────────────────────────────
 
 test "frontmatter: a leading YAML block becomes a metadata node, not rendered to HTML body" {
     var r = try parse(testing.allocator, "---\ntitle: Hi\n---\n# Heading\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const fm = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[fm].kind == .metadata);
@@ -4102,7 +4032,7 @@ test "frontmatter: a leading YAML block becomes a metadata node, not rendered to
 
 test "frontmatter: a leading TOML (+++) block is tagged lang=\"toml\"" {
     var r = try parse(testing.allocator, "+++\ntitle = \"Hi\"\n+++\nbody\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const fm = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[fm].kind == .metadata);
     try testing.expectEqualStrings("toml", r.ast.nodes[fm].kind.metadata.lang);
@@ -4111,7 +4041,7 @@ test "frontmatter: a leading TOML (+++) block is tagged lang=\"toml\"" {
 
 test "frontmatter: the language tag is stored as-written; MIME is application/<lang>" {
     var r = try parse(testing.allocator, "---fig\ntitle = Twig\n---\n# Twig\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const fm = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[fm].kind == .metadata);
     // No normalization: `fig` stays `fig` (and `figl` would stay `figl`).
@@ -4131,7 +4061,7 @@ test "frontmatter: the language tag is stored as-written; MIME is application/<l
 
 test "frontmatter: an arbitrary config language flows through the application/<lang> rule" {
     var r = try parse(testing.allocator, "---edn\n{:title \"Hi\"}\n---\nbody\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const fm = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[fm].kind == .metadata);
     try testing.expectEqualStrings("edn", r.ast.nodes[fm].kind.metadata.lang);
@@ -4142,7 +4072,7 @@ test "frontmatter: an arbitrary config language flows through the application/<l
 
 test "frontmatter: HTML printer refuses a metadata body containing `</script` (injection guard)" {
     var r = try parse(testing.allocator, "---figl\nx = \"</script><img src=x onerror=alert(1)>\"\n---\n# Body\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     try testing.expectError(error.UnsafeMetadata, Html.serializeAlloc(testing.allocator, &r.ast, null));
 
     // The other surfaces stay lossless — only the raw-text HTML island is unsafe.
@@ -4153,7 +4083,7 @@ test "frontmatter: HTML printer refuses a metadata body containing `</script` (i
 
 test "frontmatter: the `</script` guard is case-insensitive" {
     var r = try parse(testing.allocator, "---figl\nx = \"a </SCRIPT b\"\n---\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     try testing.expectError(error.UnsafeMetadata, Html.serializeAlloc(testing.allocator, &r.ast, null));
 }
 
@@ -4161,7 +4091,7 @@ test "frontmatter: a lone `<script` (no close) is inert raw text and still rende
     // Without a `</script`, the content can't break out of the island, so the
     // guard must NOT over-refuse it.
     var r = try parse(testing.allocator, "---figl\nx = \"see <script src=x>\"\n---\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const html = try Html.serializeAlloc(testing.allocator, &r.ast, null);
     defer testing.allocator.free(html);
     try testing.expect(std.mem.startsWith(u8, html, "<script type=\"application/figl\">\n"));
@@ -4169,7 +4099,7 @@ test "frontmatter: a lone `<script` (no close) is inert raw text and still rende
 
 test "endmatter: a trailing `---<lang>` block becomes the doc's last child" {
     var r = try parse(testing.allocator, "# Body\n\ntext\n\n---toml\nisbn = \"1-2-3\"\n---\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     // Body first (heading, paragraph), metadata LAST.
     const root = r.ast.root;
@@ -4186,7 +4116,7 @@ test "endmatter: a trailing `---<lang>` block becomes the doc's last child" {
 
 test "endmatter: front AND end matter coexist on one document" {
     var r = try parse(testing.allocator, "---figl\ntitle = Twig\n---\n\n# Body\n\n---toml\nisbn = \"x\"\n---\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const first = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[first].kind == .metadata);
@@ -4202,7 +4132,7 @@ test "endmatter: front AND end matter coexist on one document" {
 test "endmatter: round-trips through the Markdown serializer" {
     const src = "# Body\n\n---toml\nisbn = \"x\"\n---\n";
     var r = try parse(testing.allocator, src, .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const md = try @import("serializer.zig").serializeAstAlloc(testing.allocator, &r.ast);
     defer testing.allocator.free(md);
     // The trailing block re-emits as `---toml` … `---`.
@@ -4213,7 +4143,7 @@ test "endmatter: an untagged trailing `---` block is NOT endmatter (thematic bre
     // Bare `---` is ambiguous away from the top, so it parses as ordinary
     // CommonMark: `text` + thematic break + `k = v` paragraph + thematic break.
     var r = try parse(testing.allocator, "text\n\n---\nk = v\n---\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     var last: Node.Id = r.ast.nodes[r.ast.root].first_child.?;
     while (r.ast.nodes[last].next_sibling) |n| last = n;
     try testing.expect(r.ast.nodes[last].kind != .metadata);
@@ -4223,7 +4153,7 @@ test "endmatter: a tagged trailing block with no blank separator is NOT endmatte
     // Without the mandatory blank line above the opener, the tail parses
     // normally (here the `---toml` is a lazy paragraph continuation).
     var r = try parse(testing.allocator, "text\n---toml\nk = v\n---\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     var last: Node.Id = r.ast.nodes[r.ast.root].first_child.?;
     while (r.ast.nodes[last].next_sibling) |n| last = n;
     try testing.expect(r.ast.nodes[last].kind != .metadata);
@@ -4231,14 +4161,14 @@ test "endmatter: a tagged trailing block with no blank separator is NOT endmatte
 
 test "frontmatter: `----` (four dashes) is a thematic break, not a metadata fence" {
     var r = try parse(testing.allocator, "----\nfoo\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const first = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[first].kind == .thematic_break);
 }
 
 test "frontmatter: an unterminated leading '---' block falls back to ordinary parsing" {
     var r = try parse(testing.allocator, "---\ntitle: Hi\n", .{ .frontmatter = true });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     // No closing `---`: the first line is just a thematic break, same as
     // with the flag off.
     const first = r.ast.nodes[r.ast.root].first_child.?;
@@ -4247,7 +4177,7 @@ test "frontmatter: an unterminated leading '---' block falls back to ordinary pa
 
 test "frontmatter OFF: a leading '---' is an ordinary CommonMark thematic break" {
     var r = try parse(testing.allocator, "---\nfoo\n", .{ .frontmatter = false });
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const first = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[first].kind == .thematic_break);
     const para = r.ast.nodes[first].next_sibling.?;
@@ -4270,7 +4200,7 @@ test "container directive: name becomes an element tag, attrs applied" {
 
 test "container directive: AST node kind/form/name/attrs" {
     var r = try parse(testing.allocator, ":::warning\ncontent\n:::\n", directives_on);
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const dir = firstChild(r.ast, r.ast.root);
     try testing.expect(r.ast.nodes[dir].kind == .container);
     try testing.expectEqual(@as(?AST.Form, .block_fenced), r.ast.nodes[dir].kind.container.form);
@@ -4281,7 +4211,7 @@ test "container directive: AST node kind/form/name/attrs" {
 
 test "container directive: nested blocks (list) parse as blocks" {
     var r = try parse(testing.allocator, ":::box\n- a\n- b\n:::\n", directives_on);
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const dir = firstChild(r.ast, r.ast.root);
     const list = firstChild(r.ast, dir);
     try testing.expect(r.ast.nodes[list].kind == .bullet_list);
@@ -4301,7 +4231,7 @@ test "leaf directive: single line, label is inline content" {
 
 test "leaf directive: AST kind and no-label case" {
     var r = try parse(testing.allocator, "::hr\n", directives_on);
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const dir = firstChild(r.ast, r.ast.root);
     try testing.expect(r.ast.nodes[dir].kind == .container);
     try testing.expectEqual(@as(?AST.Form, .block_leaf), r.ast.nodes[dir].kind.container.form);
@@ -4327,7 +4257,7 @@ test "container directive: a label with nested brackets is still dropped" {
 
 test "container directive interrupts a paragraph" {
     var r = try parse(testing.allocator, "text\n:::box\nin\n:::\n", directives_on);
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     const para = firstChild(r.ast, r.ast.root);
     try testing.expect(r.ast.nodes[para].kind == .para);
     const dir = r.ast.nodes[para].next_sibling.?;
@@ -4342,7 +4272,7 @@ test "unterminated container directive stays open to end of document" {
 
 test "directives OFF: colon-fence lines are ordinary paragraphs" {
     var r = try parse(testing.allocator, ":::note\nhi\n:::\n", .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
     // Everything is one paragraph; no directive node anywhere.
     for (r.ast.nodes) |n| try testing.expect(n.kind != .container);
 }
@@ -4362,7 +4292,7 @@ test "text directive renders inline as its named element" {
 test "span: a fenced code block covers its closing fence" {
     const src = "```zig\nconst x = 1;\n```\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[cb].kind == .code_block);
@@ -4377,7 +4307,7 @@ test "span: an UNterminated fenced code block stops at its last content line" {
     // at the last content line (the complement of the test above).
     const src = "```zig\nconst x = 1;\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const cb = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[cb].kind == .code_block);
@@ -4390,7 +4320,7 @@ test "span: a list's span covers ALL its items, not just the first" {
     // whole list depends on this — a first-item-only span would leave `- b\n- c`.
     const src = "- a\n- b\n- c\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const list = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[list].kind == .bullet_list);
@@ -4401,7 +4331,7 @@ test "span: a list's span covers ALL its items, not just the first" {
 test "span: a multi-line list item covers its continuation lines" {
     const src = "- first\n  continued\n- second\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const list = r.ast.nodes[r.ast.root].first_child.?;
     const item = r.ast.nodes[list].first_child.?;
@@ -4413,7 +4343,7 @@ test "span: a multi-line list item covers its continuation lines" {
 test "span: a block quote's span covers all its lines" {
     const src = "> line one\n> line two\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const bq = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[bq].kind == .block_quote);
@@ -4432,7 +4362,7 @@ test "span: a block quote covers its own trailing marker lines" {
     // `> ` line, neither holding a block.
     const src = "> a\n>\n> \n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const bq = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[bq].kind == .block_quote);
@@ -4450,7 +4380,7 @@ test "span: a quote's marker lines stop at the blank that ends the quote" {
     // it is nobody's, and the paragraph past that is its own.
     const src = "> a\n> \n\nafter\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const bq = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[bq].kind == .block_quote);
@@ -4461,7 +4391,7 @@ test "span: a quote's marker lines stop at the blank that ends the quote" {
 test "span: nested quotes both cover the trailing marker lines they match" {
     const src = "> > a\n> >\n> > \n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const outer = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[outer].kind == .block_quote);
@@ -4478,7 +4408,7 @@ test "span: a lazy continuation line does not extend the quote past its paragrap
     // the paragraph that swallowed it lazily, exactly as before.
     const src = "> a\nb\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const bq = r.ast.nodes[r.ast.root].first_child.?;
     try testing.expect(r.ast.nodes[bq].kind == .block_quote);
@@ -4492,7 +4422,7 @@ test "span: a list item is NOT extended by the blank lines it matches" {
     // followed by a blank still stops at its own last line.
     const src = "- item\n\n[link]: /url\n";
     var r = try parse(testing.allocator, src, .{});
-    defer r.deinit(testing.allocator);
+    defer r.deinit();
 
     const list = r.ast.nodes[r.ast.root].first_child.?;
     const item = r.ast.nodes[list].first_child.?;

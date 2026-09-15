@@ -320,8 +320,8 @@ pub fn runQuery(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, 
     const source = try readSource(allocator, io, opts.file, stderr);
 
     // Querying needs the tree AND the spans it reports, so this is the shared
-    // `Document` — the per-format reparse adapter discards only the LANGUAGE
-    // side tables (djot references, Markdown link refs), never the positions.
+    // `Document` — the per-format reparse adapter, which is `parse` minus the
+    // `ParsedDoc` wrapper.
     var doc = format.entryFor(opts.input).parseToAst(&opts.parse_config, allocator, source) catch |err| {
         stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ opts.file, @tagName(opts.input), err }) catch {};
         stderr.flush() catch {};

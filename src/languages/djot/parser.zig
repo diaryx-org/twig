@@ -13,10 +13,9 @@
 //! `Builder`'s bottom-up, each-node-final-once shape.
 //!
 //! References and footnotes are never resolved here — `Link`/`Image` nodes
-//! carry a label string, and `Document.references`/`.footnotes` are label ->
-//! node maps consulted at render time (see djot.js's `parse.ts`/`html.ts`
-//! split, documented on `Document.references` in `djot.zig`), which is why
-//! `build` produces a `Document` (AST + side tables) rather than a bare
+//! carry a label string, and `Document.labels` holds the label -> node maps
+//! consulted at render time (see djot.js's `parse.ts`/`html.ts` split), which
+//! is why `build` produces a `Document` (AST + tables) rather than a bare
 //! `AST`.
 
 const std = @import("std");
@@ -24,10 +23,7 @@ const Allocator = std.mem.Allocator;
 const ast_mod = @import("../../ast/ast.zig");
 const AST = ast_mod;
 const Node = AST.Node;
-const Document = @import("djot.zig").Document;
-/// The shared position-carrying document (`src/document.zig`), distinct from
-/// djot's own `Document` above.
-const TwigDocument = @import("../../document.zig");
+const Document = @import("../../document.zig");
 const compact = @import("../../ast/compact.zig");
 const Span = @import("../../span.zig");
 const event = @import("event.zig");
@@ -104,7 +100,7 @@ fn toAstNumbering(n: ListMarkerStyle.Numbering) AST.ListNumbering {
     };
 }
 
-fn toAstDelim(d: ListMarkerStyle.Delim) TwigDocument.Spelling.OrderedDelim {
+fn toAstDelim(d: ListMarkerStyle.Delim) Document.Spelling.OrderedDelim {
     return switch (d) {
         .period => .period,
         .paren_after => .paren_after,
@@ -353,7 +349,7 @@ pub const TreeBuilder = struct {
     content_spans: std.ArrayList(?Span) = .empty,
     /// Parallel to `nodes` — node `id`'s recorded spelling. See
     /// `Document.node_spelling`.
-    spellings: std.ArrayList(?TwigDocument.Spelling) = .empty,
+    spellings: std.ArrayList(?Document.Spelling) = .empty,
     /// Parallel to `nodes` — the span of node `id`'s own leading marker. See
     /// `Document.node_marker_spans`.
     marker_spans: std.ArrayList(?Span) = .empty,
@@ -660,7 +656,7 @@ pub const TreeBuilder = struct {
 
         self.deinitScratch();
 
-        const raw: TwigDocument = .{
+        const raw: Document = .{
             .ast = .{
                 .allocator = self.allocator,
                 .owned_strings = try self.owned_strings.toOwnedSlice(self.allocator),
@@ -669,71 +665,34 @@ pub const TreeBuilder = struct {
                 .attrs = try self.attrs_table.toOwnedSlice(self.allocator),
             },
             // Positions travel beside the tree, not inside it — see
-            // `djot.zig`'s `Document` and `src/document.zig`.
+            // `src/document.zig`.
             .source = self.source,
             .node_spans = try self.spans.toOwnedSlice(self.allocator),
             .node_content_spans = try self.content_spans.toOwnedSlice(self.allocator),
             .node_spelling = try self.spellings.toOwnedSlice(self.allocator),
             .node_marker_spans = try self.marker_spans.toOwnedSlice(self.allocator),
+            // Built by `commitAttrs` from `PendingAttrs.origin`. `null` per
+            // entry wherever the set has no single range -- a synthesized
+            // one, or two `{...}` blocks merged into one `Attrs` -- which is
+            // `Document.attrs_spans`'s contract.
             .attrs_spans = try self.attrs_span_table.toOwnedSlice(self.allocator),
+            // Reference and footnote DEFINITIONS hang off no tree — they are
+            // resolved by label — so they ride here, where compaction reads
+            // them as roots and repoints them.
+            .labels = .{
+                .references = self.references,
+                .auto_references = self.auto_references,
+                .footnotes = self.footnotes,
+            },
         };
+        self.references = .empty;
+        self.auto_references = .empty;
+        self.footnotes = .empty;
 
         // Drop the delimiter runs the inline pass built and abandoned, so the
         // arena is the document rather than the search for it (see
-        // `ast/compact.zig`). Reference and footnote DEFINITIONS hang off no
-        // tree — they are resolved by label — so they must be handed in as
-        // extra roots or the sweep would delete them.
-        const compacted = try compactWithTables(
-            self.allocator,
-            raw,
-            &.{ &self.references, &self.auto_references, &self.footnotes },
-        );
-
-        return .{
-            .ast = compacted.ast,
-            .source = compacted.source,
-            .node_spans = compacted.node_spans,
-            .node_content_spans = compacted.node_content_spans,
-            .node_spelling = compacted.node_spelling,
-            .node_marker_spans = compacted.node_marker_spans,
-            // Built by `commitAttrs` from `PendingAttrs.origin` and carried
-            // through compaction unchanged (the attrs table is not
-            // renumbered). `null` per entry wherever the set has no single
-            // range -- a synthesized one, or two `{...}` blocks merged into
-            // one `Attrs` -- which is `Document.attrs_spans`'s contract.
-            .attrs_spans = compacted.attrs_spans,
-            .references = self.references,
-            .auto_references = self.auto_references,
-            .footnotes = self.footnotes,
-        };
-    }
-
-    /// Compact `doc`, using every value in `tables` as an extra root, then
-    /// rewrite those tables onto the new ids. The tables are label ->
-    /// definition-node maps, so their values are exactly the live nodes that
-    /// tree reachability cannot see.
-    fn compactWithTables(
-        allocator: Allocator,
-        doc: TwigDocument,
-        tables: []const *std.StringHashMapUnmanaged(Node.Id),
-    ) Allocator.Error!TwigDocument {
-        var roots: std.ArrayList(Node.Id) = .empty;
-        defer roots.deinit(allocator);
-        for (tables) |t| {
-            var it = t.valueIterator();
-            while (it.next()) |v| try roots.append(allocator, v.*);
-        }
-
-        const c = try compact.run(allocator, doc, roots.items);
-        defer c.freeMap(allocator);
-
-        // Every table value was passed in as a root, so each is guaranteed to
-        // have survived and `.?` cannot fire.
-        for (tables) |t| {
-            var it = t.valueIterator();
-            while (it.next()) |v| v.* = c.map[v.*].?;
-        }
-        return c.doc;
+        // `ast/compact.zig`).
+        return compact.run(self.allocator, raw);
     }
 
     fn handleEvent(self: *TreeBuilder, ev: Event) Allocator.Error!void {
@@ -1886,7 +1845,7 @@ test "span: a footnote definition stops at its own last line" {
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
 
-    const note = doc.footnotes.get("fn") orelse return error.TestExpectedNonNull;
+    const note = doc.labels.footnote("fn") orelse return error.TestExpectedNonNull;
     const sp = doc.span(note);
     try testing.expectEqualStrings("[^fn]: a note.\n", src[sp.start..sp.end]);
 }
@@ -1898,7 +1857,7 @@ test "span: a footnote definition keeps the blank line BETWEEN its paragraphs" {
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
 
-    const note = doc.footnotes.get("fn") orelse return error.TestExpectedNonNull;
+    const note = doc.labels.footnote("fn") orelse return error.TestExpectedNonNull;
     const sp = doc.span(note);
     try testing.expectEqualStrings("[^fn]: one\n\n    two\n", src[sp.start..sp.end]);
 }
@@ -1908,7 +1867,7 @@ test "span: a reference definition stops before the next definition" {
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
 
-    const first = doc.references.get("a") orelse return error.TestExpectedNonNull;
+    const first = doc.labels.reference("a") orelse return error.TestExpectedNonNull;
     const sp = doc.span(first);
     try testing.expectEqualStrings("[a]: /u\n", src[sp.start..sp.end]);
 }
@@ -1975,11 +1934,10 @@ test "attrs_span: a block attribute line is the range above the block" {
     const src = "{.vis .family}\nheld back\n";
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
-    const d = doc.document();
 
     const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(doc.ast.nodes[para].kind == .para);
-    const as = d.attrsSpan(para) orelse return error.TestExpectedNonNull;
+    const as = doc.attrsSpan(para) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("{.vis .family}", src[as.start..as.end]);
     // The paragraph itself begins after the line, which is exactly why the
     // line needs naming separately.
@@ -1990,10 +1948,9 @@ test "attrs_span: a multi-line attribute block is one range end to end" {
     const src = "{.vis\n .family}\nheld back\n";
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
-    const d = doc.document();
 
     const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
-    const as = d.attrsSpan(para) orelse return error.TestExpectedNonNull;
+    const as = doc.attrsSpan(para) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("{.vis\n .family}", src[as.start..as.end]);
 }
 
@@ -2001,7 +1958,6 @@ test "attrs_span: inline attributes are the block after the span" {
     const src = "a [b]{.x} c\n";
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
-    const d = doc.document();
 
     const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
     var id = doc.ast.nodes[para].first_child;
@@ -2009,7 +1965,7 @@ test "attrs_span: inline attributes are the block after the span" {
         if (doc.ast.nodes[n].attrs != null) break;
     }
     const span_node = id orelse return error.TestExpectedNonNull;
-    const as = d.attrsSpan(span_node) orelse return error.TestExpectedNonNull;
+    const as = doc.attrsSpan(span_node) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("{.x}", src[as.start..as.end]);
 }
 
@@ -2020,11 +1976,10 @@ test "attrs_span: two blocks merged into one set report no range" {
     const src = "{.a}\n{.b}\npara\n";
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
-    const d = doc.document();
 
     const para = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("a b", doc.ast.attrsOf(para).get("class").?);
-    try testing.expectEqual(@as(?Span, null), d.attrsSpan(para));
+    try testing.expectEqual(@as(?Span, null), doc.attrsSpan(para));
 }
 
 test "attrs_span: a synthesized set reports no range" {
@@ -2034,12 +1989,11 @@ test "attrs_span: a synthesized set reports no range" {
     const src = "# Title\n";
     var doc = try parseDoc(testing.allocator, src);
     defer doc.deinit();
-    const d = doc.document();
 
     const sec = doc.ast.nodes[doc.ast.root].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(doc.ast.nodes[sec].kind == .section);
     try testing.expect(doc.ast.attrsOf(sec).get("id") != null);
-    try testing.expectEqual(@as(?Span, null), d.attrsSpan(sec));
+    try testing.expectEqual(@as(?Span, null), doc.attrsSpan(sec));
 }
 
 // ── content_span on framed *leaves* ─────────────────────────────────────

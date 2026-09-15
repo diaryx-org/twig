@@ -18,29 +18,26 @@ pub const AST = @import("ast/ast.zig");
 /// `*const Document` because splicing needs both. See `document.zig`.
 pub const Document = @import("document.zig");
 
-/// Djot support: `Djot.parse(allocator, source) !Djot.Document` (the shared
-/// `AST` plus djot's reference/footnote side tables) plus `Djot.html` for
-/// HTML rendering. See `languages/djot/djot.zig`'s module doc comment.
+/// Djot support: `Djot.parse(allocator, source) !Document` plus `Djot.html`
+/// for HTML rendering, which resolves references and footnotes through
+/// `Document.labels`. See `languages/djot/djot.zig`'s module doc comment.
 pub const Djot = @import("languages/djot/djot.zig");
 
-/// XML support: `Xml.parse(allocator, source) !AST` (well-formed XML 1.0, no
-/// external DTD processing) plus `Xml.serialize`/`Xml.serializeAlloc` for
-/// rendering back to text. Unlike `Djot`, XML needs no side-table wrapper —
-/// `parse` returns the shared `AST` directly. See `languages/xml/xml.zig`'s
-/// module doc comment.
+/// XML support: `Xml.parse(allocator, source) !Document` (well-formed XML 1.0,
+/// no external DTD processing) plus `Xml.serialize`/`Xml.serializeAlloc` for
+/// rendering back to text. See `languages/xml/xml.zig`'s module doc comment.
 pub const Xml = @import("languages/xml/xml.zig");
 
 /// HTML support: `Html.parse` builds generic-markup AST nodes from forgiving
 /// HTML; `Html.serialize`/`Html.serializeAlloc` render the full shared
-/// vocabulary.  The printer takes an optional `Html.Context` to resolve
-/// djot-style reference/footnote side tables without this module depending on
-/// `Djot`.
+/// vocabulary.  The printer takes an optional `Html.Context` — a
+/// `Document.Labels` — to resolve references and footnotes without this
+/// module depending on `Djot`.
 pub const Html = @import("languages/html/html.zig");
 
-/// Markdown support: `Markdown.parse(allocator, source, options) !Markdown.Document`
-/// (the shared `AST` plus Markdown's link-reference-definition side table)
-/// plus `Markdown.ParseOptions` feature flags. Rendering uses
-/// `Markdown.html` (an adapter over the shared `Html` printer). See
+/// Markdown support: `Markdown.parse(allocator, source, options) !Document`
+/// plus `Markdown.ParseOptions` feature flags. Rendering uses `Markdown.html`
+/// (an adapter over the shared `Html` printer). See
 /// `languages/markdown/markdown.zig`'s module doc comment for scope details.
 pub const Markdown = @import("languages/markdown/markdown.zig");
 

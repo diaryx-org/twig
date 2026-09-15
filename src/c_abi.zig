@@ -285,8 +285,8 @@ pub const TwigDocument = opaque {};
 /// allowed to care whether it was reached through `twig_parse` or through
 /// `twig_editor_document`.
 const DocumentView = union(enum) {
-    /// A one-shot parse the handle OWNS, with its language's side tables
-    /// (`twig_parse`). Deinited by `twig_document_destroy`.
+    /// A one-shot parse the handle OWNS, with the format and config it was
+    /// parsed under (`twig_parse`). Deinited by `twig_document_destroy`.
     owned: twig.format.ParsedDoc,
     /// The editor's live tree, BORROWED (`twig_editor_document`). The pointer
     /// is to the `Splicer`'s `doc` field, whose ADDRESS is stable for the
@@ -656,8 +656,8 @@ pub export fn twig_document_render_html(
 
     const allocator = activeAllocator();
     const handle = asHandle(raw);
-    // Rendering needs the language tag and side tables of a real parse; a
-    // borrowed editor view has only the tree. Render the editor's source
+    // Rendering needs the format and parse config a `ParsedDoc` records; a
+    // borrowed editor view is the bare `Document`. Render the editor's source
     // (`twig_editor_source` + `twig_parse`) instead.
     const parsed = switch (handle.view) {
         .owned => |*p| p,
@@ -680,10 +680,10 @@ pub export fn twig_document_render_html(
 /// Serialize `parsed` as `target`'s own source syntax, mirroring
 /// `twig convert`'s two paths (see `cli/actions.zig`'s `convertSource`):
 ///   - `target` == the document's own format: round-trip through that
-///     format's `Document`-aware canonical serializer, which resolves djot/
-///     Markdown reference/footnote side tables.
+///     format's `Document`-aware canonical serializer, which reads the parsed
+///     `labels` and spelling.
 ///   - `target` != it: cross-format conversion through the target's bare-`AST`
-///     serializer (`serializeAstAlloc`), which rebuilds any side tables it
+///     serializer (`serializeAstAlloc`), which rebuilds any label tables it
 ///     needs from the tree alone.
 /// Returns `null` when `target` has no serializer for the requested direction
 /// (today: converting *into* XML from another format — XML's serializer only
@@ -697,7 +697,7 @@ fn serializeDocument(
     // "Same format" is asked through `Target.asFormat` rather than `==` now that
     // the two axes are different types: an export-only target has no format to
     // match and takes the cross-format path, which is the only one it has.
-    const same_format = if (target.asFormat()) |f| std.meta.activeTag(parsed.*) == f else false;
+    const same_format = if (target.asFormat()) |f| parsed.format == f else false;
     const result = if (same_format)
         twig.format.serializeCanonicalAlloc(allocator, parsed)
     else
@@ -1586,8 +1586,8 @@ fn buildQueryMatches(
 // ── Editor ─────────────────────────────────────────────────────────────────
 // A separate handle from `TwigDocument`: the authoring editor (`twig.Editor` —
 // a span-splice engine plus its format's `Syntax`) owns evolving source bytes
-// plus a bare-AST reparse of them, where `TwigDocument` holds a one-shot parse
-// with its language's side tables.
+// plus a `Document` reparse of them, where `TwigDocument` holds a one-shot
+// parse with the format and config it was made under.
 // Editing reparses after every successful edit, so node ids/paths are only
 // valid against the tree *as of the last edit* — which is why every op here is
 // addressed by a fresh locator string (an index path or a unique selector),
@@ -1792,8 +1792,8 @@ pub export fn twig_editor_destroy(ed: ?*TwigEditor) void {
 /// (node ids and spans are only valid against the tree they came from).
 ///
 /// `twig_document_render_html` and `twig_document_serialize` are the two
-/// document functions this view cannot serve — they need the language tag and
-/// side tables of a real parse, and return `unsupported_format` here. Take
+/// document functions this view cannot serve — they need the format and parse
+/// config a `ParsedDoc` records, and return `unsupported_format` here. Take
 /// `twig_editor_source` through `twig_parse` for those.
 pub export fn twig_editor_document(
     ed: ?*TwigEditor,
@@ -4041,8 +4041,8 @@ pub export fn twig_builder_set_attrs(
 // extended. Output buffers follow the borrowed-until-next-same-call contract.
 
 /// Serialize a built `AST` (subtree rooted at the view's root) to `target`'s own
-/// source syntax, always from a bare AST — a built tree has no djot/Markdown
-/// side tables.
+/// source syntax, always from a bare AST — a built tree has no parsed label
+/// tables.
 ///
 /// NOT routed through `twig.format.serializeFromAstAlloc`, and the reason is a
 /// live bug rather than a design choice. The `targets` table says XML has NO
@@ -4077,7 +4077,7 @@ fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: tw
 }
 
 /// Render the subtree rooted at `root` to HTML via the generic whole-vocabulary
-/// printer (no djot/Markdown side tables — a built tree has none). Borrowed
+/// printer (no label tables — a built tree has none). Borrowed
 /// output, valid until the next `twig_builder_render_html` on this handle or its
 /// destruction.
 pub export fn twig_builder_render_html(

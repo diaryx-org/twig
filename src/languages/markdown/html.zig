@@ -4,15 +4,13 @@
 //! `languages/html/serializer.zig`" split, for the same reason).
 //!
 //! Markdown resolves `link`/`image` references at PARSE time (Phase 2), so
-//! — unlike djot — this adapter's `Html.Context` always has EMPTY
-//! `references`/`auto_references`: there is nothing for the shared printer
-//! to look up for those. Footnotes are the one Markdown construct that
-//! (like djot's) resolves at RENDER time instead (see `markdown.zig`'s
-//! module doc comment and `Document.footnotes`'s doc comment), so
-//! `Context.footnotes` is the only side table this adapter actually
-//! populates from `doc`.
+//! — unlike djot — the shared printer never looks a reference up here; the
+//! `labels.references` it is handed is simply never consulted. Footnotes are
+//! the one Markdown construct that (like djot's) resolves at RENDER time
+//! instead (see `markdown.zig`'s module doc comment), so `labels.footnotes`
+//! is the table that matters.
 //!
-//! This is the module `cli/format.zig`'s markdown registry entry renders
+//! This is the module `format.zig`'s markdown registry entry renders
 //! through (`renderHtmlMarkdown`) instead of the bare generic
 //! `Html.serialize`, precisely so footnotes resolve when converting via the
 //! CLI — using the generic printer directly (`ctx = null`) would silently
@@ -24,11 +22,21 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const markdown = @import("markdown.zig");
-const Document = markdown.Document;
+const Document = @import("../../document.zig");
 const Html = @import("../html/html.zig");
 
 pub const RenderOptions = struct {
     warn: ?*const fn (message: []const u8) void = null,
+    /// Which Markdown dialect's HTML conventions to print with — GFM spells a
+    /// table cell's alignment `align="center"` where twig's default flavour
+    /// writes a `style`. This is `ParseOptions.dialect`, which the parser
+    /// never reads and the `Document` does not record (see that field's doc
+    /// comment for why it is not recoverable from the tree); the caller that
+    /// held the parse config supplies it. `format.zig`'s registry does so
+    /// from the `ParseConfig` it carries on every `ParsedDoc`, which is what
+    /// keeps a document from being parsed as GFM and printed as CommonMark by
+    /// a caller forgetting to say so twice.
+    dialect: markdown.ParseOptions.Dialect = .commonmark,
 };
 
 /// Same error set `Html`'s printer returns: write failures from `writer`
@@ -36,32 +44,20 @@ pub const RenderOptions = struct {
 /// allocate).
 pub const RenderError = Html.RenderError;
 
-/// Build the shared printer's reference/footnote side tables from `doc`'s
-/// public fields. `references`/`auto_references` stay at their `.empty`
-/// default -- Markdown has no render-time reference table (see this file's
-/// module doc comment) -- so only `footnotes` is ever non-empty here.
-fn contextFor(doc: *const Document) Html.Context {
-    return .{ .footnotes = doc.footnotes };
-}
-
 /// Render `doc` (rooted at `doc.ast.root`, normally a `doc` node) to HTML,
 /// writing to `writer`. Delegates to `Html.Renderer` directly (rather than
 /// `Html.serialize`) so `options.warn` can be threaded through to the
 /// printer's own `RenderOptions` -- mirrors `Djot.html.render` exactly.
 pub fn render(allocator: Allocator, doc: *const Document, writer: *Writer, options: RenderOptions) RenderError!void {
-    const ctx = contextFor(doc);
-    // Route through the shared printer with this dialect's conventions plus
-    // this call's `warn` hook. The dialect comes from the document itself
-    // (`doc.options.dialect`, recorded at parse time) rather than from this
-    // call, so a caller can't render a GFM document with CommonMark's
-    // conventions by forgetting to say so twice. See `ParseOptions.dialect`
-    // and `Html.commonmark_render_options`/`Html.gfm_render_options`.
-    var render_opts = switch (doc.options.dialect) {
+    // Route through the shared printer with the dialect's conventions plus
+    // this call's `warn` hook. See `RenderOptions.dialect`, and
+    // `Html.commonmark_render_options`/`Html.gfm_render_options`.
+    var render_opts = switch (options.dialect) {
         .commonmark => Html.commonmark_render_options,
         .gfm => Html.gfm_render_options,
     };
     render_opts.warn = options.warn;
-    var r = Html.Renderer.init(allocator, &doc.ast, writer, &ctx, render_opts);
+    var r = Html.Renderer.init(allocator, &doc.ast, writer, &doc.labels, render_opts);
     defer r.deinit();
     try r.renderNode(doc.ast.root);
 }
@@ -87,9 +83,8 @@ test "dialect: the same table prints twig-markdown-shaped by default and GFM-sha
     // The contract this file exists to enforce: twig prints djot, markdown,
     // and GFM DISTINCTLY. Both dialects parse this to the same
     // `table`/`row`/`cell` nodes; only the printing differs, and the dialect
-    // rides along on the Document rather than being re-supplied at render
-    // time. (Djot's third spelling — bare `<tr>`, no sections — is pinned by
-    // `languages/djot/conformance.zig`.)
+    // is the caller's to name at render time. (Djot's third spelling — bare
+    // `<tr>`, no sections — is pinned by `languages/djot/conformance.zig`.)
     const src = "| a |\n| :-: |\n| 1 |\n";
 
     var md_doc = try markdown.parse(testing.allocator, src, .{ .tables = true });
@@ -99,7 +94,7 @@ test "dialect: the same table prints twig-markdown-shaped by default and GFM-sha
 
     var gfm_doc = try markdown.parse(testing.allocator, src, markdown.ParseOptions.gfm);
     defer gfm_doc.deinit();
-    const gfm_out = try renderAlloc(testing.allocator, &gfm_doc, .{});
+    const gfm_out = try renderAlloc(testing.allocator, &gfm_doc, .{ .dialect = .gfm });
     defer testing.allocator.free(gfm_out);
 
     // Both section their rows — that's well-formed HTML, not a GFM quirk.
@@ -126,7 +121,7 @@ test "dialect: tagfilter is GFM-only, so default markdown passes raw <title> thr
 
     var gfm_doc = try markdown.parse(testing.allocator, src, markdown.ParseOptions.gfm);
     defer gfm_doc.deinit();
-    const gfm_out = try renderAlloc(testing.allocator, &gfm_doc, .{});
+    const gfm_out = try renderAlloc(testing.allocator, &gfm_doc, .{ .dialect = .gfm });
     defer testing.allocator.free(gfm_out);
     try testing.expect(std.mem.indexOf(u8, gfm_out, "&lt;title>") != null);
     // `<strong>` isn't blacklisted, so it stays live in both.
@@ -248,7 +243,7 @@ test "footnote: multiple footnotes are numbered in reference order" {
 test "footnotes OFF: '[^a]' with no definition falls back to ordinary CommonMark link parsing" {
     // With `footnotes = false`, `'['` never special-cases `^` at all -- this
     // is ordinary shortcut-reference-link syntax with an unresolved label
-    // ("^a", no matching `link_references` entry), which CommonMark falls
+    // ("^a", no matching `labels.references` entry), which CommonMark falls
     // back to literal bracket text for (same as any other undefined
     // `[label]` -- see `block.zig`'s own "unresolved reference falls back
     // to literal brackets" coverage).

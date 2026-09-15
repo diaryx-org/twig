@@ -13,7 +13,7 @@
 //!     numeric character references, code spans, soft/hard breaks).
 //!   - Phase 2 (this): the rest of CommonMark's inline grammar — emphasis/
 //!     strong (the delimiter-run algorithm), links, images, autolinks, raw
-//!     inline HTML — resolved AT PARSE TIME against the `link_references`
+//!     inline HTML — resolved AT PARSE TIME against the `labels.references`
 //!     table Phase 1 populates (unlike djot, Markdown has no render-time
 //!     reference table: a resolved reference link is emitted as a `link`
 //!     node with `destination` already set and `reference == null`). See
@@ -33,27 +33,24 @@
 //! straight through the generic printer, `Html.serialize`/`Html.serializeAlloc`
 //! (`languages/html/serializer.zig`), the same way `languages/html/conformance.zig`
 //! proves it works for djot: Phase 2 resolves every reference link/image at
-//! PARSE time, so (unlike djot's `Html.Context.references`) `Document
-//! .link_references` never needs to be consulted by the renderer at all.
-//! Footnotes (`self.options.footnotes`) are the one exception — like djot's
-//! footnotes, they're resolved/numbered/backlinked entirely at RENDER time
-//! (see `Document.footnotes`'s doc comment below), which the shared printer
-//! only does when handed an `Html.Context` — so `Markdown.parse` output
-//! should be rendered via THIS package's own `html.zig` (`Markdown.html
-//! .render`/`.renderAlloc`, mirroring `Djot.html`), not the bare generic
-//! printer, whenever footnotes might be in play (`cli/format.zig`'s
-//! registry does exactly this).
+//! PARSE time, so (unlike djot) `Document.labels.references` never needs to
+//! be consulted by the renderer at all. Footnotes (`ParseOptions.footnotes`)
+//! are the one exception — like djot's footnotes, they're
+//! resolved/numbered/backlinked entirely at RENDER time against
+//! `Document.labels.footnotes`, which the shared printer only does when
+//! handed an `Html.Context` — so `Markdown.parse` output should be rendered
+//! via THIS package's own `html.zig` (`Markdown.html.render`/`.renderAlloc`,
+//! mirroring `Djot.html`), not the bare generic printer, whenever footnotes
+//! might be in play (`format.zig`'s registry does exactly this).
 //!
 //! ── `Document` ───────────────────────────────────────────────────────────
-//! Like djot (and unlike XML, which needs no side tables), Markdown needs a
-//! wrapper around the shared `AST`: link reference definitions
-//! (`[label]: url "title"`) are parsed and stripped out of the block stream
-//! by `block.zig` (see its module doc comment), but their labels only
-//! become useful once Phase 2 resolves `link`/`image` nodes against them —
-//! so, exactly like djot's `Document.references`, they're carried
-//! alongside the `AST` rather than folded into it. Footnote definitions
-//! (`Document.footnotes`) are carried the same way, for the render-time
-//! reason described above.
+//! `parse` returns the shared `Document` (`src/document.zig`). Link reference
+//! definitions (`[label]: url "title"`) are parsed and stripped out of the
+//! block stream by `block.zig` (see its module doc comment), and their labels
+//! land in `Document.labels.references`, where Phase 2 resolves `link`/`image`
+//! nodes against them; footnote definitions land in `labels.footnotes` for the
+//! render-time reason above. Neither kind of definition is attached in the
+//! tree — they are resolved by label, never rendered in place.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -62,10 +59,7 @@ const block = @import("block.zig");
 const inline_mod = @import("inline.zig");
 
 pub const AST = @import("../../ast/ast.zig");
-const Span = @import("../../span.zig");
-/// The shared position-carrying document (`src/document.zig`), aliased to
-/// avoid colliding with this module's Markdown-specific `Document`.
-const TwigDocument = @import("../../document.zig");
+const Document = @import("../../document.zig");
 pub const ParseOptions = @import("options.zig");
 pub const highlight = @import("highlight.zig");
 pub const html = @import("html.zig");
@@ -73,139 +67,16 @@ pub const serializer = @import("serializer.zig");
 
 pub const Parser = block.Parser;
 
-/// A parsed Markdown document: the language-neutral `AST` plus the
-/// label -> `reference`-node table `inline.zig`'s link/image resolution
-/// consults DURING parsing (`block.parse` calls `inline_mod.parseInline`
-/// with this same map before `Document` is ever constructed — see
-/// `block.zig`'s `resolvePendingInline`). Kept on `Document` after parsing
-/// mainly for provenance/introspection (e.g. future editor tooling that
-/// wants to see where a definition came from); unlike `Djot.Document
-/// .references`, the shared HTML printer never needs to consult it, since
-/// every resolvable `link`/`image` node already carries its resolved
-/// `destination` by the time parsing finishes. Mirrors `Djot.Document`'s
-/// general shape — see that type's doc comment for why side tables live
-/// here rather than on the shared `AST` (XML/HTML have nothing like them).
-pub const Document = struct {
-    ast: AST,
-
-    /// The source `ast` was parsed from (BORROWED) and the id-indexed position
-    /// tables tying the two together — `src/document.zig`'s
-    /// `source`/`node_spans`/`node_content_spans`, carried here for the same
-    /// reason djot's `Document` carries them: positions are not meaning, so
-    /// they ride beside the tree rather than on its nodes. A printer takes
-    /// `*const AST` and cannot reach a byte offset; the edit layer takes the
-    /// `TwigDocument` that `document()` projects.
-    source: []const u8 = "",
-    node_spans: []const Span = &.{},
-    node_content_spans: []const ?Span = &.{},
-    node_spelling: []const ?TwigDocument.Spelling = &.{},
-    node_marker_spans: []const ?Span = &.{},
-    /// Indexed by `AST.Attrs.Id`, not by node id — see
-    /// `TwigDocument.attrs_spans`.
-    attrs_spans: []const ?Span = &.{},
-
-    /// The options this document was parsed with. Retained so RENDERING can
-    /// recover the dialect (`ParseOptions.dialect`) without the caller having
-    /// to supply the flavor a second time — `html.zig` maps it to the shared
-    /// printer's conventions. Every field defaults, so a `Document` assembled
-    /// from a bare AST rather than by `parse` (`serializer.zig`'s
-    /// `serializeAstAlloc`) simply gets twig's default flavor, which is what
-    /// that path wants: it serializes back to Markdown source and never
-    /// consults a render convention.
-    options: ParseOptions = .{},
-
-    /// Label (normalized: trimmed, internal whitespace collapsed, ASCII
-    /// lowercased — see `block.zig`'s `normalizeLabel`) -> the `reference`
-    /// node holding that link reference definition's destination (and, as
-    /// a `title` attribute when present, its title). These `reference`
-    /// nodes are NOT attached anywhere in `ast`'s tree: they're pure
-    /// side-table entries that `inline.zig` resolves by label at PARSE
-    /// time (never at render time, and never rendered in place).
-    ///
-    /// This map's KEYS are slices of `ast.owned_strings` (each key is the
-    /// same string as its `reference` node's own `.label` field, not a
-    /// separate copy — see `block.zig`'s `tryParseLinkRefDef`), so `deinit`
-    /// only needs to free the map structure itself.
-    link_references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-
-    /// Label (normalized, same rule as `link_references`) -> the `footnote`
-    /// definition node with that label (`block.zig`'s `[^label]: ...`
-    /// handling, gated on `self.options.footnotes`). Unlike
-    /// `link_references`, the shared HTML printer DOES need to consult this
-    /// one: a `footnote_reference`'s label, like djot's, is resolved,
-    /// numbered, and backlinked entirely at RENDER time (djot.js-style),
-    /// never at parse time — see `html.zig` (this package's thin adapter
-    /// over the shared printer's `Html.Context`, mirroring
-    /// `Djot.Document.footnotes`/`djot/html.zig` exactly) and this file's
-    /// module doc comment.
-    ///
-    /// This map's KEYS are slices of `ast.owned_strings` (the same string as
-    /// its `footnote` node's own `.label` field), so `deinit` only needs to
-    /// free the map structure itself — same story as `link_references`.
-    footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-
-    pub fn deinit(self: *Document) void {
-        const allocator = self.ast.allocator;
-        self.link_references.deinit(allocator);
-        self.footnotes.deinit(allocator);
-        allocator.free(self.node_spans);
-        allocator.free(self.node_content_spans);
-        allocator.free(self.node_spelling);
-        allocator.free(self.node_marker_spans);
-        allocator.free(self.attrs_spans);
-        self.ast.deinit();
-    }
-
-    /// A BORROWED `TwigDocument` view over this parse — the shape the edit
-    /// layer takes. Valid only while this `Document` lives; must NOT be
-    /// `deinit`ed. Same contract as djot's `Document.document`.
-    pub fn document(self: *const Document) TwigDocument {
-        return .{
-            .source = self.source,
-            .ast = self.ast,
-            .node_spans = self.node_spans,
-            .node_content_spans = self.node_content_spans,
-            .node_spelling = self.node_spelling,
-            .node_marker_spans = self.node_marker_spans,
-            .attrs_spans = self.attrs_spans,
-        };
-    }
-
-    /// Node `id`'s source span.
-    pub fn span(self: *const Document, id: AST.Node.Id) Span {
-        return self.node_spans[id];
-    }
-
-    /// Node `id`'s interior span, or `null`.
-    pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
-        return self.node_content_spans[id];
-    }
-
-    /// Node `id`'s recorded spelling, or `null` (canonical). Tolerates a
-    /// short/absent table — see `TwigDocument.node_spelling`.
-    pub fn spelling(self: *const Document, id: AST.Node.Id) ?TwigDocument.Spelling {
-        if (id >= self.node_spelling.len) return null;
-        return self.node_spelling[id];
-    }
-};
-
-/// Parse `source` (Markdown/CommonMark text) into a `Document`. The
-/// returned document is fully self-contained (its AST owns copies of every
-/// string it needs) and must be freed with `doc.deinit()`.
+/// Parse `source` (Markdown/CommonMark text) into a `Document`. The returned
+/// document borrows `source` and owns everything else (its AST holds copies
+/// of every string it needs); free it with `doc.deinit()`.
+///
+/// `options` decides what parses; it is not recorded on the result. The one
+/// option rendering needs — `options.dialect`, for GFM's HTML conventions —
+/// is passed to `html.render` by whoever holds the config
+/// (`format.zig`'s registry carries it on `ParsedDoc`).
 pub fn parse(allocator: Allocator, source: []const u8, options: ParseOptions) Allocator.Error!Document {
-    const result = try block.parse(allocator, source, options);
-    return .{
-        .ast = result.ast,
-        .source = result.source,
-        .node_spans = result.node_spans,
-        .node_content_spans = result.node_content_spans,
-        .node_spelling = result.node_spelling,
-        .node_marker_spans = result.node_marker_spans,
-        .attrs_spans = result.attrs_spans,
-        .options = options,
-        .link_references = result.link_references,
-        .footnotes = result.footnotes,
-    };
+    return block.parse(allocator, source, options);
 }
 
 /// Whether `angled` — a whole `<…>` run, brackets included — spells a

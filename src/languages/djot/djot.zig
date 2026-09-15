@@ -11,10 +11,15 @@
 //! comment for the full picture of how the pieces fit together.
 //!
 //! This is also where everything djot-specific-but-not-parse-time lives:
-//! `Document` (the shared `AST` plus djot's reference-resolution side
-//! tables) and the `isBlock`/`isInline` classification of the shared kind
-//! vocabulary (djot's block/inline dichotomy is meaningless for, say, a
-//! generic XML `element`, so it has no business in `ast/`).
+//! the `isBlock`/`isInline` classification of the shared kind vocabulary
+//! (djot's block/inline dichotomy is meaningless for, say, a generic XML
+//! `element`, so it has no business in `ast/`).
+//!
+//! `parse` returns the shared `Document` (`src/document.zig`): the tree, the
+//! position tables, and — in `Document.labels` — the label -> definition-node
+//! maps djot's render-time reference resolution reads. Those maps used to
+//! live on a djot-only `Document` wrapper; they are now a column of the one
+//! document type every format returns.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -24,112 +29,13 @@ const inline_mod = @import("inline.zig");
 const parser = @import("parser.zig");
 
 pub const AST = @import("../../ast/ast.zig");
-const Span = @import("../../span.zig");
-/// The shared position-carrying document (`src/document.zig`). Aliased to
-/// avoid colliding with this module's own djot-specific `Document`.
-const TwigDocument = @import("../../document.zig");
+const Document = @import("../../document.zig");
 pub const html = @import("html.zig");
 pub const serializer = @import("serializer.zig");
 
-/// A parsed djot document: the language-neutral `AST` plus the label ->
-/// definition-node maps djot's render-time reference resolution needs.
-/// These are side tables of the AST proper (their keys live in the AST's
-/// `owned_strings`, and their values are plain node ids), split out so the
-/// shared `AST` stays free of djot-only baggage — XML/HTML have nothing
-/// like them.
-pub const Document = struct {
-    ast: AST,
-
-    /// The source `ast` was parsed from (BORROWED) and the id-indexed position
-    /// tables that tie the two together — see `src/document.zig`, whose
-    /// `source`/`node_spans`/`node_content_spans` these are.
-    ///
-    /// They live here rather than on `AST` because positions are not meaning:
-    /// a printer takes `*const AST` and must not be able to reach a byte
-    /// offset, while the edit layer takes the `TwigDocument` that `document()`
-    /// projects. This type was already djot's fidelity carrier (it holds the
-    /// reference/footnote side-tables for the same reason), so it is where the
-    /// position tables belong too.
-    source: []const u8 = "",
-    node_spans: []const Span = &.{},
-    node_content_spans: []const ?Span = &.{},
-    node_spelling: []const ?TwigDocument.Spelling = &.{},
-    node_marker_spans: []const ?Span = &.{},
-    /// Indexed by `AST.Attrs.Id`, not by node id — see
-    /// `TwigDocument.attrs_spans`.
-    attrs_spans: []const ?Span = &.{},
-
-    /// Label (normalized) -> the `reference` definition node with that label.
-    /// Populated during parsing; never consulted during parsing itself —
-    /// label resolution (matching a `link`/`image`'s `reference` string
-    /// against this table) is deferred entirely to render time, so forward
-    /// references need no special handling. See djot.js's
-    /// `parse.ts`/`html.ts` split.
-    references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-
-    /// Same shape as `references`, for reference definitions synthesized by
-    /// the parser itself (e.g. implicit heading-derived link targets) rather
-    /// than written explicitly by the author.
-    auto_references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-
-    /// Label -> the `footnote` definition node with that label.
-    footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty,
-
-    pub fn deinit(self: *Document) void {
-        // The maps' keys live in `ast.owned_strings`; only the map
-        // structures themselves are freed here (before the strings go away,
-        // though the order is immaterial — map deinit never reads keys).
-        const allocator = self.ast.allocator;
-        self.references.deinit(allocator);
-        self.auto_references.deinit(allocator);
-        self.footnotes.deinit(allocator);
-        allocator.free(self.node_spans);
-        allocator.free(self.node_content_spans);
-        allocator.free(self.node_spelling);
-        allocator.free(self.node_marker_spans);
-        allocator.free(self.attrs_spans);
-        self.ast.deinit();
-    }
-
-    /// A BORROWED `TwigDocument` view over this parse — the shape the edit
-    /// layer (`ast/splicer.zig`, `ast/editor.zig`, `ast/locate.zig`) and
-    /// `languages/xml/serializer.zig` take. Valid only while this `Document`
-    /// lives; must NOT be `deinit`ed (this type owns the storage). Same
-    /// borrowing contract as `AST.Builder.view`.
-    pub fn document(self: *const Document) TwigDocument {
-        return .{
-            .source = self.source,
-            .ast = self.ast,
-            .node_spans = self.node_spans,
-            .node_content_spans = self.node_content_spans,
-            .node_spelling = self.node_spelling,
-            .node_marker_spans = self.node_marker_spans,
-            .attrs_spans = self.attrs_spans,
-        };
-    }
-
-    /// Node `id`'s source span — the common case that would otherwise read
-    /// `d.document().span(id)`.
-    pub fn span(self: *const Document, id: AST.Node.Id) Span {
-        return self.node_spans[id];
-    }
-
-    /// Node `id`'s interior span, or `null`. See `Document.node_content_spans`.
-    pub fn contentSpan(self: *const Document, id: AST.Node.Id) ?Span {
-        return self.node_content_spans[id];
-    }
-
-    /// Node `id`'s recorded spelling, or `null` (canonical). Tolerates a
-    /// short/absent table — see `TwigDocument.node_spelling`.
-    pub fn spelling(self: *const Document, id: AST.Node.Id) ?TwigDocument.Spelling {
-        if (id >= self.node_spelling.len) return null;
-        return self.node_spelling[id];
-    }
-};
-
-/// Parse `source` (Djot markup) into a `Document`. The returned document is
-/// fully self-contained (its AST owns copies of every string it needs) and
-/// must be freed with `doc.deinit()`.
+/// Parse `source` (Djot markup) into a `Document`. The returned document
+/// borrows `source` and owns everything else (its AST holds copies of every
+/// string it needs); free it with `doc.deinit()`.
 pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Document {
     var block_parser = try block.Parser.init(allocator, source);
     defer block_parser.deinit();
@@ -210,7 +116,7 @@ test "heading gets an auto id and wraps a section" {
     try testing.expect(ast.nodes[heading_id].kind.heading.level == 1);
 }
 
-test "reference link resolves via the references map" {
+test "reference link resolves via the labels table" {
     var doc = try parse(testing.allocator,
         \\[foo][bar]
         \\
@@ -218,7 +124,7 @@ test "reference link resolves via the references map" {
         \\
     );
     defer doc.deinit();
-    try testing.expect(doc.references.contains("bar"));
+    try testing.expect(doc.labels.reference("bar") != null);
 }
 
 test "bullet list is tight, definition list restructures term/definition" {

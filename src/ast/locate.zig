@@ -690,16 +690,14 @@ fn forBothFormats(src: []const u8, check: fn (doc: *const Document, src: []const
 
     var md = try Markdown.parse(gpa, src, .{});
     defer md.deinit();
-    const md_doc = md.document();
-    check(&md_doc, src) catch |e| {
+    check(&md, src) catch |e| {
         std.debug.print("  (markdown)\n", .{});
         return e;
     };
 
     var dj = try Djot.parse(gpa, src);
     defer dj.deinit();
-    const dj_doc = dj.document();
-    check(&dj_doc, src) catch |e| {
+    check(&dj, src) catch |e| {
         std.debug.print("  (djot)\n", .{});
         return e;
     };
@@ -794,13 +792,11 @@ test "linePrefixSpan: no marker where the format read no item" {
 
     var md = try Markdown.parse(gpa, src, .{});
     defer md.deinit();
-    const md_doc = md.document();
-    try std.testing.expectEqualStrings("  - ", linePrefixText(&md_doc, src.len - 2).?);
+    try std.testing.expectEqualStrings("  - ", linePrefixText(&md, src.len - 2).?);
 
     var dj = try Djot.parse(gpa, src);
     defer dj.deinit();
-    const dj_doc = dj.document();
-    try std.testing.expect(linePrefixText(&dj_doc, src.len - 2) == null);
+    try std.testing.expect(linePrefixText(&dj, src.len - 2) == null);
 }
 
 test "linePrefixSpan: every marker on the line, from quote to checkbox" {
@@ -930,7 +926,7 @@ test "continuationPrefix: a tab in a marker advances to a tab stop" {
     const gpa = std.testing.allocator;
     var md = try Markdown.parse(gpa, "-\tx\n", .{});
     defer md.deinit();
-    const doc = md.document();
+    const doc = md;
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);

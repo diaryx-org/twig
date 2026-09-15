@@ -1,7 +1,7 @@
 //! The format registry: the single place a new Twig language plugs in.
 //!
 //! Each `Entry` bundles everything that varies by language behind one uniform
-//! shape — a parser adapter (`parse`), the bare-AST reparse adapter the
+//! shape — a parser adapter (`parse`), the `Document` reparse adapter the
 //! `Splicer` needs (`parseToAst`), an HTML renderer (`renderHtml`), optional
 //! serializers, and an optional `Syntax` table — so no consumer needs a
 //! per-language `switch` of its own. Adding a language is "write a few small
@@ -31,8 +31,8 @@
 //! today, and they are still separate types.
 //!
 //! The reason is that the enums answer different questions and only one of them
-//! can grow freely. `Format` is `ParsedDoc`'s tag: a variant there must have a
-//! parser, a reparse adapter for the `Splicer`, and a document type to hold. A
+//! can grow freely. `Format` is what `ParsedDoc.format` records: a variant
+//! there must have a parser and a reparse adapter for the `Splicer`. A
 //! `Target` needs none of that — it needs somewhere for bytes to go. An
 //! EXPORT-ONLY target (one Twig can write and no parser can read back; PDF is
 //! the motivating case) is expressible as a `Target` and is NOT expressible as a
@@ -45,8 +45,10 @@
 //! named its `-i` re-export `InputFormat` to distinguish it from what `-o`
 //! accepts. `serializeFromAst` moved with it, from `Entry` to `TargetEntry`: it
 //! is keyed by where the bytes are going, not by what parsed them.
-//! `serializeCanonical` stayed on `Entry`, because it takes a `ParsedDoc`
-//! variant and so is inherently a fact about the input row.
+//! `serializeCanonical` stayed on `Entry`: it serializes a parsed `Document`
+//! with the label tables its own parser filled, and so is a fact about the
+//! input row — see its doc comment for what still separates it from
+//! `serializeFromAst` now that both take the shared types.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -71,9 +73,9 @@ const djot_serializer = Djot.serializer;
 const markdown_serializer = Markdown.serializer;
 const asciidoc_serializer = Asciidoc.serializer;
 
-/// Every language Twig can PARSE — the `-i`/`--input` vocabulary, the enum
-/// `ParsedDoc` is tagged by, and what the C ABI's `TwigFormat` wire codes decode
-/// to on the parse path. Deliberately has NO explicit values: the integers are
+/// Every language Twig can PARSE — the `-i`/`--input` vocabulary, what
+/// `ParsedDoc.format` records, and what the C ABI's `TwigFormat` wire codes
+/// decode to on the parse path. Deliberately has NO explicit values: the integers are
 /// the C ABI's contract, so they live there (`c_abi.zig`'s `intToFormat`), not
 /// here.
 ///
@@ -100,9 +102,9 @@ pub const Format = enum {
 /// trust boundary `registry` itself relies on.
 ///
 /// An export-only target appends HERE and nowhere else. It gets a `targets` row
-/// with `reads_back_as = null` and no `Format` variant, no `registry` row, no
-/// `ParsedDoc` variant, and no `Syntax` — none of which it could honestly fill
-/// in. That is the whole reason this enum exists apart from `Format`.
+/// with `reads_back_as = null` and no `Format` variant, no `registry` row, and
+/// no `Syntax` — none of which it could honestly fill in. That is the whole
+/// reason this enum exists apart from `Format`.
 pub const Target = enum {
     djot,
     markdown,
@@ -145,98 +147,81 @@ pub const ParseConfig = struct {
     }
 };
 
-/// A parsed document, tagged by which `Format` produced it. Exists because
-/// `Djot.parse`/`Markdown.parse` return a `Document` wrapper (the shared `AST`
-/// plus side tables — see `Djot.Document`'s doc comment) while `Xml.parse`
-/// returns the shared `AST` directly; this union gives a consumer one type to
-/// hold, deinit, and pull an `*const AST` out of, regardless of language.
-pub const ParsedDoc = union(Format) {
-    djot: Djot.Document,
-    markdown: Markdown.Document,
-    xml: Document,
-    html: Document,
-    asciidoc: Document,
+/// A parsed document: the shared `Document` plus the two facts about HOW it
+/// was parsed that the tree does not record — which `Format`'s parser
+/// produced it, and the `ParseConfig` that parser was given.
+///
+/// This used to be a `union(Format)`, because djot and Markdown each returned
+/// a wrapper of their own carrying label -> definition maps the shared
+/// `Document` had no column for. Those maps are `Document.labels` now, so
+/// every parser returns the one type and the union had nothing left to
+/// distinguish. What remains is a thin wrapper, and both its fields earn
+/// their place: `format` picks the `registry` row for every later operation,
+/// and `config` is what Markdown's wrapper was really carrying — its
+/// `dialect` decides how a table's alignment is spelled in HTML, and
+/// `renderHtml` reads it from here so a caller cannot parse a document as
+/// GFM and print it as CommonMark by forgetting to say so twice.
+pub const ParsedDoc = struct {
+    format: Format,
+    config: ParseConfig,
+    doc: Document,
 
-    /// The shared `AST` underneath, regardless of variant — MEANING only.
+    /// The shared `AST` underneath — MEANING only.
     pub fn ast(self: *const ParsedDoc) *const AST {
-        return switch (self.*) {
-            .djot => |*d| &d.ast,
-            .markdown => |*d| &d.ast,
-            .xml => |*d| &d.ast,
-            .html => |*d| &d.ast,
-            .asciidoc => |*d| &d.ast,
-        };
+        return &self.doc.ast;
     }
 
     /// A BORROWED `Document` view — the tree plus the positions addressing
-    /// `source`. What the edit layer and `languages/xml/serializer.zig` take;
-    /// must NOT be `deinit`ed (the variant owns the storage).
+    /// `source`, by value. What the edit layer and
+    /// `languages/xml/serializer.zig` take; must NOT be `deinit`ed (this
+    /// struct owns the storage).
     pub fn document(self: *const ParsedDoc) Document {
-        return switch (self.*) {
-            .djot => |*d| d.document(),
-            .markdown => |*d| d.document(),
-            .xml, .html, .asciidoc => |*d| d.*,
-        };
+        return self.doc;
     }
 
     pub fn deinit(self: *ParsedDoc) void {
-        switch (self.*) {
-            .djot => |*d| d.deinit(),
-            .markdown => |*d| d.deinit(),
-            .xml => |*d| d.deinit(),
-            .html => |*d| d.deinit(),
-            .asciidoc => |*d| d.deinit(),
-        }
+        self.doc.deinit();
     }
 };
 
 fn parseDjot(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
-    _ = ctx;
-    return .{ .djot = try Djot.parse(allocator, source) };
+    const cfg = ParseConfig.from(ctx);
+    return .{ .format = .djot, .config = cfg.*, .doc = try Djot.parse(allocator, source) };
 }
 
 fn parseMarkdown(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
-    return .{ .markdown = try Markdown.parse(allocator, source, ParseConfig.from(ctx).markdown) };
+    const cfg = ParseConfig.from(ctx);
+    return .{ .format = .markdown, .config = cfg.*, .doc = try Markdown.parse(allocator, source, cfg.markdown) };
 }
 
 fn parseXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
-    _ = ctx;
-    return .{ .xml = try Xml.parse(allocator, source) };
+    const cfg = ParseConfig.from(ctx);
+    return .{ .format = .xml, .config = cfg.*, .doc = try Xml.parse(allocator, source) };
 }
 
 fn parseHtml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
-    _ = ctx;
-    return .{ .html = try Html.parse(allocator, source) };
+    const cfg = ParseConfig.from(ctx);
+    return .{ .format = .html, .config = cfg.*, .doc = try Html.parse(allocator, source) };
 }
 
 fn parseAsciidoc(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
-    _ = ctx;
-    return .{ .asciidoc = try Asciidoc.parser.parse(allocator, source) };
+    const cfg = ParseConfig.from(ctx);
+    return .{ .format = .asciidoc, .config = cfg.*, .doc = try Asciidoc.parser.parse(allocator, source) };
 }
 
 // ── splicer reparse adapters ───────────────────────────────────────────────
-// The span-splice engine (`Splicer`) reparses after every edit and only needs
-// the bare shared `AST` — spans/structure, never a `Document`'s side tables.
-// These unwrap djot/Markdown's `Document`: its side-table map KEYS are slices
-// into `ast.owned_strings` and the maps own no AST memory (see each
-// `Document`'s doc comment), so freeing just the map *structures* and handing
-// back `.ast` is leak-free and leaves a fully valid tree. XML and HTML already
-// return a bare `AST`.
+// The span-splice engine (`Splicer`) reparses after every edit and holds the
+// shared `Document` — spans, structure, and now the label tables too, since
+// they are a column of it. Each adapter is the language's own `parse`, minus
+// the `ParsedDoc` wrapper the splicer has no use for.
 
 fn parseToAstDjot(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
     _ = ctx;
-    var doc = try Djot.parse(allocator, source);
-    doc.references.deinit(allocator);
-    doc.auto_references.deinit(allocator);
-    doc.footnotes.deinit(allocator);
-    return doc.document();
+    return Djot.parse(allocator, source);
 }
 
 fn parseToAstMarkdown(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
-    var doc = try Markdown.parse(allocator, source, ParseConfig.from(ctx).markdown);
-    doc.link_references.deinit(allocator);
-    doc.footnotes.deinit(allocator);
-    return doc.document();
+    return Markdown.parse(allocator, source, ParseConfig.from(ctx).markdown);
 }
 
 fn parseToAstXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
@@ -255,16 +240,16 @@ fn parseToAstAsciidoc(ctx: *const anyopaque, allocator: Allocator, source: []con
 }
 
 /// Djot needs its own HTML rendering path (`Djot.html.render`) rather than the
-/// generic printer: it resolves reference/footnote labels against `Document`'s
-/// side tables at render time (see `djot/html.zig`'s module doc comment) — the
-/// generic `Html.serialize` has no djot `Document` to pull those tables from.
-/// Using the generic printer here would silently drop footnotes and
+/// generic printer: it resolves reference/footnote labels against
+/// `Document.labels` at render time (see `djot/html.zig`'s module doc
+/// comment), and the generic `Html.serialize` with `ctx = null` is handed no
+/// tables. Using the generic printer here would silently drop footnotes and
 /// reference-style links.
 fn renderHtmlDjot(allocator: Allocator, doc: *const ParsedDoc, writer: *Writer) anyerror!void {
-    try Djot.html.render(allocator, &doc.djot, writer, .{});
+    try Djot.html.render(allocator, &doc.doc, writer, .{});
 }
 
-/// Every other language (XML and HTML) has no side tables to resolve, so the
+/// Every other language (XML and HTML) has no labels to resolve, so the
 /// shared, language-neutral printer (`languages/html/serializer.zig`) is the
 /// whole story — `ctx = null`.
 fn renderHtmlGeneric(allocator: Allocator, doc: *const ParsedDoc, writer: *Writer) anyerror!void {
@@ -273,32 +258,32 @@ fn renderHtmlGeneric(allocator: Allocator, doc: *const ParsedDoc, writer: *Write
 
 /// Markdown needs its own HTML rendering path (`Markdown.html.render`) rather
 /// than the generic printer for the same reason djot does (`renderHtmlDjot`'s
-/// doc comment): footnotes (`self.options.footnotes`) resolve/number/backlink
-/// entirely at RENDER time, against `Document.footnotes` — see
-/// `markdown/html.zig`'s module doc comment. Using the generic printer here
-/// would silently drop footnotes (every `link`/`image`, by contrast, is already
-/// fully resolved at PARSE time, so those are unaffected either way).
+/// doc comment): footnotes resolve/number/backlink entirely at RENDER time,
+/// against `Document.labels.footnotes` — see `markdown/html.zig`'s module doc
+/// comment. Using the generic printer here would silently drop footnotes
+/// (every `link`/`image`, by contrast, is already fully resolved at PARSE
+/// time, so those are unaffected either way). The dialect comes from the
+/// config the document was parsed with, which is the one place it is stated.
 fn renderHtmlMarkdown(allocator: Allocator, doc: *const ParsedDoc, writer: *Writer) anyerror!void {
-    try Markdown.html.render(allocator, &doc.markdown, writer, .{});
+    try Markdown.html.render(allocator, &doc.doc, writer, .{ .dialect = doc.config.markdown.dialect });
 }
 
 fn serializeCanonicalXml(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
-    const d = doc.document();
-    return Xml.serializeAlloc(allocator, &d);
+    return Xml.serializeAlloc(allocator, &doc.doc);
 }
 
 fn serializeCanonicalDjot(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
-    return djot_serializer.serializeAlloc(allocator, &doc.djot);
+    return djot_serializer.serializeAlloc(allocator, &doc.doc);
 }
 
 fn serializeCanonicalMarkdown(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
-    return markdown_serializer.serializeAlloc(allocator, &doc.markdown);
+    return markdown_serializer.serializeAlloc(allocator, &doc.doc);
 }
 
 /// HTML's printer renders the full shared vocabulary from a bare AST, so it
 /// serves as both the round-trip and the cross-format path (`ctx = null`: this
-/// is the side-table-free printer; `renderHtmlDjot`/`renderHtmlMarkdown` are the
-/// richer, side-table-resolving renders).
+/// is the label-free printer; `renderHtmlDjot`/`renderHtmlMarkdown` are the
+/// richer, label-resolving renders).
 ///
 /// These two are NEW to the registry and not new to Twig: the C ABI's
 /// `serializeDocument` has always served HTML on both paths, while this table —
@@ -322,7 +307,7 @@ fn serializeFromAstMarkdown(allocator: Allocator, ast: *const AST) anyerror![]u8
 }
 
 fn serializeCanonicalAsciidoc(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
-    return asciidoc_serializer.serializeAlloc(allocator, &doc.asciidoc);
+    return asciidoc_serializer.serializeAlloc(allocator, &doc.doc);
 }
 
 fn serializeFromAstAsciidoc(allocator: Allocator, ast: *const AST) anyerror![]u8 {
@@ -341,12 +326,11 @@ pub const Entry = struct {
     /// `parseFormatName` always accepts via `std.meta.stringToEnum`).
     aliases: []const []const u8 = &.{},
     parse: *const fn (*const anyopaque, Allocator, []const u8) anyerror!ParsedDoc,
-    /// Source -> the bare shared `AST`, the reparse callback the span-splice
-    /// engine (`Splicer`) needs. Discards any `Document` side tables (see the
-    /// splicer-adapter note above) — editing is language-neutral and only
-    /// touches spans/structure. Every format has one. Its shape matches
-    /// `Splicer.ParseFn` (leading opaque `ParseConfig` context) so it can be
-    /// handed straight to `Splicer.init`.
+    /// Source -> the shared `Document`, the reparse callback the span-splice
+    /// engine (`Splicer`) needs: `parse` without the `ParsedDoc` wrapper,
+    /// because the splicer already knows its format and config. Every format
+    /// has one. Its shape matches `Splicer.ParseFn` (leading opaque
+    /// `ParseConfig` context) so it can be handed straight to `Splicer.init`.
     parseToAst: Splicer.ParseFn,
     renderHtml: *const fn (Allocator, *const ParsedDoc, *Writer) anyerror!void,
     /// Round-trip serializer back to this format's own source syntax —
@@ -354,10 +338,14 @@ pub const Entry = struct {
     /// serializer yet; callers turn that into a clear "not supported yet" error
     /// rather than a crash.
     ///
-    /// The one serializer that stays on the INPUT row, because it takes a
-    /// `ParsedDoc` variant — it can only ever serialize a document this very
-    /// entry parsed, side tables and all. The bare-AST serializer that any
-    /// document can be fed to lives on `TargetEntry.serializeFromAst`.
+    /// The one serializer that stays on the INPUT row. It takes the parsed
+    /// `Document` whole — the `labels` its own parser filled (which say which
+    /// of two same-labelled definitions wins), the `node_spelling` that puts
+    /// an author's `*` bullets back, and for XML the interior spans that mark
+    /// a self-closing tag — where `TargetEntry.serializeFromAst` takes a bare
+    /// `AST` and rebuilds what it can (`Document.Labels.index`, canonical
+    /// spelling). The two are the same printer under two amounts of
+    /// knowledge; a caller with a `ParsedDoc` in hand should use this one.
     serializeCanonical: ?*const fn (Allocator, *const ParsedDoc) anyerror![]u8 = null,
     /// This format's surface spelling — the table the authoring gestures in
     /// `ast/editor.zig` consult. Defaults to `Syntax.none`, the table that
@@ -486,9 +474,9 @@ pub const TargetEntry = struct {
     /// Serialize a BARE shared `AST` (regardless of which format parsed it) as
     /// this target's own syntax — `convert -o <target>`'s cross-format
     /// implementation (e.g. `-i markdown -o djot`), and the C ABI's builder
-    /// output path. Unlike `Entry.serializeCanonical` it never needs a matching
-    /// `ParsedDoc` variant: it is handed whatever `ParsedDoc.ast()` returns and
-    /// builds any side tables it needs from that bare tree.
+    /// output path. Unlike `Entry.serializeCanonical` it needs no parse to
+    /// have happened: it is handed whatever `ParsedDoc.ast()` returns and
+    /// builds any label tables it needs from that bare tree.
     ///
     /// `null` means Twig cannot write this target yet, and every caller turns it
     /// into the same `error.UnsupportedFormat`. For an export-only target this
@@ -565,10 +553,10 @@ pub fn syntaxForConfig(fmt: Format, cfg: *const ParseConfig) *const Syntax {
     return pick(cfg);
 }
 
-/// The entry for whichever language produced `doc`. `ParsedDoc` is
-/// `union(Format)`, so the document knows its own row.
+/// The entry for whichever language produced `doc` — `ParsedDoc.format`
+/// records it, so the document knows its own row.
 pub fn entryForDoc(doc: *const ParsedDoc) *const Entry {
-    return entryFor(std.meta.activeTag(doc.*));
+    return entryFor(doc.format);
 }
 
 /// Errors `renderHtmlAlloc` can produce beyond a language's own. Named because
@@ -739,6 +727,28 @@ test "a config-varying row agrees with its own default table" {
     // stated as a `null`, exactly like every other optional in these tables.
     try std.testing.expectEqual(syntaxFor(.djot), syntaxForConfig(.djot, &colors));
     try std.testing.expectEqual(syntaxFor(.xml), syntaxForConfig(.xml, &colors));
+}
+
+test "a ParsedDoc renders with the dialect it was parsed under" {
+    // The `config` field's reason to exist: `--gfm` is said once, at parse,
+    // and the render reads it back from the document rather than being told
+    // again. Both configs parse this table to the same nodes; only the
+    // alignment spelling tells them apart.
+    const src = "| a |\n| :-: |\n| 1 |\n";
+    const gfm: ParseConfig = .{ .markdown = .gfm };
+    var g = try entryFor(.markdown).parse(&gfm, std.testing.allocator, src);
+    defer g.deinit();
+    const g_html = try renderHtmlAlloc(std.testing.allocator, &g);
+    defer std.testing.allocator.free(g_html);
+    try std.testing.expect(std.mem.indexOf(u8, g_html, "<th align=\"center\">") != null);
+
+    const plain: ParseConfig = .{};
+    var d = try entryFor(.markdown).parse(&plain, std.testing.allocator, src);
+    defer d.deinit();
+    const d_html = try renderHtmlAlloc(std.testing.allocator, &d);
+    defer std.testing.allocator.free(d_html);
+    try std.testing.expect(std.mem.indexOf(u8, d_html, "text-align: center") != null);
+    try std.testing.expectEqual(Format.markdown, d.format);
 }
 
 test "every syntax table in the registry is coherent" {

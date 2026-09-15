@@ -32,7 +32,7 @@
 //! ── Reference links resolve at PARSE time ───────────────────────────────
 //! Unlike djot (which keeps a reference table for the renderer to consult),
 //! CommonMark reference links/images are resolved HERE, against
-//! `Document.link_references` (threaded in as `link_refs`), producing a
+//! `Document.labels.references` (threaded in as `link_refs`), producing a
 //! `link`/`image` node with `destination` set and `reference == null` — this
 //! file's caller (`block.zig`) defers calling `parseInline` until the WHOLE
 //! document's block structure (and therefore every link reference
@@ -100,7 +100,7 @@ pub const Segment = struct {
 /// Parse `text` (a single leaf block's already-assembled content — see this
 /// file's module doc comment) into a flat sequence of inline children, added
 /// to `b` but not yet attached to any parent. `link_refs` is
-/// `Document.link_references`'s underlying map (label, already normalized
+/// `Document.labels.references`'s underlying map (label, already normalized
 /// per `block.zig`'s `normalizeLabel` -> the `reference` node holding that
 /// definition's destination/title), consulted for reference-style links and
 /// images; it must already be COMPLETE (every link reference definition in
@@ -1346,7 +1346,7 @@ fn builderAttrsOf(b: *Builder, id: Node.Id) AST.Attrs {
 
 /// Unicode simple case fold for the common bicameral scripts -- duplicated
 /// from `block.zig`'s `foldCodepointInto`, and must stay byte-for-byte in sync
-/// with it (both feed the SAME `Document.link_references` keys).
+/// with it (both feed the SAME `Document.labels.references` keys).
 fn foldRefCodepointInto(allocator: Allocator, out: *std.ArrayList(u8), cp: u21) Allocator.Error!void {
     if (cp == 0x00DF or cp == 0x1E9E) { // ß, ẞ → "ss"
         try out.appendSlice(allocator, "ss");
@@ -1368,7 +1368,7 @@ fn foldRefCodepointInto(allocator: Allocator, out: *std.ArrayList(u8), cp: u21) 
 /// fold -- duplicated from `block.zig`'s (private) `normalizeLabel` rather
 /// than shared across files, so this file's link-label resolution stays
 /// self-contained. Must stay byte-for-byte in sync with that function, since
-/// both normalize against the SAME `Document.link_references` keys.
+/// both normalize against the SAME `Document.labels.references` keys.
 fn normalizeRefLabel(allocator: Allocator, s: []const u8) Allocator.Error![]u8 {
     const trimmed = std.mem.trim(u8, s, " \t\r\n");
     var out = std.ArrayList(u8).empty;

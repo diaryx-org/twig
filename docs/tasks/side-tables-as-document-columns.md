@@ -4,11 +4,22 @@ description: Djot's and Markdown's `references`/`auto_references`/`footnotes` ma
 author: adammharris
 created: 2026-09-15
 updated: 2026-09-15
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # References and footnotes become `Document` columns, so `ParsedDoc` can stop being a union
+
+**Done** — `refactor(document): references and footnotes become Document.labels`,
+the commit that also sets this status. The three maps are one `labels` column
+on `src/document.zig` (`Document.Labels`, with `reference()`/`footnote()`
+resolvers and `Labels.index` for a bare tree); `Djot.Document` and
+`Markdown.Document` are gone and both parsers return the shared `Document`;
+`ParsedDoc` is `{ format, config, doc }`; `compact.run` sweeps from and repoints
+`labels` itself; `Html.Context` is `Document.Labels`. The two serializers stay
+separate — `serializeCanonical` reads the parsed `labels`, spelling and XML's
+interior spans, `serializeFromAst` rebuilds what it can from a bare `AST` — and
+`Entry.serializeCanonical`'s comment now says exactly that, citing no maps.
 
 **Where.** `Djot.Document` (`src/languages/djot/djot.zig`) carries
 `references`, `auto_references` and `footnotes` — label → node id — beside

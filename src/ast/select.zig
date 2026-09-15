@@ -549,12 +549,7 @@ const testing = std.testing;
 
 fn parseMd(a: Allocator, src: []const u8) !Document {
     const Markdown = @import("../languages/markdown/markdown.zig");
-    var doc = try Markdown.parse(a, src, .{});
-    doc.link_references.deinit(a);
-    doc.footnotes.deinit(a);
-    // Hand over the tree and every id-indexed side table (spans, spelling);
-    // only the language label tables above are dropped.
-    return doc.document();
+    return Markdown.parse(a, src, .{});
 }
 
 test "parse: kind, contains shorthand, :nth, and attribute predicates" {
@@ -624,10 +619,7 @@ test "parse: dangling '>' and trailing junk are rejected" {
 
 test "resolveAll: a directive node is addressable by its kind name" {
     const Markdown = @import("../languages/markdown/markdown.zig");
-    var doc = try Markdown.parse(testing.allocator, ":::note\nhi\n:::\n\n::leaf\n", .{ .directives = true });
-    doc.link_references.deinit(testing.allocator);
-    doc.footnotes.deinit(testing.allocator);
-    var ast = doc.document();
+    var ast = try Markdown.parse(testing.allocator, ":::note\nhi\n:::\n\n::leaf\n", .{ .directives = true });
     defer ast.deinit();
 
     var sel = try parse(testing.allocator, "directive");
@@ -644,10 +636,7 @@ test "resolveAll: directive[name=...] and [class~=...] audience filtering" {
         ":::vis{.public}\npublic stuff\n:::\n\n" ++
         ":::vis{.adam .family}\nprivate stuff\n:::\n\n" ++
         ":::note{.public}\nnot a vis block\n:::\n";
-    var doc = try Markdown.parse(testing.allocator, src, .{ .directives = true });
-    doc.link_references.deinit(testing.allocator);
-    doc.footnotes.deinit(testing.allocator);
-    var ast = doc.document();
+    var ast = try Markdown.parse(testing.allocator, src, .{ .directives = true });
     defer ast.deinit();
 
     // All vis directives, regardless of audience.

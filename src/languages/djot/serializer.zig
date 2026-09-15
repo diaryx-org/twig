@@ -1,4 +1,4 @@
-//! `Djot.Document` -> canonical-ish Djot text.
+//! `Document` (a djot parse) -> canonical-ish Djot text.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -6,8 +6,7 @@ const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
 const dj_syntax = @import("syntax.zig");
 const attrs_writer = @import("../../attrs_writer.zig");
-const Document = djot.Document;
-const TwigDocument = @import("../../document.zig");
+const Document = @import("../../document.zig");
 const AST = djot.AST;
 const Node = AST.Node;
 
@@ -233,8 +232,8 @@ const Renderer = struct {
         for (self.ast.nodes) |n| {
             switch (n.kind) {
                 .reference => |r| {
-                    const in_refs = if (self.doc.references.get(r.label)) |id| id == n.id else false;
-                    const in_auto = if (self.doc.auto_references.get(r.label)) |id| id == n.id else false;
+                    const in_refs = if (self.doc.labels.references.get(r.label)) |id| id == n.id else false;
+                    const in_auto = if (self.doc.labels.auto_references.get(r.label)) |id| id == n.id else false;
                     if (!in_refs and !in_auto) continue;
                     if (wrote_any) try self.writer.writeByte('\n');
                     try self.writer.print("[{s}]: {s}", .{ r.label, r.destination });
@@ -243,7 +242,7 @@ const Renderer = struct {
                     wrote_any = true;
                 },
                 .footnote => |f| {
-                    const id = self.doc.footnotes.get(f.label) orelse continue;
+                    const id = self.doc.labels.footnote(f.label) orelse continue;
                     if (id != n.id) continue;
                     if (wrote_any) try self.writer.writeByte('\n');
                     try self.writeFootnoteDefinition(n.id, f.label);
@@ -253,7 +252,7 @@ const Renderer = struct {
                 // it is written as a djot footnote definition — the same
                 // degradation the `.citation_reference` inline arm performs, so
                 // the two still point at each other in the output. No
-                // `doc.footnotes` guard: that map exists to pick ONE definition
+                // `labels.footnote` guard: that map exists to pick ONE definition
                 // when several share a label, and it is built from `.footnote`
                 // nodes only. A citation that collides with a real footnote's
                 // label is a collision the flattening created, and it is exactly
@@ -675,7 +674,7 @@ const Renderer = struct {
 
 /// A `bullet_list`'s recorded marker character, canonical `-` when the
 /// spelling table has nothing (or something else) for the node.
-fn bulletOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.Bullet {
+fn bulletOf(sp: ?Document.Spelling) Document.Spelling.Bullet {
     const s = sp orelse return .dash;
     return switch (s) {
         .bullet => |b| b,
@@ -685,7 +684,7 @@ fn bulletOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.Bullet {
 
 /// An `ordered_list`'s recorded marker punctuation, canonical `1.` when the
 /// spelling table has nothing (or something else) for the node.
-fn delimOf(sp: ?TwigDocument.Spelling) TwigDocument.Spelling.OrderedDelim {
+fn delimOf(sp: ?Document.Spelling) Document.Spelling.OrderedDelim {
     const s = sp orelse return .period;
     return switch (s) {
         .ordered_delim => |d| d,
@@ -719,13 +718,13 @@ pub fn serializeAlloc(allocator: Allocator, doc: *const Document) Allocator.Erro
 
 /// Serialize a bare, language-agnostic `AST` (e.g. one produced by a
 /// DIFFERENT format's parser, for `twig convert -o djot` cross-format
-/// conversion) as Djot text. Unlike `serializeAlloc`, there is no `Document`
-/// with djot's reference/footnote side tables to consult, so this builds a
-/// throwaway one by scanning `ast` directly for `reference`/`footnote`-kind
-/// nodes and keying them by their own `.label` payload — the same label ->
-/// id shape `Djot.parse` would have produced, just without djot's
-/// auto-reference bookkeeping (irrelevant here: `renderDetachedDefinitions`
-/// only needs SOME map that contains a definition node to print it, and
+/// conversion) as Djot text. Unlike `serializeAlloc`, there is no parsed
+/// `Document` whose `labels` name the winning definitions, so this builds a
+/// throwaway one over `Document.Labels.index` — every `reference`/`footnote`
+/// node in the arena keyed by its own `.label`, the same label -> id shape
+/// `Djot.parse` would have produced, just without djot's auto-reference
+/// bookkeeping (irrelevant here: `renderDetachedDefinitions` only needs SOME
+/// map that contains a definition node to print it, and
 /// `references`/`auto_references` are checked with `or`). `ast` itself is
 /// only shallow-copied into the temporary `Document` (never `deinit`'d
 /// through it) — the caller keeps owning it.
@@ -741,26 +740,18 @@ pub fn serializeAstAlloc(allocator: Allocator, ast: *const AST) Allocator.Error!
 pub fn serializeAstSpelledAlloc(
     allocator: Allocator,
     ast: *const AST,
-    node_spelling: []const ?TwigDocument.Spelling,
+    node_spelling: []const ?Document.Spelling,
 ) Allocator.Error![]u8 {
-    var references: std.StringHashMapUnmanaged(AST.Node.Id) = .empty;
-    defer references.deinit(allocator);
-    var footnotes: std.StringHashMapUnmanaged(AST.Node.Id) = .empty;
-    defer footnotes.deinit(allocator);
-
-    for (ast.nodes) |n| {
-        switch (n.kind) {
-            .reference => |r| try references.put(allocator, r.label, n.id),
-            .footnote => |f| try footnotes.put(allocator, f.label, n.id),
-            else => {},
-        }
-    }
+    var labels = try Document.Labels.index(allocator, ast);
+    defer labels.deinit(allocator);
 
     const doc: Document = .{
+        .source = "",
         .ast = ast.*,
+        .node_spans = &.{},
+        .node_content_spans = &.{},
         .node_spelling = node_spelling,
-        .references = references,
-        .footnotes = footnotes,
+        .labels = labels,
     };
     return serializeAlloc(allocator, &doc);
 }

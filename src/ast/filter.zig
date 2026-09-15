@@ -124,10 +124,7 @@ const testing = std.testing;
 fn parseMarkdownDirectives(ctx: *const anyopaque, a: Allocator, s: []const u8) anyerror!Document {
     _ = ctx;
     const Markdown = @import("../languages/markdown/markdown.zig");
-    var doc = try Markdown.parse(a, s, .{ .directives = true });
-    doc.link_references.deinit(a);
-    doc.footnotes.deinit(a);
-    return doc.document();
+    return Markdown.parse(a, s, .{ .directives = true });
 }
 
 const md_ctx: u8 = 0;
