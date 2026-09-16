@@ -4,11 +4,43 @@ description: Markdown's variants are a `ParseOptions` struct in Zig and a flag b
 author: adammharris
 created: 2026-09-15
 updated: 2026-09-15
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # Name Markdown's configurations as dialects
+
+## Resolution
+
+Completed in the commit `feat(format): Markdown's dialects are Format rows,
+as json/jsonc/json5 are in fig`, which also sets this status. The answer to
+the design question below is the `Format` variant, fig's shape: `commonmark`
+and `gfm` are registry rows beside `markdown`, each a `MarkdownDialect`
+instantiation over the one parser under its preset, and `Entry.dialect_of`
+says whose they are. `Target` did not grow — `targetFor(.gfm)` is `.markdown`,
+and `writesOwnSyntax` is the round-trip question both `-o canonical` and
+`twig_document_serialize` now ask, so a GFM document serialized as Markdown
+keeps its spelling.
+
+- `parseFormatName` accepts `gfm` and `commonmark`; `-i gfm` works, and the
+  CLI's `--gfm`/`--commonmark` are now spellings of `-i` rather than
+  rewrites of the parse options, so `--math --gfm` composes in either order.
+  `identify` reports the dialect; the supported-formats list says which
+  language each dialect belongs to.
+- `ParsedDoc.format` records the row, and the HTML render reads its
+  conventions from there.
+- The C ABI takes `TWIG_FORMAT_COMMONMARK` (6) and `TWIG_FORMAT_GFM` (7)
+  everywhere a format code goes; on the write side both mean Markdown. The
+  `TWIG_MD_*` flag bits stay and lay over the named dialect. The Rust crate
+  has `Format::Commonmark`, `Format::Gfm` and `Format::dialect_of`.
+- `ParseConfig.markdown` is now `Markdown.ParseOptions.Extensions` — the
+  five opt-in flags — rather than the whole `ParseOptions`. The preset is
+  the row's, so no caller states the dialect twice, and the Zig-side
+  `ParseConfig{ .markdown = .commonmark }` spelling is gone: that is
+  `Format.commonmark`.
+- Each dialect row declares its own harness samples in its own grammar, so
+  a GFM table and a strikethrough round-trip under the GFM row and the
+  CommonMark row is checked without either.
 
 **Where.** `Markdown.ParseOptions` (`src/languages/markdown/options.zig`)
 is a struct of toggles with a `.commonmark` preset; `src/format.zig`'s

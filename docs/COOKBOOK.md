@@ -135,6 +135,8 @@ single `edit` wouldn't (see Gotchas).
 
 ```sh
 twig convert doc.md                       # -> HTML (default)
+twig convert -i gfm README.md             # as GitHub-Flavored Markdown
+twig convert -i commonmark --math doc.md  # strict CommonMark, plus math
 twig convert -o canonical doc.md          # round-trip back to Markdown
 twig convert -o canonical feed.xml        # any format with a serializer
 twig identify mystery.txt                 # detect the format

@@ -87,6 +87,16 @@ pub const Format = enum {
     xml,
     html,
     asciidoc,
+    /// Strict CommonMark 0.31.2: Markdown with every extension off. A DIALECT
+    /// of `markdown` — one parser, one serializer, one `Target` — that the
+    /// registry carries as a row of its own so `-i commonmark` and
+    /// `TWIG_FORMAT_COMMONMARK` name it, the way fig's `json`/`jsonc`/`json5`
+    /// are three rows over one language. See `Entry.dialect_of`.
+    commonmark,
+    /// GitHub-Flavored Markdown: the spec's four extensions and GFM's HTML
+    /// conventions (`align=` on a cell, not `style=`). A dialect of
+    /// `markdown`, as `commonmark` is.
+    gfm,
 };
 
 /// Every format Twig can WRITE — what `-o`/`--output` names beyond its three
@@ -124,21 +134,46 @@ pub const Target = enum {
 /// The output target that writes `fmt`'s own syntax. TOTAL — every input format
 /// is also a target, including the ones with no serializer yet, because
 /// `-o asciidoc` has to reach "not supported yet" rather than "unknown target".
-/// Totality is a compile error rather than a test: `@field` fails to resolve if
-/// a `Format` name is missing from `Target`.
+///
+/// A dialect writes as its LANGUAGE: Markdown has one serializer however it was
+/// parsed, so `commonmark` and `gfm` land on `.markdown` and `Target` does not
+/// grow a row per dialect. Those are the only arms spelled out; for every
+/// language row totality is a compile error rather than a test, since `@field`
+/// fails to resolve if a `Format` name is missing from `Target`. The dialect
+/// arms agree with `Entry.dialect_of` by a test below.
 pub fn targetFor(fmt: Format) Target {
     return switch (fmt) {
+        .commonmark, .gfm => .markdown,
         inline else => |f| @field(Target, @tagName(f)),
     };
+}
+
+/// Whether `target` writes the syntax `fmt` was parsed from — the question
+/// `-o canonical` and `twig_document_serialize` ask before choosing between
+/// the input row's `serializeCanonical` (the parsed `Document` whole, spelling
+/// and labels intact) and the target's bare-`AST` `serializeFromAst`. Asked
+/// through `targetFor` rather than `==` so a GFM document serialized `-o
+/// markdown` takes the faithful path: it IS Markdown. An export-only target is
+/// never any format's own, and takes the cross-format path, the only one it has.
+pub fn writesOwnSyntax(fmt: Format, target: Target) bool {
+    return targetFor(fmt) == target;
 }
 
 /// Per-invocation parse configuration, threaded from a consumer's feature flags
 /// into the `parse`/`parseToAst` adapters. Passed as an opaque `*const anyopaque`
 /// (so `ast/splicer.zig` can carry it across reparses without depending on this
 /// type — see `Splicer.ParseFn`); every adapter that reads it `@ptrCast`s it
-/// back. Only Markdown consults it today; other formats' adapters ignore it.
+/// back. Only Markdown's rows consult it today; other formats' adapters ignore it.
+///
+/// This is what a caller adds ON TOP of the row it chose, never the row itself.
+/// Which Markdown dialect a document is — strict, GFM, or the default — is the
+/// `Format`, and the row carries that preset; the config is the opt-in
+/// `Extensions` laid over it. It used to hold the whole `ParseOptions`, and a
+/// dialect was then a value a caller wrote into the config while the `Format`
+/// still said plain `markdown` — the same fact stated in two places, which
+/// `ParsedDoc`'s doc comment below argues against.
 pub const ParseConfig = struct {
-    markdown: Markdown.ParseOptions = .{},
+    markdown: Markdown.ParseOptions.Extensions = .{},
 
     /// Recover a `*const ParseConfig` from the opaque pointer the registry
     /// adapters / the splicer pass around.
@@ -156,11 +191,12 @@ pub const ParseConfig = struct {
 /// `Document` had no column for. Those maps are `Document.labels` now, so
 /// every parser returns the one type and the union had nothing left to
 /// distinguish. What remains is a thin wrapper, and both its fields earn
-/// their place: `format` picks the `registry` row for every later operation,
-/// and `config` is what Markdown's wrapper was really carrying — its
-/// `dialect` decides how a table's alignment is spelled in HTML, and
-/// `renderHtml` reads it from here so a caller cannot parse a document as
-/// GFM and print it as CommonMark by forgetting to say so twice.
+/// their place: `format` picks the `registry` row for every later operation
+/// — and for Markdown that row IS the dialect, so `renderHtml` spells a
+/// table's alignment the way the format the document was parsed as does,
+/// and a caller cannot parse a document as GFM and print it as CommonMark
+/// by forgetting to say so twice. `config` is the extensions laid over that
+/// row, which the editor's reparse and `syntaxForConfig` need to agree on.
 pub const ParsedDoc = struct {
     format: Format,
     config: ParseConfig,
@@ -189,10 +225,57 @@ fn parseDjot(ctx: *const anyopaque, allocator: Allocator, source: []const u8) an
     return .{ .format = .djot, .config = cfg.*, .doc = try Djot.parse(allocator, source) };
 }
 
-fn parseMarkdown(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
-    const cfg = ParseConfig.from(ctx);
-    return .{ .format = .markdown, .config = cfg.*, .doc = try Markdown.parse(allocator, source, cfg.markdown) };
+/// The adapters for one Markdown DIALECT: the parser under `preset`, with the
+/// caller's `ParseConfig.markdown` extensions laid over it. One instantiation
+/// per Markdown row in `registry`, so the preset is stated on the row and
+/// nowhere else — the parse, the splicer's reparse, the HTML render's
+/// conventions and the editor's spelling table all read it from here.
+fn MarkdownDialect(comptime id: Format, comptime preset: Markdown.ParseOptions) type {
+    return struct {
+        /// The spelling table under a default config — what the row's
+        /// `syntax` points at, by address, so the serializer and the editor
+        /// cannot read two different answers for one document.
+        const syntax: *const Syntax = markdown_syntax.forOptions(preset);
+
+        fn options(ctx: *const anyopaque) Markdown.ParseOptions {
+            return Markdown.ParseOptions.withExtensions(preset, ParseConfig.from(ctx).markdown);
+        }
+
+        fn parse(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
+            const cfg = ParseConfig.from(ctx);
+            return .{ .format = id, .config = cfg.*, .doc = try Markdown.parse(allocator, source, options(ctx)) };
+        }
+
+        fn parseToAst(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
+            return Markdown.parse(allocator, source, options(ctx));
+        }
+
+        /// Markdown needs its own HTML rendering path (`Markdown.html.render`)
+        /// rather than the generic printer for the same reason djot does
+        /// (`renderHtmlDjot`'s doc comment): footnotes resolve/number/backlink
+        /// entirely at RENDER time, against `Document.labels.footnotes` — see
+        /// `markdown/html.zig`'s module doc comment. Using the generic printer
+        /// here would silently drop footnotes (every `link`/`image`, by
+        /// contrast, is already fully resolved at PARSE time, so those are
+        /// unaffected either way). The render dialect is the row's, which is
+        /// the one place it is stated.
+        fn renderHtml(allocator: Allocator, doc: *const ParsedDoc, writer: *Writer) anyerror!void {
+            try Markdown.html.render(allocator, &doc.doc, writer, .{ .dialect = preset.dialect });
+        }
+
+        /// The `Entry.syntaxFor` for this row: the extensions decide whether
+        /// `==x==` reads back as a `mark`, and so whether an editor may write
+        /// one, over whatever the preset already reads.
+        fn syntaxFor(cfg: *const ParseConfig) *const Syntax {
+            return markdown_syntax.forOptions(Markdown.ParseOptions.withExtensions(preset, cfg.markdown));
+        }
+    };
 }
+
+/// Twig's default Markdown: CommonMark plus the default-on extensions.
+const MarkdownDefault = MarkdownDialect(.markdown, .{});
+const Commonmark = MarkdownDialect(.commonmark, Markdown.ParseOptions.commonmark);
+const Gfm = MarkdownDialect(.gfm, Markdown.ParseOptions.gfm);
 
 fn parseXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
     const cfg = ParseConfig.from(ctx);
@@ -218,10 +301,6 @@ fn parseAsciidoc(ctx: *const anyopaque, allocator: Allocator, source: []const u8
 fn parseToAstDjot(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
     _ = ctx;
     return Djot.parse(allocator, source);
-}
-
-fn parseToAstMarkdown(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
-    return Markdown.parse(allocator, source, ParseConfig.from(ctx).markdown);
 }
 
 fn parseToAstXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!Document {
@@ -254,18 +333,6 @@ fn renderHtmlDjot(allocator: Allocator, doc: *const ParsedDoc, writer: *Writer) 
 /// whole story — `ctx = null`.
 fn renderHtmlGeneric(allocator: Allocator, doc: *const ParsedDoc, writer: *Writer) anyerror!void {
     try Html.serialize(allocator, doc.ast(), writer, null);
-}
-
-/// Markdown needs its own HTML rendering path (`Markdown.html.render`) rather
-/// than the generic printer for the same reason djot does (`renderHtmlDjot`'s
-/// doc comment): footnotes resolve/number/backlink entirely at RENDER time,
-/// against `Document.labels.footnotes` — see `markdown/html.zig`'s module doc
-/// comment. Using the generic printer here would silently drop footnotes
-/// (every `link`/`image`, by contrast, is already fully resolved at PARSE
-/// time, so those are unaffected either way). The dialect comes from the
-/// config the document was parsed with, which is the one place it is stated.
-fn renderHtmlMarkdown(allocator: Allocator, doc: *const ParsedDoc, writer: *Writer) anyerror!void {
-    try Markdown.html.render(allocator, &doc.doc, writer, .{ .dialect = doc.config.markdown.dialect });
 }
 
 fn serializeCanonicalXml(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
@@ -319,6 +386,14 @@ fn serializeFromAstAsciidoc(allocator: Allocator, ast: *const AST) anyerror![]u8
 /// per-language switch of their own.
 pub const Entry = struct {
     id: Format,
+    /// The language this row is a DIALECT of, or `null` for a language's own
+    /// row. A dialect is a name for one configuration of another row's parser
+    /// — strict CommonMark, GFM — carried as a row so that `-i`, `ParsedDoc`
+    /// and the C ABI can say it in one word. It shares its language's `Target`
+    /// (`targetFor`), declares no `extensions` of its own (a `.md` file is the
+    /// default flavor until a caller says otherwise), and is listed under its
+    /// language by `printSupportedInputFormats`.
+    dialect_of: ?Format = null,
     /// Small source documents checked by the shared language harness.
     /// An empty declaration fails the harness; corpora belong to conformance tests.
     samples: []const []const u8 = &.{},
@@ -397,13 +472,46 @@ pub const registry = [_]Entry{
         .samples = Markdown.samples,
         .extensions = &.{ "md", "markdown" },
         .aliases = &.{"md"},
-        .parse = parseMarkdown,
-        .parseToAst = parseToAstMarkdown,
-        .renderHtml = renderHtmlMarkdown,
+        .parse = MarkdownDefault.parse,
+        .parseToAst = MarkdownDefault.parseToAst,
+        .renderHtml = MarkdownDefault.renderHtml,
         .serializeCanonical = serializeCanonicalMarkdown,
-        .syntax = markdown_syntax.table,
-        // The one row whose authorable subset moves with the parse config.
-        .syntaxFor = syntaxForMarkdown,
+        .syntax = MarkdownDefault.syntax,
+        // The rows whose authorable subset moves with the parse config: this
+        // one and its two dialects below.
+        .syntaxFor = MarkdownDefault.syntaxFor,
+    },
+    .{
+        // Strict CommonMark — `markdown` with every extension off. Same
+        // parser, same serializer, same `Target`; a different preset, and so
+        // a different default `syntax`: `~~x~~` is two literal tildes here
+        // and no gesture may mint it. No `extensions`: nothing about a file
+        // name says it is strict.
+        .id = .commonmark,
+        .dialect_of = .markdown,
+        .samples = Markdown.commonmark_samples,
+        .extensions = &.{},
+        .parse = Commonmark.parse,
+        .parseToAst = Commonmark.parseToAst,
+        .renderHtml = Commonmark.renderHtml,
+        .serializeCanonical = serializeCanonicalMarkdown,
+        .syntax = Commonmark.syntax,
+        .syntaxFor = Commonmark.syntaxFor,
+    },
+    .{
+        // GitHub-Flavored Markdown — the spec's four extensions and GFM's
+        // HTML conventions, which is the one thing about this row a bare
+        // flag set could not say (`ParseOptions.dialect`'s doc comment).
+        .id = .gfm,
+        .dialect_of = .markdown,
+        .samples = Markdown.gfm_samples,
+        .extensions = &.{},
+        .parse = Gfm.parse,
+        .parseToAst = Gfm.parseToAst,
+        .renderHtml = Gfm.renderHtml,
+        .serializeCanonical = serializeCanonicalMarkdown,
+        .syntax = Gfm.syntax,
+        .syntaxFor = Gfm.syntaxFor,
     },
     .{
         .id = .xml,
@@ -532,12 +640,6 @@ pub fn targetEntryFor(t: Target) *const TargetEntry {
     unreachable;
 }
 
-/// The `Entry.syntaxFor` for Markdown: the parse config decides whether
-/// `==x==` reads back as a `mark`, and so whether an editor may write one.
-fn syntaxForMarkdown(cfg: *const ParseConfig) *const Syntax {
-    return markdown_syntax.forOptions(cfg.markdown);
-}
-
 /// `fmt`'s surface spelling — `Syntax.none` for a parse-only language, never
 /// `null`. Ask `.authorable()` if you need to know which.
 pub fn syntaxFor(fmt: Format) *const Syntax {
@@ -552,10 +654,12 @@ pub fn syntaxFor(fmt: Format) *const Syntax {
 /// question: converting into Markdown spells `==x==` for a `mark` whatever the
 /// config says, while a toggle that minted the same bytes without
 /// `ParseOptions.highlight` would produce text no reparse turns back into a
-/// mark. The same holds in the other direction for `~~x~~`, which a default
-/// config DOES read back and strict CommonMark does not. The two questions
-/// differ only for Markdown today, which is why every other row leaves
-/// `Entry.syntaxFor` null and gets the same answer from both.
+/// mark. The other direction — `~~x~~`, which the default flavor reads back
+/// and strict CommonMark does not — is no longer this function's to answer:
+/// that is a difference between two ROWS, and `syntaxFor(.commonmark)` says
+/// so under any config. The two questions differ only for Markdown's rows
+/// today, which is why every other row leaves `Entry.syntaxFor` null and gets
+/// the same answer from both.
 pub fn syntaxForConfig(fmt: Format, cfg: *const ParseConfig) *const Syntax {
     const e = entryFor(fmt);
     const pick = e.syntaxFor orelse return e.syntax;
@@ -612,7 +716,7 @@ pub fn serializeFromAstAlloc(allocator: Allocator, ast: *const AST, target: Targ
 }
 
 /// Map an input name to a `Format`: the enum's own tag name first
-/// (`std.meta.stringToEnum`, so `"djot"`/`"markdown"`/`"xml"` always work), then
+/// (`std.meta.stringToEnum`, so `"djot"`/`"markdown"`/`"gfm"` always work), then
 /// each entry's `aliases` (`"dj"`, `"md"`). Returns `null` for an unrecognized
 /// name so the caller can print a tailored error.
 pub fn parseFormatName(name: []const u8) ?Format {
@@ -678,13 +782,86 @@ test "every Format is also a Target, and the two agree in both directions" {
     // than generated. `targetFor` is total by construction (a missing name is a
     // compile error); what needs asserting is that the target it lands on says
     // the SAME format reads it back, so nothing can be wired to a row that
-    // spells a different language.
+    // spells a different language. A dialect lands on its LANGUAGE's target,
+    // and the language is what reads that target back — so the two arms
+    // `targetFor` spells by hand are pinned to `Entry.dialect_of` here.
     inline for (std.meta.fields(Format)) |f| {
         const fmt: Format = @enumFromInt(f.value);
         const t = targetFor(fmt);
-        try std.testing.expectEqualStrings(@tagName(fmt), @tagName(t));
-        try std.testing.expectEqual(fmt, t.asFormat().?);
+        const lang = entryFor(fmt).dialect_of orelse fmt;
+        try std.testing.expectEqualStrings(@tagName(lang), @tagName(t));
+        try std.testing.expectEqual(lang, t.asFormat().?);
+        try std.testing.expect(writesOwnSyntax(fmt, t));
     }
+}
+
+test "a dialect is a row over its language's parser, not a language" {
+    // What `dialect_of` promises: a language row is nobody's dialect, a
+    // dialect's language is a language row, and the dialect declares no
+    // extensions — a `.md` file is the default flavor until `-i` says
+    // otherwise. And the name resolves as a format in its own right.
+    for (&registry) |*e| {
+        const lang = e.dialect_of orelse continue;
+        try std.testing.expect(entryFor(lang).dialect_of == null);
+        try std.testing.expectEqual(@as(usize, 0), e.extensions.len);
+        try std.testing.expectEqual(targetFor(lang), targetFor(e.id));
+        try std.testing.expectEqual(e.id, parseFormatName(@tagName(e.id)).?);
+    }
+    try std.testing.expectEqual(Format.markdown, entryFor(.gfm).dialect_of.?);
+    try std.testing.expectEqual(Format.markdown, entryFor(.commonmark).dialect_of.?);
+    try std.testing.expect(entryFor(.markdown).dialect_of == null);
+    try std.testing.expectEqual(Target.markdown, parseTargetName("gfm").?);
+    try std.testing.expect(detectFromExtension("a.md") == .markdown);
+}
+
+test "the dialect rows parse what their names say, and record it" {
+    // Strict CommonMark reads `~~x~~` as text and a pipe table as a paragraph;
+    // GFM reads both. The same bytes, three rows, and each `ParsedDoc` says
+    // which it went through.
+    const src = "a ~~b~~ c\n\n| x |\n| - |\n| 1 |\n";
+    const cfg: ParseConfig = .{};
+    inline for (.{
+        .{ Format.commonmark, false },
+        .{ Format.markdown, true },
+        .{ Format.gfm, true },
+    }) |case| {
+        var doc = try entryFor(case[0]).parse(&cfg, std.testing.allocator, src);
+        defer doc.deinit();
+        try std.testing.expectEqual(case[0], doc.format);
+        var has_delete = false;
+        var has_table = false;
+        for (doc.ast().nodes) |n| switch (n.kind) {
+            .inline_mark => |m| has_delete = has_delete or m == .delete,
+            .table => has_table = true,
+            else => {},
+        };
+        try std.testing.expectEqual(case[1], has_delete);
+        try std.testing.expectEqual(case[1], has_table);
+    }
+}
+
+test "an extension lays over a dialect rather than replacing it" {
+    // `-i gfm --math` is GFM plus math: the table still parses, and so does
+    // the `$x$` that GFM proper does not read. And the editor's spelling table
+    // for that pairing is the one the reparse agrees with.
+    const src = "| a |\n| - |\n| $x$ |\n";
+    const math: ParseConfig = .{ .markdown = .{ .math = true } };
+    var doc = try entryFor(.gfm).parse(&math, std.testing.allocator, src);
+    defer doc.deinit();
+    var has_math = false;
+    var has_table = false;
+    for (doc.ast().nodes) |n| switch (n.kind) {
+        .text_leaf => |t| has_math = has_math or t.kind == .inline_math,
+        .table => has_table = true,
+        else => {},
+    };
+    try std.testing.expect(has_math and has_table);
+
+    const hi: ParseConfig = .{ .markdown = .{ .highlight = true } };
+    const strict_hi = syntaxForConfig(.commonmark, &hi);
+    strict_hi.assertCoherent();
+    try std.testing.expect(strict_hi.inline_delims.get(.mark).?.authorable);
+    try std.testing.expect(!strict_hi.inline_delims.get(.delete).?.authorable);
 }
 
 test "the write half is keyed on the target, not on what parsed it" {
@@ -708,14 +885,14 @@ test "a config-varying row agrees with its own default table" {
         const pick = e.syntaxFor orelse continue;
         try std.testing.expectEqual(e.syntax, pick(&default_cfg));
     }
-    // The config moves the answer in both directions from the defaults: strict
-    // CommonMark takes strikethrough AWAY, where `highlight` below adds a mark.
-    var strict: ParseConfig = .{};
-    strict.markdown = .commonmark;
-    const strict_syntax = syntaxForConfig(.markdown, &strict);
+    // The answer moves in both directions from the defaults: the strict
+    // CommonMark ROW takes strikethrough AWAY, where the `highlight`
+    // extension below adds a mark to any row.
+    const strict_syntax = syntaxFor(.commonmark);
     strict_syntax.assertCoherent();
     try std.testing.expect(syntaxFor(.markdown).inline_delims.get(.delete).?.authorable);
     try std.testing.expect(!strict_syntax.inline_delims.get(.delete).?.authorable);
+    try std.testing.expect(syntaxFor(.gfm).inline_delims.get(.delete).?.authorable);
 
     // And the variant tables are tables like any other.
     var hi: ParseConfig = .{};
@@ -739,14 +916,15 @@ test "a config-varying row agrees with its own default table" {
 }
 
 test "a ParsedDoc renders with the dialect it was parsed under" {
-    // The `config` field's reason to exist: `--gfm` is said once, at parse,
+    // The `format` field's reason to exist: `-i gfm` is said once, at parse,
     // and the render reads it back from the document rather than being told
-    // again. Both configs parse this table to the same nodes; only the
+    // again. Both rows parse this table to the same nodes; only the
     // alignment spelling tells them apart.
     const src = "| a |\n| :-: |\n| 1 |\n";
-    const gfm: ParseConfig = .{ .markdown = .gfm };
-    var g = try entryFor(.markdown).parse(&gfm, std.testing.allocator, src);
+    const gfm: ParseConfig = .{};
+    var g = try entryFor(.gfm).parse(&gfm, std.testing.allocator, src);
     defer g.deinit();
+    try std.testing.expectEqual(Format.gfm, g.format);
     const g_html = try renderHtmlAlloc(std.testing.allocator, &g);
     defer std.testing.allocator.free(g_html);
     try std.testing.expect(std.mem.indexOf(u8, g_html, "<th align=\"center\">") != null);
@@ -801,7 +979,7 @@ test "AsciiDoc parses, renders and serializes in both directions" {
     try std.testing.expectEqualStrings("= Title\n\nsome *bold* text\n", canonical);
 
     // Cross-format: a Markdown tree written as AsciiDoc.
-    var md = try parseMarkdown(&ParseConfig{}, std.testing.allocator, "# Title\n\nsome **bold** text\n");
+    var md = try MarkdownDefault.parse(&ParseConfig{}, std.testing.allocator, "# Title\n\nsome **bold** text\n");
     defer md.deinit();
     const converted = try serializeFromAstAlloc(std.testing.allocator, md.ast(), .asciidoc);
     defer std.testing.allocator.free(converted);
@@ -894,6 +1072,8 @@ test "round-trip: a raw HTML block survives the Djot leg" {
 test "format names and extensions resolve" {
     try std.testing.expectEqual(Format.djot, parseFormatName("dj").?);
     try std.testing.expectEqual(Format.markdown, parseFormatName("markdown").?);
+    try std.testing.expectEqual(Format.gfm, parseFormatName("gfm").?);
+    try std.testing.expectEqual(Format.commonmark, parseFormatName("commonmark").?);
     try std.testing.expect(parseFormatName("nope") == null);
     try std.testing.expectEqual(Format.markdown, detectFromExtension("a/b.MD").?);
     try std.testing.expect(detectFromExtension("noext") == null);

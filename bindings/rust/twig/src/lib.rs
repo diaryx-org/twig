@@ -39,6 +39,21 @@ pub enum Format {
     /// `include::`, the CSV table forms) survive as literal source text
     /// rather than failing the parse.
     Asciidoc,
+    /// Strict CommonMark 0.31.2: Markdown with every extension off. A
+    /// **dialect** of [`Format::Markdown`] — one parser under a different
+    /// preset, with a [`MarkdownExtensions`] laid over it — carried as a
+    /// format of its own so it can be named in one word, the way fig's
+    /// `json`/`jsonc`/`json5` are three formats over one language. It writes
+    /// as [`Target::Markdown`] (there is one Markdown serializer), and
+    /// [`Format::supports`] answers for it: strict CommonMark cannot author
+    /// the `~~x~~` the other two dialects can.
+    Commonmark,
+    /// GitHub-Flavored Markdown: the spec's four extensions and GFM's HTML
+    /// conventions (a cell's alignment as `align=` rather than `style=`). A
+    /// dialect of [`Format::Markdown`], as [`Format::Commonmark`] is.
+    /// [`Format::Markdown`] itself stays Twig's default flavor, CommonMark
+    /// plus the default-on extensions.
+    Gfm,
 }
 
 impl From<Format> for ffi::TwigFormat {
@@ -49,6 +64,23 @@ impl From<Format> for ffi::TwigFormat {
             Format::Xml => ffi::TwigFormat::Xml,
             Format::Html => ffi::TwigFormat::Html,
             Format::Asciidoc => ffi::TwigFormat::Asciidoc,
+            Format::Commonmark => ffi::TwigFormat::Commonmark,
+            Format::Gfm => ffi::TwigFormat::Gfm,
+        }
+    }
+}
+
+impl Format {
+    /// The language this format is a dialect of, or `None` for a language
+    /// itself: `Some(Format::Markdown)` for [`Format::Commonmark`] and
+    /// [`Format::Gfm`], `None` for everything else. A dialect shares its
+    /// language's [`Target`] (`Target::from`), which is what makes serializing
+    /// a GFM document as [`Target::Markdown`] a round trip rather than a
+    /// conversion.
+    pub fn dialect_of(self) -> Option<Format> {
+        match self {
+            Format::Commonmark | Format::Gfm => Some(Format::Markdown),
+            _ => None,
         }
     }
 }
@@ -100,12 +132,14 @@ impl Target {
 
 /// Total: every input format is also an output target, even the ones with no
 /// serializer yet (converting *into* XML reports [`Error::UnsupportedFormat`]
-/// rather than being unnameable).
+/// rather than being unnameable). A dialect lands on its language's target —
+/// [`Format::Commonmark`] and [`Format::Gfm`] both write as
+/// [`Target::Markdown`] — so `Target` does not grow a row per dialect.
 impl From<Format> for Target {
     fn from(value: Format) -> Self {
         match value {
             Format::Djot => Target::Djot,
-            Format::Markdown => Target::Markdown,
+            Format::Markdown | Format::Commonmark | Format::Gfm => Target::Markdown,
             Format::Xml => Target::Xml,
             Format::Html => Target::Html,
             Format::Asciidoc => Target::Asciidoc,
@@ -1436,9 +1470,13 @@ impl Drop for Document {
 
 /// Opt-in Markdown extensions to enable for a parse — for either the read path
 /// ([`Document::parse_with`]) or the edit path ([`Editor::new_ext`]). Ignored
-/// for non-Markdown formats. Every field defaults off, matching the library; the
-/// default-on extensions (tables, strikethrough, task lists, …) are always on
-/// and need no flag here.
+/// for non-Markdown formats. Every field defaults off, matching the library.
+///
+/// These lay **over** whichever Markdown dialect the [`Format`] named —
+/// `Format::Gfm` with `math` is GFM plus math — and the default-on set
+/// (tables, strikethrough, task lists, …) is the dialect's to decide, which is
+/// why there is no field to turn one off: that is what [`Format::Commonmark`]
+/// is.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MarkdownExtensions {
     /// Generic directives: `:name`, `::name`, `:::name`.
@@ -3497,6 +3535,45 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&converted), "= Title\n\nsome *bold* text\n");
         assert_eq!(Target::from(Format::Asciidoc), Target::Asciidoc);
         assert_eq!(Target::Asciidoc.as_format(), Some(Format::Asciidoc));
+    }
+
+    #[test]
+    fn markdown_dialects_are_formats_over_one_parser() {
+        // Three formats, one parser: strict CommonMark reads `~~x~~` as text
+        // and a pipe table as a paragraph; GFM and the default read both; an
+        // extension laid over GFM adds what GFM proper leaves out.
+        let src = "a ~~b~~ c\n\n| x |\n| - |\n| $m$ |\n";
+        let count = |doc: &mut Document, sel: &str| doc.query(sel).expect("query").len();
+        for (format, ext, delete, table, math) in [
+            (Format::Commonmark, MarkdownExtensions::default(), 0, 0, 0),
+            (Format::Markdown, MarkdownExtensions::default(), 1, 1, 0),
+            (Format::Gfm, MarkdownExtensions::default(), 1, 1, 0),
+            (Format::Gfm, MarkdownExtensions { math: true, ..Default::default() }, 1, 1, 1),
+        ] {
+            let mut doc = Document::parse_str_with(src, format, ext).expect("parse");
+            assert_eq!(count(&mut doc, "delete"), delete, "{format:?} {ext:?}");
+            assert_eq!(count(&mut doc, "table"), table, "{format:?} {ext:?}");
+            assert_eq!(count(&mut doc, "inline_math"), math, "{format:?} {ext:?}");
+        }
+
+        // A dialect writes as its language, and a GFM document serialized as
+        // Markdown is a round trip, spelling intact.
+        assert_eq!(Format::Gfm.dialect_of(), Some(Format::Markdown));
+        assert_eq!(Format::Commonmark.dialect_of(), Some(Format::Markdown));
+        assert_eq!(Format::Markdown.dialect_of(), None);
+        assert_eq!(Target::from(Format::Gfm), Target::Markdown);
+        let mut gfm = Document::parse_str("* a ~~b~~\n", Format::Gfm).expect("parse gfm");
+        let back = gfm.serialize(Format::Gfm).expect("serialize");
+        assert_eq!(String::from_utf8_lossy(&back), "* a ~~b~~\n");
+
+        // The render follows the row: GFM spells alignment as an attribute.
+        let mut table = Document::parse_str("| a |\n| :-: |\n| 1 |\n", Format::Gfm).expect("parse");
+        let html = String::from_utf8_lossy(&table.render_html().expect("render")).into_owned();
+        assert!(html.contains("align=\"center\""), "got {html:?}");
+
+        // And the capability query answers per dialect.
+        assert!(!Format::Commonmark.supports(Gesture::ToggleInline(InlineKind::Delete)));
+        assert!(Format::Gfm.supports(Gesture::ToggleInline(InlineKind::Delete)));
     }
 
     #[test]

@@ -74,10 +74,26 @@ extern "C" {
 // leaves unmodelled survives as literal source text. See src/format.zig's
 // `.asciidoc` registry row.
 #define TWIG_FORMAT_ASCIIDOC 5
+// Two DIALECTS of Markdown, each a code of its own so a caller can name it in
+// one word (the way json/jsonc/json5 are three codes over one language in fig):
+// strict CommonMark 0.31.2 with every extension off, and GitHub-Flavored
+// Markdown — the spec's four extensions plus GFM's HTML conventions (a cell's
+// alignment as `align=` rather than `style=`). TWIG_FORMAT_MARKDOWN stays
+// twig's default flavor, CommonMark plus the default-on extensions. All three
+// parse through one parser and, on the write side, all three mean Markdown:
+// twig_document_serialize with any of them is the same round trip, since there
+// is one Markdown serializer. twig_format_supports answers per dialect —
+// strict CommonMark cannot author the `~~x~~` the other two can.
+#define TWIG_FORMAT_COMMONMARK 6
+#define TWIG_FORMAT_GFM 7
 
 // Markdown extension flags for the `md_flags` bitmask of twig_parse_ext and
 // twig_editor_create_ext (ignored for non-Markdown formats). Each is an opt-in,
 // default-off extension; a 0 mask is the plain twig_parse/twig_editor_create.
+// The bits lay OVER whichever Markdown dialect the format code named, so
+// TWIG_FORMAT_GFM with TWIG_MD_MATH is GFM plus math; the default-on set
+// (tables, strikethrough, ...) is the dialect's, which is why there is no bit
+// to turn one off — that is what TWIG_FORMAT_COMMONMARK is.
 #define TWIG_MD_DIRECTIVES    (1u << 0)  // generic directives: :name, ::name, :::name
 #define TWIG_MD_MATH          (1u << 1)  // $...$ / $$...$$ math
 #define TWIG_MD_HTML_ELEMENTS (1u << 2)  // parse raw HTML into semantic AST nodes

@@ -48,6 +48,13 @@ pub const TwigFormat = enum(c_int) {
     xml = 3,
     html = 4,
     asciidoc = 5,
+    /// Strict CommonMark: a DIALECT of `markdown` — one parser under a
+    /// different preset, with `md_flags` laid over it — carried as a code
+    /// of its own, as fig's `json`/`jsonc`/`json5` are. On the write side
+    /// it means Markdown (`intToTarget`): there is one Markdown serializer.
+    commonmark = 6,
+    /// GitHub-Flavored Markdown, a dialect of `markdown` the same way.
+    gfm = 7,
 };
 
 /// A byte range `[start, end)` into the source, C-ABI shape of `Span`. Used by
@@ -417,6 +424,8 @@ fn intToWire(format: c_int) ?TwigFormat {
         @intFromEnum(TwigFormat.xml) => .xml,
         @intFromEnum(TwigFormat.html) => .html,
         @intFromEnum(TwigFormat.asciidoc) => .asciidoc,
+        @intFromEnum(TwigFormat.commonmark) => .commonmark,
+        @intFromEnum(TwigFormat.gfm) => .gfm,
         else => null,
     };
 }
@@ -443,12 +452,13 @@ fn intToFormat(format: c_int) ?twig.Format {
 
 /// Map a raw `int` format code to a `twig.format.Target` — the OUTPUT axis, for
 /// `twig_document_serialize` and `twig_builder_serialize`. Accepts every code
-/// `intToFormat` does, plus (in future) the export-only ones it rejects.
+/// `intToFormat` does — a dialect code writing as its language's target, the
+/// registry's `targetFor` being the one place that is decided — plus (in
+/// future) the export-only ones `intToFormat` rejects, which would be decoded
+/// here after it has declined them.
 fn intToTarget(format: c_int) ?twig.format.Target {
-    const wire = intToWire(format) orelse return null;
-    return switch (wire) {
-        inline else => |k| @field(twig.format.Target, @tagName(k)),
-    };
+    const fmt = intToFormat(format) orelse return null;
+    return twig.format.targetFor(fmt);
 }
 
 pub export fn twig_version() u32 {
@@ -615,7 +625,7 @@ pub export fn twig_parse_ext(
     const target = intToFormat(format) orelse return .unsupported_format;
 
     const allocator = activeAllocator();
-    const cfg: twig.format.ParseConfig = .{ .markdown = markdownOptionsFromFlags(md_flags) };
+    const cfg: twig.format.ParseConfig = .{ .markdown = markdownExtensionsFromFlags(md_flags) };
     const parsed = twig.format.entryFor(target).parse(&cfg, allocator, source) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         // Only XML can reject its input; the others are infallible by design
@@ -694,11 +704,11 @@ fn serializeDocument(
     parsed: *const twig.format.ParsedDoc,
     target: twig.format.Target,
 ) anyerror!?[]u8 {
-    // "Same format" is asked through `Target.asFormat` rather than `==` now that
-    // the two axes are different types: an export-only target has no format to
-    // match and takes the cross-format path, which is the only one it has.
-    const same_format = if (target.asFormat()) |f| parsed.format == f else false;
-    const result = if (same_format)
+    // "Same format" is the registry's `writesOwnSyntax`, not `==`: the two
+    // axes are different types, a GFM document serialized as Markdown IS a
+    // round trip, and an export-only target has no format to match and takes
+    // the cross-format path, which is the only one it has.
+    const result = if (twig.format.writesOwnSyntax(parsed.format, target))
         twig.format.serializeCanonicalAlloc(allocator, parsed)
     else
         twig.format.serializeFromAstAlloc(allocator, parsed.ast(), target);
@@ -1638,6 +1648,10 @@ const EditOp = enum { replace, replace_content, insert_before, insert_after, ins
 /// The bit values are the wire contract, so they live here. Every bit is an
 /// opt-in, default-off extension — the default-on ones (tables, strikethrough,
 /// …) need no flag, and a `0` mask reproduces `twig_parse`/`twig_editor_create`.
+/// The bits lay over whichever Markdown DIALECT the format code named
+/// (`TWIG_FORMAT_MARKDOWN`, `_COMMONMARK`, `_GFM`), so `TWIG_FORMAT_GFM |
+/// TWIG_MD_MATH` is GFM plus math; the default-on set is the dialect's to
+/// decide, which is why there is no bit to turn one off.
 const TWIG_MD_DIRECTIVES: u32 = 1 << 0;
 const TWIG_MD_MATH: u32 = 1 << 1;
 const TWIG_MD_HTML_ELEMENTS: u32 = 1 << 2;
@@ -1647,14 +1661,14 @@ const TWIG_MD_HIGHLIGHT: u32 = 1 << 3;
 /// `--highlight-colors` turns both on.
 const TWIG_MD_HIGHLIGHT_COLORS: u32 = 1 << 4;
 
-fn markdownOptionsFromFlags(flags: u32) twig.Markdown.ParseOptions {
-    var opts: twig.Markdown.ParseOptions = .{};
-    opts.directives = (flags & TWIG_MD_DIRECTIVES) != 0;
-    opts.math = (flags & TWIG_MD_MATH) != 0;
-    opts.html_elements = (flags & TWIG_MD_HTML_ELEMENTS) != 0;
-    opts.highlight = (flags & TWIG_MD_HIGHLIGHT) != 0;
-    opts.highlight_colors = (flags & TWIG_MD_HIGHLIGHT_COLORS) != 0;
-    return opts;
+fn markdownExtensionsFromFlags(flags: u32) twig.Markdown.ParseOptions.Extensions {
+    return .{
+        .directives = (flags & TWIG_MD_DIRECTIVES) != 0,
+        .math = (flags & TWIG_MD_MATH) != 0,
+        .html_elements = (flags & TWIG_MD_HTML_ELEMENTS) != 0,
+        .highlight = (flags & TWIG_MD_HIGHLIGHT) != 0,
+        .highlight_colors = (flags & TWIG_MD_HIGHLIGHT_COLORS) != 0,
+    };
 }
 
 // ── error -> status ────────────────────────────────────────────────────────
@@ -1739,7 +1753,7 @@ pub export fn twig_editor_create_ext(
     // the handle's lifetime.
     handle.* = .{
         .editor = undefined,
-        .parse_config = .{ .markdown = markdownOptionsFromFlags(md_flags) },
+        .parse_config = .{ .markdown = markdownExtensionsFromFlags(md_flags) },
     };
     // `parseToAst` and the spelling come from the same registry row, so the
     // parser and the spelling can never be crossed — and the spelling is taken
@@ -2941,7 +2955,7 @@ pub export fn twig_format_supports_ext(
     const g = gestureFromInt(gesture) orelse return .invalid_argument;
     const decoded = gestureOf(g, kind) orelse return .invalid_argument;
 
-    const cfg: twig.format.ParseConfig = .{ .markdown = markdownOptionsFromFlags(md_flags) };
+    const cfg: twig.format.ParseConfig = .{ .markdown = markdownExtensionsFromFlags(md_flags) };
     slot.* = @intFromBool(twig.Editor.supports(twig.format.syntaxForConfig(fmt, &cfg), decoded));
     return .ok;
 }
@@ -4257,6 +4271,94 @@ test "twig_parse_ext with TWIG_MD_HTML_ELEMENTS makes an embedded <img> queryabl
     }
 }
 
+test "TWIG_FORMAT_COMMONMARK and TWIG_FORMAT_GFM name a Markdown dialect, and md_flags lay over it" {
+    // Three codes, one parser: strict CommonMark reads `~~x~~` as text and a
+    // pipe table as a paragraph, GFM and the default read both, and a flag
+    // laid over GFM adds what GFM proper leaves out without taking its
+    // extensions away.
+    const source = "a ~~b~~ c\n\n| x |\n| - |\n| $m$ |\n";
+    inline for (.{
+        .{ TwigFormat.commonmark, @as(u32, 0), @as(usize, 0), @as(usize, 0), @as(usize, 0) },
+        .{ TwigFormat.markdown, @as(u32, 0), @as(usize, 1), @as(usize, 1), @as(usize, 0) },
+        .{ TwigFormat.gfm, @as(u32, 0), @as(usize, 1), @as(usize, 1), @as(usize, 0) },
+        .{ TwigFormat.gfm, TWIG_MD_MATH, @as(usize, 1), @as(usize, 1), @as(usize, 1) },
+    }) |case| {
+        var doc: ?*TwigDocument = null;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_parse_ext(source.ptr, source.len, @intFromEnum(case[0]), case[1], &doc),
+        );
+        defer twig_document_destroy(doc);
+        inline for (.{ .{ "delete", case[2] }, .{ "table", case[3] }, .{ "inline_math", case[4] } }) |q| {
+            var ptr: ?[*]const TwigQueryMatch = null;
+            var len: usize = 0;
+            try std.testing.expectEqual(
+                TwigStatus.ok,
+                twig_document_query(doc, q[0].ptr, q[0].len, &ptr, &len),
+            );
+            try std.testing.expectEqual(q[1], len);
+        }
+    }
+
+    // The render follows the row: GFM spells a cell's alignment as an
+    // attribute, the default flavor as a style, from the same nodes.
+    const table = "| a |\n| :-: |\n| 1 |\n";
+    inline for (.{ .{ TwigFormat.gfm, "align=\"center\"" }, .{ TwigFormat.markdown, "text-align: center" } }) |case| {
+        var doc: ?*TwigDocument = null;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_parse(table.ptr, table.len, @intFromEnum(case[0]), &doc),
+        );
+        defer twig_document_destroy(doc);
+        var ptr: ?[*]const u8 = null;
+        var len: usize = 0;
+        try std.testing.expectEqual(TwigStatus.ok, twig_document_render_html(doc, &ptr, &len));
+        try std.testing.expect(std.mem.indexOf(u8, ptr.?[0..len], case[1]) != null);
+    }
+}
+
+test "a dialect code on the write side means its language" {
+    // Parsed as GFM, serialized as `TWIG_FORMAT_GFM` or `TWIG_FORMAT_MARKDOWN`:
+    // both are the Markdown round trip — the parsed document whole, spelling
+    // intact — not a cross-format conversion. There is one Markdown serializer.
+    const source = "* a ~~b~~\n";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.gfm), &doc),
+    );
+    defer twig_document_destroy(doc);
+    var ptr: ?[*]const u8 = null;
+    var len: usize = 0;
+    inline for (.{ TwigFormat.gfm, TwigFormat.markdown, TwigFormat.commonmark }) |target| {
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_document_serialize(doc, @intFromEnum(target), &ptr, &len),
+        );
+        try std.testing.expectEqualStrings(source, ptr.?[0..len]);
+    }
+
+    // And the capability query is per dialect: strict CommonMark cannot author
+    // the strikethrough the other two can, with no document in hand.
+    var out: c_int = -1;
+    inline for (.{ .{ TwigFormat.commonmark, 0 }, .{ TwigFormat.gfm, 1 }, .{ TwigFormat.markdown, 1 } }) |case| {
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+            @intFromEnum(case[0]),
+            @intFromEnum(TwigGesture.toggle_inline),
+            @intFromEnum(TwigInlineKind.delete),
+            &out,
+        ));
+        try std.testing.expectEqual(@as(c_int, case[1]), out);
+    }
+    var fx = try EditorFixture.initFmt("a word b\n", .commonmark);
+    defer fx.deinit();
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_editor_toggle_inline(fx.ed, 2, 6, @intFromEnum(TwigInlineKind.delete), null),
+    );
+    try fx.expectSource("a word b\n");
+}
+
 test "twig_parse_ext with TWIG_MD_HIGHLIGHT makes ==text== a queryable mark" {
     const source = "some ==lit== text\n";
 
@@ -5373,7 +5475,7 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
     // decode reaches the SAME question. So: ask, then run the gesture on a live
     // editor and check the two agree.
     var supported: c_int = -1;
-    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc }) |fmt| {
+    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm }) |fmt| {
         const code = @intFromEnum(fmt);
         // Only has to PARSE — every gesture consults the syntax table before it
         // reads a byte of source, so this never has to be somewhere the gesture
@@ -5657,7 +5759,7 @@ test "twig_format_supports: a kind is read in the gesture's own space, or reject
 
 test "twig_format_is_authorable: the read-only question, and its weakness" {
     var out: c_int = -1;
-    for ([_]TwigFormat{ .djot, .markdown, .html, .asciidoc }) |fmt| {
+    for ([_]TwigFormat{ .djot, .markdown, .html, .asciidoc, .commonmark, .gfm }) |fmt| {
         try std.testing.expectEqual(
             TwigStatus.ok,
             twig_format_is_authorable(@intFromEnum(fmt), &out),

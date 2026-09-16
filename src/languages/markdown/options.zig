@@ -10,9 +10,14 @@
 //! stay opt-in.
 //!
 //! Two presets name the dialects twig renders distinctly — `commonmark` and
-//! `gfm` — and both are composable: `args.zig` applies a preset first and
-//! then any individual flags left-to-right, so `--gfm --math` means "GFM,
-//! plus math".
+//! `gfm` — and each is a `Format` of its own in `format.zig`'s registry
+//! (`-i gfm`, `TWIG_FORMAT_GFM`), beside `markdown`, the default flavor. The
+//! registry row owns the preset; what a caller passes per parse is an
+//! `Extensions` — the opt-in flags — laid over it, so `-i gfm --math` and
+//! `twig_parse_ext(TWIG_FORMAT_GFM, TWIG_MD_MATH)` both mean "GFM, plus
+//! math", and no caller has to say the dialect twice.
+
+const std = @import("std");
 
 const Options = @This();
 
@@ -88,7 +93,45 @@ dialect: Dialect = .commonmark,
 /// extensions above): the two parse differently but print identically, since
 /// every convention they'd disagree on belongs to a construct strict
 /// CommonMark doesn't have in the first place.
+///
+/// This is the RENDER axis only. The three named parse configurations —
+/// the default, `commonmark`, and `gfm` — are `Format` variants in
+/// `format.zig`, each a registry row over this one parser.
 pub const Dialect = enum { commonmark, gfm };
+
+/// The opt-in extensions a caller may lay over a dialect's preset, per parse.
+/// This is what `format.ParseConfig.markdown` carries and what the C ABI's
+/// `TWIG_MD_*` bitmask decodes to, field for field.
+///
+/// Only the extensions that are OFF in every preset are here — `math`,
+/// `directives`, `html_elements`, `highlight`, `highlight_colors` — which is
+/// what makes "laid over" a plain OR (`Options.withExtensions`): an
+/// extension is on if the dialect has it or the caller asked for it, and a
+/// caller who asks for nothing gets the dialect exactly. The default-on
+/// extensions (`tables`, `strikethrough`, …) are not knobs here: turning
+/// one OFF is what strict CommonMark is, and that is a dialect, named as a
+/// `Format` rather than spelled as a flag.
+pub const Extensions = struct {
+    directives: bool = false,
+    math: bool = false,
+    html_elements: bool = false,
+    highlight: bool = false,
+    /// Inert without `highlight`, exactly as the field it maps onto.
+    highlight_colors: bool = false,
+};
+
+/// `base` with `ext`'s opt-ins turned on — the composition a registry row
+/// performs between its dialect preset and the `Extensions` a caller passed.
+/// `dialect` and every default-on flag come from `base` untouched.
+pub fn withExtensions(base: Options, ext: Extensions) Options {
+    var out = base;
+    out.directives = base.directives or ext.directives;
+    out.math = base.math or ext.math;
+    out.html_elements = base.html_elements or ext.html_elements;
+    out.highlight = base.highlight or ext.highlight;
+    out.highlight_colors = base.highlight_colors or ext.highlight_colors;
+    return out;
+}
 
 /// Strict CommonMark: every extension off. Use this to compare Phase 1's
 /// output against the CommonMark spec's own test suite (`conformance.zig`
@@ -129,3 +172,19 @@ pub const gfm: Options = .{
     .html_elements = false,
     .dialect = .gfm,
 };
+
+test "Extensions covers exactly the flags every preset leaves off" {
+    // The OR in `withExtensions` is sound only while no preset turns one of
+    // these on; a preset that did would make an extension impossible to
+    // leave off over it, and this is where that would show.
+    inline for (.{ Options{}, commonmark, gfm }) |preset| {
+        inline for (std.meta.fields(Extensions)) |f| {
+            try std.testing.expect(!@field(preset, f.name));
+        }
+        // Nothing asked for is the preset exactly.
+        try std.testing.expectEqual(preset, withExtensions(preset, .{}));
+    }
+    const over_gfm = withExtensions(gfm, .{ .math = true });
+    try std.testing.expect(over_gfm.math and over_gfm.tables and !over_gfm.footnotes);
+    try std.testing.expectEqual(Dialect.gfm, over_gfm.dialect);
+}

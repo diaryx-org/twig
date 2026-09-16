@@ -111,6 +111,11 @@ pub enum TwigFormat {
     /// algorithms cannot write); every other gesture works. What the parser
     /// leaves unmodelled survives as literal source text.
     Asciidoc = 5,
+    /// Strict CommonMark, a dialect of `Markdown`: one parser under a
+    /// different preset, `md_flags` laid over it. Writes as Markdown.
+    Commonmark = 6,
+    /// GitHub-Flavored Markdown, a dialect of `Markdown` the same way.
+    Gfm = 7,
 }
 
 /// Markdown extension flags for the `md_flags` bitmask of `twig_parse_ext` and

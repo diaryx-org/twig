@@ -63,6 +63,11 @@ refers to are:
 - **Extensions off by default.** Non-CommonMark / non-GFM features (math,
   and other `ParseOptions` toggles) are opt-in; with everything off, output
   matches strict CommonMark. (See `languages/markdown/options.zig`.)
+- **A dialect is a `Format`.** Strict CommonMark and GFM are registry rows
+  of their own (`-i commonmark`, `-i gfm`, `TWIG_FORMAT_GFM`) over the one
+  Markdown parser, the way fig's `json`/`jsonc`/`json5` are three rows over
+  one language; the extension flags lay over whichever row was named. (See
+  `format.zig`'s `Entry.dialect_of`, and the two-axes section below.)
 - **The correctness bar is the real source.** Span tests slice the *original*
   source with a resolved node's span and check the bytes — parsing must
   produce spans that address the true input, not a re-emitted approximation.
@@ -100,11 +105,23 @@ for each:
 | Input | `Format` | `registry` | What can Twig **parse**? |
 | Output | `Target` | `targets` | What can Twig **write**? |
 
-Every `Format` is also a `Target`, so today the two lists have the same five
-names. They are separate types because only one of them can grow freely. A
+Every `Format` is also a `Target`, and every `Target` today reads back as some
+`Format`. They are separate types because only one of them can grow freely. A
 `Format` variant is what `ParsedDoc.format` records: it must have a parser and
 a `Document` reparse adapter for the `Splicer`. A `Target` needs none of that —
 it needs somewhere for bytes to go.
+
+The lists are not the same length, and the difference runs the other way from
+the one below: `Format` has two more names than `Target`, because a
+**dialect** is a `Format` and not a `Target`. `commonmark` and `gfm` are
+registry rows over Markdown's parser under a preset each — a different
+default `Syntax`, a different HTML convention for a table cell — and
+`Entry.dialect_of` says whose they are. They write as Markdown: there is one
+Markdown serializer, so `targetFor(.gfm)` is `.markdown`, and serializing a
+GFM document as Markdown is a round trip (`writesOwnSyntax`), not a
+conversion. The `ParseConfig` a caller passes is what lays *over* the row it
+chose — the opt-in `Extensions` — never the row itself, so the dialect is said
+once, as the format.
 
 That difference is what makes an **export-only target** expressible: a format
 Twig can write and no parser can read back. PDF is the motivating case. Such a

@@ -104,7 +104,8 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\
         \\options:
         \\  -i, --input <format>   override input-format detection
-        \\                         (djot/dj, markdown/md, xml, html/htm)
+        \\                         (djot/dj, markdown/md, commonmark, gfm, xml,
+        \\                         html/htm, asciidoc/adoc)
         \\  -o, --output <format>  select convert's output (html, ast, canonical)
         \\  --dry-run              (edit) print the result instead of writing it
         \\
@@ -113,11 +114,12 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\  --math                 enable $…$ / $$…$$ math
         \\  --highlight            enable ==…== highlight (a `mark` node)
         \\  --highlight-colors     enable ==🔴 …== coloured highlights (implies --highlight)
-        \\  --commonmark           strict CommonMark (all extensions off)
-        \\  --gfm                  the GFM dialect (extensions + GFM's HTML output)
+        \\  --commonmark           same as -i commonmark: strict CommonMark
+        \\  --gfm                  same as -i gfm: GFM's extensions and HTML output
         \\
         \\Input format is normally inferred from the file extension
-        \\(.dj/.djot, .md/.markdown, .xml, .html/.htm). Pass `-` as the file to read from
+        \\(.dj/.djot, .md/.markdown, .xml, .html/.htm, .adoc/.asciidoc). A `.md` file is
+        \\twig's default Markdown; say `-i gfm` or `-i commonmark` for a dialect. Pass `-` as the file to read from
         \\stdin — this requires an explicit `-i`, since there is no extension
         \\to infer from.
         \\
@@ -127,8 +129,9 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\  {s} convert -o canonical feed.xml
         \\  {s} identify doc.md
         \\  {s} convert -i markdown - < doc.md
+        \\  {s} convert -i gfm --math README.md
         \\
-    , .{ binary_name, binary_name, binary_name, binary_name, binary_name, binary_name });
+    , .{ binary_name, binary_name, binary_name, binary_name, binary_name, binary_name, binary_name });
     try w.flush();
 }
 
@@ -264,8 +267,7 @@ fn convertSource(
             // the input, and answers `null` here instead of comparing false by
             // accident.
             const target = output_target orelse format.targetFor(input);
-            const same_format = if (target.asFormat()) |f| f == input else false;
-            const out = if (same_format) blk: {
+            const out = if (format.writesOwnSyntax(input, target)) blk: {
                 const serializeFn = entry.serializeCanonical orelse {
                     stderr.print(
                         "error: canonical output is not supported for {s} yet: no serializer\n",

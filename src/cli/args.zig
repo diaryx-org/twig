@@ -61,8 +61,9 @@ pub const ConvertOptions = struct {
     /// `-o canonical` ("round-trip back to `input`") case.
     output_target: ?format.Target = null,
     /// Markdown extension flags (`--directives`, `--math`, `--html-elements`,
-    /// `--highlight`, `--highlight-colors`, `--commonmark`, `--gfm`); ignored
-    /// for non-Markdown inputs. See `applyExtFlag`.
+    /// `--highlight`, `--highlight-colors`); ignored for non-Markdown inputs.
+    /// The dialect (`--commonmark`, `--gfm`) is `input`, not this — see
+    /// `applyExtFlag`.
     parse_config: format.ParseConfig = .{},
     /// `--warn`: report to stderr what this conversion will silently lose.
     ///
@@ -221,16 +222,15 @@ fn argFail(
 ///   --highlight-colors / --no-…       `==🔴 …==` coloured highlights; the
 ///                                     positive form turns `--highlight` on
 ///                                     too, since colours need a highlight
-///   --commonmark                      strict CommonMark (every extension off)
-///   --gfm                             the GFM dialect
-/// A preset (`--commonmark`/`--gfm`) followed by an individual flag composes
-/// left-to-right, so `--gfm --directives` is GFM plus directives.
-///
-/// The two presets select a DIALECT, not just a set of extensions: each also
-/// carries the HTML conventions its flavor renders with (`Options.dialect`),
-/// so `--gfm` prints GFM's tables/task lists rather than twig-markdown's.
-/// Composition preserves that — `--gfm --math` is still the GFM dialect.
-fn applyExtFlag(arg: []const u8, cfg: *format.ParseConfig) bool {
+///   --commonmark                      `-i commonmark`: strict CommonMark
+///   --gfm                             `-i gfm`: the GFM dialect
+/// The last two are not extension flags but spellings of `-i`: a dialect is a
+/// `Format` row of its own (`format.zig`'s `Entry.dialect_of`), and the
+/// extension flags lay over whichever row `input` names, so `--gfm --math`
+/// and `--math --gfm` are both GFM plus math. The HTML conventions a flavor
+/// renders with come with the row (`Options.dialect`), so `-i gfm` prints
+/// GFM's tables rather than twig-markdown's.
+fn applyExtFlag(arg: []const u8, input: *?InputFormat, cfg: *format.ParseConfig) bool {
     if (std.mem.eql(u8, arg, "--directives")) {
         cfg.markdown.directives = true;
     } else if (std.mem.eql(u8, arg, "--no-directives")) {
@@ -253,9 +253,9 @@ fn applyExtFlag(arg: []const u8, cfg: *format.ParseConfig) bool {
     } else if (std.mem.eql(u8, arg, "--no-highlight-colors")) {
         cfg.markdown.highlight_colors = false;
     } else if (std.mem.eql(u8, arg, "--commonmark")) {
-        cfg.markdown = .commonmark;
+        input.* = .commonmark;
     } else if (std.mem.eql(u8, arg, "--gfm")) {
-        cfg.markdown = .gfm;
+        input.* = .gfm;
     } else {
         return false;
     }
@@ -312,7 +312,7 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
     var parse_config = format.ParseConfig{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &parse_config)) {
+        if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .convert, "convert: -i/--input needs a format value", ArgError.MissingFormatValue);
@@ -388,7 +388,7 @@ fn parseQuery(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!
     var parse_config = format.ParseConfig{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &parse_config)) {
+        if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .query, "query: -i/--input needs a format value", ArgError.MissingFormatValue);
@@ -428,7 +428,7 @@ fn parseFilter(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError
     var parse_config = format.ParseConfig{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &parse_config)) {
+        if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .filter, "filter: -i/--input needs a format value", ArgError.MissingFormatValue);
@@ -483,7 +483,7 @@ fn parseEdit(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!C
     var parse_config = format.ParseConfig{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &parse_config)) {
+        if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .edit, "edit: -i/--input needs a format value", ArgError.MissingFormatValue);
@@ -751,19 +751,37 @@ test "parseConfig: --highlight-colors turns highlight on with it; --no-highlight
     try testing.expect(!c2.options.convert.parse_config.markdown.highlight_colors);
 }
 
-test "parseConfig: --commonmark and --gfm presets, and left-to-right composition" {
+test "parseConfig: --commonmark and --gfm select the dialect row, and extensions lay over it in any order" {
     var buf: [256]u8 = undefined;
 
     var w = scratchWriter(&buf);
     var cm = TestArgs{ .items = &.{ "twig", "query", "--commonmark", "doc.md", "para" } };
     const c = try parseConfig(&cm, &w);
-    try testing.expect(!c.options.query.parse_config.markdown.tables); // commonmark turns extensions off
+    try testing.expectEqual(InputFormat.commonmark, c.options.query.input);
 
     var w2 = scratchWriter(&buf);
     var gfmd = TestArgs{ .items = &.{ "twig", "query", "--gfm", "--directives", "doc.md", "para" } };
     const c2 = try parseConfig(&gfmd, &w2);
-    try testing.expect(c2.options.query.parse_config.markdown.tables); // from --gfm
-    try testing.expect(c2.options.query.parse_config.markdown.directives); // added after the preset
+    try testing.expectEqual(InputFormat.gfm, c2.options.query.input);
+    try testing.expect(c2.options.query.parse_config.markdown.directives);
+
+    // The flag before the dialect survives it: neither replaces the other.
+    var w3 = scratchWriter(&buf);
+    var dgfm = TestArgs{ .items = &.{ "twig", "query", "--directives", "--gfm", "doc.md", "para" } };
+    const c3 = try parseConfig(&dgfm, &w3);
+    try testing.expectEqual(InputFormat.gfm, c3.options.query.input);
+    try testing.expect(c3.options.query.parse_config.markdown.directives);
+
+    // `-i gfm` is the same word spelled the long way, and the last one said
+    // wins between the two spellings.
+    var w4 = scratchWriter(&buf);
+    var igfm = TestArgs{ .items = &.{ "twig", "convert", "-i", "gfm", "doc.md" } };
+    const c4 = try parseConfig(&igfm, &w4);
+    try testing.expectEqual(InputFormat.gfm, c4.options.convert.input);
+    var w5 = scratchWriter(&buf);
+    var both = TestArgs{ .items = &.{ "twig", "convert", "--gfm", "-i", "commonmark", "doc.md" } };
+    const c5 = try parseConfig(&both, &w5);
+    try testing.expectEqual(InputFormat.commonmark, c5.options.convert.input);
 }
 
 test "parseConfig: edit carries the parse config too" {

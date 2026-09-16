@@ -595,8 +595,46 @@ static void test_format_capability_matches_the_gestures(void) {
           TWIG_STATUS_INVALID_ARGUMENT);
 }
 
+static void test_markdown_dialect_codes_match_runtime(void) {
+    // The two dialect codes decode to the rows their names say: strict
+    // CommonMark reads `~~x~~` as text where GFM reads a `delete`, and both
+    // write back as Markdown — TWIG_FORMAT_GFM on the write side is the same
+    // round trip as TWIG_FORMAT_MARKDOWN.
+    const char *src = "a ~~b~~ c\n";
+    int supported = -1;
+    CHECK(twig_format_supports(TWIG_FORMAT_COMMONMARK, TWIG_GESTURE_TOGGLE_INLINE,
+                               TWIG_INLINE_DELETE, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    CHECK(twig_format_supports(TWIG_FORMAT_GFM, TWIG_GESTURE_TOGGLE_INLINE,
+                               TWIG_INLINE_DELETE, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+
+    TwigDocument *doc = NULL;
+    CHECK(twig_parse((const uint8_t *)src, strlen(src), TWIG_FORMAT_GFM, &doc) ==
+          TWIG_STATUS_OK);
+    const TwigQueryMatch *matches = NULL;
+    size_t len = 0;
+    CHECK(twig_document_query(doc, (const uint8_t *)"delete", 6, &matches, &len) ==
+          TWIG_STATUS_OK);
+    CHECK(len == 1);
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    CHECK(twig_document_serialize(doc, TWIG_FORMAT_GFM, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == strlen(src) && memcmp(out, src, out_len) == 0);
+    twig_document_destroy(doc);
+
+    doc = NULL;
+    CHECK(twig_parse((const uint8_t *)src, strlen(src), TWIG_FORMAT_COMMONMARK, &doc) ==
+          TWIG_STATUS_OK);
+    CHECK(twig_document_query(doc, (const uint8_t *)"delete", 6, &matches, &len) ==
+          TWIG_STATUS_OK);
+    CHECK(len == 0);
+    twig_document_destroy(doc);
+}
+
 int main(void) {
     test_abi_version_matches_header();
+    test_markdown_dialect_codes_match_runtime();
     test_line_prefixes_answer_two_different_questions();
     test_task_items_report_their_checkbox_state();
     test_definitions_are_reachable_only_through_their_own_call();

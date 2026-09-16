@@ -73,8 +73,9 @@ pub const Parser = block.Parser;
 ///
 /// `options` decides what parses; it is not recorded on the result. The one
 /// option rendering needs — `options.dialect`, for GFM's HTML conventions —
-/// is passed to `html.render` by whoever holds the config
-/// (`format.zig`'s registry carries it on `ParsedDoc`).
+/// is passed to `html.render` by whoever holds the preset (`format.zig`'s
+/// registry, where each Markdown dialect is a row and `ParsedDoc.format`
+/// says which).
 pub fn parse(allocator: Allocator, source: []const u8, options: ParseOptions) Allocator.Error!Document {
     return block.parse(allocator, source, options);
 }
@@ -135,10 +136,31 @@ test "headings are flat -- no section wrapper, no auto id (unlike djot)" {
 }
 
 /// Small documents exercising the shared engine contract; not a conformance corpus.
+/// These are the default flavor's; each dialect row declares its own below,
+/// in the grammar it actually reads.
 pub const samples: []const []const u8 = &.{
     "",
     "A paragraph with *emphasis* and **strong** text.\n",
     "# Heading\n\n> Quote\n\n- first\n- second\n",
     "- [x] done\n- [ ] pending\n",
     "``` zig\nconst x = 1;\n```\n",
+};
+
+/// Strict CommonMark's harness samples: only what the spec itself spells, so
+/// the row round-trips without leaning on an extension it does not read.
+pub const commonmark_samples: []const []const u8 = &.{
+    "",
+    "A paragraph with *emphasis* and **strong** text.\n",
+    "# Heading\n\n> Quote\n\n- first\n- second\n",
+    "Setext\n======\n\n    indented code\n",
+};
+
+/// GFM's harness samples: the spec's constructs plus the four GFM
+/// extensions, so a table and a strikethrough have to survive the row's own
+/// reparse.
+pub const gfm_samples: []const []const u8 = &.{
+    "",
+    "A paragraph with ~~struck~~ and **strong** text.\n",
+    "| a | b |\n| --- | ---: |\n| 1 | 2 |\n",
+    "- [x] done\n- [ ] pending\n\nSee https://example.com now.\n",
 };

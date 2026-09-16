@@ -39,6 +39,7 @@ pub const targets = twig.format.targets;
 pub const entryFor = twig.format.entryFor;
 pub const targetEntryFor = twig.format.targetEntryFor;
 pub const targetFor = twig.format.targetFor;
+pub const writesOwnSyntax = twig.format.writesOwnSyntax;
 pub const parseFormatName = twig.format.parseFormatName;
 pub const parseTargetName = twig.format.parseTargetName;
 pub const detectFromExtension = twig.format.detectFromExtension;
@@ -89,6 +90,9 @@ pub fn printSupportedInputFormats(w: *Writer) Writer.Error!void {
     for (&registry) |*e| {
         try w.print("  - {s}", .{@tagName(e.id)});
         for (e.aliases) |alias| try w.print(" ({s})", .{alias});
+        // A dialect is a row like any other, and the list says whose it is
+        // rather than leaving `gfm` to look like a sixth language.
+        if (e.dialect_of) |lang| try w.print(" — a {s} dialect", .{@tagName(lang)});
         try w.writeByte('\n');
     }
 }

@@ -39,9 +39,9 @@ var test_cfg: format.ParseConfig = .{};
 /// very config the splicer reparses with. Two of them, because colours are a
 /// second, narrower gate on top of highlights.
 var highlight_cfg: format.ParseConfig = .{ .markdown = .{ .highlight = true } };
-/// The other direction: strict CommonMark, where `~~x~~` is two literal tildes
-/// and the strikethrough a default-options editor may author is refused.
-var commonmark_cfg: format.ParseConfig = .{ .markdown = .commonmark };
+/// The other direction — strict CommonMark, where `~~x~~` is two literal
+/// tildes — is not a config at all: it is the `.commonmark` ROW, and the
+/// fixtures below name it as the format.
 var highlight_colors_cfg: format.ParseConfig = .{
     .markdown = .{ .highlight = true, .highlight_colors = true },
 };
@@ -452,19 +452,16 @@ test "toggleInline: GFM strikethrough is authorable under Twig's defaults" {
     try md.expectSource("a word b\n");
 
     // Strict CommonMark has no strikethrough, so the same gesture over a
-    // document parsed that way would mint two literal tildes. Refused.
-    var strict = try Fixture.initWith("a word b\n", .markdown, &commonmark_cfg);
+    // document parsed as that dialect would mint two literal tildes. Refused.
+    var strict = try Fixture.init("a word b\n", .commonmark);
     defer strict.deinit();
     try testing.expectError(error.UnsupportedFormat, strict.ed.toggleInline(Span.init(2, 6), .delete));
     try testing.expectError(error.UnsupportedFormat, strict.ed.wrapRange(Span.init(2, 6), .delete));
     try strict.expectSource("a word b\n");
 
-    // The two axes are independent: a CommonMark parse with highlights on
-    // authors `==x==` and still refuses `~~x~~`.
-    var mixed_cfg: format.ParseConfig = .{
-        .markdown = .{ .strikethrough = false, .highlight = true },
-    };
-    var mixed = try Fixture.initWith("a word b\n", .markdown, &mixed_cfg);
+    // The two axes are independent: the CommonMark row with the highlight
+    // extension laid over it authors `==x==` and still refuses `~~x~~`.
+    var mixed = try Fixture.initWith("a word b\n", .commonmark, &highlight_cfg);
     defer mixed.deinit();
     try testing.expectError(error.UnsupportedFormat, mixed.ed.toggleInline(Span.init(2, 6), .delete));
     try mixed.ed.toggleInline(Span.init(2, 6), .mark);
@@ -643,7 +640,7 @@ test "Editor.supports: the inline gates move with the parse config, in both dire
     const plain = format.syntaxFor(.markdown);
     const hi = format.syntaxForConfig(.markdown, &highlight_cfg);
     const colors = format.syntaxForConfig(.markdown, &highlight_colors_cfg);
-    const strict = format.syntaxForConfig(.markdown, &commonmark_cfg);
+    const strict = format.syntaxFor(.commonmark);
 
     // Strikethrough defaults ON, so the DEFAULT answer is yes and turning the
     // extension off is what makes it no — the opposite direction from the
