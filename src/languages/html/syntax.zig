@@ -10,32 +10,67 @@
 //! arms). A `Delims{open, close}` is exactly a tag pair. So Cmd-B over HTML
 //! needs no new code — only the bytes, which is what this file is.
 //!
-//! ── Why it stops where it does ─────────────────────────────────────────────
-//! Everything left `null` below is null because HTML's spelling has a different
-//! SHAPE, not because nobody filled it in. Three shapes are missing:
+//! ── Where a tag pair is not enough: the renderers ──────────────────────────
+//! Two of HTML's spellings have no table shape at all, and they are why
+//! `Syntax` grew its renderer family (see its module doc comment):
 //!
-//!   * `heading_marker` is a byte repeated `level` times then a space. HTML's
-//!     `<h1>…</h1>` is a wrapping pair carrying the level in BOTH ends.
+//!   * A literal is spelled with ENTITIES. Every alphabet field in `Syntax`
+//!     feeds a routine that writes a backslash before a byte, and filling
+//!     `text_escapes` with `&<>` would make `insertLiteral` write `\&` — two
+//!     literal characters here, not an escape. So the alphabets stay `null`
+//!     and `renderText` below writes `&amp;`/`&lt;`/`&gt;` instead, in every
+//!     position alike: `<pre>` reads `&lt;` the same way `<p>` does.
+//!   * A heading is a WRAPPING PAIR carrying the level in both ends, so there
+//!     is no `heading_marker` to rewrite. `renderBlock` is the serializer over
+//!     a fragment, and `Editor.setBlock` builds the heading node and prints
+//!     it through this — the tag pair falls out of the tree.
+//!
+//! ── What still stops, and why ──────────────────────────────────────────────
+//! Everything left `null` below is null because HTML's spelling has a different
+//! SHAPE from the gesture that would read it, not because nobody filled it in:
+//!
 //!   * `ContainerSpelling` prefixes every LINE. `<blockquote>` wraps a range,
 //!     and a list needs a per-item `<li>` — a different algorithm, not a
 //!     different alphabet, which is the premise `syntax.zig` is built on.
 //!   * `CodeFence` measures the longest run of its fence byte. `<pre><code>`
 //!     doesn't measure anything; it entity-escapes a body instead.
+//!   * `link_text_escapes`/`link_dest_escapes` feed `[text](dest)`, and a
+//!     link's destination here lives in a quoted `href` attribute.
 //!
-//! And one mechanism is missing: the escape fields (`text_escapes`,
-//! `link_text_escapes`, `link_dest_escapes`) all feed routines in
-//! `ast/editor.zig` that emit a literal BACKSLASH before a byte from the
-//! alphabet. HTML escapes with entities, and a link's destination lives in a
-//! quoted `href` attribute rather than in `(…)`. Filling those fields with
-//! `&<>` would make `insertLiteral` write `\&`, which is two literal characters
-//! in HTML and not an escape at all. They stay `null`, and every gesture that
-//! reads them stays a clean `error.UnsupportedFormat`.
-//!
-//! Lifting those four is a change to `syntax.zig` and `editor.zig`, not to this
-//! file — which is the point of keeping this file inert.
+//! Each of those is a gesture that could be taught to build a node and print
+//! it the way `setBlock` now does; which of them should be is
+//! `docs/proposals/editable-html-block-elements.md`'s question, and lifting
+//! one is a change to `editor.zig`, not to this file.
 
 const std = @import("std");
 const syntax = @import("../../syntax.zig");
+const Writer = std.Io.Writer;
+const AST = @import("../../ast/ast.zig");
+const serializer = @import("serializer.zig");
+
+/// HTML's literal: the three bytes that open markup become entities, in every
+/// position — there is no line-start alphabet because no HTML byte opens a
+/// block at column zero, and no verbatim exemption because a `<pre>` body
+/// decodes entities exactly as a `<p>` does. Mirrors `serializer.zig`'s
+/// `writeEscaped` for text content, and stays byte-for-byte what its
+/// `parser.zig` decodes back, so an inserted `str` reparses as itself.
+fn renderText(_: *const syntax.Syntax, text: []const u8, _: syntax.TextPosition, out: *Writer) Writer.Error!void {
+    for (text) |c| {
+        switch (c) {
+            '&' => try out.writeAll("&amp;"),
+            '<' => try out.writeAll("&lt;"),
+            '>' => try out.writeAll("&gt;"),
+            else => try out.writeByte(c),
+        }
+    }
+}
+
+/// The serializer over one node — HTML's printer takes a node id directly, so
+/// no re-rooting adapter is needed. Label-free (`ctx = null`): a fragment the
+/// editor builds resolves nothing by label.
+fn renderBlock(allocator: std.mem.Allocator, ast: *const AST, root: AST.Node.Id, out: *Writer) anyerror!void {
+    try serializer.serializeNode(allocator, ast, root, out, null);
+}
 
 pub const table: syntax.Syntax = .{
     // Seven of nine. Each is the tag `html/serializer.zig` emits AND the tag
@@ -101,10 +136,17 @@ pub const table: syntax.Syntax = .{
     // hard break is the same future work it is for every other format.
     .cell_line_break = "<br>",
 
+    // ── Renderers ──────────────────────────────────────────────────────────
+    // The two spellings no table can hold — see this file's doc comment.
+    .renderText = renderText,
+    .renderBlock = renderBlock,
+
     // ── Deliberately absent ────────────────────────────────────────────────
-    // `heading_marker`, `container_spelling`, `code_fence`, `task_marker`,
-    // `footnote`, `link_*_escapes`, `text_escapes`/`block_start_escapes`: the
-    // shape and mechanism mismatches in this file's doc comment.
+    // `heading_marker`: a heading is spelled through `renderBlock` instead.
+    // `container_spelling`, `code_fence`, `task_marker`, `footnote`,
+    // `link_*_escapes`: the shape mismatches in this file's doc comment.
+    // `text_escapes`/`block_start_escapes`: `renderText` is not the alphabet
+    // renderer, so it carries no alphabet — `assertCoherent` pins that.
     //
     // `spellsAutolink`: HTML has no autolink form at all — a bare `<https://x>`
     // is a tag with a nonsense name, never a link.
@@ -116,7 +158,6 @@ pub const table: syntax.Syntax = .{
 };
 
 test "html authors the seven marks it can read back, and neither quote" {
-    const AST = @import("../../ast/ast.zig");
     const paired = [_]AST.InlineMark{ .emph, .strong, .mark, .superscript, .subscript, .insert, .delete };
     for (std.enums.values(AST.InlineMark)) |m| {
         const want = std.mem.indexOfScalar(AST.InlineMark, &paired, m) != null;
@@ -137,26 +178,27 @@ test "html authors the seven marks it can read back, and neither quote" {
 }
 
 test "html spells `code` and no other text leaf" {
-    const AST = @import("../../ast/ast.zig");
     for (std.enums.values(AST.TextLeafKind)) |l| {
         try std.testing.expectEqual(l == .verbatim, table.text_leaf_delims.get(l) != null);
     }
     try std.testing.expect(table.text_leaf_delims.get(.verbatim).?.authorable);
 }
 
-test "html spells no block structure and no escape alphabet" {
-    // The four shape/mechanism mismatches, pinned so lifting one is a
-    // deliberate edit here rather than a silent drift in `syntax.zig`.
+test "html spells no line-prefixed block structure and no backslash alphabet" {
+    // The shape mismatches, pinned so lifting one is a deliberate edit here
+    // rather than a silent drift in `syntax.zig`.
     try std.testing.expect(table.heading_marker == null);
     try std.testing.expect(table.container_spelling.get(.block_quote) == null);
     try std.testing.expect(table.container_spelling.get(.bullet_list) == null);
     try std.testing.expect(table.container_spelling.get(.ordered_list) == null);
     try std.testing.expect(table.code_fence == null);
-    // Backslash escaping is the mechanism HTML does not have; `assertCoherent`
-    // only pairs their nullness, so the fact that BOTH pairs are null — rather
-    // than half-filled with `&<>` — is stated here.
+    // Backslash escaping is the mechanism HTML does not have: the alphabets
+    // are null rather than half-filled with `&<>`, and the literal is spelled
+    // by a renderer of HTML's own instead of the shared alphabet one.
     try std.testing.expect(table.text_escapes == null);
     try std.testing.expect(table.block_start_escapes == null);
+    try std.testing.expect(table.renderText != null);
+    try std.testing.expect(table.renderText != &syntax.renderTextByAlphabet);
     try std.testing.expect(table.link_text_escapes == null);
     try std.testing.expect(table.link_dest_escapes == null);
     // No footnotes, no task boxes, no autolink form, no attribute spelling.
@@ -165,6 +207,29 @@ test "html spells no block structure and no escape alphabet" {
     try std.testing.expect(table.spellsAutolink == null);
     try std.testing.expect(table.attr_spelling == null);
     table.assertCoherent();
+}
+
+test "html spells a literal with entities, in every position" {
+    for (std.enums.values(syntax.TextPosition)) |pos| {
+        var out: Writer.Allocating = .init(std.testing.allocator);
+        defer out.deinit();
+        try table.renderText.?(&table, "a <b> & \\c", pos, &out.writer);
+        // The backslash is content: it is not HTML's escape and is written as is.
+        try std.testing.expectEqualStrings("a &lt;b&gt; &amp; \\c", out.written());
+    }
+}
+
+test "html prints a fragment as the tag pair its parser reads back" {
+    var b = AST.Builder.init(std.testing.allocator);
+    defer b.deinit();
+    const text = try b.addLeaf(.{ .str = "hi" });
+    const em = try b.addContainer(.{ .inline_mark = .emph }, &.{text});
+    const h = try b.addContainer(.{ .heading = .{ .level = 2 } }, &.{em});
+    const view = b.view(h);
+    var out: Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try table.renderBlock.?(std.testing.allocator, &view, h, &out.writer);
+    try std.testing.expectEqualStrings("<h2><em>hi</em></h2>\n", out.written());
 }
 
 test "html spells the rule and the break as void tags" {

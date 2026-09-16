@@ -1066,9 +1066,9 @@ TwigStatus twig_format_supports_ext(
 //
 // A 1 is a WEAKER claim than it looks, and driving per-button state from it is
 // the mistake this comment exists to prevent. HTML answers 1 — it spells the
-// inline marks — while TWIG_GESTURE_SET_BLOCK, the container, code-block, task
-// and footnote gestures and TWIG_GESTURE_INSERT_LITERAL are all still
-// unsupported there. Use twig_format_supports per button.
+// inline marks, a heading and a literal — while the container, code-block,
+// task, link and footnote gestures are all still unsupported there. Use
+// twig_format_supports per button.
 TwigStatus twig_format_is_authorable(int format, int *out_authorable);
 
 // ── Offset-addressed editing & read-back ──────────────────────────────────────
@@ -1365,11 +1365,14 @@ TwigStatus twig_editor_set_mark_color(
 );
 
 // Convert the innermost heading/paragraph covering byte `offset` to `block_kind`
-// (a `level`-N heading, or a paragraph), rewriting its leading marker while
-// keeping its inline content. Djot and Markdown only (both spell headings `#`…),
-// else TWIG_STATUS_UNSUPPORTED_FORMAT. TWIG_STATUS_INVALID_ARGUMENT for a
-// heading `level` outside 1–6 or an `offset` past the source. Fills out_change
-// on success if non-NULL.
+// (a `level`-N heading, or a paragraph). Where the format spells a heading with
+// a leading marker (Djot, Markdown, AsciiDoc) that marker is rewritten and the
+// inline content kept byte for byte; where it spells one as a tag pair (HTML)
+// the block is rebuilt as a node of the new kind and printed by the format's
+// own serializer, attributes along. TWIG_STATUS_UNSUPPORTED_FORMAT for a format
+// that can do neither (XML). TWIG_STATUS_INVALID_ARGUMENT for a heading `level`
+// outside 1–6 or an `offset` past the source. Fills out_change on success if
+// non-NULL.
 //
 // On a BLANK LINE it OPENS the block instead of converting one, so "H2, then
 // type" works from an empty line the way it works from a full one — there is no
@@ -1575,19 +1578,22 @@ TwigStatus twig_editor_insert_image(
 );
 
 // Insert `text` at `offset` as a LITERAL run: every byte the format would read as
-// markup is backslash-escaped so the run reparses as exactly `text` — a typed
-// `*`, `#` or backtick stays that character instead of opening emphasis, a
+// markup is escaped the format's way so the run reparses as exactly `text` — a
+// typed `*`, `#` or backtick stays that character instead of opening emphasis, a
 // heading or a code span. This is the inverse of serialization (which writes an
 // already-parsed run verbatim); it is what an editor calls to enter text that
 // must not become markup by keystroke — a WYSIWYG surface where formatting comes
 // only from commands.
 //
 // The escaping is positional and per-format, and neither is the caller's to
-// reproduce. `text_escapes` bytes (`*`, backtick, `[`, `<`…) are escaped anywhere
-// on the line; `block_start_escapes` bytes (`#`, `>`, `-`…) only where `offset`
-// sits in its line's leading whitespace, since they open a block only there — so
-// an inserted "5 - 3" keeps its `-` while "- item" at column zero does not become
-// a bullet. An embedded newline in `text` re-enters that line-start zone.
+// reproduce. In the backslash formats (Djot, Markdown, AsciiDoc) inline specials
+// (`*`, backtick, `[`, `<`…) are escaped anywhere on the line and block markers
+// (`#`, `>`, `-`…) only where `offset` sits in its line's leading whitespace,
+// since they open a block only there — so an inserted "5 - 3" keeps its `-`
+// while "- item" at column zero does not become a bullet — and an embedded
+// newline in `text` re-enters that line-start zone. Inside a code span, code
+// block or raw node the run is written as it is, since a backslash there would
+// show. HTML escapes with entities (`&lt;`, `&amp;`) in every position.
 //
 // Like twig_editor_insert_link, this guards the run's own bytes and leans on the
 // splice+reparse+rollback backstop for anything else: an insertion that would
@@ -1595,7 +1601,7 @@ TwigStatus twig_editor_insert_image(
 // changes nothing. Two constructs a byte-alphabet cannot reach are left as-is: a
 // GFM bare-URL autolink (`https://x.com`, no delimiter to escape) and an
 // ordered-list marker (`1.`, special only after digits). Returns
-// TWIG_STATUS_UNSUPPORTED_FORMAT for a parse-only format (XML, HTML), and
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a parse-only format (XML), and
 // TWIG_STATUS_INVALID_ARGUMENT when `offset` is past the source.
 TwigStatus twig_editor_insert_literal(
     TwigEditor *editor,

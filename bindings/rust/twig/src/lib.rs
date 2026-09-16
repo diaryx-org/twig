@@ -880,10 +880,9 @@ impl Format {
     ///
     /// `true` is a **weaker** claim than it looks, and driving per-button state
     /// from it is the mistake this doc exists to prevent: [`Format::Html`]
-    /// answers `true` — it spells the inline marks — while
-    /// [`Gesture::SetBlock`], the container, code-block, task and footnote
-    /// gestures and [`Gesture::InsertLiteral`] are all still unsupported there.
-    /// Use [`Format::supports`] per button.
+    /// answers `true` — it spells the inline marks, a heading and a literal —
+    /// while the container, code-block, task, link and footnote gestures are
+    /// all still unsupported there. Use [`Format::supports`] per button.
     pub fn is_authorable(self) -> bool {
         let mut authorable: c_int = 0;
         let status = unsafe {
@@ -2046,11 +2045,15 @@ impl Editor {
         })
     }
 
-    /// Convert the innermost heading/paragraph covering byte `offset` to `kind`,
-    /// rewriting its leading marker while keeping its inline content (the
-    /// toolbar's H1…H6 / Body switch). Djot and Markdown only, else
-    /// [`Error::UnsupportedFormat`]; [`Error::InvalidArgument`] for a heading
-    /// level outside 1–6.
+    /// Convert the innermost heading/paragraph covering byte `offset` to `kind`
+    /// (the toolbar's H1…H6 / Body switch). Where the format spells a heading
+    /// with a leading marker (Djot, Markdown, AsciiDoc) that marker is
+    /// rewritten and the inline content kept byte for byte; where it spells
+    /// one as a tag pair (HTML) the block is rebuilt as a node of the new kind
+    /// and printed by the format's own serializer, so `<p>a <em>b</em></p>`
+    /// becomes `<h2>a <em>b</em></h2>` with its attributes along.
+    /// [`Error::UnsupportedFormat`] for a format that can do neither (XML);
+    /// [`Error::InvalidArgument`] for a heading level outside 1–6.
     ///
     /// On a BLANK LINE this OPENS the block rather than converting one, so
     /// "H2, then type" works from an empty line the way it works from a full
@@ -2282,24 +2285,28 @@ impl Editor {
     }
 
     /// Insert `text` at `offset` as a literal run: every byte the format reads as
-    /// markup is backslash-escaped so the run reparses as exactly `text` — a typed
-    /// `*`, `#` or `` ` `` stays that character rather than opening emphasis, a
-    /// heading or a code span. This is the inverse of serialization (which writes
-    /// an already-parsed run verbatim): it is what a WYSIWYG surface calls so that
-    /// keyboard input can never mint markup, leaving formatting to explicit
-    /// commands.
+    /// markup is escaped the format's way so the run reparses as exactly `text`
+    /// — a typed `*`, `#` or `` ` `` stays that character rather than opening
+    /// emphasis, a heading or a code span. This is the inverse of serialization
+    /// (which writes an already-parsed run verbatim): it is what a WYSIWYG
+    /// surface calls so that keyboard input can never mint markup, leaving
+    /// formatting to explicit commands.
     ///
     /// The escaping is positional and per-format, and neither is the caller's to
-    /// reproduce: inline specials (`*`, `` ` ``, `[`, `<`…) are escaped anywhere
-    /// on the line, while block markers (`#`, `>`, `-`…) are escaped only where
-    /// `offset` sits in its line's leading whitespace — so an inserted "5 - 3"
-    /// keeps its `-` but "- item" at column zero does not become a bullet. An
-    /// embedded newline in `text` re-enters that line-start zone.
+    /// reproduce. In the backslash formats (Djot, Markdown, AsciiDoc) inline
+    /// specials (`*`, `` ` ``, `[`, `<`…) are escaped anywhere on the line,
+    /// while block markers (`#`, `>`, `-`…) are escaped only where `offset` sits
+    /// in its line's leading whitespace — so an inserted "5 - 3" keeps its `-`
+    /// but "- item" at column zero does not become a bullet — and an embedded
+    /// newline in `text` re-enters that line-start zone. Inside a code span,
+    /// code block or raw node the run is written as it is, since a backslash
+    /// there would show. HTML escapes with entities (`&lt;`, `&amp;`) in every
+    /// position.
     ///
     /// Two constructs a byte-alphabet cannot reach are left as typed: a GFM
     /// bare-URL autolink (`https://x.com`, with no delimiter to escape) and an
     /// ordered-list marker (`1.`, special only after a digit run). Returns
-    /// [`Error::UnsupportedFormat`] for a parse-only format (XML, HTML) and
+    /// [`Error::UnsupportedFormat`] for a parse-only format (XML) and
     /// [`Error::InvalidArgument`] when `offset` is past the source.
     pub fn insert_literal(&mut self, offset: usize, text: &str) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe {
@@ -5769,17 +5776,17 @@ mod tests {
     #[test]
     fn supports_answers_per_gesture_where_authorable_cannot() {
         // HTML is why the per-gesture query exists. `is_authorable` is true for
-        // it — it spells the inline marks — while a toolbar built on that
-        // predicate would show a heading button, a quote button and a
-        // code-block button that all fail.
+        // it — it spells the inline marks, a heading and a literal — while a
+        // toolbar built on that predicate would show a quote button and a
+        // code-block button that both fail.
         assert!(Format::Html.is_authorable());
         assert!(Format::Html.supports(Gesture::ToggleInline(InlineKind::Strong)));
-        assert!(!Format::Html.supports(Gesture::SetBlock));
+        assert!(Format::Html.supports(Gesture::SetBlock));
+        assert!(Format::Html.supports(Gesture::InsertLiteral));
         assert!(!Format::Html.supports(Gesture::ToggleBlockContainer(
             BlockContainerKind::BlockQuote
         )));
         assert!(!Format::Html.supports(Gesture::ToggleCodeBlock));
-        assert!(!Format::Html.supports(Gesture::InsertLiteral));
         // The nine that used to answer nothing at all: HTML has a table its
         // parser reads and no spelling to write one back with, no blank-line
         // block separation, and no numbered list marker.

@@ -3090,8 +3090,8 @@ pub export fn twig_editor_insert_image(
 }
 
 // ── Literal text ───────────────────────────────────────────────────────────────
-// The engine — the per-format `text_escapes`/`block_start_escapes` alphabets and
-// the positional escape walk — is `twig.Editor.insertLiteral`.
+// The engine — the positional walk, and the per-format `Syntax.renderText` it
+// hands each run to — is `twig.Editor.insertLiteral`.
 
 /// Insert `text` at `offset` as a literal run, escaped for the format so it
 /// reparses as exactly `text`. See `twig.h` for the semantics and
@@ -5673,11 +5673,11 @@ test "twig_format_is_authorable: the read-only question, and its weakness" {
     }
 
     // HTML's 1 above is the trap the per-gesture query exists for: authorable,
-    // and yet a heading button over it would fail.
+    // and yet a code-block button over it would fail.
     var supported: c_int = -1;
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
         @intFromEnum(TwigFormat.html),
-        @intFromEnum(TwigGesture.set_block),
+        @intFromEnum(TwigGesture.toggle_code_block),
         0,
         &supported,
     ));

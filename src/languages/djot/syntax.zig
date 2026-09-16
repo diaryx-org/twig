@@ -9,6 +9,7 @@
 const std = @import("std");
 const syntax = @import("../../syntax.zig");
 const inline_mod = @import("inline.zig");
+const serializer = @import("serializer.zig");
 
 /// Djot classifies an autolink on content alone, so this defers to the parser's
 /// own scanner rather than re-deriving the rule. `angled` arrives with its
@@ -121,6 +122,12 @@ pub const table: syntax.Syntax = .{
     // the div `:` and the code fences (`` ` ``/`~`) are already escaped on every
     // line by `text_escapes`, so they need no line-start entry.
     .block_start_escapes = "#>|",
+    // ── Renderers ──────────────────────────────────────────────────────────
+    // The shared backslash renderer over the two alphabets above, and the
+    // serializer over a fragment — see `markdown/syntax.zig` for why a format
+    // with a heading marker carries the latter at all.
+    .renderText = syntax.renderTextByAlphabet,
+    .renderBlock = syntax.renderBlockVia(serializer.serializeAstAlloc),
     .spellsAutolink = spellsAutolink,
     // No `cell_line_break`: djot has no native in-cell hard break, and spelling
     // one as `<br>` would emit non-idiomatic djot that any other djot reader

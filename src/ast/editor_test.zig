@@ -280,18 +280,17 @@ test "toggleInline: html spells every kind the toolbar vocabulary names" {
     }
 }
 
-test "toggleInline: html's raggedness stops at the block level" {
-    // The gestures whose spelling has the wrong SHAPE for its field (heading is a
-    // wrapping pair, a quote wraps rather than prefixing lines, a fence measures
-    // nothing) and the ones whose escaping mechanism is entities, not
-    // backslashes. All refused through the one uniform path, none of them with a
-    // hand-written HTML arm.
+test "toggleInline: html's raggedness stops at the line-prefixed blocks" {
+    // The gestures whose spelling has the wrong SHAPE for its field (a quote
+    // wraps rather than prefixing lines, a fence measures nothing, a link's
+    // destination lives in an attribute). All refused through the one uniform
+    // path, none of them with a hand-written HTML arm. A heading and a literal
+    // used to be on this list; they go through the renderers now — see the
+    // `setBlock: html` and `insert_literal: html` tests.
     var fx = try Fixture.init("<p>ab</p>\n", .html);
     defer fx.deinit();
-    try testing.expectError(error.UnsupportedFormat, fx.ed.setBlock(4, .heading, 1));
     try testing.expectError(error.UnsupportedFormat, toggleContainer(&fx, 3, 5, .block_quote));
     try testing.expectError(error.UnsupportedFormat, fx.ed.toggleCodeBlock(Span.init(3, 5), null));
-    try testing.expectError(error.UnsupportedFormat, insertLiteral(&fx, 4, "x"));
     try testing.expectError(error.UnsupportedFormat, insertLink(&fx, 3, 5, "http://x.dev"));
     try fx.expectSource("<p>ab</p>\n");
 }
@@ -820,6 +819,53 @@ test "renumberOrderedLists: each nesting level restarts at 1" {
     defer fx.deinit();
     try fx.ed.renumberOrderedLists(0);
     try fx.expectSource("1. a\n   1. b\n   2. c\n2. d\n");
+}
+
+test "setBlock: html builds the heading and prints it, inline content and attributes along" {
+    // No marker to rewrite — `<h2>` carries its level in both ends — so the
+    // paragraph's children go under a fresh heading node and `renderBlock`
+    // spells it. The `<em>` survives because it is re-spelled from the tree,
+    // and the `class` because the node's attributes ride along.
+    var fx = try Fixture.init("<p class=\"lead\">hello <em>x</em></p>\n<p>two</p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.setBlock(20, .heading, 2);
+    try fx.expectSource("<h2 class=\"lead\">hello <em>x</em></h2>\n<p>two</p>\n");
+    const h = fx.find(.{ .tag = .heading }) orelse return error.NoHeading;
+    try testing.expectEqual(@as(u32, 2), fx.ed.astView().nodes[h].kind.heading.level);
+    try testing.expect(fx.find(.{ .mark = .emph }) != null);
+    // And back: the same path, printing a paragraph.
+    try fx.ed.setBlock(20, .paragraph, 0);
+    try fx.expectSource("<p class=\"lead\">hello <em>x</em></p>\n<p>two</p>\n");
+    try fx.expectNoNodeOfKind(.{ .tag = .heading });
+}
+
+test "setBlock: html re-levels a heading in place" {
+    var fx = try Fixture.init("<h1>t</h1>\n", .html);
+    defer fx.deinit();
+    try fx.ed.setBlock(5, .heading, 3);
+    try fx.expectSource("<h3>t</h3>\n");
+    try testing.expectError(error.InvalidLevel, fx.ed.setBlock(5, .heading, 7));
+    try testing.expectError(error.InvalidRange, fx.ed.setBlock(99, .heading, 1));
+}
+
+test "setBlock: html opens an empty heading on a blank line, and nothing inside a leaf" {
+    var fx = try Fixture.init("<p>a</p>\n\n<p>b</p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.setBlock(9, .heading, 2);
+    try fx.expectSource("<p>a</p>\n<h2></h2>\n<p>b</p>\n");
+    try testing.expect(fx.find(.{ .tag = .heading }) != null);
+    // A paragraph on a blank line is the state it is already in.
+    var blank = try Fixture.init("<p>a</p>\n\n", .html);
+    defer blank.deinit();
+    try blank.ed.setBlock(9, .paragraph, 0);
+    try blank.expectSource("<p>a</p>\n\n");
+    // A blank line inside a `<pre>` body is inside the listing, not between
+    // blocks.
+    var pre = try Fixture.init("<pre><code>x\n\ny</code></pre>\n", .html);
+    defer pre.deinit();
+    const inner = std.mem.indexOf(u8, pre.ed.sourceBytes(), "\n\n").? + 1;
+    try testing.expectError(error.NotEditable, pre.ed.setBlock(inner, .heading, 1));
+    try pre.expectSource("<pre><code>x\n\ny</code></pre>\n");
 }
 
 test "setBlock: opens a heading on a blank line" {
@@ -1817,12 +1863,61 @@ test "insert_literal: a lone backslash round-trips as a backslash" {
     }
 }
 
+test "insert_literal: html spells a literal with entities, and reads it back" {
+    // No backslash to spell a literal with, so `renderText` is HTML's own:
+    // the reparse decodes the entities back to the bytes that went in, and no
+    // tag was minted on the way.
+    // (No trailing newline: HTML's parser keeps inter-block whitespace as a
+    // `str`, which would join the visible text below.)
+    var fx = try Fixture.init("<p>ab</p>", .html);
+    defer fx.deinit();
+    const typed = "<em>x</em> & 1 < 2 \\ # *y*";
+    try insertLiteral(&fx, 4, typed);
+    try fx.expectSource("<p>a&lt;em&gt;x&lt;/em&gt; &amp; 1 &lt; 2 \\ # *y*b</p>");
+    try expectVisibleText(&fx, "a" ++ typed ++ "b");
+    try fx.expectNoNodeOfKind(.{ .mark = .emph });
+}
+
 test "insert_literal: a parse-only format spells no literal" {
-    for ([_]format.Format{ .xml, .html }) |fmt| {
-        var fx = try Fixture.init("<r>ab</r>", fmt);
+    var fx = try Fixture.init("<r>ab</r>", .xml);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, insertLiteral(&fx, 3, "x"));
+}
+
+test "insert_literal: inside a code span the bytes are written as they are" {
+    // A backslash inside a code span is a backslash — an escape there would
+    // SHOW. The engine reports `verbatim` and the alphabet renderer writes the
+    // run raw; the reparse proves the `*` is the code's text, not emphasis.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("a `cd` e\n", fmt);
         defer fx.deinit();
-        try testing.expectError(error.UnsupportedFormat, insertLiteral(&fx, 3, "x"));
+        try insertLiteral(&fx, 4, "*_");
+        try fx.expectSource("a `c*_d` e\n");
+        try fx.expectNoNodeOfKind(.{ .mark = .emph });
+        const id = fx.find(.{ .text_leaf = .verbatim }) orelse return error.NoCode;
+        try testing.expectEqualStrings("c*_d", fx.ed.astView().nodes[id].kind.text_leaf.text);
     }
+    // A fenced body likewise, block markers included: `#` at column zero of a
+    // listing is a `#`.
+    var md = try Fixture.init("```\nx\n```\n", .markdown);
+    defer md.deinit();
+    try insertLiteral(&md, 4, "# ");
+    try md.expectSource("```\n# x\n```\n");
+    try md.expectNoNodeOfKind(.{ .tag = .heading });
+    // And HTML still escapes there, because `<pre>` decodes entities too.
+    var html = try Fixture.init("<pre><code>x</code></pre>\n", .html);
+    defer html.deinit();
+    try insertLiteral(&html, 11, "<b>");
+    try html.expectSource("<pre><code>&lt;b&gt;x</code></pre>\n");
+}
+
+test "insert_literal: flush against a code span's delimiter is still outside it" {
+    // `offset` at the opening backtick is BEFORE the span, so the `*` needs its
+    // escape; the content span is what decides, not the node span.
+    var fx = try Fixture.init("a `c` e\n", .markdown);
+    defer fx.deinit();
+    try insertLiteral(&fx, 2, "*");
+    try fx.expectSource("a \\*`c` e\n");
 }
 
 test "insert_literal: an offset past the source is InvalidRange" {
@@ -2806,10 +2901,12 @@ test "supports is the per-gesture answer authorable() cannot give" {
     const html = format.syntaxFor(.html);
     try testing.expect(html.authorable());
     try testing.expect(Editor.supports(html, .{ .toggle_inline = .strong }));
-    try testing.expect(!Editor.supports(html, .set_block));
+    // The two that moved from refused to supported when the renderers landed:
+    // a heading through `renderBlock`, a literal through `renderText`.
+    try testing.expect(Editor.supports(html, .set_block));
+    try testing.expect(Editor.supports(html, .insert_literal));
     try testing.expect(!Editor.supports(html, .{ .toggle_block_container = .block_quote }));
     try testing.expect(!Editor.supports(html, .toggle_code_block));
-    try testing.expect(!Editor.supports(html, .insert_literal));
     // The three that used to answer nothing at all, because they consulted no
     // `Syntax` field: HTML has a table its parser reads and no table spelling to
     // write one back with, no blank-line block separation, and no numbered list

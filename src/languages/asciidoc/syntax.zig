@@ -44,6 +44,7 @@
 const std = @import("std");
 pub const syntax = @import("../../syntax.zig");
 const parser = @import("parser.zig");
+const serializer = @import("serializer.zig");
 
 /// `<https://…>` autolinks in AsciiDoc when the interior is a URL of a scheme
 /// the parser knows; a bare word in angle brackets is text.
@@ -113,6 +114,12 @@ pub const table: syntax.Syntax = .{
     // attribute entry, `-` a bullet or listing. `*`, `+` and `[` open blocks
     // too but are escaped everywhere by `text_escapes` already.
     .block_start_escapes = "=.>|/':-",
+    // ── Renderers ──────────────────────────────────────────────────────────
+    // The shared backslash renderer over the two alphabets above, and the
+    // serializer over a fragment — see `markdown/syntax.zig` for why a format
+    // with a heading marker carries the latter at all.
+    .renderText = syntax.renderTextByAlphabet,
+    .renderBlock = syntax.renderBlockVia(serializer.serializeAstAlloc),
     .spellsAutolink = spellsAutolink,
 
     // ── Deliberately absent ────────────────────────────────────────────────

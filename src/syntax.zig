@@ -6,12 +6,13 @@
 //! Twig's formats are RAGGED: every one of them parses and renders, but they
 //! author wildly different subsets — djot spells all eight inline marks,
 //! Markdown four (`**`/`*`/`` ` ``/`~~`, and `==…==` where the parse config
-//! reads it back), HTML spells seven as tag pairs and nothing block-level,
-//! AsciiDoc everything but a link, a footnote and a table, XML none at all. A `?Delims` per (format, kind)
-//! makes that raggedness DATA. The alternative — a `switch (format)` per op,
-//! with an `else => unsupported_format` arm — is what the C ABI grew instead,
-//! and it put the spelling of djot's `{=mark=}` behind an `extern` boundary
-//! where the CLI couldn't reach it and only a C caller could test it.
+//! reads it back), HTML spells seven as tag pairs and, of the blocks, only a
+//! heading, AsciiDoc everything but a link, a footnote and a table, XML none
+//! at all. A `?Delims` per (format, kind) makes that raggedness DATA. The
+//! alternative — a `switch (format)` per op, with an `else =>
+//! unsupported_format` arm — is what the C ABI grew instead, and it put the
+//! spelling of djot's `{=mark=}` behind an `extern` boundary where the CLI
+//! couldn't reach it and only a C caller could test it.
 //!
 //! So: a `null` field means "this format has no spelling for that", and every
 //! caller turns that into one uniform "unsupported" error. Exactly how
@@ -19,18 +20,41 @@
 //! "Twig cannot write that target yet".
 //!
 //! ── Why data, not behaviour ────────────────────────────────────────────────
-//! Everything here is a byte string or a flag except `spellsAutolink`, which
-//! has to run the format's OWN scanner (see below). That's deliberate: the
+//! Nearly everything here is a byte string or a flag. That's deliberate: the
 //! *algorithms* — walk the destination escaping bytes, prefix each line of a
 //! covered block — are format-INDEPENDENT and live once in `ast/editor.zig`.
 //! Only the alphabet changes. Keeping the tables inert means a new format is a
 //! `Syntax` literal, not new code paths.
+//!
+//! ── Where an alphabet cannot spell the edit: the renderers ─────────────────
+//! Three fields are functions, not bytes, and they are the WHOLE list — see the
+//! "Renderers" section of `Syntax`. Each exists because some format's spelling
+//! is not a table at all:
+//!
+//!   * `spellsAutolink` has to run the format's own scanner.
+//!   * `renderText` spells a literal run. Three formats spell one by writing a
+//!     backslash before a byte from an alphabet, and they share ONE function for
+//!     it (`renderTextByAlphabet`, below, reading `text_escapes`); HTML spells
+//!     one with entities, which no alphabet can say.
+//!   * `renderBlock` spells a block from a tree fragment. `Editor.setBlock`
+//!     rewrites a leading marker where the format has one; where a heading is
+//!     `<h2>…</h2>` there is no marker to rewrite, so the editor builds the
+//!     node and asks the format to print it.
+//!
+//! The engine still owns the algorithm — WHICH position a byte sits in, WHICH
+//! node to build — and dispatches on presence: a `null` renderer is the same
+//! uniform "unsupported" a `null` alphabet is. No renderer receives the editor,
+//! performs a splice, or is called with a format's name. (Fig's editor grew the
+//! same small family, for the same reason, once its last per-format hooks
+//! turned out to be the spellings that were not a table.)
 //!
 //! `Syntax` names no format and imports no language module; `format.zig`'s
 //! registry is what binds a `Format` to its `Syntax`, and `ast/editor.zig`
 //! takes a `*const Syntax` without ever learning which format it came from.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Writer = std.Io.Writer;
 const AST = @import("ast/ast.zig");
 
 /// The inline marks a toolbar can wrap or toggle over a selection. Named for
@@ -53,6 +77,27 @@ pub const BlockKind = enum { paragraph, heading };
 /// a `BlockKind` these prefix EVERY line, they nest, and a list numbers its
 /// items — which is why they're a separate vocabulary.
 pub const ContainerKind = enum { block_quote, bullet_list, ordered_list };
+
+/// Where a run of literal text is about to land — the one thing `renderText`
+/// is told beyond the bytes. The EDITOR computes it from the tree and the
+/// caret, and hands the renderer runs that never straddle two positions, so a
+/// format spells each position without restating how they are told apart.
+pub const TextPosition = enum {
+    /// Ordinary prose, after other text on its line: the inline
+    /// metacharacters bite (`*`, `` ` ``, `[`, `<`…), block markers do not.
+    inline_text,
+    /// A line's leading whitespace and the byte that ends it, where a block
+    /// marker opens a block (`#`, `>`, `-`…) — so the inline alphabet AND the
+    /// line-start alphabet bite. The editor slices a run so that this position
+    /// covers exactly that zone: a run handed in here holds at most one
+    /// non-whitespace byte, and it is the last.
+    block_start,
+    /// Inside a code span, a code block or a raw node, whose body the format
+    /// reads without interpreting. A backslash format writes the bytes as they
+    /// are; an entity format still escapes, because `<pre>` reads `&lt;` the
+    /// same way `<p>` does.
+    verbatim,
+};
 
 /// The source delimiters that mark an inline kind. Values are exactly what the
 /// format's serializer emits, so a wrap round-trips.
@@ -332,6 +377,58 @@ pub const Quoting = enum { never, always, when_needed };
 /// "but does this format have a table at all?" question to forget to ask.
 pub const none: Syntax = .{};
 
+/// The `renderText` of every format that spells a literal by writing a
+/// backslash before a byte from an alphabet — Markdown, djot and AsciiDoc,
+/// which differ only in `text_escapes`/`block_start_escapes` and share this
+/// one function.
+/// In `verbatim` position the bytes are written as they are: a backslash there
+/// is a backslash, not an escape, in all three.
+///
+/// This is the algorithm `ast/editor.zig` used to hold. It moved here so that
+/// the editor asks one question of every format — `renderText` — and so that
+/// the alphabets are read in exactly one place, next to their definition.
+pub fn renderTextByAlphabet(
+    syntax: *const Syntax,
+    text: []const u8,
+    position: TextPosition,
+    out: *Writer,
+) Writer.Error!void {
+    // `assertCoherent` pins both non-null wherever this is the renderer.
+    const inline_escapes = syntax.text_escapes.?;
+    const block_escapes = syntax.block_start_escapes.?;
+    for (text) |c| {
+        const escape = switch (position) {
+            .verbatim => false,
+            .inline_text => std.mem.indexOfScalar(u8, inline_escapes, c) != null,
+            .block_start => std.mem.indexOfScalar(u8, inline_escapes, c) != null or
+                std.mem.indexOfScalar(u8, block_escapes, c) != null,
+        };
+        if (escape) try out.writeByte('\\');
+        try out.writeByte(c);
+    }
+}
+
+/// A `renderBlock` made from a whole-tree serializer: the fragment is the
+/// tree re-rooted at `root`, which is all a `serializeAstAlloc` needs to
+/// print exactly that node and its descendants. The three lightweight formats
+/// build theirs from this; HTML's serializer prints a node directly and needs
+/// no adapter.
+pub fn renderBlockVia(
+    comptime serializeAstAlloc: fn (Allocator, *const AST) Allocator.Error![]u8,
+) *const fn (Allocator, *const AST, AST.Node.Id, *Writer) anyerror!void {
+    return &struct {
+        fn render(allocator: Allocator, ast: *const AST, root: AST.Node.Id, out: *Writer) anyerror!void {
+            // A shallow copy: the arena and strings are still `ast`'s, and this
+            // value is never `deinit`ed.
+            var fragment = ast.*;
+            fragment.root = root;
+            const text = try serializeAstAlloc(allocator, &fragment);
+            defer allocator.free(text);
+            try out.writeAll(text);
+        }
+    }.render;
+}
+
 /// One format's surface spelling. Every field defaults to "can't spell it", so
 /// a format that only parses is `.{}` (see `none`) and every gesture over it
 /// reports unsupported without that format needing to say so.
@@ -455,8 +552,11 @@ pub const Syntax = struct {
     /// blocks (see `block_start_escapes`) and is where a typed `<https://…>`
     /// would otherwise autolink. Over-escaping is safe (valid, just noisier
     /// source), so this errs wide — the Hidden-mode caller never shows the
-    /// source. `null` = a parse-only format, so `insertLiteral` is
-    /// `error.UnsupportedFormat`.
+    /// source. Read by `renderTextByAlphabet` and nothing else: a format that
+    /// states an alphabet sets `renderText` to that function, and a format
+    /// that spells a literal some other way (HTML) states no alphabet at all —
+    /// see `assertCoherent`. `null` alone says nothing about whether a literal
+    /// can be spelled; `renderText` does.
     text_escapes: ?[]const u8 = null,
 
     /// The bytes that only open a construct at a LINE START — block markers
@@ -467,20 +567,6 @@ pub const Syntax = struct {
     /// must be escaped everywhere lives there and needs no line-start entry here.
     /// `null` iff `text_escapes` is — see `assertCoherent`.
     block_start_escapes: ?[]const u8 = null,
-
-    /// Whether `angled` — a `<dest>` run, BRACKETS INCLUDED — spells an
-    /// autolink. `null` = this format has no autolink form.
-    ///
-    /// A function, not a table, because it must be asked of the format's OWN
-    /// scanner (the one its parser dispatches on) rather than re-derived here,
-    /// so it cannot drift from what a reparse will see. There is no shared rule
-    /// to hoist: the formats genuinely disagree. Markdown wants an absolute URI
-    /// (a 2-32 character `scheme:`) or a CommonMark email, and silently reads
-    /// anything else as raw HTML (`<foo>` is a tag!) or literal text. Djot
-    /// classifies on content alone — an `@` not preceded by `:` is an email,
-    /// else a `letter:` is a url — which is why `mailto:a@b.dev` is a `url` in
-    /// Markdown but an `email` in djot. Both refuse a relative path.
-    spellsAutolink: ?*const fn (angled: []const u8) bool = null,
 
     /// How a hard break is spelled *inside a table cell*, where a row is a
     /// single source line so the ordinary newline spelling (`  \n`, djot's
@@ -500,6 +586,68 @@ pub const Syntax = struct {
     /// `assertCoherent` says nothing about it.
     cell_line_break: ?[]const u8 = null,
 
+    // ── Renderers ──────────────────────────────────────────────────────────
+    // The spellings that are not a table. Every field above is bytes an
+    // algorithm in `ast/editor.zig` writes; each field here is the algorithm's
+    // last step handed to the format, for the cases where no alphabet could
+    // say it. They are dispatched by presence exactly as the alphabets are —
+    // `null` is "unsupported", through the one uniform path — and the module
+    // doc comment says why there are three and not thirty.
+
+    /// Spell `text` so that it reparses as ITSELF in `position` — the format
+    /// half of `Editor.insertLiteral`. `null` = this format cannot spell a
+    /// literal, so `insertLiteral` is `error.UnsupportedFormat`.
+    ///
+    /// The editor decides the position and slices the run (see
+    /// `TextPosition`); the renderer only ever answers "how are these bytes
+    /// written here". A format whose answer is "a backslash before a byte from
+    /// an alphabet" sets this to `renderTextByAlphabet` and states the
+    /// alphabet in `text_escapes`/`block_start_escapes`; `assertCoherent` pins
+    /// the three together. A format whose answer is anything else — HTML's
+    /// entities — writes its own, and carries no alphabet.
+    renderText: ?*const fn (
+        syntax: *const Syntax,
+        text: []const u8,
+        position: TextPosition,
+        out: *Writer,
+    ) Writer.Error!void = null,
+
+    /// Spell the block `root` of `ast`, descendants included, as this format's
+    /// source — a fragment printed by the format's own serializer. `null` =
+    /// this format cannot print a fragment.
+    ///
+    /// The editor reaches for this where a gesture has no marker to rewrite:
+    /// `setBlock` over a format with no `heading_marker` builds a heading node
+    /// over the block's inline children, renders it here, and splices what
+    /// comes back. For every format with a from-AST serializer this is that
+    /// serializer over the fragment (`renderBlockVia`), which is what makes a
+    /// tag-pair heading authorable without teaching the editor about tags.
+    ///
+    /// Where a format HAS a marker the editor keeps using it, because the
+    /// marker path preserves the block's inline bytes verbatim while this one
+    /// re-spells them from the tree. So carrying this alongside a marker moves
+    /// nothing; it is the answer for the formats that have no other.
+    renderBlock: ?*const fn (
+        allocator: Allocator,
+        ast: *const AST,
+        root: AST.Node.Id,
+        out: *Writer,
+    ) anyerror!void = null,
+
+    /// Whether `angled` — a `<dest>` run, BRACKETS INCLUDED — spells an
+    /// autolink. `null` = this format has no autolink form.
+    ///
+    /// A function, not a table, because it must be asked of the format's OWN
+    /// scanner (the one its parser dispatches on) rather than re-derived here,
+    /// so it cannot drift from what a reparse will see. There is no shared rule
+    /// to hoist: the formats genuinely disagree. Markdown wants an absolute URI
+    /// (a 2-32 character `scheme:`) or a CommonMark email, and silently reads
+    /// anything else as raw HTML (`<foo>` is a tag!) or literal text. Djot
+    /// classifies on content alone — an `@` not preceded by `:` is an email,
+    /// else a `letter:` is a url — which is why `mailto:a@b.dev` is a `url` in
+    /// Markdown but an `email` in djot. Both refuse a relative path.
+    spellsAutolink: ?*const fn (angled: []const u8) bool = null,
+
     /// Whether this format can be authored into at all — true once it can spell
     /// ANY one gesture, which is a weaker claim than it looks. HTML answers true
     /// on its inline marks alone while every block gesture over it is still
@@ -510,7 +658,7 @@ pub const Syntax = struct {
     pub fn authorable(self: *const Syntax) bool {
         return self.link_text_escapes != null or
             self.heading_marker != null or
-            self.text_escapes != null or
+            self.renderText != null or
             self.inline_delims.get(.strong) != null;
     }
 
@@ -557,6 +705,12 @@ pub const Syntax = struct {
         // literal run: a format that could escape mid-line specials but not
         // block markers (or vice versa) would let `insertLiteral` mint the other.
         std.debug.assert((self.text_escapes == null) == (self.block_start_escapes == null));
+        // An alphabet is read by exactly one renderer, and that renderer reads
+        // nothing else: a table that stated an alphabet and pointed `renderText`
+        // elsewhere would carry a spelling nothing consults, and one that named
+        // the alphabet renderer without an alphabet would fail on first use
+        // rather than here.
+        std.debug.assert((self.text_escapes != null) == (self.renderText == &renderTextByAlphabet));
         // A checkbox is written after a bullet marker, so the two spellings are
         // one construct: `- ` + `[ ] `. A format with a checkbox and no bullet
         // list would have nowhere to put it.
@@ -640,6 +794,8 @@ test "a parse-only format spells nothing" {
     try std.testing.expect(s.heading_marker == null);
     try std.testing.expect(s.text_escapes == null);
     try std.testing.expect(s.block_start_escapes == null);
+    try std.testing.expect(s.renderText == null);
+    try std.testing.expect(s.renderBlock == null);
     try std.testing.expect(s.table_spelling == null);
     try std.testing.expect(s.block_separator == null);
     s.assertCoherent();

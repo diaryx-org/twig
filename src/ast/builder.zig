@@ -223,6 +223,34 @@ pub fn graftDocument(self: *Builder, src: *const Document, offset: usize) Alloca
     return base + src.ast.root;
 }
 
+/// Copy the subtree of `src` rooted at `id` — kind, attributes, descendants
+/// — into this builder, position-free, and return the copy's root.
+///
+/// The fragment half of `graftDocument`: that one relocates a whole parsed
+/// document with its spans, this one lifts one node out of a tree so that a
+/// caller can print it or hang it under a node it is about to build (see
+/// `Editor.setBlock`'s render path, which puts a paragraph's inline children
+/// under a fresh heading). Positions are dropped deliberately — a fragment
+/// built for serialization has none to keep, and `finish` would discard them
+/// anyway.
+pub fn graftSubtree(self: *Builder, src: *const AST, id: Node.Id) Allocator.Error!Node.Id {
+    const node = src.nodes[id];
+    const out = try self.addNode(node.kind);
+    if (node.attrs) |ai| try self.setAttrs(out, src.attrs[ai]);
+    var prev: ?Node.Id = null;
+    var child = node.first_child;
+    while (child) |c| : (child = src.nodes[c].next_sibling) {
+        const cloned = try self.graftSubtree(src, c);
+        if (prev) |p| {
+            self.nodes.items[p].next_sibling = cloned;
+        } else {
+            self.nodes.items[out].first_child = cloned;
+        }
+        prev = cloned;
+    }
+    return out;
+}
+
 /// Freeze the builder into an owned `AST` rooted at `root`, DISCARDING the
 /// position tables. The builder is left empty, so a subsequent `deinit` is
 /// harmless.

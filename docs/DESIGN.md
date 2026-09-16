@@ -156,9 +156,9 @@ comments in `c_abi.zig`. The tier numbers are only a priority label; they
 don't imply anything beyond "what got built in what order."
 
 **A toolbar needs the answer before the call.** Twig's formats are ragged —
-djot spells all eight inline marks, Markdown four, HTML spells marks and
-nothing block-level, AsciiDoc everything but links, footnotes and tables, XML
-nothing — and every gesture already
+djot spells all eight inline marks, Markdown four, HTML spells marks, a
+heading and a literal but no quote, list or fence, AsciiDoc everything but
+links, footnotes and tables, XML nothing — and every gesture already
 reports that, as `TWIG_STATUS_UNSUPPORTED_FORMAT`. But that arrives *after* the
 call, which is too late to gray a button out rather than let it fail. So
 `twig_format_supports(format, gesture, kind)` asks the same question earlier:

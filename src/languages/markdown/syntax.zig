@@ -24,6 +24,7 @@
 const std = @import("std");
 const syntax = @import("../../syntax.zig");
 const markdown = @import("markdown.zig");
+const serializer = @import("serializer.zig");
 const highlight = @import("highlight.zig");
 const Options = @import("options.zig");
 const AST = @import("../../ast/ast.zig");
@@ -148,6 +149,14 @@ const base: syntax.Syntax = .{
     // underline), `=` a setext underline. `*`/`_` also open bullets/breaks but are
     // already escaped everywhere by `text_escapes`, so they need no entry here.
     .block_start_escapes = "#>-+=",
+    // ── Renderers ──────────────────────────────────────────────────────────
+    // A literal is a backslash before a byte from the two alphabets above —
+    // the shared renderer, not a Markdown one. A fragment is the serializer
+    // over it; `setBlock` never reaches it here because `heading_marker` is
+    // the preferred path, but it is the same answer every serializing format
+    // gives (see `Syntax.renderBlock`).
+    .renderText = syntax.renderTextByAlphabet,
+    .renderBlock = syntax.renderBlockVia(serializer.serializeAstAlloc),
     .spellsAutolink = spellsAutolink,
     // GFM's only in-cell break: a table row is one source line, and raw HTML is
     // valid inside a GFM cell, so `<br>` is the one spelling that fits. The

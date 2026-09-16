@@ -3,11 +3,23 @@ title: "Proposal: editable HTML block elements"
 status: draft
 author: adammharris
 created: 2026-09-09
-updated: 2026-09-09
+updated: 2026-09-15
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
 # Editable HTML block elements
+
+## Status
+
+Still `draft`; the MECHANISM half closed on 2026-09-15 with
+[Fragment renderers on the format](/docs/tasks/fragment-renderers.md).
+`Syntax.renderBlock` lets a gesture build a node and have the format print it,
+and `Editor.setBlock` takes that path where there is no heading marker — so a
+leaf editor over an HTML document can now make a line a heading, and
+`insertLiteral` there writes entities through `Syntax.renderText`. What
+remains is exactly the question below: which of the other block elements — a
+quote, a list and its items, a code block, a link — should be exposed the
+same way, and how an element-origin `container` is described to an editor.
 
 **Placeholder.** This records that the question is open, ahead of the review
 that would answer it. It argues nothing yet.
@@ -16,10 +28,11 @@ that would answer it. It argues nothing yet.
 
 `Format::Html` carries a `Syntax` table: seven of the nine inline marks as
 tag pairs, `<code>` for verbatim, `<hr>` for a thematic break, `<br>` for the
-in-cell break. Every block construct an editor would insert, a heading, a
-list and its items, a block quote, a code fence, a link, is unspellable in
-HTML today, so a leaf editor over an HTML document can mark a word bold and
-cannot make a line a heading.
+in-cell break, and — since the renderers — a heading. Every other block
+construct an editor would insert, a list and its items, a block quote, a code
+fence, a link, is unspellable in HTML today, so a leaf editor over an HTML
+document can mark a word bold and make a line a heading, and cannot quote it
+or list it.
 
 Whether that gap should close, and how far, is what needs deciding:
 

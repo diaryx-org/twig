@@ -38,6 +38,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Writer = std.Io.Writer;
 
 const AST = @import("ast.zig");
 const Document = @import("../document.zig");
@@ -52,6 +53,18 @@ pub const Splicer = @import("splicer.zig").Splicer;
 /// `Editor` itself (`Editor.InlineKind`, `Editor.Error`, ...).
 const Syntax = syntax_mod.Syntax;
 const ContainerSpelling = syntax_mod.ContainerSpelling;
+/// The renderers' types, unwrapped from their optional fields — what a gesture
+/// holds once it has dispatched on presence.
+const RenderTextFn = @typeInfo(@FieldType(Syntax, "renderText")).optional.child;
+const RenderBlockFn = @typeInfo(@FieldType(Syntax, "renderBlock")).optional.child;
+
+/// The node `setBlock`'s render path builds for a `BlockKind`.
+fn blockNodeKind(kind: syntax_mod.BlockKind, level: u32) AST.Node.Kind {
+    return switch (kind) {
+        .paragraph => .para,
+        .heading => .{ .heading = .{ .level = level } },
+    };
+}
 
 /// The node an `InlineKind`/`ContainerKind` parses back as. The vocabularies
 /// are named for their kinds, so this is a rename, not a mapping — and it fails
@@ -287,7 +300,10 @@ pub const Editor = struct {
             // implication (a palette implies an authorable mark), not the
             // converse.
             .set_mark_color => syntax.mark_colors != null,
-            .set_block => syntax.heading_marker != null,
+            // Either path: a leading marker to rewrite, or a fragment renderer
+            // to print a fresh node through. `setBlock` prefers the marker and
+            // falls back to the renderer, in that order — see there.
+            .set_block => syntax.heading_marker != null or syntax.renderBlock != null,
             .toggle_block_container => |k| syntax.container_spelling.get(k) != null,
             .insert_thematic_break => syntax.thematic_break != null,
             .toggle_code_block, .set_code_language => syntax.code_fence != null,
@@ -298,7 +314,7 @@ pub const Editor = struct {
             // it is written out anyway so the query reads as the gesture does.
             .insert_image => syntax.link_text_escapes != null and syntax.link_dest_escapes != null,
             .insert_footnote => syntax.footnote != null,
-            .insert_literal => syntax.text_escapes != null,
+            .insert_literal => syntax.renderText != null,
             .insert_line_break => syntax.cell_line_break != null,
             // A total answer only because `assertCoherent` pins a heading marker
             // and a code fence non-null wherever a block separator is: those are
@@ -579,8 +595,23 @@ pub const Editor = struct {
     /// paragraph, which is the same gap `splitBlock` documents — so a caller
     /// that could only convert an existing block had to spell `#` itself, and
     /// spell it per format. See `openBlockOnBlankLine`.
+    ///
+    /// TWO SPELLINGS, tried in this order. Where the format has a
+    /// `heading_marker` the block's leading marker is rewritten and its inline
+    /// bytes are kept verbatim — a `*em*` stays `*em*`. Where it has none but
+    /// carries a `renderBlock`, there is no marker to rewrite (HTML's heading is
+    /// a tag PAIR, level in both ends), so the block's inline children are put
+    /// under a fresh node of the requested kind and the format prints it — the
+    /// same tree, re-spelled, which is why a marker is preferred when there is
+    /// one. A format with neither is `error.UnsupportedFormat`.
     pub fn setBlock(self: *Editor, offset: usize, kind: BlockKind, level: u32) Error!void {
-        const marker = self.syntax.heading_marker orelse return error.UnsupportedFormat;
+        if (self.syntax.heading_marker) |marker| return self.setBlockByMarker(offset, kind, level, marker);
+        if (self.syntax.renderBlock) |render| return self.setBlockByRender(offset, kind, level, render);
+        return error.UnsupportedFormat;
+    }
+
+    /// `setBlock` over a format with a leading heading marker: rewrite it.
+    fn setBlockByMarker(self: *Editor, offset: usize, kind: BlockKind, level: u32, marker: u8) Error!void {
         if (kind == .heading and (level < 1 or level > 6)) return error.InvalidLevel;
 
         const src = self.sourceBytes();
@@ -611,6 +642,111 @@ pub const Editor = struct {
         @memcpy(buf[prefix_len..], content);
 
         return self.commitSplice(block_span.start, end, buf);
+    }
+
+    /// `setBlock` over a format with no leading marker but a fragment
+    /// renderer: BUILD the block and let the format print it.
+    ///
+    /// The block's inline children are cloned under a new `heading`/`para`
+    /// node — its attributes ride along, so `<p class="lead">` becomes
+    /// `<h2 class="lead">` — and the rendered fragment replaces the block's
+    /// whole span. The renderer's trailing line end is dropped because a block
+    /// span excludes its own; the reparse is the backstop, as everywhere.
+    fn setBlockByRender(
+        self: *Editor,
+        offset: usize,
+        kind: BlockKind,
+        level: u32,
+        render: RenderBlockFn,
+    ) Error!void {
+        if (kind == .heading and (level < 1 or level > 6)) return error.InvalidLevel;
+
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const doc = &self.splicer.doc;
+        const block = locate.innermostBlock(doc, offset) orelse
+            return self.openBlockByRender(offset, kind, level, render);
+
+        const allocator = self.splicer.allocator;
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        var kids: std.ArrayList(AST.Node.Id) = .empty;
+        defer kids.deinit(allocator);
+        var child = doc.ast.nodes[block].first_child;
+        while (child) |c| : (child = doc.ast.nodes[c].next_sibling) {
+            try kids.append(allocator, try b.graftSubtree(&doc.ast, c));
+        }
+        const root = try b.addContainer(blockNodeKind(kind, level), kids.items);
+        if (doc.ast.nodes[block].attrs) |ai| try b.setAttrs(root, doc.ast.attrs[ai]);
+
+        const block_span = doc.span(block);
+        return self.spliceRendered(&b, root, render, block_span.start, block_span.end);
+    }
+
+    /// `setBlockByRender` on a BLANK LINE: open an EMPTY block of the requested
+    /// kind there. The same guard as `openBlockOnBlankLine` — a blank line
+    /// interior to a leaf (a code body, a table) is `error.NotEditable`, and
+    /// `.paragraph` is a no-op — but no quote markers to carry and no blank
+    /// separation to write: a format that spells a heading as a fragment does
+    /// not read line prefixes, so the fragment stands wherever it is spliced.
+    fn openBlockByRender(
+        self: *Editor,
+        offset: usize,
+        kind: BlockKind,
+        level: u32,
+        render: RenderBlockFn,
+    ) Error!void {
+        const line = try self.blankLineBetweenBlocks(offset);
+        if (kind == .paragraph) return;
+
+        var b = AST.Builder.init(self.splicer.allocator);
+        defer b.deinit();
+        const root = try b.addContainer(blockNodeKind(kind, level), &.{});
+        return self.spliceRendered(&b, root, render, line.start, line.end);
+    }
+
+    /// Print `root` of `b` through `render` and splice it over `[start, end)`,
+    /// minus the line end a block renderer writes after its block — the span
+    /// being replaced excludes its own.
+    fn spliceRendered(
+        self: *Editor,
+        b: *const AST.Builder,
+        root: AST.Node.Id,
+        render: RenderBlockFn,
+        start: usize,
+        end: usize,
+    ) Error!void {
+        const allocator = self.splicer.allocator;
+        const view = b.view(root);
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        render(allocator, &view, root, &out.writer) catch |err| switch (err) {
+            error.OutOfMemory, error.WriteFailed => return error.OutOfMemory,
+            // The format refused to print the fragment — a content refusal,
+            // not a format one, since the renderer exists.
+            else => return error.NotEditable,
+        };
+        const rendered = std.mem.trimEnd(u8, out.written(), "\r\n");
+        return self.commitSplice(start, end, rendered);
+    }
+
+    /// The line the caret is on, when it is a BLANK line lying BETWEEN a
+    /// container's children — the place `setBlock` may open a block. The span
+    /// is the whole line body, trailing spaces included, so a splice over it
+    /// takes them along. `error.NotEditable` for a line with content, or for a
+    /// blank line INTERIOR to a leaf; `openBlockOnBlankLine` below makes the
+    /// same two tests, with a line prefix in the way, and says why
+    /// `locate.isBlockParent` is the hinge.
+    fn blankLineBetweenBlocks(self: *const Editor, offset: usize) Error!Span {
+        const src = self.sourceBytes();
+        const doc = &self.splicer.doc;
+        const line_start = locate.lineStartAt(src, offset);
+        const body = locate.lineBody(src[line_start..locate.lineEndAt(src, offset)]);
+        if (!locate.isBlankLine(body)) return error.NotEditable;
+        if (locate.lineOwningBlock(doc, offset)) |lb| {
+            if (!locate.isBlockParent(doc.ast.nodes[lb.block].kind)) return error.NotEditable;
+        }
+        return Span.init(line_start, line_start + body.len);
     }
 
     /// `setBlock` where there is no block to convert: the caret sits on a BLANK
@@ -1882,9 +2018,22 @@ pub const Editor = struct {
     /// digit run, not per-byte). Both mint at most a link or a list from
     /// literal-looking text, never corruption; a caller that must suppress them
     /// does so above this op.
+    ///
+    /// INSIDE A CODE SPAN, a code block or a raw node the run is written in
+    /// `verbatim` position instead: the format reads that body literally, so a
+    /// backslash format writes the bytes as they are (an escape there would
+    /// SHOW its backslash) and an entity format still escapes. The one byte no
+    /// position can hold is the span's own closing delimiter, which is the same
+    /// "guards its own bytes" limit as above.
+    ///
+    /// The engine here decides WHERE each byte lands; the format decides how a
+    /// byte is written there. That split is `Syntax.renderText`: Markdown, djot
+    /// and AsciiDoc share one renderer over their alphabets, and HTML — which
+    /// has no backslash to spell a literal with — writes entities. The editor
+    /// never sees either rule.
     pub fn insertLiteral(self: *Editor, offset: usize, text: []const u8) Error!void {
         try self.checkRange(offset, offset);
-        if (self.syntax.text_escapes == null) return error.UnsupportedFormat;
+        const render = self.syntax.renderText orelse return error.UnsupportedFormat;
 
         const allocator = self.splicer.allocator;
         const src = self.sourceBytes();
@@ -1899,11 +2048,41 @@ pub const Editor = struct {
             }
         }
 
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(allocator);
-        try writeLiteral(allocator, self.syntax, text, at_line_start, &out);
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        const in_verbatim = try self.insideVerbatim(offset);
+        writeLiteral(self.syntax, render, text, at_line_start, in_verbatim, &out.writer) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+        };
 
-        return self.commitSplice(offset, offset, out.items);
+        return self.commitSplice(offset, offset, out.written());
+    }
+
+    /// Whether writing at `offset` lands inside a body the format reads
+    /// LITERALLY — a code span, a code block, a raw node — where the inline and
+    /// block-start alphabets mean nothing. Inclusive at both ends of the body
+    /// (`content_span`), because text written flush against either delimiter
+    /// still ends up inside it; a node with no interior is a leaf whose bytes
+    /// ARE its delimiters, and a splice at its edge lands beside it.
+    fn insideVerbatim(self: *const Editor, offset: usize) Allocator.Error!bool {
+        const doc = &self.splicer.doc;
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(self.splicer.allocator);
+        try locate.ancestorChain(self.splicer.allocator, doc, offset, &chain);
+        for (chain.items) |id| {
+            const literal = switch (doc.ast.nodes[id].kind) {
+                .code_block, .raw_block, .raw_inline => true,
+                .text_leaf => |l| switch (l.kind) {
+                    .verbatim, .inline_math, .display_math => true,
+                    else => false,
+                },
+                else => false,
+            };
+            if (!literal) continue;
+            const cs = doc.contentSpan(id) orelse continue;
+            if (cs.start <= offset and offset <= cs.end) return true;
+        }
+        return false;
     }
 
     /// Insert a hard line break *inside a table cell* at `offset`, spelled the
@@ -2693,33 +2872,42 @@ fn writeLinkText(
     }
 }
 
-/// Escape `text` for BODY-TEXT position, backslash-escaping every `text_escapes`
-/// byte and — only while in a line's leading whitespace — every
-/// `block_start_escapes` byte. `at_line_start` seeds that zone for the first
-/// line; a `\n` re-enters it, and spaces/tabs (a block marker tolerates up to
-/// three leading spaces) hold it, so `\n  # h` still escapes the `#`. The two
-/// alphabets are separate because a `#` is a heading only at a line start but a
-/// `*` is emphasis anywhere. See `Editor.insertLiteral`.
+/// Write `text` through `render`, one run per `TextPosition`. The engine's half
+/// of `Editor.insertLiteral`: it decides which bytes sit at a LINE START —
+/// `at_line_start` seeds that zone for the first line; a `\n` re-enters it, and
+/// spaces/tabs (a block marker tolerates up to three leading spaces) hold it, so
+/// `\n  # h` still hands the `#` over in `block_start` position — and which sit
+/// in a verbatim body, where the whole run goes over at once. Every run given
+/// to `render` lies in exactly one position, so the format spells bytes and
+/// never re-derives where a line starts.
 fn writeLiteral(
-    allocator: Allocator,
     syntax: *const Syntax,
+    render: RenderTextFn,
     text: []const u8,
     at_line_start: bool,
-    out: *std.ArrayList(u8),
-) !void {
-    const inline_escapes = syntax.text_escapes orelse return error.UnsupportedFormat;
-    const block_escapes = syntax.block_start_escapes orelse return error.UnsupportedFormat;
+    in_verbatim: bool,
+    out: *Writer,
+) Writer.Error!void {
+    if (in_verbatim) return render(syntax, text, .verbatim, out);
+    var rest = text;
     var block_pos = at_line_start;
-    for (text) |c| {
-        const escape = std.mem.indexOfScalar(u8, inline_escapes, c) != null or
-            (block_pos and std.mem.indexOfScalar(u8, block_escapes, c) != null);
-        if (escape) try out.append(allocator, '\\');
-        try out.append(allocator, c);
-        if (c == '\n') {
-            block_pos = true;
-        } else if (c != ' ' and c != '\t') {
-            block_pos = false;
+    while (rest.len > 0) {
+        const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len - 1;
+        const line = rest[0 .. nl + 1];
+        rest = rest[nl + 1 ..];
+        var body = line;
+        if (block_pos) {
+            // The leading whitespace and the byte that ends it: the run in
+            // which a block marker bites.
+            var i: usize = 0;
+            while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+            const zone = @min(i + 1, line.len);
+            try render(syntax, line[0..zone], .block_start, out);
+            body = line[zone..];
         }
+        if (body.len > 0) try render(syntax, body, .inline_text, out);
+        // A line end re-enters the zone for whatever follows it.
+        block_pos = line[line.len - 1] == '\n';
     }
 }
 

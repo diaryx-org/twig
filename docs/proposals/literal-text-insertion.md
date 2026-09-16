@@ -8,6 +8,17 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 # Format-correct literal text insertion
 
+## Update (2026-09-15): HTML spells a literal now, through a renderer
+
+The alphabet below is no longer the only mechanism. `Syntax.renderText` is the
+verb the editor calls; the three backslash formats point it at a shared
+`renderTextByAlphabet` over `text_escapes`/`block_start_escapes`, and HTML
+supplies its own, writing entities. `insertLiteral` over an HTML document
+succeeds and reparses to the same `str`. The editor also reports a third
+position, `verbatim`, inside a code span or block, where the alphabet formats
+write the run raw. See
+[Fragment renderers on the format](/docs/tasks/fragment-renderers.md).
+
 ## Update (2026-08-30): HTML's `null` is about backslashes, not about parsing
 
 The landed alphabets are as described below, HTML's pair included: `text_escapes`
