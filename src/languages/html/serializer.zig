@@ -244,6 +244,24 @@ fn isRawTextElement(name: []const u8) bool {
     return raw_text_elements.has(name);
 }
 
+/// Write the text body of element `name` as HTML: verbatim for a raw-text
+/// element, whose content has no escaping mechanism, and entity-escaped for
+/// any other — the rcdata `<title>`/`<textarea>`, whose body the parser
+/// decoded. For the serializers that pass an HTML element through as a tag
+/// (Markdown's, AsciiDoc's) and meet a `Container.text` body under it: the
+/// rule is the tag's, so it lives here and not in each of them.
+pub fn writeElementText(w: *Writer, name: []const u8, text: []const u8) Writer.Error!void {
+    if (isRawTextElement(name)) return w.writeAll(text);
+    for (text) |c| {
+        switch (c) {
+            '&' => try w.writeAll("&amp;"),
+            '<' => try w.writeAll("&lt;"),
+            '>' => try w.writeAll("&gt;"),
+            else => try w.writeByte(c),
+        }
+    }
+}
+
 pub const Renderer = struct {
     allocator: Allocator,
     ast: *const AST,
@@ -558,9 +576,17 @@ pub const Renderer = struct {
         }
     }
 
-    /// Write a raw-text element's children literally (no escaping). The parser
-    /// yields such content as a single `str`/`verbatim` node; any other child
-    /// kind falls back to normal rendering so nothing is silently dropped.
+    /// Write the text body of element `tag` — verbatim where the tag is
+    /// raw-text, entity-escaped otherwise. The instance form of
+    /// `writeElementText` below.
+    fn writeElementText(self: *Renderer, tag: []const u8, text: []const u8) Writer.Error!void {
+        if (isRawTextElement(tag)) try self.writer.writeAll(text) else try self.writeEscaped(text);
+    }
+
+    /// Write a raw-text element's children literally (no escaping). A built
+    /// tree may put such content under the element as a `str`/`verbatim`
+    /// node; any other child kind falls back to normal rendering so nothing
+    /// is silently dropped.
     fn renderRawTextChildren(self: *Renderer, id: Node.Id) RenderError!void {
         var it = self.ast.children(id);
         while (it.next()) |child| {
@@ -705,11 +731,22 @@ pub const Renderer = struct {
                 const tag = if (c.name.len > 0) c.name else if (block) "div" else "span";
                 try self.renderTag(tag, id, &.{});
                 if (isVoidElement(tag)) return;
+                // A body the tokenizer read as text (`Container.text`) is
+                // written back by the tag's rule: raw for a raw-text element,
+                // entity-escaped for an rcdata one — which is what the parser
+                // decoded. No children to render either way.
+                if (c.text) |text| {
+                    try self.writeElementText(tag, text);
+                    try self.renderCloseTag(tag);
+                    return;
+                }
                 if (isRawTextElement(tag)) {
                     // Raw-text content (script/style/…) has no escaping
                     // mechanism in HTML: it must be written verbatim. Escaping
                     // it would corrupt the JS/CSS and double-escape on
-                    // re-parse (`<` → `&lt;` → `&amp;lt;`).
+                    // re-parse (`<` → `&lt;` → `&amp;lt;`). A parsed tree
+                    // carries the body as the payload above; this arm is for
+                    // a built one that put a `str` under the element.
                     try self.renderRawTextChildren(id);
                     try self.renderCloseTag(tag);
                     return;

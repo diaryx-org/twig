@@ -32,6 +32,7 @@ pub const ParseError = parser_mod.ParseError;
 /// since its `</span>` is a separate inline token). Names match as stored on a
 /// node (lowercase, as the parser produces).
 pub const isVoidElement = serializer_mod.isVoidElement;
+pub const writeElementText = serializer_mod.writeElementText;
 
 pub const serialize = serializer_mod.serialize;
 pub const serializeOpts = serializer_mod.serializeOpts;

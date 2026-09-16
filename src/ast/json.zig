@@ -267,6 +267,12 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
             try w.write(c.form);
             try w.objectField("argument");
             try w.write(c.argument);
+            // Present only where the body was read as text, so a consumer
+            // walking `children` on every other container sees no new key.
+            if (c.text) |t| {
+                try w.objectField("text");
+                try w.write(t);
+            }
         },
         // The three markup leaves report their family member as the node's
         // `kind` name (see `Kind.kindName`), so one arm serves all of them.

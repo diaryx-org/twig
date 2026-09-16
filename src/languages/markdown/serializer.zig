@@ -9,6 +9,7 @@ const Writer = std.Io.Writer;
 const markdown = @import("markdown.zig");
 const md_syntax = @import("syntax.zig");
 const attrs_writer = @import("../../attrs_writer.zig");
+const html_lang = @import("../html/html.zig");
 const Document = @import("../../document.zig");
 const AST = markdown.AST;
 const Node = AST.Node;
@@ -477,7 +478,9 @@ const Renderer = struct {
                     try self.writer.print("<{s}", .{c.name});
                     try attrs_writer.writeHtmlAttrs(self.writer, self.ast.attrsOf(id));
                     try self.writer.writeByte('>');
-                    try self.renderBlocks(id, ctx, false);
+                    // A text body (a `<script>`'s, a `<title>`'s) is the
+                    // tag's to spell, raw or escaped — it is HTML either way.
+                    if (c.text) |text| try html_lang.writeElementText(self.writer, c.name, text) else try self.renderBlocks(id, ctx, false);
                     try self.writer.print("</{s}>\n", .{c.name});
                     return;
                 };
@@ -693,7 +696,7 @@ const Renderer = struct {
                     try self.writer.print("<{s}", .{c.name});
                     try attrs_writer.writeHtmlAttrs(self.writer, self.ast.attrsOf(id));
                     try self.writer.writeByte('>');
-                    try self.renderInlineChildren(id, ctx);
+                    if (c.text) |text| try html_lang.writeElementText(self.writer, c.name, text) else try self.renderInlineChildren(id, ctx);
                     try self.writer.print("</{s}>", .{c.name});
                     return;
                 }

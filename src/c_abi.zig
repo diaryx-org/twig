@@ -2163,6 +2163,10 @@ fn kindText(node: *const twig.AST.Node) ?[]const u8 {
         .raw_block => |p| p.text,
         .raw_inline => |p| p.text,
         .metadata => |p| p.text,
+        // A container whose body the tokenizer read as text — a `<script>`,
+        // a `<title>` — carries it here and has no children; `null` for the
+        // markup-bodied rest, exactly as `holdsOpaqueText` answers.
+        .container => |c| c.text,
         // No stored spelling anymore (see `Kind.smart_punctuation`'s doc on
         // `ast.zig`) — derive the canonical ASCII spelling instead, keeping
         // this accessor's C-surface behavior identical. A static string

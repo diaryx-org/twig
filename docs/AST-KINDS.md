@@ -273,6 +273,18 @@ block/inline classification that `div` and `span` used to encode by being
 separate kinds, and its `null` means UNCLASSIFIED, which is the honest answer
 for HTML/XML.
 
+`text` is the one thing a `container` says about its body, and it is a
+parse fact rather than a classification: HTML's tokenizer reads a raw-text
+element (`<script>`, `<style>`, `<iframe>`, …) or an rcdata one (`<title>`,
+`<textarea>`) as ONE RUN OF TEXT with no tags inside, and the node carries
+that run as its payload and no children — `contentModel` answers `.text`, as
+for a `code_block`. Before this the body hung under the element as a `str`,
+so `<script>a < b</script>` and `<span>a &lt; b</span>` were the same shape
+and an editor could not tell JavaScript from prose without carrying the
+tokenizer's tag lists itself. What twig deliberately does *not* say about an
+element — whether it is sectioning, whether it is chrome — is argued in
+`docs/proposals/editable-html-block-elements.md`.
+
 ### `line_block` and `line` — why `indent` is a number
 
 A line block is a run of lines whose **breaks are the content**: rST spells it

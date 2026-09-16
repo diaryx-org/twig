@@ -81,8 +81,14 @@ pub fn serializeNode(doc: *const Document, id: Node.Id, writer: *Writer) Writer.
                 return;
             }
             try writer.writeByte('>');
-            var it = doc.children(id);
-            while (it.next()) |child| try serializeNode(doc, child.id, writer);
+            // XML has no raw-text elements, so a text body that came from
+            // HTML's tokenizer is written as the character data it is.
+            if (e.text) |text| {
+                try writeEscapedText(writer, text);
+            } else {
+                var it = doc.children(id);
+                while (it.next()) |child| try serializeNode(doc, child.id, writer);
+            }
             try writer.writeAll("</");
             try writer.writeAll(e.name);
             try writer.writeByte('>');

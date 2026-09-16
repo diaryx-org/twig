@@ -485,6 +485,13 @@ pub struct FlatNode {
     /// A heading's level; `None` for every other kind.
     pub level: Option<u32>,
     pub kind: Kind,
+    /// The node's text payload — a `str`'s bytes, a `code_block`'s body — and
+    /// `None` for a node whose content is its children. Since twig 3.5 this is
+    /// also `Some` for a [`Kind::Container`] whose body the HTML tokenizer read
+    /// as TEXT rather than markup (`<script>`, `<style>`, `<iframe>`, `<title>`,
+    /// `<textarea>`, …): such a node has no children, and this is how an editor
+    /// learns that the body is not prose without carrying the tokenizer's tag
+    /// lists itself. Test `text.is_some()`, not the tag name.
     pub text: Option<String>,
     pub destination: Option<String>,
     /// Whether a `row`/`cell` belongs to the table head; `None` for every other
@@ -4075,6 +4082,37 @@ mod tests {
         // And decidable now.
         assert_eq!(tag.origin, Some(ContainerOrigin::Element));
         assert_eq!(directive.origin, Some(ContainerOrigin::Directive));
+    }
+
+    #[test]
+    fn a_container_whose_body_is_text_says_so_in_text() {
+        // `<script>` and `<span>` used to be the same shape — a container over
+        // one `str` — and differ only in name, so an editor could not tell a
+        // JavaScript body from prose without its own tag list. The tokenizer
+        // knows: a raw-text or rcdata body is the node's `text`, and there
+        // are no children to step into.
+        let mut html = Editor::new(
+            "<script>a < b</script><title>a &amp; b</title><span>a &amp; b</span>\n".as_bytes(),
+            Format::Html,
+        )
+        .expect("html editor");
+        let nodes = html.nodes().expect("html nodes");
+        let by_name = |name: &str| {
+            nodes
+                .iter()
+                .find(|n| n.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("a <{name}> container"))
+        };
+        let script = by_name("script");
+        assert_eq!(script.kind, Kind::Container);
+        assert_eq!(script.text.as_deref(), Some("a < b"));
+        assert_eq!(script.first_child, None);
+        // rcdata is decoded, like any text.
+        assert_eq!(by_name("title").text.as_deref(), Some("a & b"));
+        // A markup body is children, and `text` stays `None`.
+        let span = by_name("span");
+        assert_eq!(span.text, None);
+        assert!(span.first_child.is_some());
     }
 
     /// Parse `src` as both authorable formats and run `check` over each — the

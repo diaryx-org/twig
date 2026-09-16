@@ -397,6 +397,7 @@ fn dupeKind(self: *Builder, kind: Node.Kind) Allocator.Error!Node.Kind {
             .name = try self.dupe(v.name),
             .form = v.form,
             .argument = if (v.argument) |a| try self.dupe(a) else null,
+            .text = if (v.text) |t| try self.dupe(t) else null,
         } },
         .markup_leaf => |v| .{ .markup_leaf = .{ .kind = v.kind, .text = try self.dupe(v.text) } },
         .processing_instruction => |v| .{ .processing_instruction = .{

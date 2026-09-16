@@ -310,6 +310,23 @@ pub const Node = struct {
             /// children are the body). `null` for every format that has no
             /// argument position — which today is all of them except rST.
             argument: ?[]const u8 = null,
+            /// The body, where the producing tokenizer read it as TEXT rather
+            /// than as markup — HTML's raw-text elements (`<script>`,
+            /// `<style>`, `<iframe>`, …) and its rcdata ones (`<title>`,
+            /// `<textarea>`). `null` for every container whose body is
+            /// markup, which is every other one.
+            ///
+            /// This is a parse fact, not a classification: the parser did not
+            /// look for tags inside, so there are none, and the bytes are one
+            /// opaque run the way a `code_block`'s are. `contentModel` answers
+            /// `.text` for such a node, so `insertChild` refuses it and
+            /// `replaceContent` works, and the C ABI's `kindText` extracts it
+            /// — which is how an editor learns that a `<script>` body is not
+            /// prose without carrying the tokenizer's tag lists itself
+            /// (`docs/proposals/editable-html-block-elements.md`). Whether the
+            /// bytes are written back raw or entity-escaped is the tag's
+            /// property, and the HTML serializer's to know.
+            text: ?[]const u8 = null,
         };
 
         // ── The three classifiers ────────────────────────────────────────
@@ -501,8 +518,10 @@ pub const Node = struct {
                 // A fenced container holds blocks; the inline and
                 // one-line-leaf forms hold the label's inlines. An
                 // UNCLASSIFIED container answers `blocks` as the permissive
-                // one, since only `text` answers no.
-                .container => |c| if (c.form) |f| switch (f) {
+                // one, since only `text` answers no — unless its body was
+                // read as text (see `Container.text`), in which case it is
+                // exactly the opaque-payload case and answers so.
+                .container => |c| if (c.text != null) .text else if (c.form) |f| switch (f) {
                     .block_fenced => .blocks,
                     .block_leaf, .inline_text => .inlines,
                 } else .blocks,
@@ -699,7 +718,8 @@ pub const Node = struct {
                 .inline_mark => |v| v == other.inline_mark,
                 .container => |v| eqlStr(v.name, other.container.name) and
                     v.form == other.container.form and
-                    eqlOptStr(v.argument, other.container.argument),
+                    eqlOptStr(v.argument, other.container.argument) and
+                    eqlOptStr(v.text, other.container.text),
                 .markup_leaf => |v| v.kind == other.markup_leaf.kind and
                     eqlStr(v.text, other.markup_leaf.text),
                 .processing_instruction => |v| eqlStr(v.target, other.processing_instruction.target) and

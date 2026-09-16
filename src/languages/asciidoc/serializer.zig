@@ -40,6 +40,7 @@ const Node = AST.Node;
 const Document = @import("../../document.zig");
 const adoc_syntax = @import("syntax.zig");
 const parser = @import("parser.zig");
+const html_lang = @import("../html/html.zig");
 
 const Renderer = struct {
     allocator: Allocator,
@@ -72,6 +73,13 @@ const Renderer = struct {
     fn emitByte(self: *Renderer, c: u8) Writer.Error!void {
         try self.w.writeByte(c);
         self.last = c;
+    }
+
+    /// A passed-through element's text body, by the tag's HTML rule (see
+    /// `html.writeElementText`), with `last` kept honest.
+    fn emitElementText(self: *Renderer, name: []const u8, text: []const u8) Writer.Error!void {
+        try html_lang.writeElementText(self.w, name, text);
+        if (text.len > 0) self.last = text[text.len - 1];
     }
 
     fn emitRepeat(self: *Renderer, c: u8, n: usize) Writer.Error!void {
@@ -454,7 +462,8 @@ const Renderer = struct {
             try self.emit(name);
             try self.writeHtmlAttrs(id);
             try self.emit(">\n");
-            try self.renderBlocks(id);
+            // A text body is the tag's to spell (see `html.writeElementText`).
+            if (c.text) |text| try self.emitElementText(name, text) else try self.renderBlocks(id);
             try self.emit("</");
             try self.emit(name);
             try self.emit(">\n");
@@ -992,7 +1001,7 @@ const Renderer = struct {
                     try self.emit(c.name);
                     try self.writeHtmlAttrs(id);
                     try self.emitByte('>');
-                    try self.renderInlineChildren(id);
+                    if (c.text) |text| try self.emitElementText(c.name, text) else try self.renderInlineChildren(id);
                     try self.emit("</");
                     try self.emit(c.name);
                     try self.emitByte('>');

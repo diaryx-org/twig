@@ -211,22 +211,31 @@ pub const Parser = struct {
             return id;
         }
 
-        var children: []Node.Id = undefined;
-        var content_end = self.pos;
+        // A raw-text or rcdata element's body is one run of TEXT — the
+        // tokenizer looks for no tags inside it — and the node carries it as
+        // its payload rather than as a `str` child (`Container.text`), so a
+        // consumer reads `<script>` and `<span>` as different shapes and not
+        // merely different names. The rcdata run is entity-decoded, as the
+        // spec has it; a raw one is the bytes.
         if (isRawText(name) or isRcdata(name)) {
             const raw_start = self.pos;
             const end = self.rawTextEnd(name);
             self.pos = end;
-            if (try self.parseTextRange(raw_start, end, isRcdata(name))) |id| {
-                children = try self.allocator.dupe(Node.Id, &.{id});
-            } else children = try self.allocator.alloc(Node.Id, 0);
-            content_end = self.pos;
+            const raw = self.source[raw_start..end];
+            const text = if (isRcdata(name)) try self.decodeText(raw) else try self.allocator.dupe(u8, raw);
+            defer self.allocator.free(text);
             if (self.pos < self.source.len and self.endTagMatches(name)) self.consumeEndTag();
-        } else {
-            children = try self.parseChildren(name);
-            content_end = self.pos;
-            if (self.pos < self.source.len and self.endTagMatches(name)) self.consumeEndTag();
+            const id = try self.builder.addLeaf(.{ .container = .{ .name = name, .text = text } });
+            self.builder.setSpan(id, Span.init(start, self.pos));
+            self.builder.setContentSpan(id, Span.init(raw_start, end));
+            self.markElementOrigin(id, self.builder.nodes.items[id].kind);
+            try self.builder.setAttrs(id, .{ .entries = attrs });
+            return id;
         }
+
+        var children: []Node.Id = try self.parseChildren(name);
+        const content_end = self.pos;
+        if (self.pos < self.source.len and self.endTagMatches(name)) self.consumeEndTag();
         // `semanticKind` may shrink `children` to a sub-slice (dropping layout
         // whitespace, wrapping list items). Free the *original* allocation —
         // freeing a length-shrunk view mismatches the allocator's size class.
@@ -910,8 +919,31 @@ test "HTML parser closes li and p implicitly and keeps script raw" {
     try testing.expect(ast.ast.nodes[second_li].kind == .list_item);
     try testing.expect(ast.ast.nodes[p].kind == .para);
     try testing.expectEqualStrings("div", ast.ast.nodes[div].kind.container.name);
-    const script_text = ast.ast.nodes[script].first_child.?;
-    try testing.expectEqualStrings("a < b &amp;", ast.ast.nodes[script_text].kind.str);
+    // The script's body is its PAYLOAD, not a child: the tokenizer read it as
+    // text, so the node says so (`Container.text`) and holds no children.
+    try testing.expect(ast.ast.nodes[script].first_child == null);
+    try testing.expectEqualStrings("a < b &amp;", ast.ast.nodes[script].kind.container.text.?);
+    try testing.expect(ast.ast.nodes[script].kind.holdsOpaqueText());
+    try testing.expectEqual(Span.init(47, 58), ast.contentSpan(script).?);
+}
+
+test "HTML parser: an rcdata body is decoded text on the container, a markup body is children" {
+    var parser = Parser.init(testing.allocator, "<title>a &amp; b</title><textarea><b>x</b></textarea><span>a &amp; b</span>");
+    defer parser.deinit();
+    var ast = try parser.parse();
+    defer ast.deinit();
+    const title = ast.ast.nodes[ast.ast.root].first_child.?;
+    const textarea = ast.ast.nodes[title].next_sibling.?;
+    const span = ast.ast.nodes[textarea].next_sibling.?;
+    try testing.expectEqualStrings("a & b", ast.ast.nodes[title].kind.container.text.?);
+    // rcdata: no tags inside, so the `<b>` is text.
+    try testing.expectEqualStrings("<b>x</b>", ast.ast.nodes[textarea].kind.container.text.?);
+    try testing.expect(ast.ast.nodes[textarea].first_child == null);
+    // A markup body: children, no payload, and `contentModel` says so.
+    try testing.expect(ast.ast.nodes[span].kind.container.text == null);
+    try testing.expect(ast.ast.nodes[span].first_child != null);
+    try testing.expect(!ast.ast.nodes[span].kind.holdsOpaqueText());
+    try testing.expectEqual(ast.containerOrigin(title), .element);
 }
 
 test "HTML parser restores Twig printer semantics and ignores layout whitespace" {

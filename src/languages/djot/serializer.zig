@@ -352,7 +352,16 @@ const Renderer = struct {
                 if (c.name.len > 0) try self.writer.print(" {s}", .{c.name});
                 try self.writer.writeByte('\n');
                 const p = Prefix{ .parent = ctx.prefix, .segment = "  " };
-                try self.renderBlocks(id, .{ .prefix = &p }, true);
+                if (c.text) |text| {
+                    // A text body from HTML's tokenizer (a `<script>`'s):
+                    // djot has no raw-text element, so the bytes go in as
+                    // the fence's text — degraded, nothing dropped.
+                    try self.writePrefix(.{ .prefix = &p });
+                    try self.writeInlineText(text, .{ .prefix = &p });
+                    if (text.len == 0 or text[text.len - 1] != '\n') try self.writer.writeByte('\n');
+                } else {
+                    try self.renderBlocks(id, .{ .prefix = &p }, true);
+                }
                 try self.writePrefix(ctx);
                 try self.writer.writeAll(":::\n");
             },
@@ -661,7 +670,7 @@ const Renderer = struct {
                     return;
                 }
                 try self.writer.writeByte('[');
-                try self.renderInlineChildren(id, ctx);
+                if (c.text) |text| try self.writeInlineText(text, ctx) else try self.renderInlineChildren(id, ctx);
                 try self.writer.writeByte(']');
                 // Same reasoning as the block arm: djot holds a container's
                 // identity as a class, so a name from a format that has one
