@@ -90,6 +90,104 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.4.0
+
+### Added
+
+- **syntax** — fragment renderers on the format, where an alphabet cannot spell the edit ([`e15b9b9`](https://github.com/diaryx-org/twig/commit/e15b9b9d441d76f87a0830a6e68e7e99260d88f8))
+- **format** — Markdown's dialects are Format rows, as json/jsonc/json5 are in fig ([`d574a45`](https://github.com/diaryx-org/twig/commit/d574a45c648eeef08f6803b9d5f0fa1ee944079c))
+
+### Fixed
+
+- **languages** — enforce per-format engine contracts ([`383dc68`](https://github.com/diaryx-org/twig/commit/383dc68bdce86670ff966461670f89c98646d4fc))
+- **markdown** — a table cell spans from the pipe that opens it to the one that closes it ([`86bfd04`](https://github.com/diaryx-org/twig/commit/86bfd04b110d55dabaf254c6568f34b095880d21))
+- **editor** — a toggle finds the mark a selection covers, not only one it equals ([`f09e951`](https://github.com/diaryx-org/twig/commit/f09e9517872ab32dc200b15cec64a49c40ef9e43))
+- **editor** — an inline mark over a code span closes around its backticks ([`dde59e7`](https://github.com/diaryx-org/twig/commit/dde59e74a794de981278d26aebaaf7583ba13840))
+
+### Changed
+
+- **document** — references and footnotes become Document.labels ([`ba8930a`](https://github.com/diaryx-org/twig/commit/ba8930a0d3cb88342714e0fad1583d637f3e06df))
+
+### Behavioural changes
+
+- Djot documents without a final newline now borrow the
+  caller's source instead of freed scanner storage. Their source spans stop
+  at the original byte length rather than including a synthetic newline.
+
+- Canonical Djot serialization no longer emits implicit
+  heading references as explicit definitions, avoiding duplicate reference
+  nodes on reparse. Bare-AST serialization still prints its references.
+
+- Djot paragraph attributes serialize on the preceding
+  line, preserving their block attachment instead of attaching to inline text.
+
+- `Editor.insertLiteral` and `Editor.setBlock` succeed
+  over an HTML document where they returned `error.UnsupportedFormat`; a
+  literal is spelled with `&lt;`/`&gt;`/`&amp;`, and a heading or
+  paragraph is rebuilt as the tag pair with the block's attributes
+  along. `Editor.supports`, `twig_format_supports` and
+  `Format::supports` answer true for `set_block` and `insert_literal` on
+  HTML accordingly.
+
+- `insertLiteral` inside a code span, code block, math
+  span or raw node now writes the run as it is in Markdown, djot and
+  AsciiDoc, where it used to backslash-escape and the backslash showed
+  as text. `"a `cd` e"` with `*` inserted at 4 gives `` a `c*d` e ``
+  rather than `` a `c\*d` e ``.
+
+- a `Syntax` literal that states `text_escapes` must
+  now set `renderText = renderTextByAlphabet`, and one with `renderText`
+  set to anything else must leave the alphabets `null`;
+  `assertCoherent` fails otherwise. `Syntax.authorable()` reads
+  `renderText` where it read `text_escapes`.
+
+- `twig convert`/`query`/`edit`/`filter` treat
+  `--gfm` and `--commonmark` as `-i gfm` / `-i commonmark` rather than
+  as a rewrite of the Markdown parse options. Two consequences: an
+  extension flag before the dialect flag is kept (`--math --gfm` is GFM
+  plus math, where it used to be plain GFM), and the flag overrides an
+  extension-inferred or `-i`-given input format, so `-i djot --gfm`
+  parses as GFM where `--gfm` was inert for a non-Markdown input.
+  `identify` never accepted either flag and still does not.
+
+- the Zig `format.ParseConfig.markdown` field is
+  `Markdown.ParseOptions.Extensions` rather than `Markdown.ParseOptions`.
+  A caller that set `.markdown = .commonmark` or `.gfm` names
+  `Format.commonmark`/`Format.gfm` instead; one that set `.highlight`,
+  `.math`, `.directives`, `.html_elements` or `.highlight_colors` is
+  unchanged; one that turned a default-on extension off has no
+  spelling for that now short of the `commonmark` row.
+
+- `twig_parse`, `twig_editor_create`,
+  `twig_document_serialize`, `twig_format_supports` and
+  `twig_format_is_authorable` accept format codes 6 and 7, which they
+  reported as `TWIG_STATUS_UNSUPPORTED_FORMAT`.
+
+- A Markdown `cell`'s `span` is now its own extent — from
+  the pipe that opens it to the pipe that closes it, exclusive — rather
+  than the whole row's. In `"| a | b |\n|---|---|\n"` the header's first
+  cell reported `0..9` and now reports `0..4` (`| a `), its second `0..9`
+  and now `4..8` (`| b `). `content_span` is unchanged. `nodes_at` and
+  `node_at` inside a multi-column row now descend into the cell holding the
+  offset and on into its inline content, where they stopped at the row's
+  last cell.
+
+- `toggle_inline` over a range that covers a `kind`
+  node's whole interior and lies within its span — the interior plus some
+  or all of its delimiters — now removes that mark, where it wrapped the
+  range in another pair. Over a node of another kind whose only child is
+  a `kind` node filling its interior (`***word***` for `strong`, a
+  paragraph that is one mark) it now removes the inner mark, where it
+  wrapped again. Exact-span and exact-interior ranges behave as before.
+
+- `toggle_inline` and `wrap_range` over a range that
+  cuts into an inline code span (`verbatim`) or inline math now widen the
+  range to the whole leaf and write the delimiters around its backticks —
+  `` `word` `` with `word` selected becomes `` **`word`** `` — where they
+  wrote them inside as literal text (`` `**word**` ``). The `Change`
+  reported covers the widened range.
+
+
 ## 3.3.3
 
 ### Fixed
