@@ -1321,8 +1321,10 @@ TwigStatus twig_editor_wrap_range(
 );
 
 // Toggle `kind` over [start, end): strip the mark if the range already is a node
-// of `kind` (its whole span or its interior), else wrap it — a rich editor's
-// Cmd-B. Same argument/format/rollback rules as twig_editor_wrap_range,
+// of `kind` — covers its whole interior and reaches no further than its own
+// delimiters, or is a mark of another kind that is nothing but it — else wrap
+// it — a rich editor's Cmd-B. Same argument/format/rollback rules as
+// twig_editor_wrap_range,
 // including its per-block cutting: the strip-or-wrap question is asked once per
 // block the range touches, so a second press over a multi-block selection
 // removes every mark the first one wrote instead of nesting a pair around each.

@@ -209,6 +209,50 @@ test "toggleInline: bold on, then off, round-trips in both formats" {
     try dj.expectSource("a word b\n");
 }
 
+test "toggleInline: a selection that reaches into a mark's delimiters is still that mark" {
+    // A rich view draws no delimiters, so a drag that ends after the `d` of
+    // `**bold**` ends before its closing `**` or after it — both are the
+    // bold, and the second used to be wrapped again as `****bold****`.
+    var md = try Fixture.init("**bold** plain\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(2, 8), .strong);
+    try md.expectSource("bold plain\n");
+
+    var md2 = try Fixture.init("**bold** plain\n", .markdown);
+    defer md2.deinit();
+    try md2.ed.toggleInline(Span.init(0, 6), .strong);
+    try md2.expectSource("bold plain\n");
+
+    // Short of the interior is not the mark: `bol` alone is a new selection.
+    var md3 = try Fixture.init("**bold** plain\n", .markdown);
+    defer md3.deinit();
+    try md3.ed.toggleInline(Span.init(2, 5), .strong);
+    try md3.expectSource("****bol**d** plain\n");
+}
+
+test "toggleInline: bold over emphasis toggles off again from the whole span" {
+    // `***word***` is an emph whose whole interior is a strong. The second
+    // press over the same span is the strong coming off, not a third pair.
+    var md = try Fixture.init("*word*\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(0, 6), .strong);
+    try md.expectSource("***word***\n");
+    try md.ed.toggleInline(Span.init(0, 10), .strong);
+    try md.expectSource("*word*\n");
+    // The same from the interior alone, and from the strong's own span.
+    try md.ed.toggleInline(Span.init(1, 5), .strong);
+    try md.expectSource("***word***\n");
+    try md.ed.toggleInline(Span.init(1, 9), .strong);
+    try md.expectSource("*word*\n");
+}
+
+test "toggleInline: a whole paragraph that is one mark is that mark" {
+    var md = try Fixture.init("**bold**\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(0, 8), .strong);
+    try md.expectSource("bold\n");
+}
+
 test "toggleInline: a kind the format can't spell is refused, not mis-spelled" {
     // Djot spells `{=mark=}`; Markdown has no mark at all. This is the raggedness
     // `Syntax`'s optional table exists to carry.

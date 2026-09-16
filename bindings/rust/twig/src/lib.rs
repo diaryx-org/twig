@@ -2017,8 +2017,10 @@ impl Editor {
     }
 
     /// Toggle `kind` over `[start, end)`: remove the mark if the range already
-    /// *is* a node of `kind` (its whole span or its rendered interior), else
-    /// wrap it — a rich editor's Cmd-B. Same error rules as
+    /// *is* a node of `kind` — covers its whole rendered interior and reaches
+    /// no further than its own delimiters, or is a mark of another kind that
+    /// is nothing but it (`***word***` selected whole is the strong inside the
+    /// emphasis) — else wrap it — a rich editor's Cmd-B. Same error rules as
     /// [`Editor::wrap_range`], and the same per-block cutting: remove-or-wrap
     /// is decided once per block the range touches, so a second press over a
     /// multi-block selection takes off every mark the first one put on instead

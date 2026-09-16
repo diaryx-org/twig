@@ -359,8 +359,10 @@ pub const Editor = struct {
     }
 
     /// Toggle `kind` over `[start, end)`: strip the mark where the range already
-    /// IS a node of `kind` (its whole span or its interior), else wrap it — a
-    /// rich editor's Cmd-B. One decision per block the range touches; see
+    /// IS a node of `kind` — covers its whole interior and reaches no further
+    /// than its delimiters, looking through a mark of another kind that is
+    /// nothing but it (`Splicer.inlineNodeCovering`) — else wrap it — a rich
+    /// editor's Cmd-B. One decision per block the range touches; see
     /// `applyInline`.
     pub fn toggleInline(self: *Editor, span: Span, kind: InlineKind) Error!void {
         return self.applyInline(span, kind, .toggle);

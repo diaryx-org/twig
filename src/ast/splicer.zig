@@ -635,10 +635,11 @@ pub const Splicer = struct {
     }
 
     /// Toggle an inline mark of `kind` over `span`. If `span` already *is* a
-    /// node of `kind` — its whole span or its interior `content_span` exactly
-    /// equal to `span` — the mark is removed (delimiters stripped); otherwise
-    /// `span` is wrapped with `open`/`close`. Mirrors a rich editor's Cmd-B:
-    /// select a word, bold it; select it again, un-bold it.
+    /// node of `kind` — covers its whole interior and reaches no further than
+    /// its delimiters, see `inlineNodeCovering` — the mark is removed
+    /// (delimiters stripped); otherwise `span` is wrapped with `open`/`close`.
+    /// Mirrors a rich editor's Cmd-B: select a word, bold it; select it again,
+    /// un-bold it.
     pub fn toggleInline(self: *Splicer, span: Span, kind: AST.KindRef, open: []const u8, close: []const u8) !void {
         const strip = (try self.inlineStrip(span, kind, open, close)) orelse
             return self.wrapRange(span, open, close);
@@ -698,18 +699,50 @@ pub const Splicer = struct {
         return error.NoContentSpan;
     }
 
-    /// The id of a node of `kind` whose whole span or interior exactly equals
-    /// `span` — the "is this selection already marked?" test behind
-    /// `toggleInline`. `null` if none.
+    /// The id of the node of `kind` that `span` already IS — the "is this
+    /// selection already marked?" test behind `toggleInline`. `null` if none.
+    ///
+    /// A selection is a mark's when it covers the mark's whole interior and
+    /// reaches no further than the mark's own delimiters: `content_span ⊆
+    /// span ⊆ span(node)`. That takes the two exact shapes — the whole node,
+    /// or its interior — and everything between them, which is what a
+    /// selection made in a rich view actually is: the delimiters draw
+    /// nothing there, so a drag that ends "after the d" of `**bold**` ends
+    /// either before its closing `**` or after it, and both mean the bold.
+    /// Wrapping the second (`bold**`) wrote `****bold****`.
+    ///
+    /// A node of another kind that the selection is — `***word***` is an
+    /// `emph` whose whole interior is a `strong`, and a whole paragraph can
+    /// be one mark — is looked through to the `kind` node filling its
+    /// interior, so the second press of Bold over a bolded emphasis takes
+    /// the bold off instead of nesting a third pair.
     fn inlineNodeCovering(self: *Splicer, span: Span, kind: AST.KindRef) ?Node.Id {
         for (self.doc.ast.nodes, 0..) |node, id| {
-            if (!kind.matches(node.kind)) continue;
-            if (self.doc.span(node.id).eql(span)) return @intCast(id);
-            if (self.doc.contentSpan(node.id)) |cs| {
-                if (cs.eql(span)) return @intCast(id);
+            const node_span = self.doc.span(node.id);
+            if (node_span.eql(Span.init(0, 0))) continue;
+            const cs = self.doc.contentSpan(node.id);
+            // The exact-span match a kind without a recorded interior can
+            // still make (its delimiters are stripped by width, see
+            // `inlineStrip`).
+            if (kind.matches(node.kind) and node_span.eql(span)) return @intCast(id);
+            const interior = cs orelse continue;
+            if (!(node_span.start <= span.start and span.start <= interior.start and
+                interior.end <= span.end and span.end <= node_span.end)) continue;
+            if (kind.matches(node.kind)) return @intCast(id);
+            if (self.soleChildFilling(node.id, interior)) |child| {
+                if (kind.matches(self.doc.ast.nodes[child].kind)) return child;
             }
         }
         return null;
+    }
+
+    /// `id`'s only child, if it has exactly one and that child's span is the
+    /// whole of `interior` — a mark that is nothing but another mark.
+    fn soleChildFilling(self: *Splicer, id: Node.Id, interior: Span) ?Node.Id {
+        var it = self.doc.children(id);
+        const first = it.next() orelse return null;
+        if (it.next() != null) return null;
+        return if (self.doc.span(first.id).eql(interior)) first.id else null;
     }
 };
 
