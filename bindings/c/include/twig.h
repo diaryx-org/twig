@@ -1309,7 +1309,8 @@ TwigStatus twig_editor_nodes_at(
 // which reparses as literal asterisks and no mark. Block markers stay outside
 // the pair (a heading keeps its `# `, a list item its `- `), and a code block
 // inside the range is stepped over: `**` there is two characters of someone's
-// program. A range with no inline content in it at all — one wholly inside a
+// program. A code span the range cuts into is taken whole, so the pair closes
+// around its backticks. A range with no inline content in it at all — one wholly inside a
 // fence — is TWIG_STATUS_NOT_EDITABLE. A zero-width range is exempt: it crosses
 // nothing, and inserting an empty pair to type between is the point.
 TwigStatus twig_editor_wrap_range(

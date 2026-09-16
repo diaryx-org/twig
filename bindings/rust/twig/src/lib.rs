@@ -2001,8 +2001,11 @@ impl Editor {
     /// literal asterisks and no mark at all. A block's own marker stays outside
     /// the pair (a heading keeps its `# `, a list item its `- `), and a code
     /// block inside the range is stepped over — `**` in a program is two
-    /// asterisks. A range with no inline content anywhere in it, one wholly
-    /// inside a fence, is [`Error::NotEditable`]. A zero-width range is exempt
+    /// asterisks. A code span the range cuts into is taken whole, so the pair
+    /// closes around its backticks (`` **`word`** `` from a selection of
+    /// `word`) rather than inside them. A range with no inline content
+    /// anywhere in it, one wholly inside a fence, is [`Error::NotEditable`].
+    /// A zero-width range is exempt
     /// from all of this: it crosses nothing, and opening an empty pair for the
     /// caret to type between is the gesture.
     pub fn wrap_range(

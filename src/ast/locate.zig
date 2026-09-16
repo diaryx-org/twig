@@ -590,6 +590,27 @@ pub fn inlineHostPieces(
     out.shrinkRetainingCapacity(kept);
 }
 
+/// Grow `piece` to take in every code span (`verbatim`, `inline_math`) it
+/// cuts into, so a delimiter pair written around it lands outside the
+/// backticks. A piece wholly inside one becomes the whole of it; one that
+/// meets none is unchanged. The leaves are inline and lie inside their host,
+/// so a widened piece stays within the host it was cut from.
+pub fn widenOverVerbatim(doc: *const Document, piece: *Span) void {
+    for (doc.ast.nodes) |node| {
+        const leaf = switch (node.kind) {
+            .text_leaf => |l| l.kind,
+            else => continue,
+        };
+        if (leaf != .verbatim and leaf != .inline_math) continue;
+        const s = doc.span(node.id);
+        if (s.len() == 0) continue;
+        // Meets the piece at all — sharing bytes, not merely touching.
+        if (s.end <= piece.start or piece.end <= s.start) continue;
+        piece.start = @min(piece.start, s.start);
+        piece.end = @max(piece.end, s.end);
+    }
+}
+
 fn spanStartsBefore(_: void, a: Span, b: Span) bool {
     return a.start < b.start;
 }

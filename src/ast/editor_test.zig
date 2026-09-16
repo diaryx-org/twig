@@ -253,6 +253,25 @@ test "toggleInline: a whole paragraph that is one mark is that mark" {
     try md.expectSource("bold\n");
 }
 
+test "toggleInline: a selection inside a code span marks the whole code span" {
+    // `**` inside the backticks is code; the mark closes around them, and
+    // comes off again from the span it left selected.
+    var md = try Fixture.init("a `word` b\n", .markdown);
+    defer md.deinit();
+    try md.ed.toggleInline(Span.init(3, 7), .strong);
+    try md.expectSource("a **`word`** b\n");
+    try md.ed.toggleInline(Span.init(2, 12), .strong);
+    try md.expectSource("a `word` b\n");
+    // A selection that cuts into the code span from outside takes it whole.
+    try md.ed.toggleInline(Span.init(0, 4), .emph);
+    try md.expectSource("*a `word`* b\n");
+    // Toggling code itself from inside the span strips it.
+    var md2 = try Fixture.init("a `word` b\n", .markdown);
+    defer md2.deinit();
+    try md2.ed.toggleInline(Span.init(3, 7), .verbatim);
+    try md2.expectSource("a word b\n");
+}
+
 test "toggleInline: a kind the format can't spell is refused, not mis-spelled" {
     // Djot spells `{=mark=}`; Markdown has no mark at all. This is the raggedness
     // `Syntax`'s optional table exists to carry.

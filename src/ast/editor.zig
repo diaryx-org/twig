@@ -417,9 +417,12 @@ pub const Editor = struct {
     ///
     /// `error.NotEditable` when the range holds no inline host at all — a
     /// selection inside a code block, where `**` would be two asterisks of
-    /// someone's program rather than a mark. A zero-width range is exempt from
-    /// the whole business: it crosses no boundary, and inserting an empty pair
-    /// for the caret to type between is a gesture in its own right.
+    /// someone's program rather than a mark. A code SPAN is the same asterisks
+    /// at a smaller scale, and a piece that cuts into one is widened to the
+    /// whole of it (`locate.widenOverVerbatim`), so the mark closes around the
+    /// backticks. A zero-width range is exempt from the whole business: it
+    /// crosses no boundary, and inserting an empty pair for the caret to type
+    /// between is a gesture in its own right.
     fn applyInline(self: *Editor, span: Span, kind: InlineKind, mode: InlineMode) Error!void {
         try self.checkRange(span.start, span.end);
         const d = self.syntax.authorableDelimsFor(kindRef(kind)) orelse return error.UnsupportedFormat;
@@ -434,6 +437,11 @@ pub const Editor = struct {
         } else {
             try locate.inlineHostPieces(allocator, &self.splicer.doc, span, &pieces);
             if (pieces.items.len == 0) return error.NotEditable;
+            // A piece that cuts into a code span widens to the whole of it:
+            // `**` inside the backticks is two asterisks of code, so the
+            // mark closes around the code instead — `` **`word`** `` from a
+            // selection of `word`, which the next press takes off again.
+            for (pieces.items) |*p| locate.widenOverVerbatim(&self.splicer.doc, p);
         }
 
         // Decide everything first: a removal expands its piece to the whole
@@ -443,6 +451,9 @@ pub const Editor = struct {
         defer edits.deinit(allocator);
         var region = span;
         for (pieces.items) |p| {
+            // A piece widened over a code span reaches past the selection.
+            region.start = @min(region.start, p.start);
+            region.end = @max(region.end, p.end);
             const strip = if (mode == .toggle)
                 self.splicer.inlineStrip(p, kindRef(kind), d.open, d.close) catch
                     return error.NotEditable
