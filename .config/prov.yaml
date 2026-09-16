@@ -19,6 +19,10 @@ about: off
 workspace_id: twig
 root: README.md
 fields:
+  audience:
+    values: closed
+    vocabulary: '[Audiences](/vocab/audiences.md)'
+    reify: true
   status:
   - under: '[[Tasks]]'
     values: closed
@@ -49,3 +53,9 @@ views:
     label: All work
     group: status
     where: { has: status }
+exports:
+  www:
+    label: twig on diaryx.org
+    gate:
+      field: audience
+      value: public
