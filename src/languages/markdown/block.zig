@@ -457,6 +457,39 @@ fn splitTableRow(allocator: Allocator, s: []const u8) Allocator.Error![][]const 
     return cells.toOwnedSlice(allocator);
 }
 
+/// Where each cell of a row lies in `s` -- one `{ start, end }` per cell
+/// `splitTableRow` yields, in the same order and by the same walk (so the
+/// two cannot disagree about where a cell is). A cell runs from the `|`
+/// that opens it, inclusive, to the `|` that closes it, exclusive: the
+/// first cell keeps the row's leading edge pipe, and the trailing edge pipe
+/// belongs to no cell, as `stripEdgePipes` drops it. A row with no edge
+/// pipes opens its first cell at its first byte. Caller frees the slice.
+fn tableCellExtents(allocator: Allocator, s: []const u8) Allocator.Error![][2]usize {
+    const trimmed_outer = std.mem.trim(u8, s, " \t");
+    const lead = @intFromPtr(trimmed_outer.ptr) - @intFromPtr(s.ptr);
+    const inner = stripEdgePipes(trimmed_outer);
+    // Where `inner` sits in `trimmed_outer`: one past a leading edge pipe.
+    const inner_at = @intFromPtr(inner.ptr) - @intFromPtr(trimmed_outer.ptr);
+    var out = std.ArrayList([2]usize).empty;
+    errdefer out.deinit(allocator);
+    // The first cell opens on the edge pipe when there is one.
+    var start: usize = lead;
+    var i: usize = 0;
+    while (i < inner.len) : (i += 1) {
+        if (inner[i] == '\\' and i + 1 < inner.len) {
+            i += 1;
+            continue;
+        }
+        if (inner[i] == '|') {
+            const at = lead + inner_at + i;
+            try out.append(allocator, .{ start, at });
+            start = at;
+        }
+    }
+    try out.append(allocator, .{ start, lead + inner_at + inner.len });
+    return out.toOwnedSlice(allocator);
+}
+
 /// Parse a table DELIMITER row (`---|:--:|--:`) into one `Alignment` per
 /// cell, or `null` if any cell isn't of the form `:?-+:?` (at least one
 /// hyphen, optionally flanked by a `:` on either/both sides) -- i.e. `s`
@@ -2520,7 +2553,7 @@ pub const Parser = struct {
         var row_ids = std.ArrayList(Node.Id).empty;
         defer row_ids.deinit(self.allocator);
 
-        const header_row_id = try self.buildTableRow(header_cells, aligns, true, idx, idx);
+        const header_row_id = try self.buildTableRow(s, header_cells, aligns, true, idx, idx);
         try row_ids.append(self.allocator, header_row_id);
 
         var last_idx = idx + 1;
@@ -2537,7 +2570,7 @@ pub const Parser = struct {
 
             const raw_cells = try splitTableRow(self.allocator, row_s);
             defer self.allocator.free(raw_cells);
-            const row_id = try self.buildTableRow(raw_cells, aligns, false, scan, scan);
+            const row_id = try self.buildTableRow(row_s, raw_cells, aligns, false, scan, scan);
             try row_ids.append(self.allocator, row_id);
             last_idx = scan;
             scan += 1;
@@ -2621,10 +2654,15 @@ pub const Parser = struct {
     /// pulling text from `cells[i]` when present or `""` for a ragged
     /// row's missing trailing cells (extra `cells` entries beyond
     /// `aligns.len` are simply never visited -- GFM's "ignore extra cells"
-    /// rule).
-    fn buildTableRow(self: *Parser, cells: []const []const u8, aligns: []const AST.Alignment, head: bool, start_line: usize, end_line: usize) Allocator.Error!Node.Id {
+    /// rule). `row` is the row's text as `splitTableRow` saw it (indent
+    /// stripped, a genuine slice of the line), which is where each cell's
+    /// own span is read from.
+    fn buildTableRow(self: *Parser, row: []const u8, cells: []const []const u8, aligns: []const AST.Alignment, head: bool, start_line: usize, end_line: usize) Allocator.Error!Node.Id {
         var cell_ids = std.ArrayList(Node.Id).empty;
         defer cell_ids.deinit(self.allocator);
+        const extents = try tableCellExtents(self.allocator, row);
+        defer self.allocator.free(extents);
+        const row_base = @intFromPtr(row.ptr) - @intFromPtr(self.source.ptr);
         for (aligns, 0..) |al, i| {
             // Every `cells[i]` is a genuine (trimmed) slice of this row's
             // OWN line -- `splitTableRow`/`stripEdgePipes` only ever
@@ -2648,6 +2686,16 @@ pub const Parser = struct {
                 try self.unescapeCellPipes(text, &out, &segs);
                 break :blk try self.addDeferredTextNode(kind, out.items, segs.items, start_line, end_line);
             };
+            // The cell's own span, over the line span `addDeferredTextNode`
+            // gave it: from the `|` that opens it to the one that closes it,
+            // so a hit-test descends into THIS cell and not the row's last.
+            // A ragged row's missing cell is a zero-width span where its
+            // text would begin, holding nothing.
+            const ext = if (i < extents.len) extents[i] else blk: {
+                const end = if (extents.len > 0) extents[extents.len - 1][1] else row.len;
+                break :blk .{ end, end };
+            };
+            self.builder.setSpan(cell_id, Span.init(row_base + ext[0], row_base + ext[1]));
             try cell_ids.append(self.allocator, cell_id);
         }
         const row_id = try self.builder.addContainer(.{ .row = .{ .head = head } }, cell_ids.items);
@@ -3729,6 +3777,46 @@ test "table: header/delimiter/body with per-column alignment" {
     const body_row = r.ast.nodes[head_row].next_sibling.?;
     try testing.expect(!r.ast.nodes[body_row].kind.row.head);
     try testing.expectEqual(@as(?Node.Id, null), r.ast.nodes[body_row].next_sibling);
+}
+
+test "span: a table cell runs from the pipe that opens it to the one that closes it" {
+    const src = "| a | **b** |\n|---|---|\n| 1 | 2 \\| 3 |\nno | pipes\n";
+    var r = try parse(testing.allocator, src, .{ .tables = true });
+    defer r.deinit();
+    const table = r.ast.nodes[r.ast.root].first_child.?;
+    const head_row = r.ast.nodes[r.ast.nodes[table].first_child.?].next_sibling.?;
+    const c1 = r.ast.nodes[head_row].first_child.?;
+    const c2 = r.ast.nodes[c1].next_sibling.?;
+    try testing.expectEqualStrings("| a ", Span.of(u8, r.span(c1), src));
+    try testing.expectEqualStrings("| **b** ", Span.of(u8, r.span(c2), src));
+    try testing.expectEqualStrings("**b**", Span.of(u8, r.contentSpan(c2).?, src));
+    // An escaped pipe is text, not a boundary.
+    const body_row = r.ast.nodes[head_row].next_sibling.?;
+    const b2 = r.ast.nodes[r.ast.nodes[body_row].first_child.?].next_sibling.?;
+    try testing.expectEqualStrings("| 2 \\| 3 ", Span.of(u8, r.span(b2), src));
+    // No edge pipes: the first cell opens on its first byte.
+    const last_row = r.ast.nodes[body_row].next_sibling.?;
+    const n1 = r.ast.nodes[last_row].first_child.?;
+    const n2 = r.ast.nodes[n1].next_sibling.?;
+    try testing.expectEqualStrings("no ", Span.of(u8, r.span(n1), src));
+    try testing.expectEqualStrings("| pipes", Span.of(u8, r.span(n2), src));
+    // The row still spans its whole line.
+    try testing.expectEqualStrings("| a | **b** |", Span.of(u8, r.span(head_row), src));
+}
+
+test "span: a ragged row's missing cell is empty where its text would begin" {
+    const src = "| a | b |\n|---|---|\n| 1 |\n";
+    var r = try parse(testing.allocator, src, .{ .tables = true });
+    defer r.deinit();
+    const table = r.ast.nodes[r.ast.root].first_child.?;
+    const head_row = r.ast.nodes[r.ast.nodes[table].first_child.?].next_sibling.?;
+    const body_row = r.ast.nodes[head_row].next_sibling.?;
+    const b1 = r.ast.nodes[body_row].first_child.?;
+    const b2 = r.ast.nodes[b1].next_sibling.?;
+    try testing.expectEqualStrings("| 1 ", Span.of(u8, r.span(b1), src));
+    const sp = r.span(b2);
+    try testing.expectEqual(sp.start, sp.end);
+    try testing.expectEqual(r.span(b1).end, sp.start);
 }
 
 test "table: ragged rows are padded/truncated to the header's column count" {

@@ -538,10 +538,9 @@ pub fn inlineHostRegion(doc: *const Document, id: AST.Node.Id) ?Span {
 /// True when `id` has children and every one of them is inline — the elided
 /// `<p>` of a tight table cell.
 ///
-/// An EMPTY node answers false rather than vacuously true, which matters: a
-/// Markdown `cell` spans its whole ROW and only `content_span` narrows it to
-/// the cell, so an empty cell admitted here would contribute a range covering
-/// its neighbours. There is nothing in it to mark either way.
+/// An EMPTY node answers false rather than vacuously true: with no
+/// `content_span` its region would be its whole span, delimiter included,
+/// and there is nothing in it to mark either way.
 fn holdsInlinesDirectly(doc: *const Document, id: AST.Node.Id) bool {
     var it = doc.children(id);
     var any = false;
@@ -672,6 +671,34 @@ test "deepestContaining descends to the innermost node and chains to it" {
     try std.testing.expectEqual(deep, chain.items[chain.items.len - 1]);
     try std.testing.expectEqual(ast.ast.root, chain.items[0]);
     try std.testing.expect(chain.items.len >= 2);
+}
+
+test "deepestContaining reaches a mark in the first cell of a two-column Markdown row" {
+    const gpa = std.testing.allocator;
+    const src = "| A | B |\n| --- | --- |\n| **bold** | other |\n";
+    var doc = try Markdown.parse(gpa, src, .{});
+    defer doc.deinit();
+    // Inside `bold`: the chain runs through the FIRST cell to the strong. It
+    // used to end at the last cell, every cell of a row having carried the
+    // row's whole span.
+    const at = std.mem.indexOf(u8, src, "bold").? + 1;
+    const deep = deepestContaining(&doc, at).?;
+    const kind = doc.ast.nodes[deep].kind;
+    try std.testing.expect(kind == .str);
+    var chain: std.ArrayList(AST.Node.Id) = .empty;
+    defer chain.deinit(gpa);
+    try ancestorChain(gpa, &doc, at, &chain);
+    var saw_strong = false;
+    for (chain.items) |id| {
+        const k = doc.ast.nodes[id].kind;
+        if (k == .inline_mark and k.inline_mark == .strong) saw_strong = true;
+    }
+    try std.testing.expect(saw_strong);
+    // And `other` resolves into the second cell, not the first.
+    const other = std.mem.indexOf(u8, src, "other").?;
+    const cell = deepestContaining(&doc, other - 2).?; // the `|` before it
+    try std.testing.expect(doc.ast.nodes[cell].kind == .cell);
+    try std.testing.expectEqualStrings("| other ", Span.of(u8, doc.span(cell), src));
 }
 
 // ── Caret / prefix tests ───────────────────────────────────────────────────

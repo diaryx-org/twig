@@ -132,10 +132,10 @@ pub fn extract(allocator: Allocator, doc: *const Document, offset: usize) Error!
             }
             col_index += 1;
         }
-        // Every cell of a row shares the ROW's span (the parser doesn't span
-        // cells individually), so the caret's cell can't be read off a cell span
-        // — the row is located by its own (per-line) span, and the column by
-        // counting the `|` separators before the caret on that line.
+        // The row is located by its own (per-line) span, and the column by
+        // counting the `|` separators before the caret on that line — the one
+        // walk that answers for a caret on the delimiter line or in a ragged
+        // gap too, where no cell span holds it.
         if (!found_caret and offset >= doc.span(child.id).start and offset <= doc.span(child.id).end) {
             grid.caret_row = row_index;
             grid.caret_col = columnAt(src, doc.span(child.id).start, offset);
