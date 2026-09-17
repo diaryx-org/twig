@@ -29,8 +29,8 @@ pub enum Format {
     Xml,
     Html,
     /// Parsed, rendered, serialized (`Target::Asciidoc`) and authored into:
-    /// every block gesture and the inline marks work over an AsciiDoc
-    /// document, while the link, image, footnote and table gestures report
+    /// every block gesture, the inline marks, a link and an image work over
+    /// an AsciiDoc document, while the footnote and table gestures report
     /// [`Error::UnsupportedFormat`] — their AsciiDoc spellings have a shape
     /// the gesture algorithms cannot write (see [`Format::supports`]).
     ///
@@ -728,8 +728,9 @@ impl MarkColor {
 ///
 /// Twig's formats are **ragged**: Djot spells all eight inline marks and
 /// Markdown four (a fifth with [`MarkdownExtensions::highlight`]), HTML spells
-/// marks and nothing block-level, AsciiDoc spells everything but links,
-/// footnotes and tables, XML nothing. Every [`Editor`]
+/// marks, headings, quotes, lists, code blocks, links and images but no task
+/// box, footnote or table edit, AsciiDoc spells everything but footnotes and
+/// tables, XML nothing. Every [`Editor`]
 /// method already reports that as
 /// [`Error::UnsupportedFormat`] — but only once called, which is too late for a
 /// UI that wants to *disable* the button rather than let it fail.
@@ -5896,17 +5897,20 @@ mod tests {
     #[test]
     fn supports_answers_per_gesture_where_authorable_cannot() {
         // HTML is why the per-gesture query exists. `is_authorable` is true for
-        // it — it spells the inline marks, a heading and a literal — while a
-        // toolbar built on that predicate would show a quote button and a
-        // code-block button that both fail.
+        // it — it spells the inline marks, and every block its parser reads
+        // back through a renderer — while a toolbar built on that predicate
+        // would show a task-box button and a footnote button that both fail.
         assert!(Format::Html.is_authorable());
         assert!(Format::Html.supports(Gesture::ToggleInline(InlineKind::Strong)));
         assert!(Format::Html.supports(Gesture::SetBlock));
         assert!(Format::Html.supports(Gesture::InsertLiteral));
-        assert!(!Format::Html.supports(Gesture::ToggleBlockContainer(
+        assert!(Format::Html.supports(Gesture::ToggleBlockContainer(
             BlockContainerKind::BlockQuote
         )));
-        assert!(!Format::Html.supports(Gesture::ToggleCodeBlock));
+        assert!(Format::Html.supports(Gesture::ToggleCodeBlock));
+        assert!(Format::Html.supports(Gesture::InsertLink));
+        assert!(!Format::Html.supports(Gesture::ToggleTaskItem));
+        assert!(!Format::Html.supports(Gesture::InsertFootnote));
         // The nine that used to answer nothing at all: HTML has a table its
         // parser reads and no spelling to write one back with, no blank-line
         // block separation, and no numbered list marker.
@@ -5926,11 +5930,13 @@ mod tests {
             }
         }
         // AsciiDoc is in the middle of the range the other way round from
-        // HTML: the block gestures work, the link/footnote/table shapes don't.
+        // HTML: the block gestures work, a link prints through its renderer,
+        // the footnote/table shapes don't.
         assert!(Format::Asciidoc.is_authorable());
         assert!(Format::Asciidoc.supports(Gesture::SetBlock));
         assert!(Format::Asciidoc.supports(Gesture::ToggleInline(InlineKind::Mark)));
-        assert!(!Format::Asciidoc.supports(Gesture::InsertLink));
+        assert!(Format::Asciidoc.supports(Gesture::InsertLink));
+        assert!(!Format::Asciidoc.supports(Gesture::InsertFootnote));
         assert!(!Format::Asciidoc.supports(Gesture::TableInsertRow));
 
         // And the two authorable formats differ from each other, which is the

@@ -6,6 +6,8 @@ const Document = @import("../document.zig");
 const Span = @import("../span.zig");
 const Editor = @import("../ast/editor.zig").Editor;
 const AST = @import("../ast/ast.zig");
+const select = @import("../ast/select.zig");
+const Syntax = @import("../syntax.zig").Syntax;
 
 fn expectSpan(span: Span, len: usize) !void {
     try testing.expect(span.start <= span.end);
@@ -103,7 +105,10 @@ fn expectRenderText(entry: format.Entry) !void {
 /// What `Editor` assumes of a declared `renderBlock`: a heading fragment it
 /// builds — a `heading` over a `str` — prints as source the format parses
 /// back to a heading of that level over that text, which is what lets
-/// `setBlock` splice the print in.
+/// `setBlock` splice the print in. And the same of every other fragment a
+/// gesture builds where its alphabet is missing: a quote and a list over
+/// paragraphs, a code block, a link and an image over text — each reparses
+/// to its kind with its text intact.
 fn expectRenderBlock(entry: format.Entry) !void {
     const render = entry.syntax.renderBlock.?;
     var b = AST.Builder.init(testing.allocator);
@@ -131,6 +136,76 @@ fn expectRenderBlock(entry: format.Entry) !void {
         else => {},
     };
     try testing.expect(found);
+
+    // The gesture fragments, each built the way its gesture builds it.
+    var q = AST.Builder.init(testing.allocator);
+    defer q.deinit();
+    const quote = try q.addContainer(.block_quote, &.{
+        try q.addContainer(.para, &.{try q.addLeaf(.{ .str = "one" })}),
+        try q.addContainer(.para, &.{try q.addLeaf(.{ .str = "two" })}),
+    });
+    try expectFragmentReparses(entry, render, &q, quote, .block_quote, "onetwo");
+
+    var l = AST.Builder.init(testing.allocator);
+    defer l.deinit();
+    const list = try l.addContainer(.{ .ordered_list = .{ .numbering = .decimal, .tight = true, .start = null } }, &.{
+        try l.addContainer(.list_item, &.{try l.addContainer(.para, &.{try l.addLeaf(.{ .str = "one" })})}),
+        try l.addContainer(.list_item, &.{try l.addContainer(.para, &.{try l.addLeaf(.{ .str = "two" })})}),
+    });
+    try expectFragmentReparses(entry, render, &l, list, .ordered_list, "onetwo");
+
+    var c = AST.Builder.init(testing.allocator);
+    defer c.deinit();
+    const code = try c.addLeaf(.{ .code_block = .{ .lang = "zig", .text = "a < b\n" } });
+    try expectFragmentReparses(entry, render, &c, code, .code_block, "a < b\n");
+
+    var k = AST.Builder.init(testing.allocator);
+    defer k.deinit();
+    const link = try k.addContainer(.{ .link = .{ .destination = "https://x.dev/?a=1&b=2", .reference = null } }, &.{try k.addLeaf(.{ .str = "here" })});
+    try expectFragmentReparses(entry, render, &k, link, .link, "here");
+
+    var m = AST.Builder.init(testing.allocator);
+    defer m.deinit();
+    const image = try m.addContainer(.{ .image = .{ .destination = "cat.png", .reference = null } }, &.{try m.addLeaf(.{ .str = "a cat" })});
+    try expectFragmentReparses(entry, render, &m, image, .image, "a cat");
+}
+
+/// Print `root` of `b` through `render`, parse the print, and find a node of
+/// `tag` whose text is `text` — the reparse promise each gesture fragment
+/// rests on. A link or image also has to read its destination back.
+fn expectFragmentReparses(
+    entry: format.Entry,
+    render: @typeInfo(@FieldType(Syntax, "renderBlock")).optional.child,
+    b: *const AST.Builder,
+    root: AST.Node.Id,
+    tag: std.meta.Tag(AST.Node.Kind),
+    text: []const u8,
+) !void {
+    const view = b.view(root);
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try render(testing.allocator, &view, root, &out.writer);
+    errdefer std.debug.print("\n--- {s} fragment source ---\n{s}\n", .{ @tagName(tag), out.written() });
+    const config: format.ParseConfig = .{};
+    var parsed = try entry.parse(&config, testing.allocator, out.written());
+    defer parsed.deinit();
+    const ast = &parsed.doc.ast;
+    for (ast.nodes, 0..) |n, i| {
+        if (std.meta.activeTag(n.kind) != tag) continue;
+        const got = try select.textOf(testing.allocator, ast, @intCast(i));
+        defer testing.allocator.free(got);
+        // Whether a listing's payload ends in a line end is the format's
+        // convention (AsciiDoc's does not), not part of the promise.
+        try testing.expectEqualStrings(std.mem.trimEnd(u8, text, "\n"), std.mem.trimEnd(u8, got, "\n"));
+        switch (n.kind) {
+            .link => |v| try testing.expectEqualStrings("https://x.dev/?a=1&b=2", v.destination.?),
+            .image => |v| try testing.expectEqualStrings("cat.png", v.destination.?),
+            .code_block => |v| try testing.expectEqualStrings("zig", v.lang.?),
+            else => {},
+        }
+        return;
+    }
+    return error.FragmentDidNotReparse;
 }
 
 test "harness: every declared renderer keeps the engine's promise" {

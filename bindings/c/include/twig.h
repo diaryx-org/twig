@@ -948,8 +948,9 @@ typedef enum TwigBlockContainerKind {
 
 // ── Format capability (the toolbar's gray-out question) ───────────────────────
 // Twig's formats are RAGGED: Djot spells all eight inline marks and Markdown
-// three, HTML spells marks and nothing block-level, AsciiDoc everything but
-// links, footnotes and tables, XML nothing. Every gesture below already
+// three, HTML spells marks, headings, quotes, lists, code blocks, links and
+// images but no task box, footnote or table edit, AsciiDoc everything but
+// footnotes and tables, XML nothing. Every gesture below already
 // reports that, as
 // TWIG_STATUS_UNSUPPORTED_FORMAT — but only once called, which is too late for a
 // UI that wants to DISABLE the button instead of letting it fail. An editor

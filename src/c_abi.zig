@@ -2970,8 +2970,8 @@ pub export fn twig_format_supports_ext(
 ///
 /// The open-read-only question, and only that one: 0 for a parse-only format
 /// (XML), where every gesture refuses and an editor should not offer a
-/// toolbar at all. A 1 is a WEAKER claim than it looks — HTML answers 1 on
-/// its inline marks while every block gesture over it is still unsupported —
+/// toolbar at all. A 1 is a WEAKER claim than it looks — HTML answers 1 while
+/// a task box, a footnote and every table edit over it are still unsupported —
 /// so do not drive per-button state from this. `twig_format_supports` is that
 /// question.
 pub export fn twig_format_is_authorable(format: c_int, out_authorable: ?*c_int) TwigStatus {
@@ -5779,11 +5779,11 @@ test "twig_format_is_authorable: the read-only question, and its weakness" {
     }
 
     // HTML's 1 above is the trap the per-gesture query exists for: authorable,
-    // and yet a code-block button over it would fail.
+    // and yet a task-box button over it would fail.
     var supported: c_int = -1;
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
         @intFromEnum(TwigFormat.html),
-        @intFromEnum(TwigGesture.toggle_code_block),
+        @intFromEnum(TwigGesture.toggle_task_item),
         0,
         &supported,
     ));

@@ -343,18 +343,17 @@ test "toggleInline: html spells every kind the toolbar vocabulary names" {
     }
 }
 
-test "toggleInline: html's raggedness stops at the line-prefixed blocks" {
-    // The gestures whose spelling has the wrong SHAPE for its field (a quote
-    // wraps rather than prefixing lines, a fence measures nothing, a link's
-    // destination lives in an attribute). All refused through the one uniform
-    // path, none of them with a hand-written HTML arm. A heading and a literal
-    // used to be on this list; they go through the renderers now — see the
-    // `setBlock: html` and `insert_literal: html` tests.
+test "toggleInline: html's raggedness stops at what has no native spelling" {
+    // The gestures whose construct HTML has no element for (a task box is a
+    // form control, a footnote is a convention). All refused through the one
+    // uniform path, none of them with a hand-written HTML arm. A heading, a
+    // literal, the containers, the code block and the link used to be on this
+    // list; they go through the renderers now — see the `… html` tests of
+    // each gesture.
     var fx = try Fixture.init("<p>ab</p>\n", .html);
     defer fx.deinit();
-    try testing.expectError(error.UnsupportedFormat, toggleContainer(&fx, 3, 5, .block_quote));
-    try testing.expectError(error.UnsupportedFormat, fx.ed.toggleCodeBlock(Span.init(3, 5), null));
-    try testing.expectError(error.UnsupportedFormat, insertLink(&fx, 3, 5, "http://x.dev"));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.toggleTaskItem(3));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.insertFootnote(3, "a"));
     try fx.expectSource("<p>ab</p>\n");
 }
 
@@ -879,6 +878,123 @@ test "renumberOrderedLists: each nesting level restarts at 1" {
     defer fx.deinit();
     try fx.ed.renumberOrderedLists(0);
     try fx.expectSource("1. a\n   1. b\n   2. c\n2. d\n");
+}
+
+test "toggle_block_container: html wraps the covered blocks in a quote the parser reads back" {
+    // No line prefix to write — `<blockquote>` wraps — so the covered blocks
+    // go under a fresh `block_quote` node and `renderBlock` prints it. Both
+    // paragraphs, with the mark re-spelled from the tree.
+    var fx = try Fixture.init("<p>a <em>b</em></p>\n<p>c</p>\n<p>d</p>\n", .html);
+    defer fx.deinit();
+    try toggleContainer(&fx, 3, 21, .block_quote);
+    try fx.expectSource("<blockquote>\n<p>a <em>b</em></p>\n<p>c</p>\n</blockquote>\n<p>d</p>\n");
+    const q = fx.find(.{ .tag = .block_quote }) orelse return error.NoQuote;
+    const ast = fx.ed.astView();
+    var n: usize = 0;
+    var c = ast.nodes[q].first_child;
+    while (c) |id| : (c = ast.nodes[id].next_sibling) n += 1;
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expect(fx.find(.{ .mark = .emph }) != null);
+}
+
+test "toggle_block_container: html quote on, then off, round-trips" {
+    var fx = try Fixture.init("<p>a</p>\n<p>b</p>\n", .html);
+    defer fx.deinit();
+    try toggleContainer(&fx, 3, 12, .block_quote);
+    try fx.expectSource("<blockquote>\n<p>a</p>\n<p>b</p>\n</blockquote>\n");
+    // Off: the range reaches both of the quote's blocks, so they are printed
+    // in its place.
+    const src = fx.ed.sourceBytes();
+    const a = std.mem.indexOf(u8, src, "a</p>").?;
+    const b = std.mem.indexOf(u8, src, "b</p>").?;
+    try toggleContainer(&fx, a, b + 1, .block_quote);
+    try fx.expectSource("<p>a</p>\n<p>b</p>\n");
+    try fx.expectNoNodeOfKind(.{ .tag = .block_quote });
+}
+
+test "toggle_block_container: html quoting part of a quote nests, and off peels one level" {
+    var fx = try Fixture.init("<blockquote>\n<p>a</p>\n<p>b</p>\n</blockquote>\n", .html);
+    defer fx.deinit();
+    const a = std.mem.indexOf(u8, fx.ed.sourceBytes(), "a</p>").?;
+    try toggleContainer(&fx, a, a + 1, .block_quote);
+    try fx.expectSource("<blockquote>\n<blockquote>\n<p>a</p>\n</blockquote>\n<p>b</p>\n</blockquote>\n");
+    const a2 = std.mem.indexOf(u8, fx.ed.sourceBytes(), "a</p>").?;
+    try toggleContainer(&fx, a2, a2 + 1, .block_quote);
+    try fx.expectSource("<blockquote>\n<p>a</p>\n<p>b</p>\n</blockquote>\n");
+}
+
+test "toggle_block_container: html makes each covered block an item, tight when they are paragraphs" {
+    var fx = try Fixture.init("<p>a</p>\n<p>b</p>\n", .html);
+    defer fx.deinit();
+    try toggleContainer(&fx, 3, 12, .bullet_list);
+    try fx.expectSource("<ul>\n<li>\na\n</li>\n<li>\nb\n</li>\n</ul>\n");
+    const l = fx.find(.{ .tag = .bullet_list }) orelse return error.NoList;
+    try testing.expect(fx.ed.astView().nodes[l].kind.bullet_list.tight);
+    // Off: each item's blocks, as paragraphs again.
+    const src = fx.ed.sourceBytes();
+    const a = std.mem.indexOf(u8, src, "a\n").?;
+    const b = std.mem.indexOf(u8, src, "b\n").?;
+    try toggleContainer(&fx, a, b + 1, .bullet_list);
+    try fx.expectSource("<p>a</p>\n<p>b</p>\n");
+    try fx.expectNoNodeOfKind(.{ .tag = .list_item });
+}
+
+test "toggle_block_container: html converts between the list kinds in place, tightness kept" {
+    var fx = try Fixture.init("<ul class=\"x\">\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n</ul>\n", .html);
+    defer fx.deinit();
+    const src = fx.ed.sourceBytes();
+    const a = std.mem.indexOf(u8, src, "a</p>").?;
+    const b = std.mem.indexOf(u8, src, "b</p>").?;
+    try toggleContainer(&fx, a, b + 1, .ordered_list);
+    try fx.expectSource("<ol class=\"x\">\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n</ol>\n");
+    const l = fx.find(.{ .tag = .ordered_list }) orelse return error.NoList;
+    try testing.expect(!fx.ed.astView().nodes[l].kind.ordered_list.tight);
+    try fx.expectNoNodeOfKind(.{ .tag = .bullet_list });
+    // A range reaching only one item nests a list inside it instead.
+    const a2 = std.mem.indexOf(u8, fx.ed.sourceBytes(), "a</p>").?;
+    try toggleContainer(&fx, a2, a2 + 1, .bullet_list);
+    try testing.expect(fx.find(.{ .tag = .bullet_list }) != null);
+    try testing.expect(fx.find(.{ .tag = .ordered_list }) != null);
+}
+
+test "toggle_block_container: html opens a container over an empty paragraph on a blank line" {
+    var fx = try Fixture.init("<p>a</p>\n\n<p>b</p>\n", .html);
+    defer fx.deinit();
+    try toggleContainer(&fx, 9, 9, .ordered_list);
+    try fx.expectSource("<p>a</p>\n<ol>\n<li>\n<p></p>\n</li>\n</ol>\n<p>b</p>\n");
+    // The press that made it un-makes it, through the ordinary toggle-off.
+    const p = std.mem.indexOf(u8, fx.ed.sourceBytes(), "<p></p>").? + 3;
+    try toggleContainer(&fx, p, p, .ordered_list);
+    try fx.expectSource("<p>a</p>\n<p></p>\n<p>b</p>\n");
+    // And a quote, over a blank line at the end.
+    var q = try Fixture.init("<p>a</p>\n\n", .html);
+    defer q.deinit();
+    try toggleContainer(&q, 9, 9, .block_quote);
+    try q.expectSource("<p>a</p>\n<blockquote>\n<p></p>\n</blockquote>\n");
+    // Inside a `<pre>` body a blank line is the listing's, not a gap: the
+    // caret resolves to the code block, which is wrapped whole — the marker
+    // path's rule for the same caret.
+    var pre = try Fixture.init("<pre><code>x\n\ny</code></pre>\n", .html);
+    defer pre.deinit();
+    const inner = std.mem.indexOf(u8, pre.ed.sourceBytes(), "\n\n").? + 1;
+    try toggleContainer(&pre, inner, inner, .block_quote);
+    try pre.expectSource("<blockquote>\n<pre><code>x\n\ny</code></pre>\n</blockquote>\n");
+}
+
+test "toggle_block_container: html takes an empty container back off" {
+    var fx = try Fixture.init("<p>a</p>\n<blockquote></blockquote>\n", .html);
+    defer fx.deinit();
+    const inner = std.mem.indexOf(u8, fx.ed.sourceBytes(), "</blockquote>").?;
+    try toggleContainer(&fx, inner, inner, .block_quote);
+    try fx.expectSource("<p>a</p>\n\n");
+    var li = try Fixture.init("<ul><li></li></ul>\n", .html);
+    defer li.deinit();
+    try toggleContainer(&li, 8, 8, .bullet_list);
+    try li.expectSource("\n");
+    // The other kind on that line is a press with nothing to do.
+    var other = try Fixture.init("<ul><li></li></ul>\n", .html);
+    defer other.deinit();
+    try testing.expectError(error.NotEditable, toggleContainer(&other, 8, 8, .block_quote));
 }
 
 test "setBlock: html builds the heading and prints it, inline content and attributes along" {
@@ -1844,6 +1960,91 @@ test "insert_image refuses a newline destination and a parse-only format" {
     try testing.expectError(error.UnsupportedFormat, insertImage(&xml, 3, 5, "cat.png"));
 }
 
+test "insert_link: html builds the link over the selection and prints it" {
+    // No `[text](dest)` alphabet — the destination lives in an attribute — so
+    // the covered inline nodes go under a `link` node and `renderBlock` prints
+    // it. The mark is re-spelled from the tree and the destination is read
+    // back out of the attribute.
+    var fx = try Fixture.init("<p>see <em>this</em> now</p>\n", .html);
+    defer fx.deinit();
+    const start = std.mem.indexOf(u8, fx.ed.sourceBytes(), "<em>").?;
+    try insertLink(&fx, start, start + 13, "https://x.dev/a?b=c&d");
+    try fx.expectSource("<p>see <a href=\"https://x.dev/a?b=c&amp;d\"><em>this</em></a> now</p>\n");
+    try fx.expectLinkDest("https://x.dev/a?b=c&d");
+    try testing.expect(fx.find(.{ .mark = .emph }) != null);
+}
+
+test "insert_link: html takes the covered part of a text run, and refuses a cut through anything else" {
+    var fx = try Fixture.init("<p>a word b</p>\n", .html);
+    defer fx.deinit();
+    try insertLink(&fx, 5, 9, "d");
+    try fx.expectSource("<p>a <a href=\"d\">word</a> b</p>\n");
+    // Into the middle of a mark: the mark's text cannot be half a link.
+    var em = try Fixture.init("<p>a <em>word</em> b</p>\n", .html);
+    defer em.deinit();
+    try testing.expectError(error.NotEditable, insertLink(&em, 3, 11, "d"));
+    try em.expectSource("<p>a <em>word</em> b</p>\n");
+    // Into a run spelling a character as an entity: a byte offset names no
+    // character there, so the slice is refused rather than guessed.
+    var ent = try Fixture.init("<p>a &amp; b</p>\n", .html);
+    defer ent.deinit();
+    try testing.expectError(error.NotEditable, insertLink(&ent, 3, 4, "d"));
+    // Whole, the same run links fine.
+    try insertLink(&ent, 3, 12, "d");
+    try ent.expectSource("<p><a href=\"d\">a &amp; b</a></p>\n");
+    // Across two paragraphs there is no inline to cover.
+    var two = try Fixture.init("<p>a</p>\n<p>b</p>\n", .html);
+    defer two.deinit();
+    try testing.expectError(error.NotEditable, insertLink(&two, 3, 12, "d"));
+}
+
+test "insert_link: html re-points an existing link, its text and attributes kept" {
+    var fx = try Fixture.init("<p><a class=\"x\" href=\"old\">t <em>e</em></a></p>\n", .html);
+    defer fx.deinit();
+    const t = std.mem.indexOf(u8, fx.ed.sourceBytes(), "t <em>").?;
+    try insertLink(&fx, t, t + 1, "new");
+    // The destination is printed first: it is the node's, and `class` an
+    // attribute that rode along.
+    try fx.expectSource("<p><a href=\"new\" class=\"x\">t <em>e</em></a></p>\n");
+    try fx.expectLinkDest("new");
+    try testing.expectEqualStrings("x", fx.ed.astView().attrsOf(fx.find(.{ .tag = .link }).?).get("class").?);
+}
+
+test "insert_link: html spells an empty selection as a link whose text is the destination" {
+    var fx = try Fixture.init("<p>ab</p>\n", .html);
+    defer fx.deinit();
+    try insertLink(&fx, 4, 4, "https://x.dev");
+    try fx.expectSource("<p>a<a href=\"https://x.dev\">https://x.dev</a>b</p>\n");
+    try fx.expectLinkDest("https://x.dev");
+    try testing.expectError(error.InvalidDestination, insertLink(&fx, 4, 4, "a\nb"));
+}
+
+test "insert_image: html spells the selection as alt text, the destination as src" {
+    var fx = try Fixture.init("<p>a cat b</p>\n", .html);
+    defer fx.deinit();
+    try insertImage(&fx, 5, 8, "cat & dog.png");
+    try fx.expectSource("<p>a <img alt=\"cat\" src=\"cat &amp; dog.png\"> b</p>\n");
+    try fx.expectSpelled(.{ .tag = .image }, "cat & dog.png");
+    var empty = try Fixture.init("<p>ab</p>\n", .html);
+    defer empty.deinit();
+    try insertImage(&empty, 4, 4, "c.png");
+    try empty.expectSource("<p>a<img alt=\"\" src=\"c.png\">b</p>\n");
+}
+
+test "insert_link: asciidoc prints `dest[text]` through its renderer, and reads it back" {
+    // The alphabet path writes `[text](dest)`, which is not AsciiDoc's shape —
+    // but the serializer's is, and the render path asks it.
+    var fx = try Fixture.init("see *this* now\n", .asciidoc);
+    defer fx.deinit();
+    try insertLink(&fx, 4, 10, "https://x.dev");
+    try fx.expectLinkDest("https://x.dev");
+    try testing.expect(fx.find(.{ .mark = .strong }) != null);
+    var img = try Fixture.init("a cat b\n", .asciidoc);
+    defer img.deinit();
+    try insertImage(&img, 2, 5, "cat.png");
+    try img.expectSpelled(.{ .tag = .image }, "cat.png");
+}
+
 // ── literal text ─────────────────────────────────────────────────────────────
 // The assertions read the REPARSED tree (via `expectVisibleText`), not the
 // spelled source: source that merely holds a `\*` still has to prove it reparses
@@ -2605,7 +2806,9 @@ test "setCodeLanguage: an indented code block has nowhere to carry one" {
 test "setCodeLanguage: outside a code block is NoBlock" {
     var fx = try Fixture.init("a\n", .markdown);
     defer fx.deinit();
-    try testing.expectError(error.NoBlock, fx.ed.setCodeLanguage(0, "zig"));
+    var off = try Fixture.init("<p>a</p>\n<pre><code>x</code></pre>\n", .html);
+    defer off.deinit();
+    try testing.expectError(error.NoBlock, off.ed.setCodeLanguage(3, "zig"));
 }
 
 test "code fence: an info string the fence can't carry is refused" {
@@ -2629,13 +2832,63 @@ test "code fence: an info string the fence can't carry is refused" {
     try dj.expectSource("```a b\na\n```\n");
 }
 
-test "code blocks: a parse-only format spells no fence" {
-    for ([_]format.Format{ .xml, .html }) |fmt| {
-        var fx = try Fixture.init("<r>ab</r>", fmt);
-        defer fx.deinit();
-        try testing.expectError(error.UnsupportedFormat, fx.ed.toggleCodeBlock(Span.init(3, 5), null));
-        try testing.expectError(error.UnsupportedFormat, fx.ed.setCodeLanguage(3, "zig"));
-    }
+test "toggleCodeBlock: html makes a listing of the covered text, and a paragraph of a listing" {
+    // No fence to measure — `<pre><code>` entity-escapes a body — so the
+    // covered blocks' TEXT becomes a `code_block` node's payload and
+    // `renderBlock` prints it. Marks are dropped, which is what a listing
+    // means; the entity is decoded on the way in and re-spelled on the way
+    // out.
+    var fx = try Fixture.init("<p>a &lt; <em>b</em></p>\n<p>c</p>\n<p>d</p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(3, 27), "zig");
+    try fx.expectSource("<pre><code class=\"language-zig\">a &lt; b\nc</code></pre>\n<p>d</p>\n");
+    const cb = fx.find(.{ .tag = .code_block }) orelse return error.NoCodeBlock;
+    const code = fx.ed.astView().nodes[cb].kind.code_block;
+    try testing.expectEqualStrings("zig", code.lang.?);
+    try testing.expectEqualStrings("a < b\nc", code.text);
+    // Off: the listing's text under a paragraph, `<` and all, minting nothing.
+    try fx.ed.toggleCodeBlock(Span.init(12, 12), null);
+    try fx.expectSource("<p>a &lt; b\nc</p>\n<p>d</p>\n");
+    try fx.expectNoNodeOfKind(.{ .tag = .code_block });
+    // Plain prose toggled twice is the document it was.
+    var plain = try Fixture.init("<p>x &amp; y</p>\n", .html);
+    defer plain.deinit();
+    try plain.ed.toggleCodeBlock(Span.init(3, 4), null);
+    try plain.expectSource("<pre><code>x &amp; y</code></pre>\n");
+    try plain.ed.toggleCodeBlock(Span.init(12, 12), null);
+    try plain.expectSource("<p>x &amp; y</p>\n");
+}
+
+test "toggleCodeBlock: html works inside a list item, where a fence could not" {
+    var fx = try Fixture.init("<ul>\n<li>\n<p>a</p>\n</li>\n</ul>\n", .html);
+    defer fx.deinit();
+    const a = std.mem.indexOf(u8, fx.ed.sourceBytes(), "a</p>").?;
+    try fx.ed.toggleCodeBlock(Span.init(a, a + 1), null);
+    try fx.expectSource("<ul>\n<li>\n<pre><code>a</code></pre>\n</li>\n</ul>\n");
+    try testing.expect(fx.find(.{ .tag = .list_item }) != null);
+}
+
+test "setCodeLanguage: html retags and clears the class, attributes kept" {
+    var fx = try Fixture.init("<pre id=\"x\"><code class=\"language-zig\">a &lt; b</code></pre>\n", .html);
+    defer fx.deinit();
+    try fx.ed.setCodeLanguage(20, "rust");
+    try fx.expectSource("<pre id=\"x\"><code class=\"language-rust\">a &lt; b</code></pre>\n");
+    try fx.ed.setCodeLanguage(20, null);
+    try fx.expectSource("<pre id=\"x\"><code>a &lt; b</code></pre>\n");
+    try testing.expect(fx.ed.astView().nodes[fx.find(.{ .tag = .code_block }).?].kind.code_block.lang == null);
+    // A language is one token in every format: whitespace would split the class.
+    try testing.expectError(error.InvalidLanguage, fx.ed.setCodeLanguage(20, "a b"));
+    try testing.expectError(error.InvalidLanguage, fx.ed.toggleCodeBlock(Span.init(20, 20), "a\nb"));
+    var off = try Fixture.init("<p>a</p>\n<pre><code>x</code></pre>\n", .html);
+    defer off.deinit();
+    try testing.expectError(error.NoBlock, off.ed.setCodeLanguage(3, "zig"));
+}
+
+test "code blocks: a parse-only format spells no fence and prints no fragment" {
+    var fx = try Fixture.init("<r>ab</r>", .xml);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.toggleCodeBlock(Span.init(3, 5), null));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.setCodeLanguage(3, "zig"));
 }
 
 // ── task list checkboxes ─────────────────────────────────────────────────────
@@ -2965,8 +3218,17 @@ test "supports is the per-gesture answer authorable() cannot give" {
     // a heading through `renderBlock`, a literal through `renderText`.
     try testing.expect(Editor.supports(html, .set_block));
     try testing.expect(Editor.supports(html, .insert_literal));
-    try testing.expect(!Editor.supports(html, .{ .toggle_block_container = .block_quote }));
-    try testing.expect(!Editor.supports(html, .toggle_code_block));
+    // And the five that followed them through `renderBlock`, once the HTML
+    // block-elements proposal admitted every block the parser reads back.
+    try testing.expect(Editor.supports(html, .{ .toggle_block_container = .block_quote }));
+    try testing.expect(Editor.supports(html, .{ .toggle_block_container = .ordered_list }));
+    try testing.expect(Editor.supports(html, .toggle_code_block));
+    try testing.expect(Editor.supports(html, .set_code_language));
+    try testing.expect(Editor.supports(html, .insert_link));
+    try testing.expect(Editor.supports(html, .insert_image));
+    // What has no native HTML spelling stays refused.
+    try testing.expect(!Editor.supports(html, .toggle_task_item));
+    try testing.expect(!Editor.supports(html, .insert_footnote));
     // The three that used to answer nothing at all, because they consulted no
     // `Syntax` field: HTML has a table its parser reads and no table spelling to
     // write one back with, no blank-line block separation, and no numbered list
@@ -2985,9 +3247,11 @@ test "supports is the per-gesture answer authorable() cannot give" {
     }
 
     // AsciiDoc sits in the middle of the range the other way round from
-    // HTML: every block gesture works, and it is the three whose SHAPE the
-    // algorithms cannot write — a link (`dest[text]`), a footnote (one macro),
-    // a table (`|===`-fenced, no delimiter row) — that a toolbar grays out.
+    // HTML: every block gesture works, a link and an image print through its
+    // renderer (`dest[text]` is no alphabet's shape, but it is a serializer's),
+    // and it is the two whose shape neither can write — a footnote (one
+    // macro), a table (`|===`-fenced, no delimiter row) — that a toolbar
+    // grays out.
     const adoc = format.syntaxFor(.asciidoc);
     try testing.expect(adoc.authorable());
     try testing.expect(Editor.supports(adoc, .{ .toggle_inline = .mark }));
@@ -3001,8 +3265,8 @@ test "supports is the per-gesture answer authorable() cannot give" {
     try testing.expect(Editor.supports(adoc, .insert_literal));
     try testing.expect(Editor.supports(adoc, .split_block));
     try testing.expect(Editor.supports(adoc, .renumber_ordered_lists));
-    try testing.expect(!Editor.supports(adoc, .insert_link));
-    try testing.expect(!Editor.supports(adoc, .insert_image));
+    try testing.expect(Editor.supports(adoc, .insert_link));
+    try testing.expect(Editor.supports(adoc, .insert_image));
     try testing.expect(!Editor.supports(adoc, .insert_footnote));
     try testing.expect(!Editor.supports(adoc, .insert_line_break));
     try testing.expect(!Editor.supports(adoc, .table_insert_row));

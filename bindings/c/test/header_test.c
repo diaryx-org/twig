@@ -503,13 +503,13 @@ static void test_format_capability_matches_the_gestures(void) {
     CHECK(supported == 0);
 
     // HTML is the case the per-gesture query exists for. `authorable` says yes —
-    // it spells the inline marks — while a code-block button over it would fail.
+    // it spells the inline marks — while a task-box button over it would fail.
     CHECK(twig_format_is_authorable(TWIG_FORMAT_HTML, &supported) == TWIG_STATUS_OK);
     CHECK(supported == 1);
     CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_TOGGLE_INLINE,
                                TWIG_INLINE_STRONG, &supported) == TWIG_STATUS_OK);
     CHECK(supported == 1);
-    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_TOGGLE_CODE_BLOCK, 0,
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_TOGGLE_TASK_ITEM, 0,
                                &supported) == TWIG_STATUS_OK);
     CHECK(supported == 0);
 

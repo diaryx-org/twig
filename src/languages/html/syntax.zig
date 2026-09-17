@@ -11,7 +11,7 @@
 //! needs no new code — only the bytes, which is what this file is.
 //!
 //! ── Where a tag pair is not enough: the renderers ──────────────────────────
-//! Two of HTML's spellings have no table shape at all, and they are why
+//! The rest of HTML's spellings have no table shape at all, and they are why
 //! `Syntax` grew its renderer family (see its module doc comment):
 //!
 //!   * A literal is spelled with ENTITIES. Every alphabet field in `Syntax`
@@ -20,27 +20,28 @@
 //!     literal characters here, not an escape. So the alphabets stay `null`
 //!     and `renderText` below writes `&amp;`/`&lt;`/`&gt;` instead, in every
 //!     position alike: `<pre>` reads `&lt;` the same way `<p>` does.
-//!   * A heading is a WRAPPING PAIR carrying the level in both ends, so there
-//!     is no `heading_marker` to rewrite. `renderBlock` is the serializer over
-//!     a fragment, and `Editor.setBlock` builds the heading node and prints
-//!     it through this — the tag pair falls out of the tree.
+//!   * Every block is a WRAPPING PAIR. A heading carries its level in both
+//!     ends, so there is no `heading_marker` to rewrite; `ContainerSpelling`
+//!     prefixes every LINE where `<blockquote>` wraps a range and a list needs
+//!     a per-item `<li>`; `CodeFence` measures the longest run of its fence
+//!     byte where `<pre><code>` entity-escapes a body; and
+//!     `link_text_escapes`/`link_dest_escapes` feed `[text](dest)` where a
+//!     destination here lives in a quoted `href`. Each is a different
+//!     ALGORITHM, not a different alphabet — the premise `syntax.zig` is built
+//!     on — so those fields stay `null` and `renderBlock` is the serializer
+//!     over a fragment: the editor builds the node (`Editor.setBlock`,
+//!     `toggleBlockContainer`, `toggleCodeBlock`, `setCodeLanguage`,
+//!     `insertLink`, `insertImage`) and the tag pair falls out of the tree.
 //!
 //! ── What still stops, and why ──────────────────────────────────────────────
-//! Everything left `null` below is null because HTML's spelling has a different
-//! SHAPE from the gesture that would read it, not because nobody filled it in:
-//!
-//!   * `ContainerSpelling` prefixes every LINE. `<blockquote>` wraps a range,
-//!     and a list needs a per-item `<li>` — a different algorithm, not a
-//!     different alphabet, which is the premise `syntax.zig` is built on.
-//!   * `CodeFence` measures the longest run of its fence byte. `<pre><code>`
-//!     doesn't measure anything; it entity-escapes a body instead.
-//!   * `link_text_escapes`/`link_dest_escapes` feed `[text](dest)`, and a
-//!     link's destination here lives in a quoted `href` attribute.
-//!
-//! Each of those is a gesture that could be taught to build a node and print
-//! it the way `setBlock` now does; which of them should be is
-//! `docs/proposals/editable-html-block-elements.md`'s question, and lifting
-//! one is a change to `editor.zig`, not to this file.
+//! A task box, a footnote and a table edit. HTML has no native spelling for
+//! the first two — `<input type="checkbox">` is a form control the parser
+//! reads as a container, and a footnote is a convention of `<sup><a>` and an
+//! `<li>` somewhere else — and a table is already authored over a parsed one
+//! by `table_edit.zig`, whose pipe spelling this format cannot write back.
+//! `docs/proposals/editable-html-block-elements.md` is where that line was
+//! drawn: what the parser reads back to a semantic kind is authorable, and
+//! nothing else is.
 
 const std = @import("std");
 const syntax = @import("../../syntax.zig");
@@ -137,14 +138,14 @@ pub const table: syntax.Syntax = .{
     .cell_line_break = "<br>",
 
     // ── Renderers ──────────────────────────────────────────────────────────
-    // The two spellings no table can hold — see this file's doc comment.
+    // The spellings no table can hold — see this file's doc comment.
     .renderText = renderText,
     .renderBlock = renderBlock,
 
     // ── Deliberately absent ────────────────────────────────────────────────
-    // `heading_marker`: a heading is spelled through `renderBlock` instead.
-    // `container_spelling`, `code_fence`, `task_marker`, `footnote`,
-    // `link_*_escapes`: the shape mismatches in this file's doc comment.
+    // `heading_marker`, `container_spelling`, `code_fence`, `link_*_escapes`:
+    // every one a wrapping pair, spelled through `renderBlock` instead.
+    // `task_marker`, `footnote`: no native spelling — this file's doc comment.
     // `text_escapes`/`block_start_escapes`: `renderText` is not the alphabet
     // renderer, so it carries no alphabet — `assertCoherent` pins that.
     //
@@ -185,13 +186,18 @@ test "html spells `code` and no other text leaf" {
 }
 
 test "html spells no line-prefixed block structure and no backslash alphabet" {
-    // The shape mismatches, pinned so lifting one is a deliberate edit here
-    // rather than a silent drift in `syntax.zig`.
+    // The shape mismatches, pinned so that filling one in is a deliberate
+    // edit here rather than a silent drift in `syntax.zig` — and pinned
+    // BESIDE the renderer that answers each, because a null alphabet with no
+    // renderer would be a gesture refused, and these are gestures that work.
+    try std.testing.expect(table.renderBlock != null);
     try std.testing.expect(table.heading_marker == null);
     try std.testing.expect(table.container_spelling.get(.block_quote) == null);
     try std.testing.expect(table.container_spelling.get(.bullet_list) == null);
     try std.testing.expect(table.container_spelling.get(.ordered_list) == null);
     try std.testing.expect(table.code_fence == null);
+    try std.testing.expect(table.link_text_escapes == null);
+    try std.testing.expect(table.link_dest_escapes == null);
     // Backslash escaping is the mechanism HTML does not have: the alphabets
     // are null rather than half-filled with `&<>`, and the literal is spelled
     // by a renderer of HTML's own instead of the shared alphabet one.
@@ -199,9 +205,8 @@ test "html spells no line-prefixed block structure and no backslash alphabet" {
     try std.testing.expect(table.block_start_escapes == null);
     try std.testing.expect(table.renderText != null);
     try std.testing.expect(table.renderText != &syntax.renderTextByAlphabet);
-    try std.testing.expect(table.link_text_escapes == null);
-    try std.testing.expect(table.link_dest_escapes == null);
-    // No footnotes, no task boxes, no autolink form, no attribute spelling.
+    // No footnotes, no task boxes, no autolink form, no attribute spelling —
+    // and no renderer answers these: they are the gestures HTML refuses.
     try std.testing.expect(table.footnote == null);
     try std.testing.expect(table.task_marker == null);
     try std.testing.expect(table.spellsAutolink == null);
@@ -230,6 +235,32 @@ test "html prints a fragment as the tag pair its parser reads back" {
     defer out.deinit();
     try table.renderBlock.?(std.testing.allocator, &view, h, &out.writer);
     try std.testing.expectEqualStrings("<h2><em>hi</em></h2>\n", out.written());
+
+    // The other shapes the editor builds where the alphabet is null, each
+    // the element `html/parser.zig` reads back to the same kind. The
+    // reparse itself is `languages/harness.zig`'s contract over every format
+    // with a renderer; this pins HTML's bytes.
+    var c = AST.Builder.init(std.testing.allocator);
+    defer c.deinit();
+    const p1 = try c.addContainer(.para, &.{try c.addLeaf(.{ .str = "a" })});
+    const p2 = try c.addContainer(.para, &.{try c.addLeaf(.{ .str = "b" })});
+    const list = try c.addContainer(.{ .bullet_list = .{ .tight = true } }, &.{
+        try c.addContainer(.list_item, &.{p1}),
+        try c.addContainer(.list_item, &.{p2}),
+    });
+    const code = try c.addLeaf(.{ .code_block = .{ .lang = "zig", .text = "a < b" } });
+    const link = try c.addContainer(.{ .link = .{ .destination = "x?a=1&b=2", .reference = null } }, &.{try c.addLeaf(.{ .str = "t" })});
+    const q = try c.addContainer(.block_quote, &.{ list, code, try c.addContainer(.para, &.{link}) });
+    const qv = c.view(q);
+    var qout: Writer.Allocating = .init(std.testing.allocator);
+    defer qout.deinit();
+    try table.renderBlock.?(std.testing.allocator, &qv, q, &qout.writer);
+    try std.testing.expectEqualStrings(
+        "<blockquote>\n<ul>\n<li>\na\n</li>\n<li>\nb\n</li>\n</ul>\n" ++
+            "<pre><code class=\"language-zig\">a &lt; b</code></pre>\n" ++
+            "<p><a href=\"x?a=1&amp;b=2\">t</a></p>\n</blockquote>\n",
+        qout.written(),
+    );
 }
 
 test "html spells the rule and the break as void tags" {

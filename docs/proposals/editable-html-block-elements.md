@@ -1,6 +1,6 @@
 ---
 title: "Proposal: editable HTML block elements"
-status: accepted
+status: implemented
 author: adammharris
 created: 2026-09-09
 updated: 2026-09-16
@@ -10,6 +10,16 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 # Editable HTML block elements
 
 ## Status
+
+`implemented` on 2026-09-16. Step 1 landed in `feat(html): a raw-text or
+rcdata body is the container's payload, not a child`; steps 2–5 in
+`feat(editor): the container, code block, link and image gestures print
+through the renderer where the alphabet is null`. Two things the sequence
+did not foresee: the render path is format-neutral, so AsciiDoc — whose
+`dest[text]` link was the other alphabet-shaped refusal — gained `insertLink`
+and `insertImage` through the same gate; and the harness contract written
+over every renderer caught the Markdown and djot serializers ending a quote
+at the blank line between its paragraphs, fixed alongside.
 
 `accepted` on 2026-09-16, on the three decisions below: the bar for a block
 element is a Markdown or Djot equivalent; twig tells an editor what its

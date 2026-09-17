@@ -6,9 +6,9 @@
 //! Twig's formats are RAGGED: every one of them parses and renders, but they
 //! author wildly different subsets — djot spells all eight inline marks,
 //! Markdown four (`**`/`*`/`` ` ``/`~~`, and `==…==` where the parse config
-//! reads it back), HTML spells seven as tag pairs and, of the blocks, only a
-//! heading, AsciiDoc everything but a link, a footnote and a table, XML none
-//! at all. A `?Delims` per (format, kind) makes that raggedness DATA. The
+//! reads it back), HTML spells seven as tag pairs and its blocks through a
+//! renderer, AsciiDoc everything but a footnote and a table, XML none at
+//! all. A `?Delims` per (format, kind) makes that raggedness DATA. The
 //! alternative — a `switch (format)` per op, with an `else =>
 //! unsupported_format` arm — is what the C ABI grew instead, and it put the
 //! spelling of djot's `{=mark=}` behind an `extern` boundary where the CLI
@@ -36,10 +36,12 @@
 //!     backslash before a byte from an alphabet, and they share ONE function for
 //!     it (`renderTextByAlphabet`, below, reading `text_escapes`); HTML spells
 //!     one with entities, which no alphabet can say.
-//!   * `renderBlock` spells a block from a tree fragment. `Editor.setBlock`
+//!   * `renderBlock` spells a node from a tree fragment. `Editor.setBlock`
 //!     rewrites a leading marker where the format has one; where a heading is
 //!     `<h2>…</h2>` there is no marker to rewrite, so the editor builds the
-//!     node and asks the format to print it.
+//!     node and asks the format to print it. The quote, list, code block,
+//!     link and image gestures take the same path where their alphabet is
+//!     missing.
 //!
 //! The engine still owns the algorithm — WHICH position a byte sits in, WHICH
 //! node to build — and dispatches on presence: a `null` renderer is the same
@@ -612,21 +614,26 @@ pub const Syntax = struct {
         out: *Writer,
     ) Writer.Error!void = null,
 
-    /// Spell the block `root` of `ast`, descendants included, as this format's
+    /// Spell the node `root` of `ast`, descendants included, as this format's
     /// source — a fragment printed by the format's own serializer. `null` =
     /// this format cannot print a fragment.
     ///
-    /// The editor reaches for this where a gesture has no marker to rewrite:
+    /// The editor reaches for this where a gesture has no alphabet to write:
     /// `setBlock` over a format with no `heading_marker` builds a heading node
     /// over the block's inline children, renders it here, and splices what
-    /// comes back. For every format with a from-AST serializer this is that
-    /// serializer over the fragment (`renderBlockVia`), which is what makes a
-    /// tag-pair heading authorable without teaching the editor about tags.
+    /// comes back; `toggleBlockContainer`, `toggleCodeBlock`,
+    /// `setCodeLanguage`, `insertLink` and `insertImage` do the same with a
+    /// quote, a list, a code block, a link and an image where their alphabet
+    /// is missing. The root is usually a block, and a `link` or `image` when
+    /// it is not; every renderer prints whatever node it is given. For every
+    /// format with a from-AST serializer this is that serializer over the
+    /// fragment (`renderBlockVia`), which is what makes a tag-pair heading
+    /// authorable without teaching the editor about tags.
     ///
-    /// Where a format HAS a marker the editor keeps using it, because the
-    /// marker path preserves the block's inline bytes verbatim while this one
-    /// re-spells them from the tree. So carrying this alongside a marker moves
-    /// nothing; it is the answer for the formats that have no other.
+    /// Where a format HAS an alphabet the editor keeps using it, because the
+    /// alphabet path preserves the covered bytes verbatim while this one
+    /// re-spells them from the tree. So carrying this alongside an alphabet
+    /// moves nothing; it is the answer for the formats that have no other.
     renderBlock: ?*const fn (
         allocator: Allocator,
         ast: *const AST,
@@ -650,7 +657,7 @@ pub const Syntax = struct {
 
     /// Whether this format can be authored into at all — true once it can spell
     /// ANY one gesture, which is a weaker claim than it looks. HTML answers true
-    /// on its inline marks alone while every block gesture over it is still
+    /// while a task box, a footnote and every table edit over it are still
     /// unsupported, so this is a "is there a door in" predicate, not a
     /// capability report. `false` for a format that spells nothing (XML).
     /// For what a given format actually preserves per node kind, see

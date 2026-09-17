@@ -270,9 +270,9 @@ pub const Editor = struct {
     /// Distinct from BOTH neighbouring questions, which are easy to reach for
     /// and wrong here:
     ///
-    ///   * `Syntax.authorable()` is "is there a door in" — true for HTML on its
-    ///     inline marks alone, while every block gesture over it is still
-    ///     unsupported. A toolbar enabled on that predicate is mostly buttons
+    ///   * `Syntax.authorable()` is "is there a door in" — true for HTML,
+    ///     while a task box, a footnote and every table edit over it are
+    ///     still unsupported. A toolbar enabled on that predicate has buttons
     ///     that fail.
     ///   * `diagnostics.zig`'s `fidelity` is "what survives a CONVERSION to this
     ///     target", which is a different table with genuinely different answers
@@ -300,19 +300,22 @@ pub const Editor = struct {
             // implication (a palette implies an authorable mark), not the
             // converse.
             .set_mark_color => syntax.mark_colors != null,
-            // Either path: a leading marker to rewrite, or a fragment renderer
-            // to print a fresh node through. `setBlock` prefers the marker and
-            // falls back to the renderer, in that order — see there.
+            // Either path: a marker alphabet to write, or a fragment renderer
+            // to print a fresh node through. Each of these gestures prefers
+            // the alphabet and falls back to the renderer, in that order —
+            // see `setBlock`, which set the pattern — so a format that has an
+            // alphabet keeps its byte-preserving path and a format with none
+            // (HTML's tag pairs, AsciiDoc's `dest[text]` link) prints the node.
             .set_block => syntax.heading_marker != null or syntax.renderBlock != null,
-            .toggle_block_container => |k| syntax.container_spelling.get(k) != null,
+            .toggle_block_container => |k| syntax.container_spelling.get(k) != null or syntax.renderBlock != null,
             .insert_thematic_break => syntax.thematic_break != null,
-            .toggle_code_block, .set_code_language => syntax.code_fence != null,
+            .toggle_code_block, .set_code_language => syntax.code_fence != null or syntax.renderBlock != null,
             .toggle_task_item, .set_task_checked, .toggle_task_checked => syntax.task_marker != null,
-            .insert_link => syntax.link_text_escapes != null,
+            .insert_link => syntax.link_text_escapes != null or syntax.renderBlock != null,
             // Both halves, as `insertImage` checks them. `assertCoherent` pins
             // them null-together, so this can't disagree with `.insert_link` —
             // it is written out anyway so the query reads as the gesture does.
-            .insert_image => syntax.link_text_escapes != null and syntax.link_dest_escapes != null,
+            .insert_image => (syntax.link_text_escapes != null and syntax.link_dest_escapes != null) or syntax.renderBlock != null,
             .insert_footnote => syntax.footnote != null,
             .insert_literal => syntax.renderText != null,
             .insert_line_break => syntax.cell_line_break != null,
@@ -729,18 +732,22 @@ pub const Editor = struct {
         start: usize,
         end: usize,
     ) Error!void {
-        const allocator = self.splicer.allocator;
         const view = b.view(root);
-        var out: Writer.Allocating = .init(allocator);
+        var out: Writer.Allocating = .init(self.splicer.allocator);
         defer out.deinit();
-        render(allocator, &view, root, &out.writer) catch |err| switch (err) {
-            error.OutOfMemory, error.WriteFailed => return error.OutOfMemory,
-            // The format refused to print the fragment — a content refusal,
-            // not a format one, since the renderer exists.
-            else => return error.NotEditable,
-        };
+        try renderNode(self.splicer.allocator, render, &view, root, &out.writer);
         const rendered = std.mem.trimEnd(u8, out.written(), "\r\n");
         return self.commitSplice(start, end, rendered);
+    }
+
+    /// One node through `render`, with the renderer's errors folded into the
+    /// editor's: a refusal to print is a content refusal, not a format one,
+    /// since the renderer exists.
+    fn renderNode(allocator: Allocator, render: RenderBlockFn, ast: *const AST, id: AST.Node.Id, out: *Writer) Error!void {
+        render(allocator, ast, id, out) catch |err| switch (err) {
+            error.OutOfMemory, error.WriteFailed => return error.OutOfMemory,
+            else => return error.NotEditable,
+        };
     }
 
     /// The line the caret is on, when it is a BLANK line lying BETWEEN a
@@ -870,9 +877,20 @@ pub const Editor = struct {
     ///
     /// ON A BLANK LINE this OPENS an empty container instead of wrapping one,
     /// `setBlock`'s rule for the same position — see `openContainerOnBlankLine`.
+    ///
+    /// TWO SPELLINGS, in `setBlock`'s order. Where the format has a
+    /// `ContainerSpelling` every line of the range is prefixed and the covered
+    /// bytes are kept verbatim. Where it has none but carries a `renderBlock`,
+    /// the container is a wrapping pair (`<blockquote>`, `<ul>` with an `<li>`
+    /// per item) and the covered blocks are put under a fresh node the format
+    /// prints — see `toggleBlockContainerByRender`. A format with neither is
+    /// `error.UnsupportedFormat`.
     pub fn toggleBlockContainer(self: *Editor, span: Span, kind: ContainerKind) Error!void {
         try self.checkRange(span.start, span.end);
-        const sp = self.syntax.container_spelling.get(kind) orelse return error.UnsupportedFormat;
+        const sp = self.syntax.container_spelling.get(kind) orelse {
+            if (self.syntax.renderBlock) |render| return self.toggleBlockContainerByRender(span, kind, render);
+            return error.UnsupportedFormat;
+        };
 
         const allocator = self.splicer.allocator;
         const src = self.sourceBytes();
@@ -1052,6 +1070,167 @@ pub const Editor = struct {
 
         // The whole line body, so a blank line's trailing spaces go with it.
         return self.commitSplice(line_start, line_start + body.len, tidy);
+    }
+
+    /// `toggleBlockContainer` over a format with no line prefix but a
+    /// fragment renderer: BUILD the container and let the format print it.
+    ///
+    /// The same three decisions as the marker path, taken from the tree
+    /// rather than from lines — there are no lines to reason about in
+    /// `<ul><li>a</li><li>b</li></ul>`, and the parser has already said what
+    /// nests in what:
+    ///
+    ///   * TOGGLE OFF when the range reaches every block a container of `kind`
+    ///     holds (`coversContainer`): the container's children — for a list,
+    ///     each item's children — are printed in its place. The blocks print
+    ///     from the document's own tree, so a paragraph that was a tight
+    ///     item's elided `<p>` comes out as a `<p>` again.
+    ///   * CONVERT when the range covers the OTHER list kind whole: its items
+    ///     are grafted under a fresh list of the requested kind, tightness
+    ///     kept, numbering start dropped.
+    ///   * WRAP otherwise: the covered blocks go under a `block_quote`, or one
+    ///     `list_item` each under a list — TIGHT when every block is a
+    ///     paragraph, which is the list the marker path's `- a\n- b` parses
+    ///     to. A partial selection inside a container nests, as it does there.
+    ///
+    /// The splice replaces the covered blocks' own spans (toggle-off and
+    /// convert: the container's), minus the line end a block span may carry
+    /// after its closing tag, so the fragment lands where the blocks were and
+    /// the line structure around them is untouched.
+    fn toggleBlockContainerByRender(
+        self: *Editor,
+        span: Span,
+        kind: ContainerKind,
+        render: RenderBlockFn,
+    ) Error!void {
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+        const doc = &self.splicer.doc;
+        const ast = self.astView();
+
+        const blocks = coveredBlocks(allocator, doc, span.start, span.end) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // Nothing to wrap: a blank line, or an empty container — see there.
+            else => return self.openContainerByRender(span.start, kind, render),
+        };
+        defer allocator.free(blocks.chain);
+
+        if (locate.innermostOfKind(doc, blocks.chain, kindTag(kind))) |target| {
+            if (coversContainer(ast, target, blocks)) return self.unwrapContainer(target, render);
+        }
+        if (kind != .block_quote) {
+            const other: Splicer.KindTag = if (kind == .bullet_list) .ordered_list else .bullet_list;
+            if (locate.innermostOfKind(doc, blocks.chain, other)) |target| {
+                if (coversContainer(ast, target, blocks)) {
+                    var b = AST.Builder.init(allocator);
+                    defer b.deinit();
+                    var items: std.ArrayList(AST.Node.Id) = .empty;
+                    defer items.deinit(allocator);
+                    var item = ast.nodes[target].first_child;
+                    while (item) |i| : (item = ast.nodes[i].next_sibling) {
+                        try items.append(allocator, try b.graftSubtree(ast, i));
+                    }
+                    const tight = switch (ast.nodes[target].kind) {
+                        .bullet_list => |v| v.tight,
+                        .ordered_list => |v| v.tight,
+                        else => unreachable,
+                    };
+                    const root = try b.addContainer(containerNodeKind(kind, tight), items.items);
+                    if (ast.nodes[target].attrs) |ai| try b.setAttrs(root, ast.attrs[ai]);
+                    const t = doc.span(target);
+                    return self.spliceRendered(&b, root, render, t.start, blockSpanEnd(src, t));
+                }
+            }
+        }
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        var kids: std.ArrayList(AST.Node.Id) = .empty;
+        defer kids.deinit(allocator);
+        var all_paras = true;
+        var cur: ?AST.Node.Id = blocks.first;
+        while (cur) |c| : (cur = if (c == blocks.last) null else ast.nodes[c].next_sibling) {
+            if (ast.nodes[c].kind != .para) all_paras = false;
+            const block = try b.graftSubtree(ast, c);
+            try kids.append(allocator, if (kind == .block_quote) block else try b.addContainer(.list_item, &.{block}));
+        }
+        const root = try b.addContainer(containerNodeKind(kind, all_paras), kids.items);
+        const first = doc.span(blocks.first);
+        const last = doc.span(blocks.last);
+        return self.spliceRendered(&b, root, render, first.start, blockSpanEnd(src, last));
+    }
+
+    /// `toggleBlockContainerByRender` where `coveredBlocks` found nothing: the
+    /// caret is on a BLANK LINE between blocks, or inside an EMPTY container.
+    ///
+    /// On a blank line an empty container of `kind` is OPENED — over an empty
+    /// paragraph, because that is the shape a wrapped paragraph has, so the
+    /// press that made it un-makes it through the ordinary toggle-off above
+    /// and the author has a block to type into. `blankLineBetweenBlocks` makes
+    /// `openBlockByRender`'s guard: a blank line interior to a leaf is
+    /// `error.NotEditable`.
+    ///
+    /// Inside an empty container of `kind` — `<blockquote></blockquote>`, or
+    /// an `<li></li>` that is the only item of a list of `kind`, neither of
+    /// which this gesture writes but both of which a document may hold — the
+    /// container is REMOVED, which is what a toggle owes the press that finds
+    /// it. Anything else the caret can be in with no block around it is
+    /// `error.NotEditable`.
+    fn openContainerByRender(self: *Editor, offset: usize, kind: ContainerKind, render: RenderBlockFn) Error!void {
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const allocator = self.splicer.allocator;
+        const doc = &self.splicer.doc;
+        const ast = self.astView();
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, offset, &chain);
+        if (emptyContainerOf(ast, chain.items, kind)) |empty| {
+            const t = doc.span(empty);
+            return self.commitSplice(t.start, blockSpanEnd(src, t), "");
+        }
+
+        const line = try self.blankLineBetweenBlocks(offset);
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const para = try b.addContainer(.para, &.{});
+        const root = switch (kind) {
+            .block_quote => try b.addContainer(.block_quote, &.{para}),
+            // Loose, so the empty paragraph is printed as a `<p>` the author can
+            // type into rather than elided to nothing.
+            .bullet_list, .ordered_list => try b.addContainer(
+                containerNodeKind(kind, false),
+                &.{try b.addContainer(.list_item, &.{para})},
+            ),
+        };
+        return self.spliceRendered(&b, root, render, line.start, line.end);
+    }
+
+    /// Print `target`'s blocks — for a list, each item's blocks — from the
+    /// document's own tree and splice them over the container: the render
+    /// path's toggle-off.
+    fn unwrapContainer(self: *Editor, target: AST.Node.Id, render: RenderBlockFn) Error!void {
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+        const doc = &self.splicer.doc;
+        const ast = self.astView();
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        const is_list = std.meta.activeTag(ast.nodes[target].kind) != .block_quote;
+        var child = ast.nodes[target].first_child;
+        while (child) |c| : (child = ast.nodes[c].next_sibling) {
+            if (is_list) {
+                var block = ast.nodes[c].first_child;
+                while (block) |bl| : (block = ast.nodes[bl].next_sibling) {
+                    try renderNode(allocator, render, ast, bl, &out.writer);
+                }
+            } else {
+                try renderNode(allocator, render, ast, c, &out.writer);
+            }
+        }
+        const t = doc.span(target);
+        return self.commitSplice(t.start, blockSpanEnd(src, t), std.mem.trimEnd(u8, out.written(), "\r\n"));
     }
 
     /// Renumber the ordered list at `offset` so its markers run `1, 2, 3, …`,
@@ -1459,9 +1638,16 @@ pub const Editor = struct {
     /// the same reason a selection running into the middle of a URL is refused
     /// rather than spliced; fencing inside a list wants marker-width prefixing,
     /// which is `toggleBlockContainer`'s machinery and not a one-line prefix's.
+    ///
+    /// TWO SPELLINGS, in `setBlock`'s order: the fence above where the format
+    /// has one, and where it has none but carries a `renderBlock`, a
+    /// `code_block` node the format prints — see `toggleCodeBlockByRender`.
     pub fn toggleCodeBlock(self: *Editor, span: Span, lang: ?[]const u8) Error!void {
         try self.checkRange(span.start, span.end);
-        const fence = self.syntax.code_fence orelse return error.UnsupportedFormat;
+        const fence = self.syntax.code_fence orelse {
+            if (self.syntax.renderBlock) |render| return self.toggleCodeBlockByRender(span, lang, render);
+            return error.UnsupportedFormat;
+        };
         if (lang) |l| try checkInfoString(fence, l);
 
         const allocator = self.splicer.allocator;
@@ -1519,8 +1705,15 @@ pub const Editor = struct {
     /// it was measured against a body this gesture doesn't touch. An INDENTED
     /// Markdown code block is `error.NotEditable`: it has no fence, so it has
     /// nowhere to carry a language (convert it with `toggleCodeBlock` twice).
+    ///
+    /// Where the format has no fence but a `renderBlock`, the block is
+    /// rebuilt with the new language and printed — see
+    /// `setCodeLanguageByRender`.
     pub fn setCodeLanguage(self: *Editor, offset: usize, lang: ?[]const u8) Error!void {
-        const fence = self.syntax.code_fence orelse return error.UnsupportedFormat;
+        const fence = self.syntax.code_fence orelse {
+            if (self.syntax.renderBlock) |render| return self.setCodeLanguageByRender(offset, lang, render);
+            return error.UnsupportedFormat;
+        };
         if (lang) |l| try checkInfoString(fence, l);
 
         const src = self.sourceBytes();
@@ -1540,6 +1733,94 @@ pub const Editor = struct {
         const info_start = line_start + f.start + f.width;
         const info_end = line_start + locate.lineBody(line).len;
         return self.commitSplice(info_start, info_end, lang orelse "");
+    }
+
+    /// `toggleCodeBlock` over a format with no fence but a fragment renderer:
+    /// BUILD the code block and let the format print it, or take one apart.
+    ///
+    /// The fence path works on SOURCE — the covered lines go inside the fence
+    /// verbatim, and unfencing gives them back — because in a lightweight
+    /// format a paragraph's source is its text. Here it is not (`<p>a
+    /// &amp; b</p>`), so the payload is the covered blocks' TEXT
+    /// (`blockTextInto`): the selection's words, with its marks dropped, is
+    /// what a listing made from prose holds. And toggling OFF puts the
+    /// listing's text under a paragraph the format prints, so `a < b` reads
+    /// back as those five characters and mints no markup — the one thing the
+    /// fence path's "unfencing means the body is read as source" cannot
+    /// promise, and the reason this direction is a render too.
+    ///
+    /// A paragraph in, the same paragraph out: toggle twice on plain prose and
+    /// the document is what it was. Prose carrying marks loses them on the way
+    /// in, which is what a code block MEANS.
+    ///
+    /// No list-item refusal: the fence path refuses inside an item because a
+    /// fence at column zero swallows the item's marker, and a wrapping pair
+    /// swallows nothing.
+    fn toggleCodeBlockByRender(self: *Editor, span: Span, lang: ?[]const u8, render: RenderBlockFn) Error!void {
+        if (lang) |l| try checkLanguageToken(l);
+
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+        const doc = &self.splicer.doc;
+        const ast = self.astView();
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, span.start, &chain);
+        if (locate.innermostOfKind(doc, chain.items, .code_block)) |cb| {
+            var b = AST.Builder.init(allocator);
+            defer b.deinit();
+            const text = try b.addLeaf(.{ .str = ast.nodes[cb].kind.code_block.text });
+            const root = try b.addContainer(.para, &.{text});
+            const t = doc.span(cb);
+            return self.spliceRendered(&b, root, render, t.start, blockSpanEnd(src, t));
+        }
+
+        const blocks = coveredBlocks(allocator, doc, span.start, span.end) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.NoBlock,
+        };
+        defer allocator.free(blocks.chain);
+
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(allocator);
+        var cur: ?AST.Node.Id = blocks.first;
+        while (cur) |c| : (cur = if (c == blocks.last) null else ast.nodes[c].next_sibling) {
+            if (c != blocks.first) try text.append(allocator, '\n');
+            try blockTextInto(allocator, ast, c, &text);
+        }
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const root = try b.addLeaf(.{ .code_block = .{ .lang = lang, .text = text.items } });
+        const first = doc.span(blocks.first);
+        const last = doc.span(blocks.last);
+        return self.spliceRendered(&b, root, render, first.start, blockSpanEnd(src, last));
+    }
+
+    /// `setCodeLanguage` over a format with no fence but a fragment renderer:
+    /// the block is rebuilt with `lang` over the same text — its attributes
+    /// along — and printed in its place.
+    fn setCodeLanguageByRender(self: *Editor, offset: usize, lang: ?[]const u8, render: RenderBlockFn) Error!void {
+        if (lang) |l| try checkLanguageToken(l);
+
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const allocator = self.splicer.allocator;
+        const doc = &self.splicer.doc;
+        const ast = self.astView();
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, offset, &chain);
+        const cb = locate.innermostOfKind(doc, chain.items, .code_block) orelse return error.NoBlock;
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const root = try b.addLeaf(.{ .code_block = .{ .lang = lang, .text = ast.nodes[cb].kind.code_block.text } });
+        if (ast.nodes[cb].attrs) |ai| try b.setAttrs(root, ast.attrs[ai]);
+        const t = doc.span(cb);
+        return self.spliceRendered(&b, root, render, t.start, blockSpanEnd(src, t));
     }
 
     // ── Task list checkboxes ─────────────────────────────────────────────────
@@ -1807,11 +2088,19 @@ pub const Editor = struct {
     ///     newline in one is `error.InvalidDestination`, since neither format can
     ///     hold it (Djot strips it, Markdown's `<…>` form forbids it) and
     ///     silently changing the caller's URL is worse than refusing.
+    ///
+    /// TWO SPELLINGS, in `setBlock`'s order: `[text](dest)` from the escape
+    /// alphabets where the format has them, and where it has none but carries
+    /// a `renderBlock`, a `link` node over the selection's inline nodes that
+    /// the format prints — see `insertLinkByRender`.
     pub fn insertLink(self: *Editor, span: Span, dest: []const u8) Error!void {
         try self.checkRange(span.start, span.end);
-        // A format with no link spelling refuses before anything else is read.
-        if (self.syntax.link_text_escapes == null) return error.UnsupportedFormat;
         if (std.mem.indexOfAny(u8, dest, "\r\n") != null) return error.InvalidDestination;
+        // A format with no link spelling refuses before anything else is read.
+        if (self.syntax.link_text_escapes == null) {
+            if (self.syntax.renderBlock) |render| return self.insertLinkByRender(span, dest, render, .link);
+            return error.UnsupportedFormat;
+        }
 
         const start = span.start;
         const end = span.end;
@@ -1912,11 +2201,18 @@ pub const Editor = struct {
     /// shape to detect here. And empty text stays empty — `![](dest)` is a perfectly
     /// good image, where the `[](dest)` that `insertLink` works to avoid is a link
     /// with nothing to click.
+    ///
+    /// The same two spellings as `insertLink`: where the format has no
+    /// alphabet but a renderer, an `image` node over the selection's inline
+    /// nodes — its alt text — is printed instead (`insertLinkByRender`, with
+    /// `.image`).
     pub fn insertImage(self: *Editor, span: Span, dest: []const u8) Error!void {
         try self.checkRange(span.start, span.end);
-        if (self.syntax.link_text_escapes == null) return error.UnsupportedFormat;
-        if (self.syntax.link_dest_escapes == null) return error.UnsupportedFormat;
         if (std.mem.indexOfAny(u8, dest, "\r\n") != null) return error.InvalidDestination;
+        if (self.syntax.link_text_escapes == null or self.syntax.link_dest_escapes == null) {
+            if (self.syntax.renderBlock) |render| return self.insertLinkByRender(span, dest, render, .image);
+            return error.UnsupportedFormat;
+        }
 
         const allocator = self.splicer.allocator;
         const src = self.sourceBytes();
@@ -1934,6 +2230,82 @@ pub const Editor = struct {
         try out.append(allocator, ')');
 
         return self.commitSplice(span.start, span.end, out.items);
+    }
+
+    /// `insertLink`/`insertImage` over a format with no link alphabet but a
+    /// fragment renderer: BUILD the node over the selection and let the format
+    /// print it.
+    ///
+    /// The alphabet path copies the selected SOURCE between `[` and `]`, which
+    /// works because in a lightweight format a selection's source is text the
+    /// format reads back. A renderer prints a TREE, so the selection has to be
+    /// one: the inline nodes it covers (`coveredInlines`), grafted under a
+    /// fresh `link` or `image`. A selection that starts or ends inside a plain
+    /// text run takes the run's covered part; one that cuts through anything
+    /// else — a mark, a code span, a text run whose source spells characters
+    /// as entities so that a byte offset names no character in it — is
+    /// `error.NotEditable`, as a range into the middle of an autolink is on the
+    /// alphabet path. Refusing beats a link whose text is not what was
+    /// selected.
+    ///
+    /// Re-pointing an existing link keeps its children and attributes and
+    /// replaces its destination — the alphabet path's rule, on the tree. An
+    /// empty selection gets a link whose text IS the destination, which is
+    /// the alphabet path's `[dest](dest)` for a format with no autolink form;
+    /// an empty selection makes an image with empty alt text, as `![](dest)`
+    /// does.
+    fn insertLinkByRender(
+        self: *Editor,
+        span: Span,
+        dest: []const u8,
+        render: RenderBlockFn,
+        shape: enum { link, image },
+    ) Error!void {
+        const allocator = self.splicer.allocator;
+        const doc = &self.splicer.doc;
+        const ast = self.astView();
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        var kids: std.ArrayList(AST.Node.Id) = .empty;
+        defer kids.deinit(allocator);
+        var target = span;
+        var attrs: ?AST.Attrs = null;
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, span.start, &chain);
+        const repoint = if (shape == .link)
+            locate.innermostCovering(doc, chain.items, &.{.link}, span.start, span.end)
+        else
+            null;
+        if (repoint) |id| {
+            target = doc.span(id);
+            if (target.start == 0 and target.end == 0) return error.NotEditable;
+            if (ast.nodes[id].attrs) |ai| attrs = ast.attrs[ai];
+            var child = ast.nodes[id].first_child;
+            while (child) |c| : (child = ast.nodes[c].next_sibling) {
+                try kids.append(allocator, try b.graftSubtree(ast, c));
+            }
+        } else if (span.end > span.start) {
+            const covered = try coveredInlines(allocator, doc, span.start, span.end);
+            defer allocator.free(covered);
+            for (covered) |piece| {
+                try kids.append(allocator, if (piece.text) |t|
+                    try b.addLeaf(.{ .str = t })
+                else
+                    try b.graftSubtree(ast, piece.node));
+            }
+        }
+        if (shape == .link and kids.items.len == 0) try kids.append(allocator, try b.addLeaf(.{ .str = dest }));
+
+        const payload: AST.Node.Kind.Link = .{ .destination = dest, .reference = null };
+        const root = try b.addContainer(switch (shape) {
+            .link => .{ .link = payload },
+            .image => .{ .image = payload },
+        }, kids.items);
+        if (attrs) |a| try b.setAttrs(root, a);
+        return self.spliceRendered(&b, root, render, target.start, target.end);
     }
 
     // ── Footnotes ────────────────────────────────────────────────────────────
@@ -2208,6 +2580,106 @@ fn containerFullyCovered(
     const lo = locate.lineStartAt(doc.source, doc.span(first).start);
     const hi = locate.lineEndAt(doc.source, doc.span(last).end -| 1);
     return region_start <= lo and region_end >= hi;
+}
+
+/// The node `toggleBlockContainerByRender` builds for a `ContainerKind`. A
+/// list built here is decimal from 1: a fresh list has no other numbering to
+/// keep, and the marker path's `1. ` says the same.
+fn containerNodeKind(kind: syntax_mod.ContainerKind, tight: bool) AST.Node.Kind {
+    return switch (kind) {
+        .block_quote => .block_quote,
+        .bullet_list => .{ .bullet_list = .{ .tight = tight } },
+        .ordered_list => .{ .ordered_list = .{ .numbering = .decimal, .tight = tight, .start = null } },
+    };
+}
+
+/// Where a splice over a block span ENDS: the span's end, minus the line end
+/// some parsers fold into a block's span after its closing bytes. A rendered
+/// fragment carries no trailing line end (`spliceRendered` trims it), so
+/// leaving the source's in place is what keeps the next block on its own line.
+fn blockSpanEnd(src: []const u8, span: Span) usize {
+    var end = span.end;
+    if (end > span.start and src[end - 1] == '\n') end -= 1;
+    if (end > span.start and src[end - 1] == '\r') end -= 1;
+    return end;
+}
+
+/// The render path's `containerFullyCovered`: true when the covered blocks
+/// hold `target` whole, or reach from the FIRST leaf block under its first
+/// child to the LAST under its last — the tree's statement of "every line the
+/// container holds", for a format whose lines say nothing. `blocks.first` may
+/// be an ancestor of that leaf (a nested list the range covers whole), which
+/// is why each end tests a path and not a node.
+fn coversContainer(ast: *const AST, target: AST.Node.Id, blocks: BlockRange) bool {
+    // The range covers a block that holds `target` whole — a list selected
+    // from outside it, the way a range over every line of one is. Both are
+    // on the chain to the range's start, so the shallower one contains the
+    // other.
+    const first_at = std.mem.indexOfScalar(AST.Node.Id, blocks.chain, blocks.first).?;
+    const target_at = std.mem.indexOfScalar(AST.Node.Id, blocks.chain, target).?;
+    if (first_at <= target_at) return true;
+
+    const first = ast.nodes[target].first_child orelse return false;
+    var last = first;
+    while (ast.nodes[last].next_sibling) |n| last = n;
+    return onEdgePath(ast, first, blocks.first, .first) and onEdgePath(ast, last, blocks.last, .last);
+}
+
+/// Whether `node` lies on the path of first (or last) children descending
+/// from `from`, `from` itself included.
+fn onEdgePath(ast: *const AST, from: AST.Node.Id, node: AST.Node.Id, edge: enum { first, last }) bool {
+    var cur = from;
+    while (true) {
+        if (cur == node) return true;
+        cur = ast.nodes[cur].first_child orelse return false;
+        if (edge == .last) {
+            while (ast.nodes[cur].next_sibling) |n| cur = n;
+        }
+    }
+}
+
+/// The empty container of `kind` the caret sits in, if the innermost node on
+/// `chain` is one — or is an empty item that is the ONLY child of one — so
+/// that `openContainerByRender` can take it back off. `null` otherwise.
+fn emptyContainerOf(ast: *const AST, chain: []const AST.Node.Id, kind: syntax_mod.ContainerKind) ?AST.Node.Id {
+    if (chain.len == 0) return null;
+    const deepest = chain[chain.len - 1];
+    if (ast.nodes[deepest].first_child != null) return null;
+    const tag = std.meta.activeTag(ast.nodes[deepest].kind);
+    if (tag == kindTag(kind)) return deepest;
+    if (tag == .list_item and chain.len >= 2) {
+        const list = chain[chain.len - 2];
+        const only = ast.nodes[list].first_child == deepest and ast.nodes[deepest].next_sibling == null;
+        if (only and std.meta.activeTag(ast.nodes[list].kind) == kindTag(kind)) return list;
+    }
+    return null;
+}
+
+/// The TEXT of a subtree, for a code block's payload: every text payload in
+/// order, a break as a line end, and a line end between sibling blocks. This
+/// is `select.textOf` with the breaks kept as breaks rather than folded to
+/// spaces — a listing is the one place a paragraph's line structure is the
+/// content, so a `<br>` in a poem becomes the line end it displayed as.
+fn blockTextInto(allocator: Allocator, ast: *const AST, id: AST.Node.Id, out: *std.ArrayList(u8)) Allocator.Error!void {
+    switch (ast.nodes[id].kind) {
+        .str => |t| try out.appendSlice(allocator, t),
+        .text_leaf => |l| try out.appendSlice(allocator, l.text),
+        .smart_punctuation => |v| try out.appendSlice(allocator, v.ascii()),
+        .raw_inline => |v| try out.appendSlice(allocator, v.text),
+        .code_block => |v| try out.appendSlice(allocator, v.text),
+        .raw_block => |v| try out.appendSlice(allocator, v.text),
+        .non_breaking_space => try out.append(allocator, ' '),
+        .soft_break, .hard_break => try out.append(allocator, '\n'),
+        else => {
+            var child = ast.nodes[id].first_child;
+            var first = true;
+            while (child) |c| : (child = ast.nodes[c].next_sibling) {
+                if (!first and ast.nodes[c].kind.level() == .block) try out.append(allocator, '\n');
+                try blockTextInto(allocator, ast, c, out);
+                first = false;
+            }
+        },
+    }
 }
 
 /// How many quotes enclose `target` on the chain — the number of `>` markers to
@@ -2810,6 +3282,89 @@ const TaskBox = struct {
 /// footnote definition is attached to no parent: both parsers resolve them by
 /// label, not by position, so the node is a detached root that a child walk
 /// never reaches.
+/// `checkInfoString` for the render path, which has no fence to measure
+/// against: a language is ONE TOKEN in every format that spells one — a
+/// `class="language-…"` splits on whitespace as an info string ends at it —
+/// so any whitespace is `error.InvalidLanguage`. Whatever else the token
+/// holds is the renderer's to escape, and the reparse's to check.
+fn checkLanguageToken(lang: []const u8) Editor.Error!void {
+    for (lang) |c| if (std.ascii.isWhitespace(c)) return error.InvalidLanguage;
+}
+
+/// One inline node a selection covers: the node whole, or — for a `str` the
+/// selection starts or ends inside — the covered part of its text.
+const InlinePiece = struct { node: AST.Node.Id, text: ?[]const u8 };
+
+/// The inline nodes `[start, end)` covers, in order: the children of the
+/// deepest node containing both ends, from the one holding `start` to the one
+/// holding `end - 1`, each of which must be inline-level. Caller frees.
+///
+/// The ends may fall inside a `str`, and only a `str`: its covered part is a
+/// slice of its text, which is exact only where the text is the source
+/// byte-for-byte (`span.len == text.len`) — a run spelling `&amp;` has no
+/// character at every byte, and slicing it would put an entity's tail in the
+/// link. Anything else the range cuts through is `error.NotEditable`, and so
+/// is a range whose ends sit in nothing (`error.NoBlock`) or that crosses a
+/// block boundary.
+fn coveredInlines(allocator: Allocator, doc: *const Document, start: usize, end: usize) Editor.Error![]InlinePiece {
+    const ast = &doc.ast;
+    var chain_a: std.ArrayList(AST.Node.Id) = .empty;
+    defer chain_a.deinit(allocator);
+    try locate.ancestorChain(allocator, doc, start, &chain_a);
+    var chain_b: std.ArrayList(AST.Node.Id) = .empty;
+    defer chain_b.deinit(allocator);
+    try locate.ancestorChain(allocator, doc, end - 1, &chain_b);
+
+    var i: usize = 0;
+    while (i + 1 < chain_a.items.len and i + 1 < chain_b.items.len and
+        chain_a.items[i + 1] == chain_b.items[i + 1]) : (i += 1)
+    {}
+    const common = chain_a.items[i];
+
+    var pieces: std.ArrayList(InlinePiece) = .empty;
+    errdefer pieces.deinit(allocator);
+
+    // The range IS one node (`<em>this</em>` selected whole): that node.
+    const common_span = doc.span(common);
+    if (common_span.start >= start and common_span.end <= end) {
+        if (ast.nodes[common].kind.level() != .@"inline") return error.NotEditable;
+        try pieces.append(allocator, .{ .node = common, .text = null });
+        return pieces.toOwnedSlice(allocator);
+    }
+    // Both ends in one text run: its covered part, and nothing else.
+    if (ast.nodes[common].kind == .str) {
+        try pieces.append(allocator, .{ .node = common, .text = try strSlice(doc, common, start, end) });
+        return pieces.toOwnedSlice(allocator);
+    }
+    if (i + 1 >= chain_a.items.len or i + 1 >= chain_b.items.len) return error.NoBlock;
+    const first = chain_a.items[i + 1];
+    const last = chain_b.items[i + 1];
+    var cur: ?AST.Node.Id = first;
+    while (cur) |c| : (cur = if (c == last) null else ast.nodes[c].next_sibling) {
+        if (ast.nodes[c].kind.level() != .@"inline") return error.NotEditable;
+        const sp = doc.span(c);
+        const cut = (c == first and sp.start < start) or (c == last and sp.end > end);
+        try pieces.append(allocator, .{
+            .node = c,
+            .text = if (cut) try strSlice(doc, c, @max(sp.start, start), @min(sp.end, end)) else null,
+        });
+    }
+    return pieces.toOwnedSlice(allocator);
+}
+
+/// The part of `str` node `id`'s text that `[start, end)` covers, where the
+/// text is its source byte-for-byte; `error.NotEditable` for any other node,
+/// or a run whose source spells a character some other way.
+fn strSlice(doc: *const Document, id: AST.Node.Id, start: usize, end: usize) Editor.Error![]const u8 {
+    const text = switch (doc.ast.nodes[id].kind) {
+        .str => |t| t,
+        else => return error.NotEditable,
+    };
+    const sp = doc.span(id);
+    if (sp.end - sp.start != text.len) return error.NotEditable;
+    return text[start - sp.start .. end - sp.start];
+}
+
 fn footnoteDefined(ast: *const AST, label: []const u8) bool {
     for (ast.nodes) |n| {
         if (std.meta.activeTag(n.kind) != .footnote) continue;
