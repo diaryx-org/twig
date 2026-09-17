@@ -64,9 +64,13 @@ const Renderer = struct {
     /// Emit prefix segments outermost-first by recursing to the root before
     /// writing, so nesting order is preserved (`  > `, not `>   `).
     fn writePrefixNode(self: *Renderer, node: ?*const Prefix) Writer.Error!void {
+        try writePrefixNodeTo(node, self.writer);
+    }
+
+    fn writePrefixNodeTo(node: ?*const Prefix, w: *Writer) Writer.Error!void {
         const p = node orelse return;
-        try self.writePrefixNode(p.parent);
-        try self.writer.writeAll(p.segment);
+        try writePrefixNodeTo(p.parent, w);
+        try w.writeAll(p.segment);
     }
 
     /// Re-emit `{#id .class key="val"}` from the node's `attrs` side-table.
@@ -94,10 +98,23 @@ const Renderer = struct {
     fn renderBlocksFrom(self: *Renderer, it: *AST.ChildIterator, ctx: Ctx, blank_between: bool, first: bool) Writer.Error!void {
         var is_first = first;
         while (it.next()) |child| {
-            if (!is_first and blank_between) try self.writer.writeByte('\n');
+            if (!is_first and blank_between) try self.writeBlankLine(ctx);
             try self.renderBlock(child.id, ctx);
             is_first = false;
         }
+    }
+
+    /// A blank line between two blocks of the same container, which inside a
+    /// quote is spelled `>` and not nothing: a bare blank line ENDS the quote,
+    /// so `> one\n\n> two` is two quotes where one was meant. The prefix is
+    /// written with its trailing space trimmed — a list item's indentation
+    /// trims to nothing, which is the bare blank line it always had.
+    fn writeBlankLine(self: *Renderer, ctx: Ctx) Writer.Error!void {
+        var line: Writer.Allocating = .init(self.allocator);
+        defer line.deinit();
+        writePrefixNodeTo(ctx.prefix, &line.writer) catch return error.WriteFailed;
+        try self.writer.writeAll(std.mem.trimEnd(u8, line.written(), " "));
+        try self.writer.writeByte('\n');
     }
 
     fn renderInlineChildren(self: *Renderer, parent: Node.Id, ctx: Ctx) Writer.Error!void {
@@ -829,6 +846,26 @@ test "serializeAlloc: nested block prefixes are emitted in nesting order" {
         defer testing.allocator.free(out);
         try testing.expect(std.mem.indexOf(u8, out, "> - item one") != null);
     }
+}
+
+test "serializeAlloc: a quote's blank line between paragraphs keeps its marker" {
+    // `> one\n\n> two` is two quotes — a bare blank line ends one — so the
+    // blank between a quote's own blocks has to be `>`. A loose list item's
+    // blank line is still bare: its prefix is indentation, which trims away.
+    var doc = try djot.parse(testing.allocator, "> one\n>\n> two\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("> one\n>\n> two\n", out);
+    var back = try djot.parse(testing.allocator, out);
+    defer back.deinit();
+    try testing.expect(doc.ast.eql(back.ast));
+
+    var loose = try djot.parse(testing.allocator, "- one\n\n  two\n");
+    defer loose.deinit();
+    const loose_out = try serializeAlloc(testing.allocator, &loose);
+    defer testing.allocator.free(loose_out);
+    try testing.expectEqualStrings("- one\n\n  two\n", loose_out);
 }
 
 test "serializeAlloc includes detached reference definitions" {
