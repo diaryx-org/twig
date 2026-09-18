@@ -90,6 +90,38 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.5.0
+
+### Added
+
+- **html** — a raw-text or rcdata body is the container's payload, not a child ([`ec512b8`](https://github.com/diaryx-org/twig/commit/ec512b819038dbb5ed7aeb449ae8637b75c4dda0))
+- **editor** — the container, code block, link and image gestures print through the renderer where the alphabet is null ([`9805a88`](https://github.com/diaryx-org/twig/commit/9805a8897e999084eb6d3f99fc6003858b104513))
+- **editor** — insert a fresh table after the caret's block ([`7d35bfa`](https://github.com/diaryx-org/twig/commit/7d35bfab0ca076bb2a95d32b168becb492c09753))
+
+### Fixed
+
+- **serializer** — a quote's blank line between its blocks keeps its marker ([`66c48fb`](https://github.com/diaryx-org/twig/commit/66c48fb8bf2230ef81f0a9b20c3e7152e16f2868))
+
+### Behavioural changes
+
+- An HTML `container` from a raw-text element
+  (`<script>`, `<style>`, `<iframe>`, …) or an rcdata one (`<title>`,
+  `<textarea>`) — parsed directly or promoted under Markdown's
+  `html_elements` — now carries its body as its own text payload and has
+  NO children, where it held one `str` child. `TwigFlatNode.text` and
+  the Rust `FlatNode::text` are set for such a node and `first_child` is
+  none; `ast_json` emits `"text"` on it; `holdsOpaqueText` is true and
+  `twig_editor_insert_child` refuses it. Every other container is
+  unchanged.
+
+- `twig convert -o markdown` / `-o djot` and the
+canonical serializers spell the blank line between two blocks of one block
+quote as `>` (with any enclosing prefix, trimmed) instead of an empty line,
+so the output reparses to one quote as the input did.
+
+- `Editor.supports` / `twig_format_supports` /
+
+
 ## 3.4.0
 
 ### Added
