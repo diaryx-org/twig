@@ -1419,6 +1419,11 @@ pub const Editor = struct {
         defer out.deinit(allocator);
 
         if (pos > 0) {
+            // An unterminated last line is ended first, or the "blank" written
+            // next is not a blank line but that line's own newline, and the
+            // block lands flush under the paragraph — `a\n---\n`, the setext
+            // heading the blank exists to prevent.
+            if (src[pos - 1] != '\n') try out.append(allocator, '\n');
             try out.appendSlice(allocator, blank);
             try out.append(allocator, '\n');
         }
