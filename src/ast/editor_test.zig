@@ -1388,6 +1388,15 @@ test "insertTable: inside a quote every line carries the marker" {
     try testing.expect(inside);
 }
 
+test "insertTable: a caret on a blank line between blocks puts the table on that line" {
+    // The shared placement, so the same correction: one blank each side.
+    var fx = try Fixture.init("a\n\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertTable(2, 1, 1);
+    try fx.expectSource("a\n\n|  |\n| --- |\n|  |\n\nb\n");
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+}
+
 test "insertTable: an empty document is a legitimate place for one" {
     var fx = try Fixture.init("", .markdown);
     defer fx.deinit();
@@ -2429,6 +2438,57 @@ test "thematic_break: an existing blank line below is not doubled" {
     try fx.ed.insertThematicBreak(0);
     // The second rule lands after the paragraph again, above the first.
     try fx.expectSource("a\n\n---\n\n---\n\nb\n");
+}
+
+test "thematic_break: a caret on a blank line between blocks puts the rule on that line" {
+    // With no block owning a blank line, the rule used to go after it and
+    // then add its own blank above — two blanks over the rule, one under.
+    // The blank the caret sits on is a separator, and the rule takes its
+    // place: one blank each side, in whichever format.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("a\n\nb\n", fmt);
+        defer fx.deinit();
+        try fx.ed.insertThematicBreak(2);
+        const rule = if (fmt == .markdown) "---" else "* * *";
+        var buf: [64]u8 = undefined;
+        try fx.expectSource(try std.fmt.bufPrint(&buf, "a\n\n{s}\n\nb\n", .{rule}));
+        try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+    }
+}
+
+test "thematic_break: a blank line the document ends on stays below the rule" {
+    // The rule is written at the blank's start, so the blank becomes the
+    // separator under it and the document still ends the way its author left
+    // it. Eating the line to end on the rule would be the fold this gesture
+    // does not do.
+    var fx = try Fixture.init("a\n\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(2);
+    try fx.expectSource("a\n\n---\n\n");
+}
+
+test "thematic_break: a blank first line takes the rule with no blank above it" {
+    // What a split at a paragraph's start leaves — `\npara` with the caret on
+    // the new blank — and where a consumer aiming "before the paragraph"
+    // through a gesture that only knows "after" ends up. Before, `\n\n---`.
+    var fx = try Fixture.init("\npara\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(0);
+    try fx.expectSource("---\n\npara\n");
+    try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+    try testing.expect(fx.find(.{ .tag = .para }) != null);
+}
+
+test "thematic_break: a run of blank lines is not folded, only not added to" {
+    // The gesture writes what is missing and nothing more: an author's extra
+    // blank lines are theirs. On the middle of three blanks the rule takes
+    // that line's start, nothing is added because both neighbours are already
+    // separators, and the two blanks that were below the caret are still
+    // below it.
+    var fx = try Fixture.init("a\n\n\n\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertThematicBreak(3);
+    try fx.expectSource("a\n\n---\n\n\nb\n");
 }
 
 test "thematic_break: an empty document is a legitimate place for one" {

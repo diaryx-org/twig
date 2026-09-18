@@ -1329,8 +1329,12 @@ pub const Editor = struct {
     ///     directly under a paragraph as a setext `<h2>` underline, so a rule
     ///     written flush against its predecessor silently becomes a heading and
     ///     eats it. The blank above is what makes one spelling safe in both
-    ///     formats. The blank below is added only when the next line isn't
-    ///     already blank, so repeating the gesture doesn't accumulate them.
+    ///     formats. Neither blank is added where the line is already one — the
+    ///     one below so repeating the gesture doesn't accumulate them, the one
+    ///     above so a caret ON a blank line between two blocks gets a rule with
+    ///     one blank each side rather than two above (`a\n\n|\nb` used to give
+    ///     `a\n\n\n---\n\nb`). A blank line is a separator, and one is all a
+    ///     separator is; the gesture writes what is missing and nothing more.
     ///   * It inherits the caret block's QUOTE PREFIX, so a rule inside a quote
     ///     stays inside it (`> a` gains `>` and `> * * *`, not a rule that ends
     ///     the quote). Only quote markers are reproduced — a list item's indent
@@ -1355,7 +1359,9 @@ pub const Editor = struct {
     ///
     /// `error.UnsupportedFormat` when the format has no thematic break. There is
     /// no `error.NoBlock`: an empty document is a legitimate place for a rule, and
-    /// with no block to sit after it goes at the caret's line end.
+    /// with no block to sit after it goes at the caret's line — ON that line
+    /// when it is blank, since a blank line is where a block goes, after it
+    /// otherwise.
     pub fn insertThematicBreak(self: *Editor, offset: usize) Error!void {
         const rule = self.syntax.thematic_break orelse return error.UnsupportedFormat;
         const src = self.sourceBytes();
@@ -1408,8 +1414,17 @@ pub const Editor = struct {
         const allocator = self.splicer.allocator;
 
         const block = if (locate.lineOwningBlock(&self.splicer.doc, offset)) |lb| lb.block else null;
-        const anchor = if (block) |b| self.splicer.doc.span(b).end -| 1 else offset;
-        const pos = locate.lineEndAt(src, anchor);
+        // With no block to sit after, the caret's own line is the anchor: a
+        // BLANK one is a separator the block can take the place of — written at
+        // its start, the blank becomes the separator below — where writing after
+        // it would step past a blank only to add another above.
+        const line_start = locate.lineStartAt(src, offset);
+        const on_blank = block == null and
+            locate.isBlankLine(locate.lineBody(src[line_start..locate.lineEndAt(src, offset)]));
+        const pos = if (on_blank)
+            line_start
+        else
+            locate.lineEndAt(src, if (block) |b| self.splicer.doc.span(b).end -| 1 else offset);
         const prefix = if (block) |b| containerPrefix(src, self.splicer.doc.span(b).start) else "";
         // A quote's blank line carries its marker but not the space after it —
         // the same rule `ContainerSpelling.blank` states for the toggle.
@@ -1424,8 +1439,13 @@ pub const Editor = struct {
             // block lands flush under the paragraph — `a\n---\n`, the setext
             // heading the blank exists to prevent.
             if (src[pos - 1] != '\n') try out.append(allocator, '\n');
-            try out.appendSlice(allocator, blank);
-            try out.append(allocator, '\n');
+            // The blank above, unless the line above already is one — the
+            // mirror of the rule below.
+            const above = src[locate.lineStartAt(src, pos - 1)..pos];
+            if (!locate.isBlankLine(locate.lineBody(above))) {
+                try out.appendSlice(allocator, blank);
+                try out.append(allocator, '\n');
+            }
         }
         // Every line of the block takes the prefix, not just its first: a
         // quote's marker is on each line it covers.
