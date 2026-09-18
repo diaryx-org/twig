@@ -90,6 +90,22 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.5.2
+
+### Fixed
+
+- **editor** — a block inserted from a blank line takes that line, and adds no blank beside one ([`f139797`](https://github.com/diaryx-org/twig/commit/f139797b1fd0defc47ef5bccd28047f3c0bfbbb1))
+
+### Behavioural changes
+
+- `insertThematicBreak` and `insertTable` with the caret
+  on a blank line that no block owns now write the block at that line's
+  start, with a blank line above only where the line above is not already
+  blank. `"a\n\nb\n"` at offset 2 gave `"a\n\n\n---\n\nb\n"` and now gives
+  `"a\n\n---\n\nb\n"`; `"\npara\n"` at 0 gave `"\n\n---\n\npara\n"` and now
+  gives `"---\n\npara\n"`. A caret inside a block is placed as before.
+
+
 ## 3.5.1
 
 ### Fixed
