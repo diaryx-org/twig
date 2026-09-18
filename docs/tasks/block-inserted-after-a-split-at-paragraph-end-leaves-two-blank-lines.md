@@ -4,11 +4,27 @@ description: '`splitBlock` at the end of a paragraph writes a blank line and an 
 author: adammharris
 created: 2026-09-18
 updated: 2026-09-18
-status: open
+status: dropped
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A block inserted after a split at a paragraph's end leaves two blank lines behind it
+
+**Status: dropped** on 2026-09-18, in favour of (2). The fold is not
+written; twig's `insertBlockAfter` keeps leaving spacing it did not write
+alone. The fix is leaf's, as
+[rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines](https://github.com/diaryx-org/leaf/blob/main/docs/tasks/rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines.md):
+do not split when the caret sits at the paragraph's end, since there is
+nothing to part.
+
+One twig change did come out of checking that (2) is safe, and it is a
+prerequisite of the leaf task rather than this one: with the split gone,
+the caret at the end of a document whose last line has no newline yet —
+`"para"` at 4, the commonest caret while typing — reached `insertBlockAfter`
+directly, and it wrote its blank line above as a bare `\n` that only
+terminated the line: `"para\n---\n"`, a setext heading. The no-op split had
+been masking it. Fixed in `a08bcf3`, with its `Behavioural-change:` trailer;
+leaf's task waits on the release that carries it.
 
 **Repro.** Markdown and djot alike:
 
