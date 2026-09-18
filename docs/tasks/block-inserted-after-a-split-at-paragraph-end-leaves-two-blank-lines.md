@@ -23,8 +23,8 @@ the caret at the end of a document whose last line has no newline yet —
 `"para"` at 4, the commonest caret while typing — reached `insertBlockAfter`
 directly, and it wrote its blank line above as a bare `\n` that only
 terminated the line: `"para\n---\n"`, a setext heading. The no-op split had
-been masking it. Fixed in `a08bcf3`, with its `Behavioural-change:` trailer;
-leaf's task waits on the release that carries it.
+been masking it. Fixed in `a08bcf3` (released as 3.5.1), with its
+`Behavioural-change:` trailer; leaf took it in its `72dcd04`.
 
 **Repro.** Markdown and djot alike:
 
