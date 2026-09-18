@@ -1345,6 +1345,19 @@ test "insertTable: the blank line above keeps the header out of the paragraph" {
     try testing.expect(fx.find(.{ .tag = .table }) != null);
 }
 
+test "insertTable: an unterminated last line is ended before the blank above" {
+    // The same line-ending as the rule's, and it matters more here: GFM reads
+    // a header row out of the paragraph a table is written flush under, so
+    // `a` followed directly by the delimiter row is a table whose header is
+    // the paragraph.
+    var fx = try Fixture.init("a", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertTable(1, 1, 1);
+    try fx.expectSource("a\n\n|  |\n| --- |\n|  |\n");
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+    try testing.expect(fx.find(.{ .tag = .para }) != null);
+}
+
 test "insertTable: spelled in the format's own dialect" {
     // Djot's delimiter row is unpadded; see `table edits re-spell in the
     // format's OWN dialect` for why that is a fact and not a style.
@@ -2301,6 +2314,25 @@ test "thematic_break: the blank line above is what keeps `---` from being a sete
     try fx.expectSource("a\n\n---\n");
     try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
     try fx.expectNoNodeOfKind(.{ .tag = .heading });
+}
+
+test "thematic_break: an unterminated last line is ended before the blank above" {
+    // A document being typed has no newline after its last line yet. The blank
+    // above was written as a bare `\n`, which on such a line only terminates
+    // it: `a` gained `\n---\n` flush underneath and became a setext heading —
+    // the failure the previous test exists to prevent, reachable from the
+    // commonest caret of all, the end of what was just typed.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("a", fmt);
+        defer fx.deinit();
+        try fx.ed.insertThematicBreak(1);
+        const rule = if (fmt == .markdown) "---" else "* * *";
+        var buf: [64]u8 = undefined;
+        try fx.expectSource(try std.fmt.bufPrint(&buf, "a\n\n{s}\n", .{rule}));
+        try testing.expect(fx.find(.{ .tag = .thematic_break }) != null);
+        try testing.expect(fx.find(.{ .tag = .para }) != null);
+        try fx.expectNoNodeOfKind(.{ .tag = .heading });
+    }
 }
 
 test "thematic_break: after a multi-line paragraph, not inside it" {
