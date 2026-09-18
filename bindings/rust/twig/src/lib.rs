@@ -798,6 +798,9 @@ pub enum Gesture {
     /// [`Format::supports_with`] rather than [`Format::supports`], which
     /// answers for default options and so always answers `false` here.
     SetMarkColor,
+    /// Mint a fresh table — [`Editor::insert_table`]. Behind the same gate as
+    /// the seven table edits: a format that can re-spell a table can write one.
+    InsertTable,
 }
 
 impl Gesture {
@@ -832,6 +835,7 @@ impl Gesture {
             Gesture::TableMoveRow => (22, 0),
             Gesture::TableMoveColumn => (23, 0),
             Gesture::SetMarkColor => (24, 0),
+            Gesture::InsertTable => (25, 0),
         }
     }
 }
@@ -2233,6 +2237,35 @@ impl Editor {
     fn table_edit(&mut self, offset: usize, op: c_int, arg: c_int) -> Result<(), Error> {
         self.change_op(|ed, out| unsafe { ffi::twig_editor_table_edit(ed, offset, op, arg, out) })?;
         Ok(())
+    }
+
+    /// Insert a fresh table — one header row, `rows` body rows, `cols` columns,
+    /// every cell empty — as its own block after the block `offset` sits in.
+    ///
+    /// The placement is [`Editor::insert_thematic_break`]'s, decision for
+    /// decision: after the caret's block rather than at the caret, blank-line
+    /// separated on both sides, carrying a block quote's prefix on every line,
+    /// and at column zero after a list item. The blank above is load-bearing
+    /// here too — GFM can read a table's header row out of the paragraph it
+    /// follows. The bytes are the format's own table spelling, through the
+    /// same emitter the `table_*` edits re-spell with, so the table this
+    /// writes is one they can edit.
+    ///
+    /// There is no [`Error::NotFound`]: an empty document is a fine place for
+    /// a table. [`Error::InvalidArgument`] for `rows == 0` or `cols == 0` — a
+    /// header with nothing under it is the shape [`Editor::table_delete_row`]
+    /// refuses to leave — or an `offset` past the source;
+    /// [`Error::UnsupportedFormat`] where the format has no table spelling,
+    /// before anything is read. [`Gesture::InsertTable`] answers ahead of time.
+    pub fn insert_table(
+        &mut self,
+        offset: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_insert_table(ed, offset, rows, cols, out)
+        })
     }
 
     /// Link `[start, end)` to `destination` — `[text](destination)`. Djot and
@@ -5293,6 +5326,33 @@ mod tests {
     }
 
     #[test]
+    fn editor_insert_table_writes_an_editable_table_after_the_block() {
+        let mut md = Editor::new_str("a\n", Format::Markdown).expect("editor");
+        md.insert_table(0, 1, 2).expect("table");
+        assert_eq!(md.source_str().unwrap(), "a\n\n|  |  |\n| --- | --- |\n|  |  |\n");
+        // What was minted is what the table edits read back.
+        md.table_insert_row(4, true).expect("row");
+        assert_eq!(
+            md.source_str().unwrap(),
+            "a\n\n|  |  |\n| --- | --- |\n|  |  |\n|  |  |\n"
+        );
+
+        let mut dj = Editor::new_str("a\n", Format::Djot).expect("editor");
+        dj.insert_table(0, 1, 2).expect("table");
+        assert_eq!(dj.source_str().unwrap(), "a\n\n|  |  |\n|---|---|\n|  |  |\n");
+
+        let mut md = Editor::new_str("a\n", Format::Markdown).expect("editor");
+        assert_eq!(md.insert_table(0, 0, 2), Err(Error::InvalidArgument));
+        assert_eq!(md.insert_table(0, 1, 0), Err(Error::InvalidArgument));
+        assert_eq!(md.source_str().unwrap(), "a\n");
+
+        let mut html = Editor::new_str("<p>ab</p>\n", Format::Html).expect("editor");
+        assert_eq!(html.insert_table(4, 1, 1), Err(Error::UnsupportedFormat));
+        assert!(!Format::Html.supports(Gesture::InsertTable));
+        assert!(Format::Markdown.supports(Gesture::InsertTable));
+    }
+
+    #[test]
     fn editor_split_block_keeps_both_halves_the_same_kind() {
         // A list item's halves are both items — the marker is repeated, so the
         // second half doesn't fall out of the list as a paragraph.
@@ -5854,6 +5914,7 @@ mod tests {
             Gesture::TableSetAlignment,
             Gesture::TableMoveRow,
             Gesture::TableMoveColumn,
+            Gesture::InsertTable,
         ]);
         all
     }
@@ -5868,7 +5929,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=24).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=25).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -5886,7 +5947,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                25,
+                26,
                 0,
                 &mut supported,
             )

@@ -653,6 +653,13 @@ unsafe extern "C" {
         arg: c_int,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_insert_table(
+        editor: *mut TwigEditor,
+        offset: usize,
+        rows: usize,
+        cols: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
     pub fn twig_editor_insert_link(
         editor: *mut TwigEditor,
         start: usize,

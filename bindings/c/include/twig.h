@@ -1009,6 +1009,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_TABLE_MOVE_ROW = 22,
     TWIG_GESTURE_TABLE_MOVE_COLUMN = 23,
     TWIG_GESTURE_SET_MARK_COLOR = 24,
+    TWIG_GESTURE_INSERT_TABLE = 25,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1511,6 +1512,33 @@ TwigStatus twig_editor_table_edit(
     size_t offset,
     int op,
     int arg,
+    TwigChange *out_change
+);
+
+// Insert a fresh table — one header row, `rows` body rows, `cols` columns,
+// every cell empty — as its own block after the block `offset` sits in. The
+// placement is twig_editor_insert_thematic_break's, decision for decision:
+// after the caret's block rather than at the caret, blank-line separated on
+// both sides, carrying a block quote's prefix on every line, and landing at
+// column zero after a list item (which splits the list). The blank above is
+// load-bearing here too: GFM can read a table's header row out of the
+// paragraph it follows, so a table written flush under prose takes the
+// paragraph's last line as its header.
+//
+// The bytes are the format's own table spelling, through the same emitter
+// every twig_editor_table_edit op re-spells with — so the table this writes is
+// one those ops can edit. There is no TWIG_STATUS_NOT_FOUND: an empty document
+// is a fine place for a table. TWIG_STATUS_INVALID_ARGUMENT for `rows == 0` or
+// `cols == 0` (a header with nothing under it is the shape the table ops refuse
+// to leave behind) or an `offset` past the source;
+// TWIG_STATUS_UNSUPPORTED_FORMAT when the format has no table spelling, checked
+// before anything is read. Ask twig_format_supports with
+// TWIG_GESTURE_INSERT_TABLE. Fills out_change on success if non-NULL.
+TwigStatus twig_editor_insert_table(
+    TwigEditor *editor,
+    size_t offset,
+    size_t rows,
+    size_t cols,
     TwigChange *out_change
 );
 
