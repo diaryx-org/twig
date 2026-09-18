@@ -3,7 +3,7 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-15
-updated: 2026-09-15
+updated: 2026-09-18
 part_of: '[Twig](/README.md)'
 contents:
 - '[References and footnotes become `Document` columns, so `ParsedDoc` can stop being a union](/docs/tasks/side-tables-as-document-columns.md)'
@@ -11,6 +11,7 @@ contents:
 - '[Fragment renderers on the format, where an alphabet cannot spell the edit](/docs/tasks/fragment-renderers.md)'
 - '[Name Markdown''s configurations as dialects](/docs/tasks/markdown-dialects.md)'
 - '[Decide whether twig carries a runtime-language contract](/docs/tasks/runtime-languages.md)'
+- '[A block inserted after a split at a paragraph''s end leaves two blank lines behind it](/docs/tasks/block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines.md)'
 ---
 
 # Tasks
