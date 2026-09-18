@@ -90,6 +90,21 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.5.1
+
+### Fixed
+
+- **editor** — a block inserted after an unterminated last line is still blank-separated ([`a08bcf3`](https://github.com/diaryx-org/twig/commit/a08bcf364387abef510fc9ae38d41b81baf2f6c7))
+
+### Behavioural changes
+
+- `insertThematicBreak` and `insertTable` after a last
+  line with no trailing newline now write that newline before the blank
+  line above the block. `"a"` + rule gave `"a\n---\n"` (a Markdown setext
+  heading) and now gives `"a\n\n---\n"`; a document ending in a newline is
+  unchanged.
+
+
 ## 3.5.0
 
 ### Added
