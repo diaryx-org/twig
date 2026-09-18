@@ -74,6 +74,43 @@ pub const Grid = struct {
     }
 };
 
+/// A grid that came from no source: one header row and `body_rows` body rows,
+/// every cell empty, `cols` columns of default alignment — the shape
+/// `Editor.insertTable` emits into a document that has no table yet. The
+/// caret sits in the first header cell, and `region` is empty because there is
+/// nothing to replace; the caller decides where the emitted bytes go.
+///
+/// A header row is not a parameter, because a table without one is not a
+/// table in either pipe format — the delimiter row that makes it one has to
+/// follow *something*. And `body_rows` is at least one for the same reason
+/// `deleteRow` refuses the last body row: a header with nothing under it is
+/// the degenerate shape every op here declines to produce.
+pub fn blank(allocator: Allocator, cols: usize, body_rows: usize) Error!Grid {
+    if (cols == 0 or body_rows == 0) return error.Refused;
+    var grid: Grid = .{
+        .allocator = allocator,
+        .rows = .empty,
+        .aligns = .empty,
+        .header_rows = 1,
+        .caret_row = 0,
+        .caret_col = 0,
+        .region = Span.init(0, 0),
+    };
+    errdefer grid.deinit();
+
+    var r: usize = 0;
+    while (r < body_rows + 1) : (r += 1) {
+        var cells: std.ArrayList([]const u8) = .empty;
+        errdefer cells.deinit(allocator);
+        var c: usize = 0;
+        while (c < cols) : (c += 1) try cells.append(allocator, "");
+        try grid.rows.append(allocator, cells);
+    }
+    var c: usize = 0;
+    while (c < cols) : (c += 1) try grid.aligns.append(allocator, .default);
+    return grid;
+}
+
 /// Errors distinct enough for the `Editor` to map to its own set.
 pub const Error = error{
     /// The offset isn't inside a table.

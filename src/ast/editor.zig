@@ -128,6 +128,9 @@ pub const Editor = struct {
         /// A footnote label this format cannot hold: empty, or carrying a line
         /// end or a reference bracket.
         InvalidLabel,
+        /// A table shape no pipe format spells: zero columns, or zero body rows
+        /// under the header.
+        InvalidShape,
         /// The `Syntax` table has no spelling for this gesture in this format.
         UnsupportedFormat,
         /// No block covers the offset/range this gesture needs one for.
@@ -255,6 +258,7 @@ pub const Editor = struct {
         table_set_alignment,
         table_move_row,
         table_move_column,
+        insert_table,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -333,6 +337,7 @@ pub const Editor = struct {
             .table_set_alignment,
             .table_move_row,
             .table_move_column,
+            .insert_table,
             => syntax.table_spelling != null,
         };
     }
@@ -1357,6 +1362,51 @@ pub const Editor = struct {
         if (offset > src.len) return error.InvalidRange;
         const allocator = self.splicer.allocator;
 
+        const line = try std.mem.concat(allocator, u8, &.{ rule, "\n" });
+        defer allocator.free(line);
+        return self.insertBlockAfter(offset, line);
+    }
+
+    /// Insert a fresh table — one header row, `rows` body rows, `cols` columns,
+    /// every cell empty — as its own block after the block `offset` sits in.
+    ///
+    /// The placement is `insertThematicBreak`'s, decision for decision: after
+    /// the caret's block rather than at the caret, blank-separated on both
+    /// sides, carrying a quote's prefix on every line and landing at column
+    /// zero after a list item. The blank above is load-bearing here for the
+    /// same reason it is for the rule: GFM lets a table's header row be read
+    /// out of the paragraph it follows, so a table written flush under prose
+    /// can take the paragraph's last line as its header.
+    ///
+    /// The bytes are the format's own `TableSpelling`, emitted by
+    /// `table_edit.emit` over a `table_edit.blank` grid — the same path every
+    /// table edit re-spells through, so a table this mints is one those edits
+    /// can read back. The header row is not optional, because neither pipe
+    /// format has a table without one; `error.InvalidShape` for zero columns
+    /// or zero body rows, the shape `tableDeleteRow` and `tableDeleteColumn`
+    /// refuse to leave behind. `error.UnsupportedFormat` where the format has
+    /// no table spelling, before anything is read.
+    pub fn insertTable(self: *Editor, offset: usize, rows: usize, cols: usize) Error!void {
+        const spelling = self.syntax.table_spelling orelse return error.UnsupportedFormat;
+        if (offset > self.sourceBytes().len) return error.InvalidRange;
+        if (rows == 0 or cols == 0) return error.InvalidShape;
+        const allocator = self.splicer.allocator;
+
+        var grid = table_edit.blank(allocator, cols, rows) catch |e| return mapTableErr(e);
+        defer grid.deinit();
+        const bytes = table_edit.emit(allocator, &grid, spelling) catch |e| return mapTableErr(e);
+        defer allocator.free(bytes);
+        return self.insertBlockAfter(offset, bytes);
+    }
+
+    /// Write `body` — one or more `\n`-terminated lines — as a block of its
+    /// own after the block `offset` sits in: the shared placement behind
+    /// `insertThematicBreak` and `insertTable`, whose doc comments own the
+    /// reasoning for each decision made here.
+    fn insertBlockAfter(self: *Editor, offset: usize, body: []const u8) Error!void {
+        const src = self.sourceBytes();
+        const allocator = self.splicer.allocator;
+
         const block = if (locate.lineOwningBlock(&self.splicer.doc, offset)) |lb| lb.block else null;
         const anchor = if (block) |b| self.splicer.doc.span(b).end -| 1 else offset;
         const pos = locate.lineEndAt(src, anchor);
@@ -1372,9 +1422,14 @@ pub const Editor = struct {
             try out.appendSlice(allocator, blank);
             try out.append(allocator, '\n');
         }
-        try out.appendSlice(allocator, prefix);
-        try out.appendSlice(allocator, rule);
-        try out.append(allocator, '\n');
+        // Every line of the block takes the prefix, not just its first: a
+        // quote's marker is on each line it covers.
+        var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, body, "\n"), '\n');
+        while (lines.next()) |l| {
+            try out.appendSlice(allocator, prefix);
+            try out.appendSlice(allocator, l);
+            try out.append(allocator, '\n');
+        }
         if (pos < src.len and !locate.isBlankLine(locate.lineBody(src[pos..locate.lineEndAt(src, pos)]))) {
             try out.appendSlice(allocator, blank);
             try out.append(allocator, '\n');

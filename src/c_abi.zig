@@ -1685,6 +1685,7 @@ fn statusOfEditorError(err: twig.Editor.Error) TwigStatus {
         error.InvalidLanguage,
         error.InvalidLabel,
         error.InvalidColor,
+        error.InvalidShape,
         => .invalid_argument,
         error.UnsupportedFormat => .unsupported_format,
         error.NoBlock => .not_found,
@@ -2843,6 +2844,7 @@ const TwigGesture = enum(c_int) {
     table_move_row = 22,
     table_move_column = 23,
     set_mark_color = 24,
+    insert_table = 25,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2873,6 +2875,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         22 => .table_move_row,
         23 => .table_move_column,
         24 => .set_mark_color,
+        25 => .insert_table,
         else => null,
     };
 }
@@ -3056,6 +3059,28 @@ pub export fn twig_editor_table_edit(
         else => return .invalid_argument,
     };
     result catch |err| return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Insert a fresh table — one header row, `rows` body rows, `cols` columns,
+/// every cell empty — as its own block after the block at `offset`. See
+/// `twig.h` for the semantics and `twig.Editor.insertTable` for the
+/// implementation: the placement is `twig_editor_insert_thematic_break`'s, and
+/// the bytes are the format's own table spelling through the same emitter
+/// every `twig_editor_table_edit` op re-spells with.
+pub export fn twig_editor_insert_table(
+    ed: ?*TwigEditor,
+    offset: usize,
+    rows: usize,
+    cols: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.insertTable(offset, rows, cols) catch |err|
+        return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;
 }

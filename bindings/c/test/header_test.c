@@ -288,6 +288,9 @@ static void test_new_block_gestures_link_and_edit(void) {
 
     // A rule after the list, then a footnote — both halves in one edit.
     CHECK(twig_editor_insert_thematic_break(editor, 6, &change) == TWIG_STATUS_OK);
+    // A fresh table after the same block; a zero shape is the caller's error.
+    CHECK(twig_editor_insert_table(editor, 6, 0, 2, NULL) == TWIG_STATUS_INVALID_ARGUMENT);
+    CHECK(twig_editor_insert_table(editor, 6, 1, 2, &change) == TWIG_STATUS_OK);
     CHECK(twig_editor_insert_footnote(editor, 7, (const uint8_t *)"a", 1, &change)
           == TWIG_STATUS_OK);
     CHECK(twig_editor_source(editor, &out, &out_len) == TWIG_STATUS_OK);
@@ -553,6 +556,13 @@ static void test_format_capability_matches_the_gestures(void) {
     CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, TWIG_GESTURE_TABLE_INSERT_ROW,
                                0, &supported) == TWIG_STATUS_OK);
     CHECK(supported == 1);
+    // Minting a table sits behind the same gate as editing one.
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_INSERT_TABLE, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    CHECK(twig_format_supports(TWIG_FORMAT_DJOT, TWIG_GESTURE_INSERT_TABLE, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
 
     // And the 0 is the answer the call itself gives, over a real HTML table —
     // the edit that used to return OK having replaced it with pipe text.
@@ -562,6 +572,7 @@ static void test_format_capability_matches_the_gestures(void) {
                              TWIG_FORMAT_HTML, &ht) == TWIG_STATUS_OK);
     CHECK(twig_editor_table_edit(ht, 15, TWIG_TABLE_INSERT_ROW, 1, NULL) ==
           TWIG_STATUS_UNSUPPORTED_FORMAT);
+    CHECK(twig_editor_insert_table(ht, 15, 1, 1, NULL) == TWIG_STATUS_UNSUPPORTED_FORMAT);
     CHECK(twig_editor_split_block(ht, 15, NULL) == TWIG_STATUS_UNSUPPORTED_FORMAT);
     CHECK(twig_editor_renumber_ordered_lists(ht, 15, NULL) ==
           TWIG_STATUS_UNSUPPORTED_FORMAT);

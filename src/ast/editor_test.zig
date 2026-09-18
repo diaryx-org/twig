@@ -1320,6 +1320,94 @@ test "table gestures refuse a format with no table spelling, and touch nothing" 
     try testing.expect(fx.find(.{ .tag = .table }) != null);
 }
 
+test "insertTable: a header, `rows` empty body rows and `cols` columns, after the caret's block" {
+    var fx = try Fixture.init("a\n\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertTable(0, 2, 3);
+    try fx.expectSource("a\n\n|  |  |  |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |\n\nb\n");
+    // A table the parser reads as one, with its header — not a paragraph of
+    // pipes. That is what the delimiter row and the blank above it buy.
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+    const head = fx.find(.{ .tag = .row }) orelse return error.NoRow;
+    try testing.expect(fx.ed.astView().nodes[head].kind.row.head);
+}
+
+test "insertTable: the blank line above keeps the header out of the paragraph" {
+    // GFM reads a delimiter row against the paragraph line above it, so a table
+    // written flush under `a` would take `a` for its header. The reparsed shape
+    // is the assertion: `a` is still a paragraph, and the table's header is the
+    // empty row this wrote.
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertTable(0, 1, 2);
+    try fx.expectSource("a\n\n|  |  |\n| --- | --- |\n|  |  |\n");
+    try testing.expect(fx.find(.{ .tag = .para }) != null);
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+}
+
+test "insertTable: spelled in the format's own dialect" {
+    // Djot's delimiter row is unpadded; see `table edits re-spell in the
+    // format's OWN dialect` for why that is a fact and not a style.
+    var fx = try Fixture.init("a\n", .djot);
+    defer fx.deinit();
+    try fx.ed.insertTable(0, 1, 2);
+    try fx.expectSource("a\n\n|  |  |\n|---|---|\n|  |  |\n");
+    const head = fx.find(.{ .tag = .row }) orelse return error.NoRow;
+    try testing.expect(fx.ed.astView().nodes[head].kind.row.head);
+}
+
+test "insertTable: inside a quote every line carries the marker" {
+    // A rule is one line and inherits the prefix once; a table is several, and
+    // a marker on the first alone would end the quote after the header.
+    var fx = try Fixture.init("> a\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertTable(2, 1, 1);
+    try fx.expectSource("> a\n>\n> |  |\n> | --- |\n> |  |\n");
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+    // One quote, and the table is a child of it rather than a block after it.
+    const quote = fx.find(.{ .tag = .block_quote }) orelse return error.NoQuote;
+    const ast = fx.ed.astView();
+    var inside = false;
+    var c = ast.nodes[quote].first_child;
+    while (c) |id| : (c = ast.nodes[id].next_sibling) {
+        if (std.meta.activeTag(ast.nodes[id].kind) == .table) inside = true;
+    }
+    try testing.expect(inside);
+}
+
+test "insertTable: an empty document is a legitimate place for one" {
+    var fx = try Fixture.init("", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertTable(0, 1, 1);
+    try fx.expectSource("|  |\n| --- |\n|  |\n");
+    try testing.expect(fx.find(.{ .tag = .table }) != null);
+}
+
+test "insertTable: the table it writes is one the table ops can edit" {
+    // The point of going through `table_edit.emit`: what is minted is what
+    // `extract` reads back, so a row can go in without a hand-typed table.
+    var fx = try Fixture.init("", .markdown);
+    defer fx.deinit();
+    try fx.ed.insertTable(0, 1, 2);
+    try fx.ed.tableInsertRow(2, true); // caret in the first header cell
+    try fx.expectSource("|  |  |\n| --- | --- |\n|  |  |\n|  |  |\n");
+}
+
+test "insertTable: zero rows or zero columns is InvalidShape, and touches nothing" {
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.InvalidShape, fx.ed.insertTable(0, 0, 2));
+    try testing.expectError(error.InvalidShape, fx.ed.insertTable(0, 2, 0));
+    try fx.expectSource("a\n");
+}
+
+test "insertTable: a format with no table spelling refuses before it reads anything" {
+    var fx = try Fixture.init("<p>ab</p>\n", .html);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.insertTable(4, 1, 1));
+    try fx.expectSource("<p>ab</p>\n");
+}
+
 test "insertLineBreak: splices an in-cell <br> that reparses as a hard_break (markdown)" {
     var fx = try Fixture.init(table_src, .markdown);
     defer fx.deinit();
@@ -3127,6 +3215,7 @@ const all_gestures = blk: {
         .table_set_alignment,
         .table_move_row,
         .table_move_column,
+        .insert_table,
     };
 };
 
@@ -3174,6 +3263,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .table_set_alignment => ed.tableSetAlignment(0, .center),
         .table_move_row => ed.tableMoveRow(0, true),
         .table_move_column => ed.tableMoveColumn(0, true),
+        .insert_table => ed.insertTable(0, 1, 1),
     };
 }
 
