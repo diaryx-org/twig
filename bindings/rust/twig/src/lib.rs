@@ -1506,6 +1506,10 @@ pub struct MarkdownExtensions {
     /// [`image` node](FlatNode) instead of an opaque `raw_block`/`raw_inline`, so
     /// it is addressable by [`Document::query`] and the tree read paths. Only
     /// tags that map verbatim onto the source are promoted; the rest stay raw.
+    /// A bare `<div>` line paired with its bare `</div>` line, and a `<span>`
+    /// paired with its `</span>` in the same run, become one container over
+    /// what lies between — the spellings twig writes for a block's and a run's
+    /// attributes, and what this flag reads back.
     pub html_elements: bool,
     /// `==text==` highlight, parsed as a `mark` node (the markdown-it-mark /
     /// Obsidian extension). Only a run of exactly two `=` delimits.

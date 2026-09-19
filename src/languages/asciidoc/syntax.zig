@@ -136,8 +136,13 @@ pub const table: syntax.Syntax = .{
     // An open block does carry them, so the loss is a property of the native
     // spellings rather than of the format.
     .names_leaf_containers = true,
+    // A block's `[#id.role,key=value]` line carries every key and reads back
+    // in full. A run's `[#id.role]#text#` does not — no slot for a third key,
+    // so `inline_attrs` stays false; see `Syntax.inline_attrs`.
+    .block_attrs = .native,
 
     // ── Deliberately absent ────────────────────────────────────────────────
+    // `inline_attrs`: above.
     // `link_text_escapes`, `link_dest_escapes`, `footnote`, `table_spelling`,
     // `cell_line_break`: the shape mismatches in this file's doc comment.
     // `attr_spelling`: the serializer writes AsciiDoc's `[#id.role,key=val]`

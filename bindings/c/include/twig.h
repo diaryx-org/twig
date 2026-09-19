@@ -96,7 +96,7 @@ extern "C" {
 // to turn one off — that is what TWIG_FORMAT_COMMONMARK is.
 #define TWIG_MD_DIRECTIVES    (1u << 0)  // generic directives: :name, ::name, :::name
 #define TWIG_MD_MATH          (1u << 1)  // $...$ / $$...$$ math
-#define TWIG_MD_HTML_ELEMENTS (1u << 2)  // parse raw HTML into semantic AST nodes
+#define TWIG_MD_HTML_ELEMENTS (1u << 2)  // parse raw HTML into semantic AST nodes; pair a bare <div> with its </div>, a <span> with its </span>
 #define TWIG_MD_HIGHLIGHT     (1u << 3)  // ==text== highlight, parsed as a `mark`
 #define TWIG_MD_HIGHLIGHT_COLORS (1u << 4)  // ==🔴 text==: the circle emoji becomes the mark's data-color; needs TWIG_MD_HIGHLIGHT
 

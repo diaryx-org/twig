@@ -136,6 +136,11 @@ pub const table: syntax.Syntax = .{
     // field it survives in is the format's own business — and it is why the
     // claim is worded "carries the name" rather than "is named".
     .names_leaf_containers = true,
+    // A block's attributes are the `{…}` line before it, and a run's the
+    // `{…}` after its brackets; both read back in full. The harness measures
+    // each.
+    .block_attrs = .native,
+    .inline_attrs = true,
     // No `cell_line_break`: djot has no native in-cell hard break, and spelling
     // one as `<br>` would emit non-idiomatic djot that any other djot reader
     // renders as literal `<br>` text. So it stays `null` — `insertLineBreak`

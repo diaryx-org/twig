@@ -262,7 +262,14 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                 }
             },
             '<' => {
-                if (scanAutolinkUri(text, i)) |end| {
+                // Under `html_elements` a `<span …>` with its `</span>` in
+                // this run is a container over the content between — checked
+                // first, since a paired span is what a `<` most often opens
+                // in a document written by twig's own Markdown serializer.
+                const paired: ?usize = if (sc.options.html_elements) try tryPairedSpan(sc, text, i) else null;
+                if (paired) |end| {
+                    i = end;
+                } else if (scanAutolinkUri(text, i)) |end| {
                     try sc.flushBuf(i);
                     const id = try b.addLeaf(.{ .text_leaf = .{ .kind = .url, .text = text[i + 1 .. end - 1] } });
                     sc.setSpanIfMapped(id, i, end);
@@ -1727,6 +1734,91 @@ fn buildTextDirective(sc: *Scanner, d: TextDirective) Allocator.Error!Node.Id {
     return id;
 }
 
+// ── Phase 3: paired <span> (`self.options.html_elements`) ──────────────
+
+/// `tag` is a whole `<…>` or `</…>` as the scanners delimit it: whether its
+/// name is `span`, case-insensitively.
+fn isSpanTag(tag: []const u8, closing: bool) bool {
+    const start: usize = if (closing) 2 else 1;
+    if (tag.len < start + 4) return false;
+    if (!std.ascii.eqlIgnoreCase(tag[start .. start + 4], "span")) return false;
+    const after = tag[start + 4];
+    return after == ' ' or after == '\t' or after == '\n' or after == '/' or after == '>';
+}
+
+/// `text[at] == '<'`, under `html_elements`: a `<span …>` whose `</span>` lies
+/// in this run is a `container` named `span` over the inline content between,
+/// carrying the tag's attributes — the one inline tag that pairs, as `<div>`
+/// is the one block tag (see `block.zig`'s `tryDivFence`), and the spelling
+/// twig's own Markdown serializer writes for an attributed run. The content
+/// is scanned by a nested scanner the way a text directive's label is, so a
+/// mark cannot straddle the span's edge. Returns the offset just past the
+/// closer, or `null` to leave the tag to the raw path: no closer in the run,
+/// a self-closing tag, or nesting past `max_directive_nesting`.
+fn tryPairedSpan(sc: *Scanner, text: []const u8, at: usize) Allocator.Error!?usize {
+    if (sc.directive_depth >= max_directive_nesting) return null;
+    const open_end = scanHtmlOpenTag(text, at) orelse return null;
+    if (!isSpanTag(text[at..open_end], false)) return null;
+    if (text[open_end - 2] == '/') return null;
+
+    // The matching closer, counting nested spans.
+    var depth: usize = 0;
+    var i = open_end;
+    var close_start: ?usize = null;
+    while (i < text.len) : (i += 1) {
+        if (text[i] != '<') continue;
+        if (scanHtmlOpenTag(text, i)) |e| {
+            if (isSpanTag(text[i..e], false) and text[e - 2] != '/') depth += 1;
+            i = e - 1;
+        } else if (scanHtmlCloseTag(text, i)) |e| {
+            if (isSpanTag(text[i..e], true)) {
+                if (depth == 0) {
+                    close_start = i;
+                    break;
+                }
+                depth -= 1;
+            }
+            i = e - 1;
+        }
+    }
+    const cs = close_start orelse return null;
+    const close_end = scanHtmlCloseTag(text, cs).?;
+
+    try sc.flushBuf(at);
+    const b = sc.b;
+    const segs = try labelSegments(b.allocator, sc.segments, open_end, cs);
+    defer b.allocator.free(segs);
+    var nested: Scanner = .{
+        .b = b,
+        .link_refs = sc.link_refs,
+        .options = sc.options,
+        .segments = segs,
+        .directive_depth = sc.directive_depth + 1,
+    };
+    defer nested.deinit();
+    const children = try runScan(&nested, text[open_end..cs]);
+    defer if (children.len > 0) b.allocator.free(children);
+
+    const id = try b.addContainer(.{ .container = .{ .form = .inline_text, .name = "span" } }, children);
+    b.setSpelling(id, .{ .container_origin = .element });
+    // The tag's attributes, read by the HTML parser as `promoteInlineHtml`
+    // reads a self-contained tag's: the opener alone parses to one `span`
+    // carrying them, and `setAttrs` copies every key and value.
+    var tag_ast = try html_lang.parse(b.allocator, text[at..open_end]);
+    defer tag_ast.deinit();
+    var it = tag_ast.children(tag_ast.ast.root);
+    while (it.next()) |child| {
+        if (child.kind != .container) continue;
+        const attrs = tag_ast.ast.attrsOf(child.id);
+        if (!attrs.isEmpty()) try b.setAttrs(id, attrs);
+        break;
+    }
+    sc.setSpanIfMapped(id, at, close_end);
+    sc.setContentSpanIfMapped(id, open_end, cs);
+    _ = try sc.appendItem(id);
+    return close_end;
+}
+
 // ── Phase 3: footnote references (`self.options.footnotes`) ────────────
 
 const FootnoteRefLabel = struct { label: []const u8, end: usize };
@@ -2671,15 +2763,90 @@ test "html_elements: an inline <br> promotes to a hard_break" {
     try testing.expect(br.kind == .hard_break);
 }
 
-test "html_elements: a paired inline tag like <span> stays raw (its close tag is separate)" {
-    // Promoting `<span>` to a childless element would silently drop the "hi"
-    // that belongs between it and its separate `</span>` token, so a non-void
-    // tag must remain a raw_inline even with the option on.
-    var ast = try parseAndFinishWithOptions("<span>hi</span>", html_on);
+/// The first node whose kind tag is `tag`, or `null`.
+fn firstOfTag(ast: *const AST, tag: std.meta.Tag(Node.Kind)) ?Node.Id {
+    for (ast.nodes, 0..) |n, i| {
+        if (std.meta.activeTag(n.kind) == tag) return @intCast(i);
+    }
+    return null;
+}
+
+test "html_elements: a paired <span> is a container over the Markdown between, carrying the tag's attributes" {
+    // It used to stay raw — promoting the opener to a childless element would
+    // have dropped the "hi" — and now it pairs with its closer instead.
+    var ast = try parseAndFinishWithOptions("a <span class=\"l\" data-k=\"v\">big *text*</span> b", html_on);
     defer ast.deinit();
-    const open = ast.nodes[ast.root].first_child.?;
-    try testing.expect(ast.nodes[open].kind == .raw_inline);
-    try testing.expectEqualStrings("<span>", ast.nodes[open].kind.raw_inline.text);
+    const span = firstOfTag(&ast, .container).?;
+    const c = ast.nodes[span].kind.container;
+    try testing.expectEqualStrings("span", c.name);
+    try testing.expect(c.form.? == .inline_text);
+    try testing.expectEqualStrings("l", ast.attrsOf(span).get("class").?);
+    try testing.expectEqualStrings("v", ast.attrsOf(span).get("data-k").?);
+    // The content is inline Markdown: text, then emphasis.
+    const first = ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("big ", ast.nodes[first].kind.str);
+    const em = ast.nodes[first].next_sibling.?;
+    try testing.expect(ast.nodes[em].kind == .inline_mark and ast.nodes[em].kind.inline_mark == .emph);
+    try testing.expect(ast.nodes[em].next_sibling == null);
+    for (ast.nodes) |n| try testing.expect(n.kind != .raw_inline);
+}
+
+test "html_elements: spans nest, and the innermost closer closes the innermost span" {
+    var ast = try parseAndFinishWithOptions("<span class=\"a\">x <span class=\"b\">y</span> z</span>", html_on);
+    defer ast.deinit();
+    // The nested scan builds the inner span first, so the outer is found by
+    // position — the root's first child — rather than by node order.
+    const outer = ast.nodes[ast.root].first_child.?;
+    try testing.expect(ast.nodes[outer].kind == .container);
+    try testing.expectEqualStrings("a", ast.attrsOf(outer).get("class").?);
+    const x = ast.nodes[outer].first_child.?;
+    const inner = ast.nodes[x].next_sibling.?;
+    try testing.expectEqualStrings("b", ast.attrsOf(inner).get("class").?);
+    const z = ast.nodes[inner].next_sibling.?;
+    try testing.expectEqualStrings(" z", ast.nodes[z].kind.str);
+    try testing.expect(ast.nodes[z].next_sibling == null);
+}
+
+test "html_elements: a <span> with no closer in the run, a self-closing one, and any other pair stay raw" {
+    var open = try parseAndFinishWithOptions("a <span class=\"x\"> b", html_on);
+    defer open.deinit();
+    try testing.expect(firstOfTag(&open, .container) == null);
+    try testing.expect(firstOfTag(&open, .raw_inline) != null);
+
+    var closed = try parseAndFinishWithOptions("a <span/> b", html_on);
+    defer closed.deinit();
+    try testing.expect(firstOfTag(&closed, .container) == null);
+
+    var bold = try parseAndFinishWithOptions("a <b>hi</b> b", html_on);
+    defer bold.deinit();
+    try testing.expect(firstOfTag(&bold, .container) == null);
+    try testing.expect(firstOfTag(&bold, .raw_inline) != null);
+}
+
+test "span: a paired <span> and its children address the true source bytes" {
+    const src = "x <span class=\"l\">a *b* c</span> y";
+    var doc = try parseAndFinishMappedDoc(src, html_on);
+    defer doc.deinit();
+    const lead = doc.ast.nodes[doc.ast.root].first_child.?;
+    const span = doc.ast.nodes[lead].next_sibling.?;
+    try testing.expect(doc.ast.nodes[span].kind == .container);
+    try testing.expectEqualStrings("<span class=\"l\">a *b* c</span>", Span.of(u8, doc.span(span), src));
+    try testing.expectEqualStrings("a *b* c", Span.of(u8, doc.contentSpan(span).?, src));
+    const first = doc.ast.nodes[span].first_child.?;
+    try testing.expectEqualStrings("a ", Span.of(u8, doc.span(first), src));
+    const emph = doc.ast.nodes[first].next_sibling.?;
+    try testing.expectEqualStrings("*b*", Span.of(u8, doc.span(emph), src));
+}
+
+test "html_elements OFF: a paired <span> is two raw inlines with the text between" {
+    var ast = try parseAndFinish("a <span class=\"l\">hi</span> b");
+    defer ast.deinit();
+    try testing.expect(firstOfTag(&ast, .container) == null);
+    var raws: usize = 0;
+    for (ast.nodes) |n| {
+        if (n.kind == .raw_inline) raws += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), raws);
 }
 
 test "text directive with label and attrs" {

@@ -621,6 +621,28 @@ pub const Syntax = struct {
     /// print one — which `assertCoherent` pins.
     names_leaf_containers: bool = false,
 
+    /// How a BLOCK carrying attributes — a paragraph with a class, an id and
+    /// a `data-` key — printed through `renderBlock` reparses: to the same
+    /// kind carrying them (`native`), or to a container whose SOLE CHILD is
+    /// that kind and which carries them (`wrapped`, Markdown's shape — a
+    /// `<div>` around the block, read back under `html_elements`). `null` =
+    /// the attributes do not come back, so `Editor.setBlockAttrs` is
+    /// `error.UnsupportedFormat`. The same rule as `names_leaf_containers`:
+    /// a claim about a TABLE, moving with the parse config where the parser
+    /// does, measured by `languages/harness.zig` rather than asserted, and
+    /// implying `renderBlock != null`, which `assertCoherent` pins.
+    block_attrs: ?BlockAttrs = null,
+
+    /// Whether an ANONYMOUS INLINE CONTAINER carrying attributes, printed
+    /// through `renderBlock`, reparses to an inline container carrying them —
+    /// anonymous (djot's `[text]{…}`) or named `span` (HTML's and Markdown's
+    /// tag), which `Editor.wrapRangeAttrs` treats as one node. `false` = it
+    /// does not, so the gesture is unsupported. AsciiDoc answers false: its
+    /// `[#id.role]#text#` keeps an id and a role and has no slot for a third
+    /// key, and a gesture that silently dropped one is what the gate is for.
+    /// Measured like `block_attrs`; implies `renderBlock != null`.
+    inline_attrs: bool = false,
+
     // ── Renderers ──────────────────────────────────────────────────────────
     // The spellings that are not a table. Every field above is bytes an
     // algorithm in `ast/editor.zig` writes; each field here is the algorithm's
@@ -827,7 +849,18 @@ pub const Syntax = struct {
         // fragment renderer — so a table claiming the reparse without carrying
         // the printer states a promise nothing could keep.
         if (self.names_leaf_containers) std.debug.assert(self.renderBlock != null);
+        // The two attribute claims rest on the same renderer.
+        if (self.block_attrs != null) std.debug.assert(self.renderBlock != null);
+        if (self.inline_attrs) std.debug.assert(self.renderBlock != null);
     }
+};
+
+/// The shape a block's attributes come back in — see `Syntax.block_attrs`.
+pub const BlockAttrs = enum {
+    /// On the block itself: djot's `{…}` line, HTML's tag, AsciiDoc's `[…]`.
+    native,
+    /// On a container whose sole child is the block: Markdown's `<div>`.
+    wrapped,
 };
 
 test "a parse-only format spells nothing" {
@@ -843,5 +876,7 @@ test "a parse-only format spells nothing" {
     try std.testing.expect(s.table_spelling == null);
     try std.testing.expect(s.block_separator == null);
     try std.testing.expect(!s.names_leaf_containers);
+    try std.testing.expect(s.block_attrs == null);
+    try std.testing.expect(!s.inline_attrs);
     s.assertCoherent();
 }

@@ -642,6 +642,28 @@ fn parseCompleteTag(s: []const u8, closing: bool, name_end: usize) ?usize {
     }
 }
 
+/// `s` is exactly one complete, non-self-closing `<div …>` open tag plus
+/// trailing whitespace: the index just past the tag's `>`, else `null`.
+fn divOpenerEnd(s: []const u8) ?usize {
+    if (s.len < 4 or s[0] != '<') return null;
+    if (matchTagNameCI(s[1..], "div") == null) return null;
+    if (s.len > 4 and !(s[4] == ' ' or s[4] == '\t' or s[4] == '>')) return null;
+    const end = parseCompleteTag(s, false, 4) orelse return null;
+    if (end >= 2 and s[end - 2] == '/') return null;
+    if (!isBlankLine(s[end..])) return null;
+    return end;
+}
+
+/// `s` is exactly one `</div>` close tag plus trailing whitespace: the index
+/// just past its `>`, else `null`.
+fn divCloserEnd(s: []const u8) ?usize {
+    if (s.len < 6 or s[0] != '<' or s[1] != '/') return null;
+    if (matchTagNameCI(s[2..], "div") == null) return null;
+    const end = parseCompleteTag(s, true, 5) orelse return null;
+    if (!isBlankLine(s[end..])) return null;
+    return end;
+}
+
 /// `s` is already indent-stripped (<=3 columns) and starts with `<`.
 /// Returns the HTML block type (1-7) it begins, or `null`.
 /// `media_blocks` is `options.html_elements`: it widens the type-6 tag list by
@@ -753,7 +775,7 @@ fn normalizeLabel(allocator: Allocator, s: []const u8) Allocator.Error![]u8 {
 
 // ── container / leaf staging types ──────────────────────────────────────
 
-const ContainerKind = enum { document, block_quote, list, list_item, footnote_def, directive };
+const ContainerKind = enum { document, block_quote, list, list_item, footnote_def, directive, html_div };
 
 const Container = struct {
     kind: ContainerKind,
@@ -817,6 +839,11 @@ const Container = struct {
     /// because `Parsed`'s own offsets are relative to a line slice that is out
     /// of scope by the time `popContainer` attaches the attributes.
     directive_attrs_span: ?Span = null,
+    /// .html_div (`self.options.html_elements`): the source span of the
+    /// `<div …>` tag that opened it, re-read at `popContainer` for the
+    /// container's attributes — the tag's own bytes are the one owned copy
+    /// the parse needs, so nothing is duplicated onto the stack.
+    div_tag: Span = Span.init(0, 0),
 
     fn deinit(self: *Container, allocator: Allocator) void {
         self.children.deinit(allocator);
@@ -1309,10 +1336,36 @@ pub const Parser = struct {
             try self.appendToTop(id);
             return;
         }
+        if (c.kind == .html_div) {
+            const id = try self.builder.addContainer(
+                .{ .container = .{ .form = .block_fenced, .name = "div" } },
+                c.children.items,
+            );
+            const syntactic = Span.init(self.lineStart(c.start_line), self.lineEnd(@min(c.end_line, line_idx)));
+            self.builder.setSpan(id, containerSpanExtended(&self.builder, id, syntactic));
+            setContentSpanFromChildren(&self.builder, id);
+            self.builder.setSpelling(id, .{ .container_origin = .element });
+            // The tag's attributes, read by the HTML parser the way
+            // `promoteHtmlBlock` reads a whole block's: the opener alone
+            // parses to one `div` container carrying them, and `setAttrs`
+            // copies every key and value into the builder's own storage.
+            var tag_ast = try html_lang.parse(self.allocator, Span.of(u8, c.div_tag, self.source));
+            defer tag_ast.deinit();
+            var it = tag_ast.children(tag_ast.ast.root);
+            while (it.next()) |child| {
+                if (child.kind != .container) continue;
+                const attrs = tag_ast.ast.attrsOf(child.id);
+                if (!attrs.isEmpty()) try self.builder.setAttrs(id, attrs);
+                break;
+            }
+            try self.appendToTop(id);
+            return;
+        }
         const kind: Node.Kind = switch (c.kind) {
             .document => unreachable,
             .footnote_def => unreachable, // handled above
             .directive => unreachable, // handled above
+            .html_div => unreachable, // handled above
             .block_quote => .block_quote,
             .list_item => if (c.is_task) .{ .task_list_item = .{ .checked = c.task_checked } } else .list_item,
             .list => if (c.ordered)
@@ -1538,7 +1591,9 @@ pub const Parser = struct {
                 // until its closing colon-fence is content, at whatever
                 // indentation it's written (like a djot fenced div). So it
                 // always "matches" and consumes nothing, exactly like `.list`.
-                .directive => {},
+                // A paired `<div>` is the same shape: its closer is a line,
+                // not a prefix.
+                .directive, .html_div => {},
                 .block_quote => {
                     const nc = matchBlockQuote(line, cur) orelse break;
                     cur = nc;
@@ -1966,6 +2021,87 @@ pub const Parser = struct {
         return null;
     }
 
+    // ── paired <div> (`self.options.html_elements`) ─────────────────────
+
+    /// A `<div …>` or `</div>` line that is an HTML block BY ITSELF — the
+    /// next line inside its containers blank, or the document over — opens
+    /// or closes a container whose children are the blocks between, the
+    /// shape pandoc calls markdown-in-HTML blocks. Only this tag pairs, and
+    /// only as a bare line: a `<div>` with content on the line after it is
+    /// the raw HTML block CommonMark says it is, and a `</div>` with a line
+    /// after it likewise. An opener with no bare closer later in the document
+    /// does not open anything, so an unclosed tag keeps its reading too.
+    ///
+    /// Why here and not in `finishHtmlBlock`: pushing at the OPENER's line
+    /// means the leaf never exists and the blank after it is simply the
+    /// container's, where promoting a finished leaf would push a container
+    /// from inside `closeLeaf` — which `closeToDepth` calls on its way to
+    /// popping the very containers the new one would sit in.
+    fn tryDivFence(self: *Parser, s: []const u8, idx: usize, interrupting: bool) Allocator.Error!bool {
+        if (divCloserEnd(s) != null) {
+            if (!self.nextLineIsBlank(idx)) return false;
+            const d_idx = self.innermostDivIndex() orelse return false;
+            self.stack.items[d_idx].end_line = idx;
+            try self.closeToDepth(d_idx, idx);
+            return true;
+        }
+        const tag_end = divOpenerEnd(s) orelse return false;
+        if (!self.nextLineIsBlank(idx)) return false;
+        if (!self.hasBareDivCloser(idx + 1)) return false;
+        if (interrupting) try self.closeLeaf(idx);
+        try self.maybeCloseTopList(idx, null);
+        self.markListsLoose();
+        try self.pushContainer(.html_div, idx);
+        const base = @intFromPtr(s.ptr) - @intFromPtr(self.source.ptr);
+        self.top().div_tag = Span.init(base, base + tag_end);
+        return true;
+    }
+
+    /// Whether the line after `idx`, read inside the containers now open, is
+    /// blank or absent — the condition under which a type-6 HTML block on
+    /// line `idx` is exactly that line. Inside a quote a blank line is `>`,
+    /// so the containers are matched first, as the driver will match them.
+    fn nextLineIsBlank(self: *Parser, idx: usize) bool {
+        const next = idx + 1;
+        if (next >= self.lines.len or next >= self.stop_at_line) return true;
+        const m = self.matchContainers(self.lines[next]);
+        if (m.matched_index < self.stack.items.len) return false;
+        return isBlankLine(self.lines[next][m.cur.pos..]);
+    }
+
+    /// Whether a bare `</div>` line follows, at this nesting: bare openers
+    /// between count up, bare closers count down. Read with leading quote
+    /// markers and whitespace stripped, since a closer inside a quote is
+    /// spelled `> </div>`; this is the guard against an opener that would
+    /// otherwise swallow the rest of the document, not the parse itself.
+    fn hasBareDivCloser(self: *Parser, from: usize) bool {
+        var depth: usize = 0;
+        var i = from;
+        const stop = @min(self.lines.len, self.stop_at_line);
+        while (i < stop) : (i += 1) {
+            const t = std.mem.trimStart(u8, self.lines[i], " \t>");
+            const bare = i + 1 >= stop or isBlankLine(std.mem.trimStart(u8, self.lines[i + 1], " \t>"));
+            if (!bare) continue;
+            if (divOpenerEnd(t) != null) {
+                depth += 1;
+            } else if (divCloserEnd(t) != null) {
+                if (depth == 0) return true;
+                depth -= 1;
+            }
+        }
+        return false;
+    }
+
+    /// Index on `self.stack` of the innermost open paired div, or `null`.
+    fn innermostDivIndex(self: *Parser) ?usize {
+        var i = self.stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.stack.items[i].kind == .html_div) return i;
+        }
+        return null;
+    }
+
     const DirectiveOpen = struct { name: []const u8, attrs: ?attrs_mod.Parsed };
 
     /// Parse a container directive opening fence: `n` colons already counted,
@@ -2270,6 +2406,10 @@ pub const Parser = struct {
 
                 if (self.options.footnotes and !interrupting) {
                     if (try self.tryStartFootnoteDef(line, cur, idx)) return true;
+                }
+
+                if (self.options.html_elements and s.len > 0 and s[0] == '<') {
+                    if (try self.tryDivFence(s, idx, interrupting)) return true;
                 }
 
                 if (s.len > 0 and s[0] == '<') {
@@ -4516,4 +4656,135 @@ test "span: a list item is NOT extended by the blank lines it matches" {
     const item = r.ast.nodes[list].first_child.?;
     try testing.expect(r.ast.nodes[item].kind == .list_item);
     try testing.expectEqualStrings("- item", src[r.span(item).start..r.span(item).end]);
+}
+
+// ── paired <div> (`html_elements`) ─────────────────────────────────────
+
+test "html_elements: a bare <div> line and its bare </div> pair into a container over the blocks between" {
+    const src =
+        \\<div class="center" data-k="v">
+        \\
+        \\hello *there*
+        \\
+        \\- one
+        \\
+        \\</div>
+        \\
+        \\after
+        \\
+    ;
+    var r = try parse(testing.allocator, src, .{ .html_elements = true });
+    defer r.deinit();
+    const div = findFirstKind(&r.ast, r.ast.root, .container).?;
+    const c = r.ast.nodes[div].kind.container;
+    try testing.expectEqualStrings("div", c.name);
+    try testing.expect(c.form.? == .block_fenced);
+    try testing.expectEqual(Document.Spelling.ContainerOrigin.element, r.containerOrigin(div).?);
+    try testing.expectEqualStrings("center", r.ast.attrsOf(div).get("class").?);
+    try testing.expectEqualStrings("v", r.ast.attrsOf(div).get("data-k").?);
+    // The paragraph and the list are its children; `after` is its sibling.
+    const first = r.ast.nodes[div].first_child.?;
+    try testing.expectEqual(Node.Kind.para, std.meta.activeTag(r.ast.nodes[first].kind));
+    const second = r.ast.nodes[first].next_sibling.?;
+    try testing.expectEqual(Node.Kind.bullet_list, std.meta.activeTag(r.ast.nodes[second].kind));
+    try testing.expect(r.ast.nodes[second].next_sibling == null);
+    const after = r.ast.nodes[div].next_sibling.?;
+    try testing.expectEqual(Node.Kind.para, std.meta.activeTag(r.ast.nodes[after].kind));
+    // No raw block anywhere: both tags were consumed by the pair.
+    for (r.ast.nodes) |n| try testing.expect(n.kind != .raw_block);
+    // The span runs from the opener's first byte to the closer's last.
+    const span = r.span(div);
+    try testing.expectEqualStrings("<div class=\"center\" data-k=\"v\">\n\nhello *there*\n\n- one\n\n</div>", src[span.start..span.end]);
+}
+
+test "html_elements: the serializer's wrap reads back as a div whose sole child is the block" {
+    // The round trip the presentation-as-attributes proposal rests on.
+    var r = try parse(testing.allocator, "<div class=\"c\">\n\nhello\n\n</div>\n", .{ .html_elements = true });
+    defer r.deinit();
+    const div = findFirstKind(&r.ast, r.ast.root, .container).?;
+    const para = r.ast.nodes[div].first_child.?;
+    try testing.expectEqual(Node.Kind.para, std.meta.activeTag(r.ast.nodes[para].kind));
+    try testing.expect(r.ast.nodes[para].next_sibling == null);
+    try testing.expect(r.ast.nodes[div].next_sibling == null);
+}
+
+test "html_elements: divs nest, and each closer closes the innermost" {
+    const src = "<div class=\"a\">\n\n<div class=\"b\">\n\nx\n\n</div>\n\ny\n\n</div>\n";
+    var r = try parse(testing.allocator, src, .{ .html_elements = true });
+    defer r.deinit();
+    const outer = findFirstKind(&r.ast, r.ast.root, .container).?;
+    try testing.expectEqualStrings("a", r.ast.attrsOf(outer).get("class").?);
+    const inner = r.ast.nodes[outer].first_child.?;
+    try testing.expectEqualStrings("b", r.ast.attrsOf(inner).get("class").?);
+    const y = r.ast.nodes[inner].next_sibling.?;
+    try testing.expectEqual(Node.Kind.para, std.meta.activeTag(r.ast.nodes[y].kind));
+    try testing.expect(r.ast.nodes[y].next_sibling == null);
+}
+
+test "html_elements: a div inside a quote pairs, its blank lines spelled with the marker" {
+    var r = try parse(testing.allocator, "> <div class=\"c\">\n>\n> hello\n>\n> </div>\n", .{ .html_elements = true });
+    defer r.deinit();
+    const quote = findFirstKind(&r.ast, r.ast.root, .block_quote).?;
+    const div = r.ast.nodes[quote].first_child.?;
+    try testing.expectEqual(Node.Kind.container, std.meta.activeTag(r.ast.nodes[div].kind));
+    try testing.expectEqualStrings("c", r.ast.attrsOf(div).get("class").?);
+    const para = r.ast.nodes[div].first_child.?;
+    try testing.expectEqual(Node.Kind.para, std.meta.activeTag(r.ast.nodes[para].kind));
+    try testing.expect(r.ast.nodes[div].next_sibling == null);
+}
+
+test "html_elements: a <div> with content on the next line is the raw HTML block CommonMark says it is" {
+    // No blank after the opener: the paragraph is part of the HTML block, so
+    // there is no pair — the block promotes the way it did before pairing.
+    var r = try parse(testing.allocator, "<div class=\"c\">\nhello\n</div>\n", .{ .html_elements = true });
+    defer r.deinit();
+    var containers: usize = 0;
+    var paras: usize = 0;
+    for (r.ast.nodes) |n| switch (n.kind) {
+        .container => containers += 1,
+        .para => paras += 1,
+        else => {},
+    };
+    try testing.expectEqual(@as(usize, 1), containers);
+    try testing.expectEqual(@as(usize, 0), paras);
+}
+
+test "html_elements: an opener with no bare closer opens nothing" {
+    var r = try parse(testing.allocator, "<div class=\"c\">\n\nhello\n\nmore\n", .{ .html_elements = true });
+    defer r.deinit();
+    // What it was before pairing: the promoted empty div beside the paragraphs.
+    const div = findFirstKind(&r.ast, r.ast.root, .container).?;
+    try testing.expect(r.ast.nodes[div].first_child == null);
+    try testing.expect(r.ast.nodes[div].next_sibling != null);
+}
+
+test "html_elements: a </div> with a line after it is not a bare closer" {
+    var r = try parse(testing.allocator, "<div>\n\nhello\n\n</div>\ntail\n", .{ .html_elements = true });
+    defer r.deinit();
+    const div = findFirstKind(&r.ast, r.ast.root, .container).?;
+    try testing.expect(r.ast.nodes[div].first_child == null);
+}
+
+test "html_elements OFF: the same bytes are two raw blocks around the paragraph" {
+    var r = try parse(testing.allocator, "<div class=\"c\">\n\nhello\n\n</div>\n", .{});
+    defer r.deinit();
+    var raws: usize = 0;
+    for (r.ast.nodes) |n| {
+        if (n.kind == .raw_block) raws += 1;
+        try testing.expect(n.kind != .container);
+    }
+    try testing.expectEqual(@as(usize, 2), raws);
+}
+
+test "html_elements: a self-closing or non-div tag is not a fence" {
+    var r = try parse(testing.allocator, "<div/>\n\nhello\n\n</div>\n", .{ .html_elements = true });
+    defer r.deinit();
+    for (r.ast.nodes) |n| {
+        if (n.kind == .container) try testing.expect(n.first_child == null);
+    }
+    var a = try parse(testing.allocator, "<aside>\n\nhello\n\n</aside>\n", .{ .html_elements = true });
+    defer a.deinit();
+    for (a.ast.nodes) |n| {
+        if (n.kind == .container) try testing.expect(n.first_child == null);
+    }
 }

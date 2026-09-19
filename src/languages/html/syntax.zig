@@ -149,6 +149,10 @@ pub const table: syntax.Syntax = .{
     // whether any other tag is a block is a property of the stylesheet — which
     // is outside what `Syntax.names_leaf_containers` claims.)
     .names_leaf_containers = true,
+    // Every attribute goes into the element's tag and comes back from it; an
+    // anonymous inline container prints as `<span>` and returns named so.
+    .block_attrs = .native,
+    .inline_attrs = true,
 
     // ── Deliberately absent ────────────────────────────────────────────────
     // `heading_marker`, `container_spelling`, `code_fence`, `link_*_escapes`:

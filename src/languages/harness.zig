@@ -170,17 +170,117 @@ fn expectRenderBlock(entry: format.Entry) !void {
     try expectFragmentReparses(entry, render, &m, image, .image, "a cat");
 }
 
-/// The parse configs a `names_leaf_containers` claim can be made under. A
-/// claim is a claim about a TABLE, and Markdown has one table per option
-/// combination — `::name` is a paragraph of colons without
-/// `ParseOptions.directives` — so the check below asks every table the registry
-/// row can produce for these, and parses each with the very config that table
-/// came from. Every other row answers the same table for both, and is checked
-/// once.
-const named_container_configs = [_]format.ParseConfig{
+/// The parse configs a per-table claim — `names_leaf_containers`,
+/// `block_attrs`, `inline_attrs` — can be made under. A claim is a claim about
+/// a TABLE, and Markdown has one table per option combination — `::name` is a
+/// paragraph of colons without `ParseOptions.directives`, a `<div>` a raw
+/// block without `html_elements` — so the check below asks every table the
+/// registry row can produce for these, and parses each with the very config
+/// that table came from. Every other row answers the same table for all
+/// four, and is checked once.
+const claim_configs = [_]format.ParseConfig{
     .{},
     .{ .markdown = .{ .directives = true } },
+    .{ .markdown = .{ .html_elements = true } },
+    .{ .markdown = .{ .directives = true, .html_elements = true } },
 };
+
+/// The three attributes every attribute claim is measured with: one per key
+/// class the spellings distinguish, and a `data-` key for the rest.
+const claim_attrs: AST.Attrs = .{ .entries = &.{
+    .{ .key = "id", .value = "intro" },
+    .{ .key = "class", .value = "lead" },
+    .{ .key = "data-size", .value = "large" },
+} };
+
+/// Every key of `claim_attrs` is on `id`, values intact. A class is looked
+/// for rather than compared, since a format may merge one it adds (a name
+/// carried as a class) into the same value.
+fn expectClaimAttrs(ast: *const AST, id: AST.Node.Id) !void {
+    const a = ast.attrsOf(id);
+    for (claim_attrs.entries) |kv| {
+        const v = a.get(kv.key) orelse return error.AttrsLost;
+        if (std.mem.eql(u8, kv.key, "class")) {
+            try testing.expect(std.mem.indexOf(u8, v, kv.value.?) != null);
+        } else {
+            try testing.expectEqualStrings(kv.value.?, v);
+        }
+    }
+}
+
+/// What `Editor.setBlockAttrs` assumes of a table claiming
+/// `Syntax.block_attrs`: a paragraph carrying `claim_attrs`, printed through
+/// `renderBlock`, reparses to a paragraph carrying them (`native`), or to a
+/// container whose SOLE CHILD is that paragraph and which carries them
+/// (`wrapped`) — and the claim says which.
+fn expectBlockAttrs(entry: format.Entry, cfg: *const format.ParseConfig, shape: @import("../syntax.zig").BlockAttrs) !void {
+    const render = tableFor(entry, cfg).renderBlock.?;
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const para = try b.addContainer(.para, &.{try b.addLeaf(.{ .str = "text" })});
+    try b.setAttrs(para, claim_attrs);
+    const view = b.view(para);
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try render(testing.allocator, &view, para, &out.writer);
+    errdefer std.debug.print("\n--- attributed block source ---\n{s}\n", .{out.written()});
+
+    var parsed = try entry.parse(cfg, testing.allocator, out.written());
+    defer parsed.deinit();
+    const ast = &parsed.doc.ast;
+    for (ast.nodes, 0..) |n, i| {
+        if (n.kind != .para) continue;
+        const id: AST.Node.Id = @intCast(i);
+        switch (shape) {
+            .native => return expectClaimAttrs(ast, id),
+            .wrapped => {
+                try testing.expect(n.next_sibling == null);
+                for (ast.nodes, 0..) |p, j| {
+                    if (p.kind != .container or p.first_child != id) continue;
+                    try testing.expect(p.kind.container.form == .block_fenced);
+                    return expectClaimAttrs(ast, @intCast(j));
+                }
+                return error.BlockNotWrapped;
+            },
+        }
+    }
+    return error.BlockDidNotReparse;
+}
+
+/// What `Editor.wrapRangeAttrs` assumes of a table claiming
+/// `Syntax.inline_attrs`: an ANONYMOUS inline container carrying
+/// `claim_attrs`, printed through `renderBlock` inside a paragraph, reparses
+/// to an inline container — anonymous, or named `span` — carrying them.
+fn expectInlineAttrs(entry: format.Entry, cfg: *const format.ParseConfig) !void {
+    const render = tableFor(entry, cfg).renderBlock.?;
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const span = try b.addContainer(.{ .container = .{ .name = "", .form = .inline_text } }, &.{try b.addLeaf(.{ .str = "text" })});
+    try b.setAttrs(span, claim_attrs);
+    const para = try b.addContainer(.para, &.{ try b.addLeaf(.{ .str = "a " }), span, try b.addLeaf(.{ .str = " b" }) });
+    const view = b.view(para);
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try render(testing.allocator, &view, para, &out.writer);
+    errdefer std.debug.print("\n--- attributed span source ---\n{s}\n", .{out.written()});
+
+    var parsed = try entry.parse(cfg, testing.allocator, out.written());
+    defer parsed.deinit();
+    const ast = &parsed.doc.ast;
+    for (ast.nodes, 0..) |n, i| {
+        const c = switch (n.kind) {
+            .container => |c| c,
+            else => continue,
+        };
+        if (c.form != .inline_text) continue;
+        if (c.name.len != 0 and !std.mem.eql(u8, c.name, "span")) continue;
+        try expectClaimAttrs(ast, @intCast(i));
+        const child = n.first_child orelse return error.SpanLostItsText;
+        try testing.expectEqualStrings("text", ast.nodes[child].kind.str);
+        return;
+    }
+    return error.SpanDidNotReparse;
+}
 
 /// The table `entry` holds for `cfg` — `format.syntaxForConfig` without the
 /// `Format` round trip, since the harness already has the row in hand.
@@ -288,20 +388,21 @@ test "harness: every declared renderer keeps the engine's promise" {
         if (entry.syntax.renderText != null) try expectRenderText(entry);
         if (entry.syntax.renderBlock != null) try expectRenderBlock(entry);
 
-        // The directive claim, per table rather than per row — and each table
-        // only once, since a row whose spelling does not move with the config
-        // answers the same address for every entry in the list.
-        var seen: [named_container_configs.len]*const Syntax = undefined;
+        // The per-table claims, per table rather than per row — and each
+        // table only once, since a row whose spelling does not move with the
+        // config answers the same address for every entry in the list.
+        var seen: [claim_configs.len]*const Syntax = undefined;
         var n: usize = 0;
-        next: for (&named_container_configs) |*cfg| {
+        next: for (&claim_configs) |*cfg| {
             const t = tableFor(entry, cfg);
-            if (!t.names_leaf_containers) continue;
             for (seen[0..n]) |s| {
                 if (s == t) continue :next;
             }
             seen[n] = t;
             n += 1;
-            try expectNamedLeafContainer(entry, cfg);
+            if (t.names_leaf_containers) try expectNamedLeafContainer(entry, cfg);
+            if (t.block_attrs) |shape| try expectBlockAttrs(entry, cfg, shape);
+            if (t.inline_attrs) try expectInlineAttrs(entry, cfg);
         }
     }
 }
