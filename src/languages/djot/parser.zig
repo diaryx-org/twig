@@ -1326,9 +1326,20 @@ pub const TreeBuilder = struct {
         if (pnode.data.heading_level != null) {
             while (pnode.data.heading_level != null and pnode.data.heading_level.? >= level) {
                 var closed = self.popContainer();
-                const sec_id = try self.addNode(.section, Span.init(closed.start, ev.end + 1));
+                // A section ends where its LAST CHILD does. `ev` is the event
+                // that closed the NEXT heading, so `ev.end + 1` ended this
+                // section at the end of the heading that begins the one after
+                // it: the first section of `# H\n\npara\n\n# H2\n\nx\n` spanned
+                // `0..16` while the second spanned `11..19`, and anything that
+                // sliced the source with the first read `# H2` back out of it.
+                // AsciiDoc's `parseSection` already ends one at its last child
+                // (`inner.last_end`); this is the same rule, and the content
+                // span below has been the same bytes all along.
+                const closed_content = self.contentSpanFromChildren(closed.first_child);
+                const sec_end = if (closed_content) |cs| cs.end else closed.start;
+                const sec_id = try self.addNode(.section, Span.init(closed.start, sec_end));
                 self.nodes.items[sec_id].first_child = closed.first_child;
-                self.setContentSpan(sec_id, self.contentSpanFromChildren(closed.first_child));
+                self.setContentSpan(sec_id, closed_content);
                 try self.commitAttrs(sec_id, &closed.attrs);
                 self.addChildToTip(sec_id);
                 closed.deinit(self.allocator);
@@ -1905,6 +1916,30 @@ test "span: a list and its last item both stop at the item's last line" {
     const item = ast.nodes[list].first_child orelse return error.TestExpectedNonNull;
     try testing.expect(ast.nodes[item].kind == .list_item);
     try testing.expectEqualStrings("- item\n", src[doc.span(item).start..doc.span(item).end]);
+}
+
+test "span: a section stops at its last child, not inside the section after it" {
+    // A heading closes the section above it, and the event that reports the
+    // close is that NEXT heading's — so the closing span used to be taken from
+    // it and the first section ended at the end of `# H2`, overlapping the
+    // second section it had just opened. Two sections that overlap are not a
+    // tree, and anything slicing the source with the first read `# H2` back
+    // out of it.
+    const src = "# H\n\npara\n\n# H2\n\nx\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const first = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[first].kind == .section);
+    const fs = doc.span(first);
+    try testing.expectEqualStrings("# H\n\npara\n", src[fs.start..fs.end]);
+
+    const second = ast.nodes[first].next_sibling orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[second].kind == .section);
+    const ss = doc.span(second);
+    try testing.expectEqualStrings("# H2\n\nx\n", src[ss.start..ss.end]);
+    try testing.expect(fs.end <= ss.start);
 }
 
 test "span: a table stops at its last row" {
