@@ -90,6 +90,60 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.6.0
+
+### Added
+
+- **editor** — insert a leaf directive after the caret's block ([`cc66242`](https://github.com/diaryx-org/twig/commit/cc662421b0353bae4d343c9e68557cf567ea357f))
+- **diagnostics** — a node's attributes are the second measured axis ([`578735a`](https://github.com/diaryx-org/twig/commit/578735ae9f21b5e1aa388a92bdd4a9fb8d64db7d))
+- **markdown** — an attributed block is written inside a div, and a div or span as its tag ([`0773c4d`](https://github.com/diaryx-org/twig/commit/0773c4df7211b9afd57fc35632e7ea323ed68f53))
+- **markdown** — html_elements pairs a bare `<div>` with its </div> and a <span> with its </span> ([`ae7149e`](https://github.com/diaryx-org/twig/commit/ae7149e0107b3f8e6f470080b228f3c97f8dfecb))
+- **editor** — replace a block's attributes, per format ([`cf9ee27`](https://github.com/diaryx-org/twig/commit/cf9ee2790f9567f48d636d1cab98abe028d1d17a))
+- **editor** — wrap a range in an attributed span, per format ([`847ced4`](https://github.com/diaryx-org/twig/commit/847ced42457723bbfd9978952f90479251280046))
+
+### Fixed
+
+- **djot** — a heading's attributes are written on the line before it, and a section's with them ([`7a4de63`](https://github.com/diaryx-org/twig/commit/7a4de6353c5c7cf107a6340bd91c247f0eb79bda))
+- **djot** — a reference definition's attributes are written on the line before it ([`27d9737`](https://github.com/diaryx-org/twig/commit/27d9737818fba276771c69dc9e9b21067f8c6f48))
+- **asciidoc** — a table's title attribute is written as its .Title line ([`ea052ba`](https://github.com/diaryx-org/twig/commit/ea052ba64fce0fb6dde708bb969eb744edfcaa51))
+
+### Behavioural changes
+
+- `twig convert --warn` and `twig_document_diagnostics`
+now report a node whose attributes a target loses, where they reported
+nothing. A C consumer switching on `TwigWarning.fidelity` sees codes 3 and
+4 for these; the Rust binding's `Fidelity::from_c` maps an unknown code to
+`Degraded`, so an older binding over a newer library reads them as that.
+
+- converting to Markdown writes `<div …>` and `</div>`
+lines, blank-separated, around any block that carries attributes, where it
+wrote the block alone; a djot fenced div or an HTML `<div>` is written as
+`<div>` … `</div>` where it was a `::: ` or `:::div` fence; a djot bracketed
+span or an HTML `<span>` is written as `<span …>` … `</span>` where it was
+its bare text or a `:span[…]` directive. `twig_document_diagnostics` reports
+`TWIG_FIDELITY_ATTRS_DEGRADED` rather than `_DROPPED` for those blocks.
+
+- under `ParseOptions.html_elements` (`TWIG_MD_HTML_ELEMENTS`,
+
+- djot writes a converted heading's attributes as a
+  `{…}` line ABOVE the `#` line instead of after its text. `## t{.x}` is
+  now `{.x}\n## t`, which djot reads back as the heading's (or, when the
+  block names an id, the section's) rather than as the text's.
+
+- djot writes a section's attributes, on the line before
+  its heading, minus an id equal to the one the parser derives from the
+  title. `{#h .x}\n## t` round-tripped to `## t` and now to `{#h .x}\n## t`.
+
+- djot writes a reference definition's attributes as a
+  `{…}` line ABOVE the definition instead of after its destination.
+  `[label]: /dest{.x}` is now `{.x}\n[label]: /dest`, which djot reads
+  back as an attributed definition where before it read no definition.
+
+- AsciiDoc writes a `title` attribute on a `table` as a
+  `.Title` line above it, where it wrote nothing. A table carrying a
+  non-empty caption is unchanged; the caption is the line.
+
+
 ## 3.5.2
 
 ### Fixed
