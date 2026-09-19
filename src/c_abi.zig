@@ -57,6 +57,28 @@ pub const TwigFormat = enum(c_int) {
     gfm = 7,
 };
 
+/// `TWIG_FORMAT_RUNTIME_BASE`: the first wire code that names a language
+/// REGISTERED AT RUNTIME rather than compiled in — the range
+/// `docs/proposals/runtime-languages.md` reserves ahead of the registration
+/// entry points, which are a later minor. Assigned per process, in
+/// registration order, never pinned: a caller that persists a format persists
+/// its name. Every `TwigFormat` member sits below it, checked at comptime just
+/// below, so a compiled code can never be argued to collide with a runtime
+/// one; `twig.h`, `header_test.c` and `twig-sys` each state the same number.
+/// Until registration exists, `intToWire` refuses a code in this range the way
+/// it refuses any other unknown code.
+pub const TWIG_FORMAT_RUNTIME_BASE: c_int = 4096;
+
+comptime {
+    for (std.meta.fields(TwigFormat)) |f| {
+        if (f.value >= TWIG_FORMAT_RUNTIME_BASE)
+            @compileError("TwigFormat." ++ f.name ++ " takes the wire code " ++
+                std.fmt.comptimePrint("{d}", .{f.value}) ++ ", but codes from " ++
+                std.fmt.comptimePrint("{d}", .{TWIG_FORMAT_RUNTIME_BASE}) ++
+                " up are reserved for languages registered at runtime (TWIG_FORMAT_RUNTIME_BASE)");
+    }
+}
+
 /// A byte range `[start, end)` into the source, C-ABI shape of `Span`. Used by
 /// `twig_document_query` for each matched node's whole extent (`span`) and
 /// interior (`content_span`).
@@ -4244,6 +4266,22 @@ pub export fn twig_builder_query(
     ptr_out.* = if (out.len == 0) null else out.ptr;
     len_out.* = out.len;
     return .ok;
+}
+
+test "a code in the reserved runtime range is refused until registration exists" {
+    // The floor of the range is a code nothing compiled-in takes (the comptime
+    // block beside `TWIG_FORMAT_RUNTIME_BASE` holds that), and until
+    // `twig_language_register` hands codes out it is one more unknown code on
+    // both axes: refused, and no handle produced.
+    const source = "# hi\n";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_parse(source.ptr, source.len, TWIG_FORMAT_RUNTIME_BASE, &doc),
+    );
+    try std.testing.expect(doc == null);
+    try std.testing.expect(intToFormat(TWIG_FORMAT_RUNTIME_BASE) == null);
+    try std.testing.expect(intToTarget(TWIG_FORMAT_RUNTIME_BASE) == null);
 }
 
 test "twig_parse + twig_document_render_html renders markdown" {

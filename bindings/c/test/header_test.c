@@ -58,6 +58,12 @@ PIN(TWIG_ALIGN_LEFT == 1);
 PIN(TWIG_ALIGN_RIGHT == 2);
 PIN(TWIG_ALIGN_CENTER == 3);
 PIN(TWIG_HEAD_NONE == -1);
+// The runtime range is reserved ahead of the entry points that will hand out
+// codes in it. Pin its floor, and that the last compiled-in code sits below
+// it: a consumer that cached "everything below the base is compiled in" must
+// keep finding that true.
+PIN(TWIG_FORMAT_RUNTIME_BASE == 4096);
+PIN(TWIG_FORMAT_GFM < TWIG_FORMAT_RUNTIME_BASE);
 
 // TwigAlignment is twig_builder_add_cell's parameter type, and TWIG_ALIGN_NONE
 // is deliberately not one of its enumerators ("not a cell" isn't an alignment
