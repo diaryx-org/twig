@@ -12,7 +12,7 @@ references:
 id_storage: both
 updated: ''
 identity: lazy
-fixity: attachments
+fixity: on
 recycle_bin: false
 history: off
 about: off
@@ -23,6 +23,8 @@ fields:
     values: closed
     vocabulary: '[Audiences](/vocab/audiences.md)'
     reify: true
+  created: { type: datetime }
+  date_of_document: { type: date }
   status:
   - under: '[[Tasks]]'
     values: closed
@@ -32,10 +34,7 @@ fields:
     values: closed
     vocabulary: '[Proposal statuses](/vocab/proposal-statuses.yaml)'
     default: draft
-  created:
-    type: datetime
-  updated:
-    type: datetime
+  updated: { type: datetime }
 views:
   open-tasks:
     label: Open tasks
@@ -43,7 +42,7 @@ views:
     under: '[[Tasks]]'
     where:
       not:
-        equals: { status: [done, dropped] }
+        equals: { status: done }
   proposals:
     label: Proposals
     group: status
@@ -56,6 +55,7 @@ views:
 exports:
   www:
     label: twig on diaryx.org
-    gate:
-      field: audience
-      value: public
+    gate: { field: audience, value: public }
+    hold: draft
+created: ''
+record_deletions: false
