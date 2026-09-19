@@ -520,6 +520,29 @@ pub const Syntax = struct {
     /// and a success reported for a gesture that had done nothing.
     block_separator: ?[]const u8 = null,
 
+    /// What continues a BLOCK onto its NEXT LINE — the bytes
+    /// `Editor.joinBlocks` writes between the two halves it merges, after the
+    /// container prefix its first half's line carries.
+    ///
+    /// The mirror of `block_separator`, and deliberately a second field rather
+    /// than a derivation from it: a split has to end one block and open
+    /// another, a join has to stay INSIDE one, and the two are not the same
+    /// question in every format. HTML is the case that proves it — a blank
+    /// line there is insignificant whitespace, so `block_separator` is `null`
+    /// and `splitBlock` refuses, while a newline inside a `<p>` is exactly the
+    /// line break a join needs and reparses as one paragraph. Every format
+    /// twig authors spells this `"\n"`; a format whose blocks cannot span
+    /// lines at all would spell it `null`, and so does a parse-only table,
+    /// which is what makes `Editor.supports(.join_blocks)` false for XML.
+    ///
+    /// No `assertCoherent` invariant hangs off it, unlike `block_separator`'s
+    /// pair of implications: everything else a join needs — the container
+    /// prefix, a heading's own marker, the closing markup it carries past the
+    /// joined text — is read out of the DOCUMENT, never re-spelled from this
+    /// table. That is why the answer here can be true where `.split_block`
+    /// is false rather than the two moving together.
+    line_join: ?[]const u8 = null,
+
     /// The bytes a link's TEXT position must have backslash-escaped for the text
     /// to reparse as the literal string handed in. Each one either opens a
     /// construct that swallows the text — `*`/`_`/`` ` ``/`~`/`^` emphasis-ish

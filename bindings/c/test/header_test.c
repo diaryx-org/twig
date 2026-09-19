@@ -51,6 +51,7 @@ PIN(TWIG_GESTURE_INSERT_LINE_BREAK == 14);
 // format gate. 14 stays pinned above: it was the end of the space once, and a
 // caller that cached it then must still find it there.
 PIN(TWIG_GESTURE_SPLIT_BLOCK == 15);
+PIN(TWIG_GESTURE_JOIN_BLOCKS == 29);
 PIN(TWIG_GESTURE_TABLE_MOVE_COLUMN == 23);
 PIN(TWIG_ALIGN_NONE == -1);
 PIN(TWIG_ALIGN_DEFAULT == 0);
@@ -396,6 +397,20 @@ static void test_new_block_gestures_link_and_edit(void) {
     CHECK(twig_editor_split_block(table_ed, 3, &change) == TWIG_STATUS_NOT_EDITABLE);
     twig_editor_destroy(table_ed);
 
+    // And the inverse: joining the second item back into the first writes the
+    // item's continuation indent, not its marker, so one item comes out.
+    static const char two[] = "- a\n- b\n";
+    TwigEditor *joiner = NULL;
+    CHECK(twig_editor_create((const uint8_t *)two, sizeof(two) - 1,
+                             TWIG_FORMAT_MARKDOWN, &joiner) == TWIG_STATUS_OK);
+    if (joiner == NULL) return;
+    CHECK(twig_editor_join_blocks(joiner, 6, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(joiner, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 8 && memcmp(out, "- a\n  b\n", 8) == 0);
+    // The first block of the document has nothing above it.
+    CHECK(twig_editor_join_blocks(joiner, 2, NULL) == TWIG_STATUS_NOT_FOUND);
+    twig_editor_destroy(joiner);
+
     // has_language == 0 leaves the fence bare; a set language tags it. Both
     // write valid source, so only the bytes tell them apart.
     static const char para[] = "x\n";
@@ -646,6 +661,14 @@ static void test_format_capability_matches_the_gestures(void) {
     CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_SPLIT_BLOCK, 0,
                                &supported) == TWIG_STATUS_OK);
     CHECK(supported == 0);
+    // The join is a gate of its own and a wider one: HTML cannot be split at a
+    // blank line and CAN be joined at a newline inside its <p>.
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_JOIN_BLOCKS, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_XML, TWIG_GESTURE_JOIN_BLOCKS, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
     CHECK(twig_format_supports(TWIG_FORMAT_HTML,
                                TWIG_GESTURE_RENUMBER_ORDERED_LISTS, 0,
                                &supported) == TWIG_STATUS_OK);
@@ -687,6 +710,9 @@ static void test_format_capability_matches_the_gestures(void) {
           TWIG_STATUS_UNSUPPORTED_FORMAT);
     CHECK(twig_editor_insert_table(ht, 15, 1, 1, NULL) == TWIG_STATUS_UNSUPPORTED_FORMAT);
     CHECK(twig_editor_split_block(ht, 15, NULL) == TWIG_STATUS_UNSUPPORTED_FORMAT);
+    // Not the join, which HTML spells — it refuses on POSITION here (the caret
+    // is in a table), which is the distinction twig_format_supports draws.
+    CHECK(twig_editor_join_blocks(ht, 15, NULL) == TWIG_STATUS_NOT_EDITABLE);
     CHECK(twig_editor_renumber_ordered_lists(ht, 15, NULL) ==
           TWIG_STATUS_UNSUPPORTED_FORMAT);
     // Not one byte moved — the refusal comes before anything is spliced.

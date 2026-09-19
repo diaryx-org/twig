@@ -136,6 +136,13 @@ pub const table: syntax.Syntax = .{
     // an enclosing `.cell`), so this understates what HTML can do — a general
     // hard break is the same future work it is for every other format.
     .cell_line_break = "<br>",
+    // A newline inside a `<p>` — insignificant whitespace to the renderer, and
+    // exactly the line break a join needs: `<p>a\nb</p>` reparses as the ONE
+    // paragraph the gesture claims to have made. This is the field that does
+    // not move with `block_separator`, which is `null` here for the mirror
+    // reason: a blank line between two `<p>`s is not what separates them, so
+    // `splitBlock` refuses while `joinBlocks` does not.
+    .line_join = "\n",
 
     // ── Renderers ──────────────────────────────────────────────────────────
     // The spellings no table can hold — see this file's doc comment.

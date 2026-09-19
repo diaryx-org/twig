@@ -115,6 +115,9 @@ const base: syntax.Syntax = .{
     // A blank line, as everywhere in CommonMark: it is what ends a paragraph and
     // opens the next.
     .block_separator = "\n",
+    // A bare line end continues one: a paragraph's second line is a soft break,
+    // not a second block.
+    .line_join = "\n",
     // A generic directive's `{#id .class key=val}` shorthand. Unlike djot, a
     // value is left bare when `attributes.zig`'s `isNameChar` grammar can read
     // it back, and quoted (escaping `"`/`\`) otherwise.
