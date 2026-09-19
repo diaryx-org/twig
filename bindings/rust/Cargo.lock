@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "twig-doc"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "twig-sys",
 ]
 
 [[package]]
 name = "twig-sys"
-version = "3.6.0"
+version = "3.7.0"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -22,36 +22,20 @@ dependencies = [
 
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
-version = "3.6.0"
+version = "3.7.0"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
-version = "3.6.0"
+version = "3.7.0"
 
 [[package]]
 name = "twig-sys-macos-arm64"
-version = "3.6.0"
+version = "3.7.0"
 
 [[package]]
 name = "twig-sys-wasm32"
-version = "3.6.0"
+version = "3.7.0"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
-version = "3.6.0"
-
-[[patch.unused]]
-name = "plates"
-version = "0.7.2"
-
-[[patch.unused]]
-name = "plates-render"
-version = "0.7.2"
-
-[[patch.unused]]
-name = "prov"
-version = "0.15.0"
-
-[[patch.unused]]
-name = "provui-core"
-version = "0.5.0"
+version = "3.7.0"
