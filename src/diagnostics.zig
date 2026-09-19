@@ -880,23 +880,21 @@ fn djotAttrsFidelity(kind: Node.Kind) AttrsFidelity {
     };
 }
 
-/// Markdown's serializer writes a `{…}` block for a directive and nowhere
-/// else, and a directive is a container the default parser does not read
-/// back — so today no attribute on any kind survives a conversion to Markdown.
-/// This is the table the presentation-as-attributes proposal changes.
+/// Markdown has no attribute spelling of its own. A block's attributes are
+/// written on a `<div>` around it — raw HTML, which every reader passes
+/// through and the DEFAULT parser reads back as two raw blocks beside the
+/// block, so the answer here is `degraded`; under `ParseOptions.html_elements`
+/// the same bytes pair into a container whose sole child is the block, which
+/// is as close as the format comes. An inline's have nowhere to go at all:
+/// no `*em*` spelling takes one.
 fn markdownAttrsFidelity(kind: Node.Kind) AttrsFidelity {
     return switch (kind) {
-        // The one exception: a reference definition's title is part of its
-        // spelling, `[label]: dest "title"`, and comes back.
-        .reference => .{ .id = .dropped, .class = .dropped, .other = .dropped, .title = .faithful },
-        .doc,
         .para,
         .heading,
         .thematic_break,
         .section,
         .code_block,
         .raw_block,
-        .metadata,
         .block_quote,
         .bullet_list,
         .ordered_list,
@@ -904,6 +902,13 @@ fn markdownAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         .definition_list,
         .line_block,
         .table,
+        => .all(.degraded),
+        // A reference definition's title is part of its spelling, `[label]:
+        // dest "title"`, and comes back; nothing else on it is written.
+        .reference => .{ .id = .dropped, .class = .dropped, .other = .dropped, .title = .faithful },
+        // Front matter is never wrapped — it has to stay the first block.
+        .metadata,
+        .doc,
         .list_item,
         .task_list_item,
         .definition_list_item,
@@ -1761,7 +1766,9 @@ test "the attribute table matches what the serializers actually do" {
     if (stale) return error.AttributeTableStale;
 }
 
-test "a djot paragraph's class converted to Markdown is reported as dropped, naming the key" {
+test "a djot paragraph's class converted to Markdown is reported, naming the key" {
+    // The class rides on a `<div>` around the paragraph, which Markdown's
+    // default parser reads as raw HTML beside it: written, not read back.
     const Djot = @import("languages/djot/djot.zig");
     var doc = try Djot.parse(testing.allocator, "{.center data-size=\"large\"}\nhello\n");
     defer doc.deinit();
@@ -1771,7 +1778,7 @@ test "a djot paragraph's class converted to Markdown is reported as dropped, nam
     const md = try analyze(arena.allocator(), &doc.ast, doc.ast.root, .markdown);
     try testing.expectEqual(@as(usize, 1), md.len);
     try testing.expectEqual(Warning.Subject.attrs, md[0].subject);
-    try testing.expectEqual(Fidelity.dropped, md[0].fidelity);
+    try testing.expectEqual(Fidelity.degraded, md[0].fidelity);
     try testing.expectEqualStrings("para", md[0].kind);
     try testing.expectEqual(@as(usize, 2), md[0].attrs.len);
     try testing.expectEqualStrings("class", md[0].attrs[0]);
@@ -1781,7 +1788,21 @@ test "a djot paragraph's class converted to Markdown is reported as dropped, nam
     defer out.deinit();
     try md[0].render(&out.writer, .markdown);
     try testing.expectEqualStrings(
-        "`para` at `0` carries attributes (class, data-size) that markdown cannot write; they are dropped",
+        "`para` at `0` carries attributes (class, data-size) that markdown writes where its parser does not read them back",
+        out.written(),
+    );
+
+    // An inline mark has nowhere for one at all.
+    var em = try Djot.parse(testing.allocator, "_x_{.big}\n");
+    defer em.deinit();
+    const ew = try analyze(arena.allocator(), &em.ast, em.ast.root, .markdown);
+    try testing.expectEqual(@as(usize, 1), ew.len);
+    try testing.expectEqual(Fidelity.dropped, ew[0].fidelity);
+    try testing.expectEqualStrings("emph", ew[0].kind);
+    out.clearRetainingCapacity();
+    try ew[0].render(&out.writer, .markdown);
+    try testing.expectEqualStrings(
+        "`emph` at `0/0` carries attributes (class) that markdown cannot write; they are dropped",
         out.written(),
     );
 
