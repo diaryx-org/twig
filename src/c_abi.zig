@@ -2867,6 +2867,7 @@ const TwigGesture = enum(c_int) {
     insert_directive = 26,
     set_block_attrs = 27,
     wrap_range_attrs = 28,
+    join_blocks = 29,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2901,6 +2902,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         26 => .insert_directive,
         27 => .set_block_attrs,
         28 => .wrap_range_attrs,
+        29 => .join_blocks,
         else => null,
     };
 }
@@ -3384,6 +3386,36 @@ pub export fn twig_editor_split_block(
     const handle = asEditor(raw);
 
     handle.editor.splitBlock(offset) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+// ── Joining two blocks ─────────────────────────────────────────────────────────
+// The engine is `twig.Editor.joinBlocks`: the inverse of the split, and one
+// splice. What it writes is `Syntax.line_join` plus the container prefix the
+// block above sits behind, and what it MOVES is that block's own closing markup
+// and the closers of every container it is in — which is why a host cannot get
+// this right by deleting the newline between the two blocks.
+
+/// Join the block at `offset` into the block before it. See `twig.h` for the
+/// semantics and `twig.Editor.joinBlocks` for the implementation — in
+/// particular what travels (the block above's closing markup and its
+/// containers' closers), what is dropped (the block below's markers, attributes
+/// and opening tags), and why a delimited container with content left after the
+/// joined block is `not_editable`.
+/// `unsupported_format` where a block cannot span lines at all; unlike
+/// `twig_editor_split_block` this is supported in HTML, where a newline inside
+/// a `<p>` is exactly the break a join needs.
+pub export fn twig_editor_join_blocks(
+    ed: ?*TwigEditor,
+    offset: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.joinBlocks(offset) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;
@@ -5507,6 +5539,97 @@ test "toolbar: an unknown wire code is invalid_argument, never a wrong gesture" 
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_wrap_range(fx.ed, 0, 1, -1, null));
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_set_block(fx.ed, 0, 99, 1, null));
     try fx.expectSource("a\n");
+}
+
+test "twig_editor_join_blocks: the wire reaches the gesture, and the format gate is its own" {
+    // The Markdown `<div>` case, which is why this is a gesture rather than a
+    // host deleting the newline between two blocks: `below` joins the div's
+    // last paragraph and the `</div>` travels past the text that came in.
+    var md = try EditorFixture.initFlags(
+        "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n",
+        .markdown,
+        TWIG_MD_HTML_ELEMENTS,
+    );
+    defer md.deinit();
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_join_blocks(md.ed, 44, &change));
+    try md.expectSource("above\n\n<div class=\"center\">\n\nhello\nbelow\n\n</div>\n");
+    // One splice, and it starts where the first block's content ended.
+    try std.testing.expectEqual(@as(usize, 34), change.old.start);
+
+    // HTML is the format whose two answers differ: it cannot be split at a
+    // blank line and can be joined at a newline inside a `<p>`.
+    var html = try EditorFixture.initFmt("<p>a</p>\n<p class=\"x\">b</p>\n", .html);
+    defer html.deinit();
+    try std.testing.expectEqual(
+        TwigStatus.unsupported_format,
+        twig_editor_split_block(html.ed, 4, null),
+    );
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_join_blocks(html.ed, 22, null));
+    try html.expectSource("<p>a\nb</p>\n");
+
+    // The refusals reach the wire as themselves.
+    var refuse = try EditorFixture.initFmt("```\nx\n```\n\nbelow\n", .markdown);
+    defer refuse.deinit();
+    try std.testing.expectEqual(TwigStatus.not_editable, twig_editor_join_blocks(refuse.ed, 11, null));
+    try std.testing.expectEqual(TwigStatus.not_found, twig_editor_join_blocks(refuse.ed, 0, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_join_blocks(refuse.ed, 99, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_join_blocks(null, 0, null));
+
+    var xml = try EditorFixture.init("<r>ab</r>");
+    defer xml.deinit();
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_join_blocks(xml.ed, 4, null));
+}
+
+test "twig_format_supports: the join's wire code answers for the join, not the split" {
+    // The pinning this boundary owes: code 29 decodes to `.join_blocks`, and
+    // the answer it gives is the one the gesture gives on a live editor of that
+    // format. HTML is the row where the two block gestures disagree, which is
+    // the whole reason `join_blocks` is a code of its own.
+    var supported: c_int = -1;
+    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm }) |fmt| {
+        const code = @intFromEnum(fmt);
+        const src: []const u8 = if (fmt == .xml) "<r>ab</r>" else "ab\n";
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+            code,
+            @intFromEnum(TwigGesture.join_blocks),
+            0,
+            &supported,
+        ));
+        var ed: ?*TwigEditor = null;
+        try std.testing.expectEqual(
+            TwigStatus.ok,
+            twig_editor_create(src.ptr, src.len, code, &ed),
+        );
+        defer twig_editor_destroy(ed);
+        const got = twig_editor_join_blocks(ed, 0, null);
+        try std.testing.expectEqual(supported == 1, got != .unsupported_format);
+    }
+
+    // And spelled out for the pair that differs, so a renumbering of either
+    // code fails here rather than in a caller's cached capability table.
+    var split: c_int = -1;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        @intFromEnum(TwigFormat.html),
+        @intFromEnum(TwigGesture.split_block),
+        0,
+        &split,
+    ));
+    try std.testing.expectEqual(@as(c_int, 0), split);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+        @intFromEnum(TwigFormat.html),
+        @intFromEnum(TwigGesture.join_blocks),
+        0,
+        &supported,
+    ));
+    try std.testing.expectEqual(@as(c_int, 1), supported);
+    // A kind is required to be 0 for a gesture that takes none.
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(
+        @intFromEnum(TwigFormat.markdown),
+        @intFromEnum(TwigGesture.join_blocks),
+        1,
+        &supported,
+    ));
 }
 
 test "toolbar: a NULL editor is invalid_argument on every gesture" {

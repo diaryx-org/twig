@@ -1022,6 +1022,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_INSERT_DIRECTIVE = 26,
     TWIG_GESTURE_SET_BLOCK_ATTRS = 27,
     TWIG_GESTURE_WRAP_RANGE_ATTRS = 28,
+    TWIG_GESTURE_JOIN_BLOCKS = 29,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1906,6 +1907,61 @@ TwigStatus twig_editor_insert_thematic_break(
 // the <p>, so this used to return OK for an edit that left one paragraph as one
 // paragraph. Ask twig_format_supports with TWIG_GESTURE_SPLIT_BLOCK.
 TwigStatus twig_editor_split_block(
+    TwigEditor *editor,
+    size_t offset,
+    TwigChange *out_change
+);
+
+// Join the block at `offset` into the block BEFORE it — Backspace at the start
+// of a block, and forward Delete at the end of the one above it. The inverse of
+// twig_editor_split_block, and the reason it is a gesture at all: what joins two
+// blocks is a fact about the FORMAT. A host that deletes the newline between
+// them is right only for two Markdown paragraphs at the top level — in HTML that
+// byte is the `>` of `</p>`, under a heading it leaves two blocks, and after a
+// Markdown <div> it deletes the blank line the div needed and breaks the div.
+//
+// B is the innermost paragraph/heading covering `offset` — the block being
+// joined upward. A is the LEAF BLOCK immediately before it in DOCUMENT ORDER,
+// not the sibling before it: the block visually above the last paragraph of
+// `above`/<div>/`hello`/</div>/`below` is `hello`, three levels down.
+//
+// What is written between them is a line break plus the container prefix A's own
+// line sits behind — a quote's `> ` repeated, a list item's marker's WIDTH in
+// spaces, nothing at the top level — which is what keeps the joined line inside
+// its containers in a format with no lazy continuation. The one exception is a
+// heading A with a LEADING MARKER (`# Title`, AsciiDoc's `== Title`): such a
+// heading is one line by its own spelling, so what joins is a single SPACE and
+// `# Title` + `below` is `# Title below`.
+//
+// What TRAVELS is A's own closing markup (an ATX closing `#` run, a setext
+// underline, `</p>`) and the closers of every container A is in that B is not (a
+// Markdown </div>, a djot `:::` fence) — carried past the text that was pulled
+// in, so the joined block keeps A's presentation and stays in its containers.
+// What is DROPPED is everything between them: the blank line, B's markers, B's
+// attribute line (djot's {…}, AsciiDoc's […]), B's opening tags. B's attributes
+// go on purpose — the joined text is A's block, so it takes A's presentation.
+//
+// A PREFIX container (a quote, a list item, a list, a section) has no closing
+// bytes, so whatever follows B inside one stays where it is: joining the first
+// item's text out of a list leaves the other items a list.
+//
+// TWIG_STATUS_NOT_FOUND when no block covers `offset`, and when B is the
+// document's first block — the ordinary Backspace-at-the-top answer.
+// TWIG_STATUS_NOT_EDITABLE when A is not a paragraph or a heading (a code block,
+// a table, a rule, a raw block: there is no text to join into), when either
+// block is in a TABLE CELL, when B is a SETEXT heading (whose underline is how
+// it is spelled at all — twig_editor_set_block normalises one to ATX, which
+// makes this work), and when B would have to leave a DELIMITED container that
+// still has content after it, which is the one shape this refuses rather than
+// guesses at. TWIG_STATUS_INVALID_ARGUMENT when `offset` is past the source.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT where a block cannot span lines, checked before
+// the source is read. This is a DIFFERENT and WIDER gate than
+// twig_editor_split_block's: HTML has no blank-line block separator and cannot
+// be split, while a newline inside its <p> is exactly the break a join needs and
+// reparses as the one paragraph. Ask twig_format_supports with
+// TWIG_GESTURE_JOIN_BLOCKS, not with TWIG_GESTURE_SPLIT_BLOCK.
+TwigStatus twig_editor_join_blocks(
     TwigEditor *editor,
     size_t offset,
     TwigChange *out_change

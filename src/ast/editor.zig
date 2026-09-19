@@ -268,6 +268,7 @@ pub const Editor = struct {
         insert_literal,
         insert_line_break,
         split_block,
+        join_blocks,
         renumber_ordered_lists,
         table_insert_row,
         table_delete_row,
@@ -350,6 +351,16 @@ pub const Editor = struct {
             // block the caret is in, and without that invariant this row would
             // be true while the gesture reported unsupported in a fence.
             .split_block => syntax.block_separator != null,
+            // A WIDER gate than the split's, and the pair is the clearest case
+            // in this switch for why each gesture reads its own field: a join
+            // writes a line break INSIDE a block, which HTML spells (a newline
+            // in a `<p>` is whitespace, and the reparse gives back the one
+            // paragraph the gesture claims) while it spells no blank-line
+            // block separator at all. Nothing else the gesture needs comes
+            // from the table — a heading's marker, the container prefix and
+            // the closing markup it carries are all read out of the document —
+            // so this row needs no `assertCoherent` implication behind it.
+            .join_blocks => syntax.line_join != null,
             .renumber_ordered_lists => spellsOrderedMarkers(syntax),
             .table_insert_row,
             .table_delete_row,
@@ -2111,6 +2122,191 @@ pub const Editor = struct {
         return in_item;
     }
 
+    // ── Joining two blocks ───────────────────────────────────────────────────
+
+    /// Join the block at `offset` into the block BEFORE it — Backspace at the
+    /// start of a block, and forward Delete at the end of the one above it.
+    /// The inverse of `splitBlock`, and the reason it is a gesture rather than
+    /// a host's own delete: what joins two blocks is a fact about the FORMAT,
+    /// and a host that deletes the newline between them is right only for two
+    /// Markdown paragraphs at the top level. In HTML that byte is the `>` of
+    /// `</p>`; under a heading it leaves two blocks; after a Markdown `<div>`
+    /// it deletes the blank line the div needed and breaks the div.
+    ///
+    /// ── The two blocks ─────────────────────────────────────────────────────
+    /// **B** is the innermost `para`/`heading` covering `offset` — the block
+    /// being joined UPWARD, and the one whose identity is given up. **A** is
+    /// the LEAF BLOCK immediately before it in document order: the nearest
+    /// preceding node holding no blocks of its own, with no other leaf block
+    /// between the two. A is found by document order rather than by sibling
+    /// order because the caret does not know about containers: the block
+    /// visually above `below` in `above`/`<div>`/`hello`/`</div>`/`below` is
+    /// `hello`, three levels down, and joining into `above` would be joining
+    /// into the wrong paragraph.
+    ///
+    /// ── What the result is made of ─────────────────────────────────────────
+    /// One splice over `[A.ce, R_end)`, assembled from four pieces:
+    ///
+    ///   * **The separator.** `Syntax.line_join` followed by the CONTAINER
+    ///     PREFIX A's own first line sits behind (`locate.continuationPrefix`
+    ///     — a quote's `> ` repeated, a list item's marker's WIDTH in spaces,
+    ///     nothing at the top level). That prefix is what keeps the joined
+    ///     line inside its containers in a format with no lazy continuation,
+    ///     which is djot: `- a` + `below` is `- a`/`  below` and not `- a`/
+    ///     `below`, which would end the list. The one exception is a heading A
+    ///     with a LEADING MARKER (`# Title`, AsciiDoc's `== Title`): such a
+    ///     heading is one line by its own spelling, so the separator is a
+    ///     single SPACE and `# Title` + `below` is `# Title below`. A SETEXT
+    ///     heading A takes the line end like everything else — its content may
+    ///     already span lines, and its underline rides along in A's tail.
+    ///   * **B's content**, `[B.cs, B.ce)` — its text and nothing else.
+    ///   * **A's tail**, `[A.ce, span(a_top).end)`, carried PAST the joined
+    ///     text: A's own closing markup (an ATX closing `#` run, a setext
+    ///     underline, `</p>`) followed by the closers of every container A
+    ///     sits in below the two blocks' lowest common ancestor (a Markdown
+    ///     `</div>`, a djot `:::` fence). `a_top` is the LCA's own child
+    ///     holding A, so this is exactly what has to be re-closed after the
+    ///     text that was pulled in. A is necessarily the last leaf in those
+    ///     containers, since B follows it immediately.
+    ///   * **Everything else between them vanishes**: the blank line, B's
+    ///     markers (`# `, `- `), B's attribute line (djot's `{…}`,
+    ///     AsciiDoc's `[…]`), B's opening tags (`<div class="center">`,
+    ///     `<p class="x">`). B's ATTRIBUTES ARE DISCARDED on purpose — the
+    ///     joined text is A's block, so it takes A's presentation.
+    ///
+    /// `R_end` is `span(B).end`, so B's own closing markup goes with it. When
+    /// B's ancestor chain below the LCA passes through a DELIMITED container —
+    /// one spelled with closing bytes of its own after its children, which is
+    /// the `container` kind (a Markdown `<div>`, an HTML element, a djot `:::`
+    /// fence, a directive) — it is the OUTERMOST of those whose span end is
+    /// used instead, because B leaving it means that container's closers go
+    /// too. The PREFIX containers (a quote, a list item, a list, a section, a
+    /// definition item) have no closers, so whatever follows B inside them
+    /// simply stays where it is: joining the first item's text out of a list
+    /// leaves the other items a list.
+    ///
+    /// ── What is refused ────────────────────────────────────────────────────
+    /// `error.NoBlock` when no `para`/`heading` covers `offset`, and when B is
+    /// the document's FIRST block — there is nothing above to join into, which
+    /// is the ordinary Backspace-at-the-top-of-the-document answer.
+    ///
+    /// `error.NotEditable` for the shapes with no honest result:
+    ///   * **A is not a `para` or a `heading`** — a code block, a table, a
+    ///     rule, a raw block, a reference definition. There is no text to join
+    ///     into, and pulling B's prose into a fence or a table would destroy
+    ///     the block a caller was standing next to.
+    ///   * **Either block is in a TABLE CELL.** A cell's blocks are not the
+    ///     document's lines; a newline between two of them divides nothing and
+    ///     a join across a cell boundary is not a join at all.
+    ///   * **B is a SETEXT heading**, whose underline is how it is spelled at
+    ///     all. `setBlock` normalises one to ATX, which makes this work;
+    ///     doing that silently here would rewrite the half the caller did not
+    ///     point at, exactly as `splitBlock` refuses one for its own half.
+    ///   * **B would have to leave a delimited container that has more content
+    ///     after it.** That container's closers cannot move up past content
+    ///     that is still inside it, and there is no single obvious thing to do
+    ///     instead — split the container in two, or drag the rest out with B —
+    ///     so this is the one shape the gesture refuses rather than guesses at.
+    ///
+    /// `error.InvalidRange` when `offset` is past the source.
+    ///
+    /// `error.UnsupportedFormat` when the format has no `Syntax.line_join`,
+    /// checked FIRST, before a byte of source is read: a join writes a line
+    /// break INSIDE a block, which is a spelling and not a universal. It is a
+    /// different gate from `splitBlock`'s `block_separator` and deliberately a
+    /// wider one — HTML has no blank-line block separator and so cannot be
+    /// split, while a newline inside its `<p>` is precisely what a join needs.
+    pub fn joinBlocks(self: *Editor, offset: usize) Error!void {
+        const join = self.syntax.line_join orelse return error.UnsupportedFormat;
+        const src = self.sourceBytes();
+        if (offset > src.len) return error.InvalidRange;
+        const doc = &self.splicer.doc;
+        const allocator = self.splicer.allocator;
+
+        // A caret in a TABLE, before B is looked for at all. A pipe table's
+        // cell holds its text directly, with no `para` under it, so the
+        // `innermostBlock` below would answer `null` there and the refusal
+        // would come back as `NoBlock` — "there is nothing here", about a
+        // caret sitting in plain view inside a cell. `lineOwningBlock` stops
+        // at the table (a `cell` is deliberately not a block parent), which
+        // makes this the same position answer for every format, whether or
+        // not its cells wrap their content in a block.
+        if (locate.lineOwningBlock(doc, offset)) |lb| {
+            if (std.meta.activeTag(doc.ast.nodes[lb.block].kind) == .table) return error.NotEditable;
+        }
+
+        const b = locate.innermostBlock(doc, offset) orelse return error.NoBlock;
+        if (isSetextHeading(doc, b)) return error.NotEditable;
+
+        var b_chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer b_chain.deinit(allocator);
+        if (!try nodePath(allocator, doc, b, &b_chain)) return error.NoBlock;
+        if (passesThroughTable(doc, b_chain.items)) return error.NotEditable;
+
+        const a = precedingLeafBlock(doc, b) orelse return error.NoBlock;
+        switch (std.meta.activeTag(doc.ast.nodes[a].kind)) {
+            .para, .heading => {},
+            else => return error.NotEditable,
+        }
+
+        var a_chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer a_chain.deinit(allocator);
+        if (!try nodePath(allocator, doc, a, &a_chain)) return error.NotEditable;
+        if (passesThroughTable(doc, a_chain.items)) return error.NotEditable;
+
+        // Where the two chains diverge. Both start at the root and neither is a
+        // prefix of the other — A is a leaf, so B cannot be inside it, and B is
+        // not A — so this index exists in both.
+        var i: usize = 0;
+        while (i < a_chain.items.len and i < b_chain.items.len and
+            a_chain.items[i] == b_chain.items[i]) i += 1;
+        if (i == 0 or i >= a_chain.items.len or i >= b_chain.items.len) return error.NotEditable;
+        const a_top = a_chain.items[i];
+
+        // B's own closing markup goes; a delimited container it is leaving
+        // takes its closers with it, and the OUTERMOST such container is the
+        // one whose span bounds the removal.
+        var r_end = doc.span(b).end;
+        for (b_chain.items[i .. b_chain.items.len - 1]) |id| {
+            if (std.meta.activeTag(doc.ast.nodes[id].kind) != .container) continue;
+            // Nothing may be left behind inside a container whose closers are
+            // about to move up past it.
+            if (lastLeafBlock(doc, id) != b) return error.NotEditable;
+            r_end = doc.span(id).end;
+            break;
+        }
+
+        const a_content = blockContent(doc, a);
+        const b_content = blockContent(doc, b);
+        const a_tail = src[a_content.end..doc.span(a_top).end];
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        // A heading written with a leading marker is ONE LINE, so what
+        // continues it is a space, not a line end. `markerSpan` is the whole
+        // test: an HTML `<h1>` has no marker and takes the line end, and
+        // `<h1>a\nb</h1>` is the one heading it should be.
+        if (std.meta.activeTag(doc.ast.nodes[a].kind) == .heading and doc.markerSpan(a) != null) {
+            try out.append(allocator, ' ');
+        } else {
+            try out.appendSlice(allocator, join);
+            _ = try locate.continuationPrefix(allocator, doc, a_content.start, &out);
+        }
+        try out.appendSlice(allocator, src[b_content.start..b_content.end]);
+        try out.appendSlice(allocator, a_tail);
+
+        // The removed region ran to the end of a line in every format whose
+        // block span covers its own terminator (djot's does, Markdown's does
+        // not), and A's tail only ends at one when A's container did. Put the
+        // terminator back when B's removal took it and the tail did not supply
+        // it, so the document keeps the line structure it had.
+        if (r_end > a_content.end and src[r_end - 1] == '\n' and
+            out.items[out.items.len - 1] != '\n') try out.append(allocator, '\n');
+
+        return self.commitSplice(a_content.end, r_end, out.items);
+    }
+
     // ── Code blocks ──────────────────────────────────────────────────────────
 
     /// Toggle a fenced code block over the blocks `[start, end)` covers: fence
@@ -3207,6 +3403,158 @@ fn quoteDepthAbove(ast: *const AST, chain: []const AST.Node.Id, target: AST.Node
         if (std.meta.activeTag(ast.nodes[id].kind) == .block_quote) depth += 1;
     }
     return depth;
+}
+
+// ── Join internals ─────────────────────────────────────────────────────────
+
+/// The interior of a BLOCK, for the formats whose parsers record one and for
+/// the ones that do not — `Editor.joinBlocks` needs both halves of a block's
+/// bytes (its content, and the markup around it) and AsciiDoc's parser records
+/// no `content_span` at all.
+///
+/// The fallback is the marker: a block with a leading marker holds its content
+/// from the marker's end to its own end, and one with neither a content span
+/// nor a marker is all content. That is a reconstruction, not a guess — it is
+/// the same relation `Document.node_content_spans` states for the parsers that
+/// do fill it in, read off `node_marker_spans` instead.
+fn blockContent(doc: *const Document, id: AST.Node.Id) Span {
+    if (doc.contentSpan(id)) |c| return c;
+    const sp = doc.span(id);
+    if (doc.markerSpan(id)) |m| {
+        if (m.end >= sp.start and m.end <= sp.end) return Span.init(m.end, sp.end);
+    }
+    return sp;
+}
+
+/// Whether `id` is a heading spelled by an UNDERLINE rather than by a marker —
+/// Markdown's setext form, the one `Editor.splitBlock` refuses for its own half
+/// and `joinBlocks` refuses for B.
+///
+/// Three conditions, and all three are needed. No recorded marker rules out
+/// every ATX-ish heading (`# x`, AsciiDoc's `== x`). Content starting where the
+/// block does rules out a WRAPPING spelling — an HTML `<h1>a</h1>` records no
+/// marker either, and its content starts after the opening tag. Content ending
+/// before the block does is the underline itself.
+fn isSetextHeading(doc: *const Document, id: AST.Node.Id) bool {
+    if (std.meta.activeTag(doc.ast.nodes[id].kind) != .heading) return false;
+    if (doc.markerSpan(id) != null) return false;
+    const content = doc.contentSpan(id) orelse return false;
+    const sp = doc.span(id);
+    return content.start == sp.start and content.end < sp.end;
+}
+
+/// Whether a node on `chain` is a table. A table's cells hold paragraphs, so a
+/// `para` inside one is a perfectly ordinary leaf block to the walks below —
+/// and joining one into the cell above it, or into the paragraph before the
+/// table, is not a join of two lines but a hole in a grid. Stated as a chain
+/// test rather than as a kind test for exactly that reason: what is refused is
+/// the POSITION, not the node.
+fn passesThroughTable(doc: *const Document, chain: []const AST.Node.Id) bool {
+    for (chain) |id| {
+        if (std.meta.activeTag(doc.ast.nodes[id].kind) == .table) return true;
+    }
+    return false;
+}
+
+/// The path of node ids from the root down to `target`, appended to `out`.
+///
+/// A tree walk rather than `locate.ancestorChain`, which descends by OFFSET: two
+/// nodes can share a start byte (a Markdown `list_item` and its first `para`
+/// both begin at column zero), so an offset names a path and not a node.
+/// `joinBlocks` already holds the node, and what it needs is that node's own
+/// ancestors — for the lowest common ancestor, which is what decides how much
+/// of A's closing markup has to travel.
+fn nodePath(
+    allocator: Allocator,
+    doc: *const Document,
+    target: AST.Node.Id,
+    out: *std.ArrayList(AST.Node.Id),
+) Allocator.Error!bool {
+    try out.append(allocator, doc.ast.root);
+    if (target == doc.ast.root) return true;
+    if (try descendTo(allocator, doc, doc.ast.root, target, out)) return true;
+    out.clearRetainingCapacity();
+    return false;
+}
+
+fn descendTo(
+    allocator: Allocator,
+    doc: *const Document,
+    id: AST.Node.Id,
+    target: AST.Node.Id,
+    out: *std.ArrayList(AST.Node.Id),
+) Allocator.Error!bool {
+    var it = doc.children(id);
+    while (it.next()) |child| {
+        try out.append(allocator, child.id);
+        if (child.id == target) return true;
+        if (try descendTo(allocator, doc, child.id, target, out)) return true;
+        _ = out.pop();
+    }
+    return false;
+}
+
+/// True for a node that HOLDS BLOCKS, and so is a container the leaf walks
+/// below descend into rather than a block they stop at.
+///
+/// `contentModel` is the classifier rather than a hand-kept list, because it is
+/// already the exhaustive answer to this exact question and a new kind has to
+/// declare one. It puts a `table` on the container side — its rows hold cells
+/// which hold paragraphs — which is why `passesThroughTable` exists rather than
+/// a "is a table a leaf?" special case here.
+fn holdsBlocks(doc: *const Document, id: AST.Node.Id) bool {
+    return doc.ast.nodes[id].kind.contentModel() == .blocks;
+}
+
+/// The last LEAF BLOCK inside `root`'s subtree in document order, or `null` when
+/// it holds none — how `joinBlocks` asks whether B is the last thing in a
+/// delimited container it is about to pull out of.
+fn lastLeafBlock(doc: *const Document, root: AST.Node.Id) ?AST.Node.Id {
+    if (!holdsBlocks(doc, root)) return root;
+    var last: ?AST.Node.Id = null;
+    var it = doc.children(root);
+    while (it.next()) |child| {
+        if (lastLeafBlock(doc, child.id)) |leaf| last = leaf;
+    }
+    return last;
+}
+
+/// The leaf block immediately before `target` in DOCUMENT ORDER — the block a
+/// caret at the start of `target` has visually above it, wherever in the tree
+/// that is. `null` when `target` is the document's first block.
+///
+/// Document order rather than sibling order is the whole point: the block above
+/// a paragraph following a `<div>` is the div's LAST paragraph, and the block
+/// above the first paragraph INSIDE the div is whatever preceded the div.
+/// Sibling order answers "the div" to the first and "nothing" to the second,
+/// and both are the wrong block to join into.
+fn precedingLeafBlock(doc: *const Document, target: AST.Node.Id) ?AST.Node.Id {
+    var state: PrecedingLeaf = .{ .doc = doc, .target = target };
+    scanLeaves(&state, doc.ast.root);
+    return if (state.found) state.last else null;
+}
+
+const PrecedingLeaf = struct {
+    doc: *const Document,
+    target: AST.Node.Id,
+    last: ?AST.Node.Id = null,
+    found: bool = false,
+};
+
+fn scanLeaves(state: *PrecedingLeaf, id: AST.Node.Id) void {
+    if (id == state.target) {
+        state.found = true;
+        return;
+    }
+    if (!holdsBlocks(state.doc, id)) {
+        state.last = id;
+        return;
+    }
+    var it = state.doc.children(id);
+    while (it.next()) |child| {
+        scanLeaves(state, child.id);
+        if (state.found) return;
+    }
 }
 
 /// What `Editor.splitBlock` does with a block of a given kind. Having ONE

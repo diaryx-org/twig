@@ -90,6 +90,10 @@ pub const table: syntax.Syntax = .{
     },
     // A blank line: djot ends a paragraph the same way Markdown does.
     .block_separator = "\n",
+    // And a bare line end continues one — djot has no lazy continuation, so the
+    // container prefix `joinBlocks` writes after this is what keeps the joined
+    // line inside the quote or the list item it was in.
+    .line_join = "\n",
     // `{#id .class key="val"}`. Djot quotes every value — its attribute grammar
     // admits a bare value, but the serializer has always quoted, and quoting is
     // never wrong.

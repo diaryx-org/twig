@@ -104,6 +104,8 @@ pub const table: syntax.Syntax = .{
     .task_marker = .{ .unchecked = "[ ]", .checked = "[x]" },
     // A blank line separates blocks here as it does everywhere.
     .block_separator = "\n",
+    // And a bare line end continues one, as everywhere.
+    .line_join = "\n",
     // Body-text literals: the span delimiters, `+` (a passthrough), `{`
     // (an attribute reference), `[` (an attribute list or anchor), `<` (a
     // cross reference or autolink), `&` (a character reference) and the

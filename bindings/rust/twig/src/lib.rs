@@ -816,6 +816,12 @@ pub enum Gesture {
     /// Supported where the format reads the printed span back: djot and HTML,
     /// and Markdown under [`MarkdownExtensions::html_elements`]; not AsciiDoc.
     WrapRangeAttrs,
+    /// Join a block into the block before it — [`Editor::join_blocks`]. The
+    /// inverse of [`Gesture::SplitBlock`] and a **wider** gate than it: a join
+    /// writes a line break inside a block, which HTML spells, while a blank
+    /// line between two of its `<p>`s is not what separates them. Ask for this
+    /// one rather than reading the split's answer for both.
+    JoinBlocks,
 }
 
 impl Gesture {
@@ -854,6 +860,7 @@ impl Gesture {
             Gesture::InsertDirective => (26, 0),
             Gesture::SetBlockAttrs => (27, 0),
             Gesture::WrapRangeAttrs => (28, 0),
+            Gesture::JoinBlocks => (29, 0),
         }
     }
 }
@@ -2689,6 +2696,59 @@ impl Editor {
     /// `offset`; [`Error::InvalidArgument`] when `offset` is past the source.
     pub fn split_block(&mut self, offset: usize) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe { ffi::twig_editor_split_block(ed, offset, out) })
+    }
+
+    /// Join the block at `offset` into the block **before** it — Backspace at
+    /// the start of a block, and forward Delete at the end of the one above it.
+    /// The inverse of [`Editor::split_block`], and the reason it is a gesture
+    /// rather than a host's own delete: what joins two blocks is a fact about
+    /// the **format**. Deleting the newline between them is right only for two
+    /// Markdown paragraphs at the top level — in HTML that byte is the `>` of
+    /// `</p>`, under a heading it leaves two blocks, and after a Markdown
+    /// `<div>` it deletes the blank line the div needed and breaks the div.
+    ///
+    /// **B** is the innermost paragraph/heading covering `offset`. **A** is the
+    /// leaf block immediately before it in **document order**, not the sibling
+    /// before it: the block visually above `below` in
+    /// `above` / `<div>` / `hello` / `</div>` / `below` is `hello`, three
+    /// levels down, and joining into `above` would be the wrong paragraph.
+    ///
+    /// * What is **written** is a line break plus the container prefix A's own
+    ///   line sits behind — a quote's `> ` repeated, a list item's marker's
+    ///   *width* in spaces, nothing at the top level — which is what keeps the
+    ///   joined line inside its containers in a format with no lazy
+    ///   continuation. A heading A with a **leading marker** (`# Title`,
+    ///   AsciiDoc's `== Title`) is one line by its own spelling, so what joins
+    ///   there is a single **space**: `# Title` + `below` is `# Title below`.
+    /// * What **travels** is A's own closing markup (an ATX closing `#` run, a
+    ///   setext underline, `</p>`) and the closers of every container A is in
+    ///   that B is not (a Markdown `</div>`, a djot `:::` fence), carried past
+    ///   the text that was pulled in — so the joined block keeps A's
+    ///   presentation and stays where it was.
+    /// * What is **dropped** is everything between them: the blank line, B's
+    ///   markers, B's attribute line (djot's `{…}`, AsciiDoc's `[…]`), B's
+    ///   opening tags. B's attributes go on purpose — the joined text is A's
+    ///   block, so it takes A's presentation.
+    /// * A **prefix** container (a quote, a list item, a list, a section) has
+    ///   no closing bytes, so whatever follows B inside one stays where it is:
+    ///   joining the first item's text out of a list leaves the rest a list.
+    ///
+    /// [`Error::NotFound`] when no block covers `offset`, and when B is the
+    /// document's first block — the ordinary Backspace-at-the-top answer.
+    /// [`Error::NotEditable`] when A is not a paragraph or a heading (a code
+    /// block, a table, a rule: there is no text to join into), when either
+    /// block is in a **table cell**, when B is a **setext heading** (whose
+    /// underline is how it is spelled at all — [`Editor::set_block`] normalises
+    /// one to ATX, which makes this work), and when B would have to leave a
+    /// **delimited** container that still has content after it, which is the
+    /// one shape this refuses rather than guesses at.
+    /// [`Error::InvalidArgument`] when `offset` is past the source.
+    ///
+    /// [`Error::UnsupportedFormat`] where a block cannot span lines at all —
+    /// and note this is a **different, wider** gate than `split_block`'s. Ask
+    /// [`Format::supports`] with [`Gesture::JoinBlocks`].
+    pub fn join_blocks(&mut self, offset: usize) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_join_blocks(ed, offset, out) })
     }
 
     /// Toggle a fenced code block over the blocks `[start, end)` covers: fence
@@ -5626,6 +5686,65 @@ mod tests {
     }
 
     #[test]
+    fn editor_join_blocks_carries_the_markup_that_has_to_travel() {
+        // The Markdown `<div>` case, which is the whole reason this is a
+        // gesture: `below` joins the div's last paragraph, and the `</div>` is
+        // carried past the text that came in rather than being left above it.
+        let src = "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n";
+        let exts = MarkdownExtensions {
+            html_elements: true,
+            ..Default::default()
+        };
+        let mut into = Editor::new_ext(src.as_bytes(), Format::Markdown, exts).expect("editor");
+        into.join_blocks(44).expect("join");
+        assert_eq!(
+            into.source_str().unwrap(),
+            "above\n\n<div class=\"center\">\n\nhello\nbelow\n\n</div>\n"
+        );
+        let nodes = into.nodes().expect("nodes");
+        assert_eq!(nodes.iter().filter(|n| n.kind == Kind::Para).count(), 2);
+
+        // Out of the div instead: B leaves it, so the div's own closers go with
+        // B's markup — and the paragraph's attributes go with them, because the
+        // joined text is the other block's.
+        let mut out_of = Editor::new_ext(src.as_bytes(), Format::Markdown, exts).expect("editor");
+        out_of.join_blocks(29).expect("join");
+        assert_eq!(out_of.source_str().unwrap(), "above\nhello\n\nbelow\n");
+
+        // A list item's continuation is spaces, not its marker: two items in,
+        // one out.
+        let mut item = Editor::new_str("- a\n- b\n", Format::Markdown).expect("editor");
+        item.join_blocks(6).expect("join");
+        assert_eq!(item.source_str().unwrap(), "- a\n  b\n");
+        let nodes = item.nodes().expect("nodes");
+        assert_eq!(nodes.iter().filter(|n| n.kind == Kind::ListItem).count(), 1);
+
+        // The document's first block has nothing above it.
+        let mut first = Editor::new_str("above\n", Format::Markdown).expect("editor");
+        assert_eq!(first.join_blocks(0), Err(Error::NotFound));
+    }
+
+    #[test]
+    fn editor_join_blocks_is_spelled_in_html_where_the_split_is_not() {
+        // The pair that motivates the separate gate. A blank line between two
+        // `<p>`s is not what separates them, so the split refuses; a newline
+        // inside one is exactly the break the join needs, and the reparse hands
+        // back the single paragraph the gesture claims to have made.
+        let mut ed =
+            Editor::new_str("<p>a</p>\n<p class=\"x\">b</p>\n", Format::Html).expect("editor");
+        assert_eq!(ed.split_block(4), Err(Error::UnsupportedFormat));
+        assert!(Format::Html.supports(Gesture::JoinBlocks));
+        ed.join_blocks(22).expect("join");
+        assert_eq!(ed.source_str().unwrap(), "<p>a\nb</p>\n");
+        let nodes = ed.nodes().expect("nodes");
+        assert_eq!(nodes.iter().filter(|n| n.kind == Kind::Para).count(), 1);
+
+        // XML spells nothing at all, so there the refusal is the format's.
+        let mut xml = Editor::new_str("<r>ab</r>", Format::Xml).expect("editor");
+        assert_eq!(xml.join_blocks(4), Err(Error::UnsupportedFormat));
+    }
+
+    #[test]
     fn editor_toggle_code_block_round_trips_and_measures_the_fence() {
         let mut ed = Editor::new_str("a\n", Format::Markdown).expect("editor");
         ed.toggle_code_block(0, 1, Some("zig")).expect("fence");
@@ -6350,6 +6469,7 @@ mod tests {
             Gesture::InsertDirective,
             Gesture::SetBlockAttrs,
             Gesture::WrapRangeAttrs,
+            Gesture::JoinBlocks,
         ]);
         all
     }
@@ -6364,7 +6484,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=28).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=29).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -6382,7 +6502,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                29,
+                30,
                 0,
                 &mut supported,
             )
@@ -6413,6 +6533,10 @@ mod tests {
         assert!(!Format::Html.supports(Gesture::TableInsertRow));
         assert!(!Format::Html.supports(Gesture::TableSetAlignment));
         assert!(!Format::Html.supports(Gesture::SplitBlock));
+        // And the one that goes the other way, which is why the join has a gate
+        // of its own: HTML cannot be split at a blank line and *can* be joined
+        // at a newline inside its `<p>`.
+        assert!(Format::Html.supports(Gesture::JoinBlocks));
         assert!(!Format::Html.supports(Gesture::RenumberOrderedLists));
         assert!(Format::Markdown.supports(Gesture::TableInsertRow));
         assert!(Format::Djot.supports(Gesture::SplitBlock));
@@ -6478,6 +6602,9 @@ mod tests {
         assert_eq!(ed.table_insert_row(15, true), Err(Error::UnsupportedFormat));
         assert_eq!(ed.renumber_ordered_lists(15), Err(Error::UnsupportedFormat));
         assert!(matches!(ed.split_block(15), Err(Error::UnsupportedFormat)));
+        // The join is spelled in HTML, so its refusal here is about the caret
+        // being in a table — a different answer, from a different gate.
+        assert_eq!(ed.join_blocks(15), Err(Error::NotEditable));
         assert_eq!(ed.source().expect("source"), src.as_bytes());
     }
 

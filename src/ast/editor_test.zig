@@ -3097,6 +3097,396 @@ test "split_block: a format that doesn't divide blocks with a blank line refuses
     try testing.expectError(error.UnsupportedFormat, fx.ed.splitBlock(0));
 }
 
+// ── join blocks ──────────────────────────────────────────────────────────────
+// The inverse of the split. Every case asserts the EXACT BYTES, because what
+// this gesture gets right or wrong is markup a rendering assertion cannot see —
+// a `</div>` that moved, a list item's continuation indent, a heading's closing
+// `#` run — and then asserts the REPARSE, because the whole claim is that two
+// text blocks became one.
+
+/// How many nodes of `tag` the reparsed tree holds. The join's claim is a claim
+/// about the count: two paragraphs where there was one, one heading where there
+/// was a heading and a paragraph.
+fn countKind(fx: *Fixture, tag: KindTag) usize {
+    var n: usize = 0;
+    for (fx.ed.astView().nodes) |node| {
+        if (std.meta.activeTag(node.kind) == tag) n += 1;
+    }
+    return n;
+}
+
+test "join_blocks: two paragraphs become one, in every format that has them" {
+    var md = try Fixture.init("above\n\nbelow\n", .markdown);
+    defer md.deinit();
+    try md.ed.joinBlocks(7);
+    try md.expectSource("above\nbelow\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&md, .para));
+
+    // Djot's paragraph span covers its own trailing newline and Markdown's does
+    // not, which is exactly the asymmetry the removal has to survive.
+    var dj = try Fixture.init("above\n\nbelow\n", .djot);
+    defer dj.deinit();
+    try dj.ed.joinBlocks(7);
+    try dj.expectSource("above\nbelow\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .para));
+
+    // AsciiDoc records no content span at all; the marker is what reconstructs
+    // one, and a paragraph has none, so the block IS its content.
+    var adoc = try Fixture.init("above\n\nbelow\n", .asciidoc);
+    defer adoc.deinit();
+    try adoc.ed.joinBlocks(7);
+    try adoc.expectSource("above\nbelow\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&adoc, .para));
+}
+
+test "join_blocks: a marker heading is one line, so what continues it is a space" {
+    var fx = try Fixture.init("# Title\n\nbelow\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(9);
+    try fx.expectSource("# Title below\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&fx, .para));
+
+    // The closing `#` run is A's TAIL: it travels past the joined text rather
+    // than being left in the middle of it.
+    var closed = try Fixture.init("# Title #\n\nbelow\n", .markdown);
+    defer closed.deinit();
+    try closed.ed.joinBlocks(11);
+    try closed.expectSource("# Title below #\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&closed, .heading));
+
+    var adoc = try Fixture.init("== Title\n\nbelow\n", .asciidoc);
+    defer adoc.deinit();
+    try adoc.ed.joinBlocks(10);
+    try adoc.expectSource("== Title below\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&adoc, .heading));
+
+    // Djot puts the heading in a `section`, so the two blocks' lowest common
+    // ancestor is that section rather than the document — and the answer is the
+    // same, which is what the LCA is for.
+    var dj = try Fixture.init("# Title\n\nbelow\n", .djot);
+    defer dj.deinit();
+    try dj.ed.joinBlocks(9);
+    try dj.expectSource("# Title below\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&dj, .para));
+}
+
+test "join_blocks: a setext heading A carries its underline past the joined text" {
+    // Its content may already span lines, so it takes the line end like a
+    // paragraph — and the `===` is tail, which is what keeps the result a
+    // heading instead of leaving the underline over the wrong half.
+    var fx = try Fixture.init("Title\n===\n\nbelow\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(11);
+    try fx.expectSource("Title\nbelow\n===\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&fx, .para));
+}
+
+test "join_blocks: B's markers go, and the joined text takes A's presentation" {
+    // A heading joined UPWARD into a paragraph is a paragraph: the marker is
+    // B's own opening markup, and everything between A's block and B's content
+    // vanishes.
+    var fx = try Fixture.init("above\n\n# Title\n\nafter\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(9);
+    try fx.expectSource("above\nTitle\n\nafter\n");
+    try testing.expectEqual(@as(usize, 0), countKind(&fx, .heading));
+    try testing.expectEqual(@as(usize, 2), countKind(&fx, .para));
+
+    // Djot's attribute line is B's markup too, so it goes with the marker it
+    // would otherwise re-attach to A's text.
+    var dj = try Fixture.init("above\n\n{.center}\nhello\n\nbelow\n", .djot);
+    defer dj.deinit();
+    try dj.ed.joinBlocks(17);
+    try dj.expectSource("above\nhello\n\nbelow\n");
+    try testing.expectEqual(@as(usize, 2), countKind(&dj, .para));
+
+    // The other direction: B is the plain one, and A KEEPS its attributes.
+    var into = try Fixture.init("above\n\n{.center}\nhello\n\nbelow\n", .djot);
+    defer into.deinit();
+    try into.ed.joinBlocks(24);
+    try into.expectSource("above\n\n{.center}\nhello\nbelow\n");
+    try testing.expectEqual(@as(usize, 2), countKind(&into, .para));
+}
+
+test "join_blocks: the container prefix is what keeps the joined line inside" {
+    // A quote repeats its marker; there is no lazy continuation in djot, and
+    // Markdown's would end the quote at the joined line in the general case.
+    var quote = try Fixture.init("> a\n\n> b\n", .markdown);
+    defer quote.deinit();
+    try quote.ed.joinBlocks(7);
+    try quote.expectSource("> a\n> b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&quote, .block_quote));
+    try testing.expectEqual(@as(usize, 1), countKind(&quote, .para));
+
+    // Two paragraphs of ONE quote: the LCA is the quote itself, so nothing of
+    // its markup travels.
+    var inside = try Fixture.init("> a\n>\n> b\n", .markdown);
+    defer inside.deinit();
+    try inside.ed.joinBlocks(8);
+    try inside.expectSource("> a\n> b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&inside, .para));
+
+    // A list item's marker is NOT repeated — repeating it would open a second
+    // item — so what the continuation carries is the marker's width in spaces.
+    var bullet = try Fixture.init("- a\n- b\n", .markdown);
+    defer bullet.deinit();
+    try bullet.ed.joinBlocks(6);
+    try bullet.expectSource("- a\n  b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&bullet, .list_item));
+
+    var dj = try Fixture.init("- a\n- b\n", .djot);
+    defer dj.deinit();
+    try dj.ed.joinBlocks(6);
+    try dj.expectSource("- a\n  b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .list_item));
+
+    // A paragraph joined INTO a one-item list lands inside the item, indented
+    // to the item's content column — three for `1. `, two for `- `.
+    var after_bullet = try Fixture.init("- a\n\nbelow\n", .markdown);
+    defer after_bullet.deinit();
+    try after_bullet.ed.joinBlocks(5);
+    try after_bullet.expectSource("- a\n  below\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&after_bullet, .list_item));
+
+    var after_ordered = try Fixture.init("1. a\n\nbelow\n", .markdown);
+    defer after_ordered.deinit();
+    try after_ordered.ed.joinBlocks(6);
+    try after_ordered.expectSource("1. a\n   below\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&after_ordered, .list_item));
+}
+
+test "join_blocks: a delimited container's closers travel, in both directions" {
+    // The case the gesture exists for. A host that joined by deleting one
+    // newline here would eat the blank line the `<div>` needs and break it.
+    //
+    // Joining `below` UP into the div's last paragraph: A is `hello`, three
+    // levels down and not a sibling of B at all, and the `</div>` A sits
+    // behind is carried past the text that was pulled in.
+    var into = try Fixture.initWith(
+        "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n",
+        .markdown,
+        &html_elements_cfg,
+    );
+    defer into.deinit();
+    try into.ed.joinBlocks(44);
+    try into.expectSource("above\n\n<div class=\"center\">\n\nhello\nbelow\n\n</div>\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&into, .container));
+    try testing.expectEqual(@as(usize, 2), countKind(&into, .para));
+
+    // And out of it: B leaves the div, so the div's own closers go with B's
+    // markup — B was the only thing in it.
+    var out_of = try Fixture.initWith(
+        "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n",
+        .markdown,
+        &html_elements_cfg,
+    );
+    defer out_of.deinit();
+    try out_of.ed.joinBlocks(29);
+    try out_of.expectSource("above\nhello\n\nbelow\n");
+    try testing.expectEqual(@as(usize, 0), countKind(&out_of, .container));
+    try testing.expectEqual(@as(usize, 2), countKind(&out_of, .para));
+
+    // Djot spells the same shape with a fence. Its `:::` line is A's tail here,
+    // and the document keeps the line terminator B's removal took with it.
+    var dj = try Fixture.init("::: note\nhello\n:::\n\nbelow\n", .djot);
+    defer dj.deinit();
+    try dj.ed.joinBlocks(20);
+    try dj.expectSource("::: note\nhello\nbelow\n:::\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .container));
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .para));
+}
+
+test "join_blocks: inside a delimited container, only the last block may leave" {
+    const src = "above\n\n<div class=\"center\">\n\nhello\n\nworld\n\n</div>\n";
+
+    // `hello` is the FIRST of two: pulling it out would have to move the div's
+    // closers up past `world`, which is still inside. The one shape the gesture
+    // refuses rather than guesses at.
+    var first = try Fixture.initWith(src, .markdown, &html_elements_cfg);
+    defer first.deinit();
+    try testing.expectError(error.NotEditable, first.ed.joinBlocks(29));
+    try first.expectSource(src);
+
+    // `world` is the last, so it joins into `hello` and the div stays whole —
+    // the LCA is the div itself, so none of its markup travels at all.
+    var last = try Fixture.initWith(src, .markdown, &html_elements_cfg);
+    defer last.deinit();
+    try last.ed.joinBlocks(36);
+    try last.expectSource("above\n\n<div class=\"center\">\n\nhello\nworld\n\n</div>\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&last, .container));
+    try testing.expectEqual(@as(usize, 2), countKind(&last, .para));
+}
+
+test "join_blocks: a prefix container leaves what follows B where it is" {
+    // A list has no closing bytes, so joining the first item's text out of it
+    // does not drag the rest along — the remaining items are still a list. Two
+    // items in, one item out, and the second item's text is now the first's.
+    var fx = try Fixture.init("- a\n- b\n- c\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(6);
+    try fx.expectSource("- a\n  b\n- c\n");
+    try testing.expectEqual(@as(usize, 2), countKind(&fx, .list_item));
+}
+
+test "join_blocks: HTML joins where it cannot split" {
+    // The gate's whole point. A blank line between two `<p>`s is not what
+    // separates them, so `splitBlock` refuses; a newline INSIDE a `<p>` is
+    // exactly the break a join needs, and the reparse gives back one paragraph.
+    var fx = try Fixture.init("<p>a</p>\n<p class=\"x\">b</p>\n", .html);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.splitBlock(4));
+    try fx.ed.joinBlocks(22);
+    try fx.expectSource("<p>a\nb</p>\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .para));
+
+    // An `<h1>` records no marker, so it takes the line end rather than the
+    // space a `#` heading takes — and `<h1>a\nb</h1>` is the one heading it
+    // should be. This is why the space case keys on the MARKER and not on the
+    // kind.
+    var heading = try Fixture.init("<h1>a</h1>\n<p>b</p>\n", .html);
+    defer heading.deinit();
+    try heading.ed.joinBlocks(14);
+    try heading.expectSource("<h1>a\nb</h1>\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&heading, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&heading, .para));
+
+    // And the nesting case: `c` joins into the `<div>`'s last paragraph, so the
+    // `</p>` and the `</div>` both travel past it.
+    var nested = try Fixture.init("<div>\n<p>a</p>\n<p>b</p>\n</div>\n<p>c</p>\n", .html);
+    defer nested.deinit();
+    try nested.ed.joinBlocks(34);
+    try nested.expectSource("<div>\n<p>a</p>\n<p>b\nc</p>\n</div>\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&nested, .container));
+    try testing.expectEqual(@as(usize, 2), countKind(&nested, .para));
+}
+
+test "join_blocks: A is the leaf block above in DOCUMENT order, not the sibling" {
+    // AsciiDoc puts each heading and the blocks under it in a `section`, so the
+    // block above `x` is the `== Two` heading, inside the section B is in —
+    // while the sibling above B's section is the FIRST section. Joining into
+    // that one would pull `x` up past a heading it belongs under.
+    var fx = try Fixture.init("== Title\n\nbelow\n\n== Two\n\nx\n", .asciidoc);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(25);
+    try fx.expectSource("== Title\n\nbelow\n\n== Two x\n");
+    try testing.expectEqual(@as(usize, 2), countKind(&fx, .section));
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .para));
+}
+
+test "join_blocks: a block with no text to join into is NotEditable" {
+    // A code block, a rule, a table: each is a leaf block above B, and none is
+    // a `para` or a `heading`. Pulling B's prose into a fence would change what
+    // the fence holds; into a rule there is nowhere to put it at all.
+    var code = try Fixture.init("```\nx\n```\n\nbelow\n", .markdown);
+    defer code.deinit();
+    try testing.expectError(error.NotEditable, code.ed.joinBlocks(11));
+    try code.expectSource("```\nx\n```\n\nbelow\n");
+
+    var rule = try Fixture.init("above\n\n***\n\nbelow\n", .markdown);
+    defer rule.deinit();
+    try testing.expectError(error.NotEditable, rule.ed.joinBlocks(12));
+    try rule.expectSource("above\n\n***\n\nbelow\n");
+
+    const after_table = "| a | b |\n|---|---|\n| c | d |\n\nbelow\n";
+    var below = try Fixture.init(after_table, .markdown);
+    defer below.deinit();
+    try testing.expectError(error.NotEditable, below.ed.joinBlocks(31));
+    try below.expectSource(after_table);
+}
+
+test "join_blocks: a caret in a table is NotEditable, not NoBlock" {
+    // A cell's blocks are not the document's lines. The refusal is checked on
+    // the POSITION rather than on the block, because a pipe table's cell holds
+    // its text with no `para` under it — so "the innermost block here" is null,
+    // and the honest answer is still that this is a table.
+    const src = "| a | b |\n|---|---|\n| c | d |\n";
+    var fx = try Fixture.init(src, .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.joinBlocks(22));
+    try fx.expectSource(src);
+}
+
+test "join_blocks: a setext heading B is NotEditable, not silently unwritten" {
+    // Its underline is how it is spelled at all, and dropping it is a rewrite
+    // of the half the caller didn't point at. `setBlock` normalises one to ATX,
+    // which makes this work — the same escape hatch `splitBlock` documents.
+    const src = "above\n\nTitle\n===\n";
+    var fx = try Fixture.init(src, .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.joinBlocks(7));
+    try fx.expectSource(src);
+}
+
+test "join_blocks: the first block of a document has nothing above it" {
+    var fx = try Fixture.init("above\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NoBlock, fx.ed.joinBlocks(0));
+    try fx.expectSource("above\n");
+
+    // Including when it is nested: the div's first paragraph is the document's
+    // first leaf block, so there is nothing above it to join into.
+    const nested = "<div class=\"center\">\n\nhello\n\nworld\n\n</div>\n";
+    var inside = try Fixture.initWith(nested, .markdown, &html_elements_cfg);
+    defer inside.deinit();
+    try testing.expectError(error.NoBlock, inside.ed.joinBlocks(22));
+    try inside.expectSource(nested);
+
+    // And a position no block covers at all.
+    var empty = try Fixture.init("", .markdown);
+    defer empty.deinit();
+    try testing.expectError(error.NoBlock, empty.ed.joinBlocks(0));
+}
+
+test "join_blocks: an offset past the source is InvalidRange" {
+    var fx = try Fixture.init("a\n\nb\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.InvalidRange, fx.ed.joinBlocks(99));
+    try fx.expectSource("a\n\nb\n");
+}
+
+test "join_blocks: a format with no line join refuses before it reads a byte" {
+    // XML spells nothing: it is parse-and-render only, and the refusal is a
+    // property of the format rather than of the caret, so it holds at a
+    // position with no block at all.
+    const src = "<r>ab</r>";
+    var fx = try Fixture.init(src, .xml);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.joinBlocks(4));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.joinBlocks(0));
+    try fx.expectSource(src);
+}
+
+test "join_blocks: the split's inverse, round-tripped" {
+    // Split a paragraph and join it back: the source is what it was. Not a
+    // property the gesture promises in general (a split writes a blank line, a
+    // join writes a line break, and only one of those is what the other
+    // removes) but it is the shape a caret editor's Enter/Backspace pair has to
+    // have for the commonest case of all.
+    var fx = try Fixture.init("one two\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.splitBlock(3);
+    try fx.expectSource("one\n\ntwo\n");
+    try testing.expectEqual(@as(usize, 2), countKind(&fx, .para));
+    try fx.ed.joinBlocks(5);
+    try fx.expectSource("one\ntwo\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .para));
+}
+
+test "join_blocks: one splice, so one undo" {
+    // The whole edit is a single `commitSplice` over `[A.ce, R_end)`, which is
+    // what makes it one entry in the undo stack rather than a delete and an
+    // insert a caller would have to undo twice.
+    var fx = try Fixture.init("above\n\nbelow\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(7);
+    try fx.expectSource("above\nbelow\n");
+    _ = try fx.ed.splicer.undo();
+    try fx.expectSource("above\n\nbelow\n");
+}
+
 // ── code blocks ──────────────────────────────────────────────────────────────
 
 /// The info string the parser reads back off the edited source — the only thing
@@ -3528,6 +3918,7 @@ const all_gestures = blk: {
         .insert_literal,
         .insert_line_break,
         .split_block,
+        .join_blocks,
         .renumber_ordered_lists,
         .table_insert_row,
         .table_delete_row,
@@ -3579,6 +3970,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .insert_literal => ed.insertLiteral(0, "x"),
         .insert_line_break => ed.insertLineBreak(0),
         .split_block => ed.splitBlock(0),
+        .join_blocks => ed.joinBlocks(0),
         .renumber_ordered_lists => ed.renumberOrderedLists(0),
         .table_insert_row => ed.tableInsertRow(0, true),
         .table_delete_row => ed.tableDeleteRow(0),
@@ -3654,6 +4046,12 @@ test "supports is the per-gesture answer authorable() cannot give" {
     try testing.expect(!Editor.supports(html, .table_insert_row));
     try testing.expect(!Editor.supports(html, .table_set_alignment));
     try testing.expect(!Editor.supports(html, .split_block));
+    // And the one that goes the OTHER way, which is why `line_join` is a field
+    // of its own rather than a second reading of `block_separator`: HTML
+    // cannot be split at a blank line and CAN be joined at a newline inside a
+    // `<p>`. A toolbar grays out Enter-splits-the-block here and leaves
+    // Backspace-joins-it live.
+    try testing.expect(Editor.supports(html, .join_blocks));
     try testing.expect(!Editor.supports(html, .renumber_ordered_lists));
 
     // A format that spells nothing answers false to every gesture, so
@@ -3681,6 +4079,7 @@ test "supports is the per-gesture answer authorable() cannot give" {
     try testing.expect(Editor.supports(adoc, .toggle_task_item));
     try testing.expect(Editor.supports(adoc, .insert_literal));
     try testing.expect(Editor.supports(adoc, .split_block));
+    try testing.expect(Editor.supports(adoc, .join_blocks));
     try testing.expect(Editor.supports(adoc, .renumber_ordered_lists));
     try testing.expect(Editor.supports(adoc, .insert_link));
     try testing.expect(Editor.supports(adoc, .insert_image));
