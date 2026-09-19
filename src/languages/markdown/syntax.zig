@@ -206,13 +206,66 @@ const color_spellings = blk: {
 /// would give the table set a combination the parser cannot produce.
 const Highlights = enum(u2) { none, marks, colors };
 
+/// The flags that move an ANSWER, as one key — the address of a table in
+/// the set. Small on purpose: `math` and `html_elements`' cousins that add
+/// nodes no gesture authors are not here. `directives` is a key because
+/// `Editor.insertDirective` authors one, and `html_elements` because
+/// `setBlockAttrs` and `wrapRangeAttrs` mint a `<div>` and a `<span>` only
+/// that flag reads back. At four flags the nested arrays this used to be
+/// gave way to an index, which is what a fifth will add a factor to.
+const Key = struct {
+    strikethrough: bool,
+    highlights: Highlights,
+    directives: bool,
+    html_elements: bool,
+
+    const count = 2 * 3 * 2 * 2;
+
+    fn index(k: Key) usize {
+        var i: usize = @intFromBool(k.strikethrough);
+        i = i * 3 + @intFromEnum(k.highlights);
+        i = i * 2 + @intFromBool(k.directives);
+        i = i * 2 + @intFromBool(k.html_elements);
+        return i;
+    }
+
+    fn fromIndex(i: usize) Key {
+        var rest = i;
+        const html_elements = rest % 2 == 1;
+        rest /= 2;
+        const directives = rest % 2 == 1;
+        rest /= 2;
+        const highlights: Highlights = @enumFromInt(rest % 3);
+        rest /= 3;
+        return .{ .strikethrough = rest == 1, .highlights = highlights, .directives = directives, .html_elements = html_elements };
+    }
+
+    fn of(opts: Options) Key {
+        // Colours are inert without a highlight to colour, exactly as in the
+        // parser: `highlight_colors` alone leaves `==` literal, so there is
+        // nothing for a palette to sit inside.
+        const h: Highlights = if (!opts.highlight)
+            .none
+        else if (opts.highlight_colors)
+            .colors
+        else
+            .marks;
+        return .{
+            .strikethrough = opts.strikethrough,
+            .highlights = h,
+            .directives = opts.directives,
+            .html_elements = opts.html_elements,
+        };
+    }
+};
+
 /// `base` with the extension-gated answers filled in — the whole difference
 /// between one table here and the next.
-fn derive(comptime strikethrough: bool, comptime highlights: Highlights, comptime directives: bool) syntax.Syntax {
+fn derive(comptime k: Key) syntax.Syntax {
     var t = base;
-    setAuthorable(&t, .delete, strikethrough);
-    setAuthorable(&t, .mark, highlights != .none);
-    if (highlights == .colors) {
+    setAuthorable(&t, .delete, k.strikethrough);
+    setAuthorable(&t, .mark, k.highlights != .none);
+    if (k.highlights == .colors) {
         t.mark_colors = .{ .attr_key = highlight.attr_key, .colors = &color_spellings };
     }
     // The serializer prints `::name[label]{attrs}` under any options — that is
@@ -220,7 +273,14 @@ fn derive(comptime strikethrough: bool, comptime highlights: Highlights, comptim
     // it back as a container. Without the flag it is a paragraph of literal
     // colons, so `insertDirective` may not mint it, exactly as `toggleInline`
     // may not mint `==x==` without `highlight`.
-    t.names_leaf_containers = directives;
+    t.names_leaf_containers = k.directives;
+    // The same shape again: the serializer writes an attributed block inside
+    // a `<div>` and an attributed run inside a `<span>` under any options,
+    // and only `html_elements` pairs the tags back into the container the
+    // gesture built. A block's attributes come back on that container — the
+    // `wrapped` shape — rather than on the block.
+    t.block_attrs = if (k.html_elements) .wrapped else null;
+    t.inline_attrs = k.html_elements;
     return t;
 }
 
@@ -230,19 +290,11 @@ fn setAuthorable(t: *syntax.Syntax, comptime m: AST.InlineMark, yes: bool) void 
     t.inline_delims.set(m, d);
 }
 
-/// Every table Markdown is authored by, indexed
-/// `[strikethrough][highlights][directives]`. Small on purpose: only the flags
-/// that move an ANSWER are keys, so `math` and `html_elements` — which add
-/// nodes no gesture authors — are not here. `directives` is a key because
-/// `Editor.insertDirective` authors one: it used not to be, and this comment
-/// used to say so.
-const tables: [2][3][2]syntax.Syntax = blk: {
-    var out: [2][3][2]syntax.Syntax = undefined;
-    for ([_]bool{ false, true }, 0..) |st, i| {
-        for (std.enums.values(Highlights), 0..) |h, j| {
-            for ([_]bool{ false, true }, 0..) |dir, k| out[i][j][k] = derive(st, h, dir);
-        }
-    }
+/// Every table Markdown is authored by, one per `Key`. See `Key` for why the
+/// set is exactly this big.
+const tables: [Key.count]syntax.Syntax = blk: {
+    var out: [Key.count]syntax.Syntax = undefined;
+    for (0..Key.count) |i| out[i] = derive(Key.fromIndex(i));
     const frozen = out;
     break :blk frozen;
 };
@@ -260,16 +312,7 @@ pub const table: *const syntax.Syntax = forOptions(.{});
 
 /// The table an editor over a document parsed with `opts` should consult.
 pub fn forOptions(opts: Options) *const syntax.Syntax {
-    // Colours are inert without a highlight to colour, exactly as in the
-    // parser: `highlight_colors` alone leaves `==` literal, so there is nothing
-    // for a palette to sit inside.
-    const h: Highlights = if (!opts.highlight)
-        .none
-    else if (opts.highlight_colors)
-        .colors
-    else
-        .marks;
-    return &tables[@intFromBool(opts.strikethrough)][@intFromEnum(h)][@intFromBool(opts.directives)];
+    return &tables[Key.of(opts).index()];
 }
 
 test "markdown SPELLS every mark and AUTHORS the ones its parse config reads back" {
@@ -310,8 +353,8 @@ test "every derived table differs from base in the authorable flags and nothing 
     // The claim that makes deriving safe: `derive` touches four fields, so a
     // future edit to it cannot quietly change an escape alphabet or a marker
     // in one table out of twelve.
-    for (&tables) |*row| {
-        for (&row.*) |*plane| for (plane) |*t| {
+    for (&tables) |*t| {
+        {
             t.assertCoherent();
             for (std.enums.values(AST.InlineMark)) |m| {
                 const b = base.inline_delims.get(m).?;
@@ -329,16 +372,24 @@ test "every derived table differs from base in the authorable flags and nothing 
             // A palette only ever rides on an authorable mark, which
             // `assertCoherent` also pins from the other side.
             if (t.mark_colors != null) try std.testing.expect(t.inline_delims.get(.mark).?.authorable);
-            // And the directive claim only ever rides on the renderer that
-            // prints one — the other implication `assertCoherent` pins.
+            // And the directive and attribute claims only ever ride on the
+            // renderer that prints one — the other implication
+            // `assertCoherent` pins.
             if (t.names_leaf_containers) try std.testing.expect(t.renderBlock != null);
-        };
+            if (t.block_attrs != null or t.inline_attrs) try std.testing.expect(t.renderBlock != null);
+        }
     }
     // `base` itself is nobody's answer: it states no gated flag at all.
     try std.testing.expect(!base.inline_delims.get(.mark).?.authorable);
     try std.testing.expect(!base.inline_delims.get(.delete).?.authorable);
     try std.testing.expect(base.mark_colors == null);
     try std.testing.expect(!base.names_leaf_containers);
+    try std.testing.expect(base.block_attrs == null);
+    try std.testing.expect(!base.inline_attrs);
+}
+
+test "the key is a bijection onto the set" {
+    for (0..Key.count) |i| try std.testing.expectEqual(i, Key.fromIndex(i).index());
 }
 
 test "the colour palette offers every circle highlight.zig knows" {
@@ -409,20 +460,37 @@ test "forOptions: each flag moves exactly its own mark" {
     try std.testing.expectEqual(table, forOptions(.{ .math = true }));
     try std.testing.expectEqual(dir, forOptions(.{ .directives = true, .math = true }));
 
-    // Twelve configurations, twelve distinct tables — the set has no duplicate
-    // a caller could reach two ways.
-    var all: [12]*const syntax.Syntax = undefined;
+    // HTML elements are the fourth axis, and they move only the two attribute
+    // claims: a `<div>` around a block and a `<span>` around a run are raw
+    // HTML under the defaults and a container with the flag on.
+    try std.testing.expect(table.block_attrs == null);
+    try std.testing.expect(!table.inline_attrs);
+    const html = forOptions(.{ .html_elements = true });
+    try std.testing.expectEqual(syntax.BlockAttrs.wrapped, html.block_attrs.?);
+    try std.testing.expect(html.inline_attrs);
+    try std.testing.expect(html != table);
+    try std.testing.expect(!html.names_leaf_containers);
+    try std.testing.expect(html.inline_delims.get(.delete).?.authorable);
+    const both = forOptions(.{ .html_elements = true, .directives = true });
+    try std.testing.expect(both.names_leaf_containers and both.inline_attrs);
+
+    // Twenty-four configurations, twenty-four distinct tables — the set has
+    // no duplicate a caller could reach two ways.
+    var all: [Key.count]*const syntax.Syntax = undefined;
     var n: usize = 0;
     for ([_]bool{ false, true }) |st| {
         for ([_][2]bool{ .{ false, false }, .{ true, false }, .{ true, true } }) |h| {
             for ([_]bool{ false, true }) |d| {
-                all[n] = forOptions(.{
-                    .strikethrough = st,
-                    .highlight = h[0],
-                    .highlight_colors = h[1],
-                    .directives = d,
-                });
-                n += 1;
+                for ([_]bool{ false, true }) |e| {
+                    all[n] = forOptions(.{
+                        .strikethrough = st,
+                        .highlight = h[0],
+                        .highlight_colors = h[1],
+                        .directives = d,
+                        .html_elements = e,
+                    });
+                    n += 1;
+                }
             }
         }
     }

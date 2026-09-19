@@ -64,6 +64,15 @@ highlight_colors: bool = false,
 /// still addresses the true input — the mission's correctness bar); anything
 /// that doesn't map 1:1 (container-nested HTML, CRLF, expanded tabs) falls
 /// back to the opaque `raw_block`/`raw_inline` it would have produced anyway.
+///
+/// Two tags PAIR as well as promote: a bare `<div …>` line and the bare
+/// `</div>` line after it become one container over the blocks between
+/// (`block.zig`'s `tryDivFence`), and a `<span …>` with its `</span>` in the
+/// same inline run one container over the content between (`inline.zig`'s
+/// `tryPairedSpan`). Those are the spellings twig's own Markdown serializer
+/// writes for a block's and a run's attributes, and this flag is what reads
+/// them back — which is why `Editor.setBlockAttrs` and `wrapRangeAttrs` are
+/// gated on it (see `syntax.zig`'s `forOptions`).
 html_elements: bool = false,
 
 /// Which Markdown DIALECT this document is written in — the flavor whose
