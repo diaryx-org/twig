@@ -350,6 +350,14 @@ static void test_new_block_gestures_link_and_edit(void) {
         CHECK(twig_editor_source(attr_ed, &out, &out_len) == TWIG_STATUS_OK);
         CHECK(out_len == 36 &&
               memcmp(out, "<div class=\"center\">\n\nhello\n\n</div>\n", 36) == 0);
+        // And a run's, as a span: `hello` sits at 22..27 inside the div.
+        const TwigKeyVal large[] = {
+            {(const uint8_t *)"class", 5, (const uint8_t *)"large", 5},
+        };
+        CHECK(twig_editor_wrap_range_attrs(attr_ed, 22, 27, large, 1, &change) == TWIG_STATUS_OK);
+        CHECK(twig_editor_source(attr_ed, &out, &out_len) == TWIG_STATUS_OK);
+        CHECK(out_len == 63 &&
+              memcmp(out, "<div class=\"center\">\n\n<span class=\"large\">hello</span>\n\n</div>\n", 63) == 0);
         twig_editor_destroy(attr_ed);
     }
 

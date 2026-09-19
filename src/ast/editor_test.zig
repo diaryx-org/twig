@@ -3539,6 +3539,7 @@ const all_gestures = blk: {
         .insert_table,
         .insert_directive,
         .set_block_attrs,
+        .wrap_range_attrs,
     };
 };
 
@@ -3589,6 +3590,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .insert_table => ed.insertTable(0, 1, 1),
         .insert_directive => ed.insertDirective(0, "page-break", null, &.{}),
         .set_block_attrs => ed.setBlockAttrs(0, &.{.{ .key = "class", .value = "c" }}),
+        .wrap_range_attrs => ed.wrapRangeAttrs(whole, &.{.{ .key = "class", .value = "c" }}),
     };
 }
 
@@ -3824,4 +3826,77 @@ test "setBlockAttrs: the caret must be in a paragraph or heading, and the attrib
     try testing.expectError(error.InvalidAttribute, dj.ed.setBlockAttrs(0, &.{.{ .key = "k", .value = "a\nb" }}));
     try testing.expectError(error.InvalidAttribute, dj.ed.setBlockAttrs(0, &.{.{ .key = "k", .value = "a\"b" }}));
     try dj.expectSource("hello\n");
+}
+
+// ── wrapRangeAttrs ─────────────────────────────────────────────────────────
+
+const class_l = [_]AST.KeyVal{.{ .key = "class", .value = "large" }};
+const class_s = [_]AST.KeyVal{.{ .key = "class", .value = "small" }};
+
+test "wrapRangeAttrs: djot brackets the range, re-styles it from inside, and unwraps it" {
+    var fx = try Fixture.init("a big _text_ b\n", .djot);
+    defer fx.deinit();
+    try fx.ed.wrapRangeAttrs(Span.init(2, 12), &class_l);
+    try fx.expectSource("a [big _text_]{.large} b\n");
+    const span = fx.find(.{ .tag = .container }).?;
+    try testing.expectEqualStrings("large", fx.ed.astView().attrsOf(span).get("class").?);
+    // Replace, not nest: a range inside the span re-styles the span.
+    try fx.ed.wrapRangeAttrs(Span.init(4, 6), &class_s);
+    try fx.expectSource("a [big _text_]{.small} b\n");
+    // Unwrapping keeps the content bytes as they are.
+    try fx.ed.wrapRangeAttrs(Span.init(4, 6), &.{});
+    try fx.expectSource("a big _text_ b\n");
+}
+
+test "wrapRangeAttrs: HTML and Markdown spell a span, and read the name back as the same node" {
+    var h = try Fixture.init("<p>a big b</p>\n", .html);
+    defer h.deinit();
+    try h.ed.wrapRangeAttrs(Span.init(5, 8), &class_l);
+    try h.expectSource("<p>a <span class=\"large\">big</span> b</p>\n");
+    try h.ed.wrapRangeAttrs(Span.init(25, 28), &class_s);
+    try h.expectSource("<p>a <span class=\"small\">big</span> b</p>\n");
+    try h.ed.wrapRangeAttrs(Span.init(25, 28), &.{});
+    try h.expectSource("<p>a big b</p>\n");
+
+    var md = try Fixture.initWith("a *big* b\n", .markdown, &html_elements_cfg);
+    defer md.deinit();
+    try md.ed.wrapRangeAttrs(Span.init(2, 7), &class_l);
+    try md.expectSource("a <span class=\"large\">*big*</span> b\n");
+    const span = md.find(.{ .container_named = "span" }).?;
+    try testing.expectEqualStrings("large", md.ed.astView().attrsOf(span).get("class").?);
+    // The mark inside rode along.
+    const em = md.ed.astView().nodes[span].first_child.?;
+    try testing.expect(md.ed.astView().nodes[em].kind == .inline_mark);
+    try md.ed.wrapRangeAttrs(Span.init(23, 26), &class_s);
+    try md.expectSource("a <span class=\"small\">*big*</span> b\n");
+    try md.ed.wrapRangeAttrs(Span.init(23, 26), &.{});
+    try md.expectSource("a *big* b\n");
+}
+
+test "wrapRangeAttrs: a directive-origin :span is not the span a range re-styles" {
+    var cfg: format.ParseConfig = .{ .markdown = .{ .directives = true, .html_elements = true } };
+    var fx = try Fixture.initWith("a :span[big]{.a} b\n", .markdown, &cfg);
+    defer fx.deinit();
+    try fx.ed.wrapRangeAttrs(Span.init(8, 11), &class_l);
+    try fx.expectSource("a :span[<span class=\"large\">big</span>]{.a} b\n");
+}
+
+test "wrapRangeAttrs: refused where the format does not read the span back, and touches nothing" {
+    var md = try Fixture.init("a big b\n", .markdown);
+    defer md.deinit();
+    try testing.expectError(error.UnsupportedFormat, md.ed.wrapRangeAttrs(Span.init(2, 5), &class_l));
+    try md.expectSource("a big b\n");
+    var adoc = try Fixture.init("a big b\n", .asciidoc);
+    defer adoc.deinit();
+    try testing.expectError(error.UnsupportedFormat, adoc.ed.wrapRangeAttrs(Span.init(2, 5), &class_l));
+}
+
+test "wrapRangeAttrs: an empty range with no span to re-style, a bad range, a bad attribute" {
+    var fx = try Fixture.init("a big b\n", .djot);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.wrapRangeAttrs(Span.init(2, 2), &class_l));
+    try testing.expectError(error.InvalidRange, fx.ed.wrapRangeAttrs(Span.init(5, 2), &class_l));
+    try testing.expectError(error.InvalidRange, fx.ed.wrapRangeAttrs(Span.init(0, 99), &class_l));
+    try testing.expectError(error.InvalidAttribute, fx.ed.wrapRangeAttrs(Span.init(2, 5), &.{.{ .key = "k", .value = null }}));
+    try fx.expectSource("a big b\n");
 }

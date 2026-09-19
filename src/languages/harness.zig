@@ -249,19 +249,19 @@ fn expectBlockAttrs(entry: format.Entry, cfg: *const format.ParseConfig, shape: 
 
 /// What `Editor.wrapRangeAttrs` assumes of a table claiming
 /// `Syntax.inline_attrs`: an ANONYMOUS inline container carrying
-/// `claim_attrs`, printed through `renderBlock` inside a paragraph, reparses
-/// to an inline container — anonymous, or named `span` — carrying them.
+/// `claim_attrs`, printed through `renderBlock` as the fragment root — which
+/// is how the gesture prints it, spliced into a line of the document —
+/// reparses to an inline container, anonymous or named `span`, carrying them.
 fn expectInlineAttrs(entry: format.Entry, cfg: *const format.ParseConfig) !void {
     const render = tableFor(entry, cfg).renderBlock.?;
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
     const span = try b.addContainer(.{ .container = .{ .name = "", .form = .inline_text } }, &.{try b.addLeaf(.{ .str = "text" })});
     try b.setAttrs(span, claim_attrs);
-    const para = try b.addContainer(.para, &.{ try b.addLeaf(.{ .str = "a " }), span, try b.addLeaf(.{ .str = " b" }) });
-    const view = b.view(para);
+    const view = b.view(span);
     var out: std.Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
-    try render(testing.allocator, &view, para, &out.writer);
+    try render(testing.allocator, &view, span, &out.writer);
     errdefer std.debug.print("\n--- attributed span source ---\n{s}\n", .{out.written()});
 
     var parsed = try entry.parse(cfg, testing.allocator, out.written());

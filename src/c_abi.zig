@@ -2866,6 +2866,7 @@ const TwigGesture = enum(c_int) {
     insert_table = 25,
     insert_directive = 26,
     set_block_attrs = 27,
+    wrap_range_attrs = 28,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2899,6 +2900,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         25 => .insert_table,
         26 => .insert_directive,
         27 => .set_block_attrs,
+        28 => .wrap_range_attrs,
         else => null,
     };
 }
@@ -3199,6 +3201,44 @@ pub export fn twig_editor_set_block_attrs(
         }
     }
     handle.editor.setBlockAttrs(offset, entries) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Wrap `[start, end)` in an anonymous inline container carrying `attrs` —
+/// djot's `[text]{…}`, HTML's and Markdown's `<span …>` — or, when the range
+/// lies inside such a span already, replace that span's attributes;
+/// `attrs_len == 0` there unwraps it. See `twig.Editor.wrapRangeAttrs`.
+///
+/// `unsupported_format` where the format's parser would not read the span
+/// back (AsciiDoc; Markdown without `TWIG_MD_HTML_ELEMENTS`);
+/// `invalid_argument` for a bad range, a NULL `attrs_ptr` with a non-zero
+/// length, or an attribute no format reads back; `not_editable` for an empty
+/// range with no span to re-style, or a range cutting a node it cannot slice.
+pub export fn twig_editor_wrap_range_attrs(
+    ed: ?*TwigEditor,
+    start: usize,
+    end: usize,
+    attrs_ptr: ?[*]const TwigKeyVal,
+    attrs_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const allocator = activeAllocator();
+    var entries: []twig.AST.KeyVal = &.{};
+    defer if (entries.len != 0) allocator.free(entries);
+    if (attrs_len != 0) {
+        const c_kvs = (attrs_ptr orelse return .invalid_argument)[0..attrs_len];
+        entries = allocator.alloc(twig.AST.KeyVal, attrs_len) catch return .out_of_memory;
+        for (c_kvs, entries) |c, *e| {
+            const key = sliceOf(c.key, c.key_len) orelse return .invalid_argument;
+            const value: ?[]const u8 = if (c.value) |vp| vp[0..c.value_len] else null;
+            e.* = .{ .key = key, .value = value };
+        }
+    }
+    handle.editor.wrapRangeAttrs(twig.Span.init(start, end), entries) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;
@@ -5889,6 +5929,32 @@ test "twig_editor_set_block_attrs: gated on TWIG_MD_HTML_ELEMENTS, and the div i
     // A bare attribute is one no lightweight format reads back.
     const bare = [_]TwigKeyVal{.{ .key = "hidden", .key_len = 6, .value = null, .value_len = 0 }};
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_set_block_attrs(ed, 0, &bare, 1, null));
+}
+
+test "twig_editor_wrap_range_attrs: gated like the block gesture, and the span is what the reparse reads" {
+    var out: c_int = -1;
+    const md = @intFromEnum(TwigFormat.markdown);
+    const gesture = @intFromEnum(TwigGesture.wrap_range_attrs);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(md, gesture, 0, &out));
+    try std.testing.expectEqual(@as(c_int, 0), out);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(md, TWIG_MD_HTML_ELEMENTS, gesture, 0, &out));
+    try std.testing.expectEqual(@as(c_int, 1), out);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.asciidoc), gesture, 0, &out));
+    try std.testing.expectEqual(@as(c_int, 0), out);
+
+    const src = "a big b\n";
+    const attrs = [_]TwigKeyVal{.{ .key = "class", .key_len = 5, .value = "large", .value_len = 5 }};
+    var ed: ?*TwigEditor = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_create_ext(src.ptr, src.len, md, TWIG_MD_HTML_ELEMENTS, &ed));
+    defer twig_editor_destroy(ed);
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_wrap_range_attrs(ed, 2, 5, &attrs, 1, null));
+    var text: ?[*]const u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_source(ed, &text, &len));
+    try std.testing.expectEqualStrings("a <span class=\"large\">big</span> b\n", text.?[0..len]);
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_wrap_range_attrs(ed, 22, 25, null, 0, null));
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_source(ed, &text, &len));
+    try std.testing.expectEqualStrings("a big b\n", text.?[0..len]);
 }
 
 test "twig_format_supports: a kind is read in the gesture's own space, or rejected" {

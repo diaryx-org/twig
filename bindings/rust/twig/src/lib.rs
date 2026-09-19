@@ -812,6 +812,10 @@ pub enum Gesture {
     /// back, which for Markdown means [`MarkdownExtensions::html_elements`]:
     /// ask [`Format::supports_with`] rather than [`Format::supports`].
     SetBlockAttrs,
+    /// Wrap a range in an attributed span — [`Editor::wrap_range_attrs`].
+    /// Supported where the format reads the printed span back: djot and HTML,
+    /// and Markdown under [`MarkdownExtensions::html_elements`]; not AsciiDoc.
+    WrapRangeAttrs,
 }
 
 impl Gesture {
@@ -849,6 +853,7 @@ impl Gesture {
             Gesture::InsertTable => (25, 0),
             Gesture::InsertDirective => (26, 0),
             Gesture::SetBlockAttrs => (27, 0),
+            Gesture::WrapRangeAttrs => (28, 0),
         }
     }
 }
@@ -2424,6 +2429,45 @@ impl Editor {
             .collect();
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_set_block_attrs(ed, offset, kvs.as_ptr(), kvs.len(), out)
+        })
+    }
+
+    /// Wrap `[start, end)` in an anonymous inline container carrying `attrs`
+    /// — djot's `[text]{…}`, HTML's and Markdown's `<span …>` — or, when the
+    /// range already lies inside such a span, **replace** that span's
+    /// attributes rather than nest a second; an empty list there unwraps it,
+    /// keeping the content bytes. That is [`Editor::insert_link`]'s rule for
+    /// a link covering the range, for the same reason. A span named `span`
+    /// and an anonymous one are the same node here; a `:span[…]` the Markdown
+    /// parser read as a directive is neither.
+    ///
+    /// The inline half of [`Editor::set_block_attrs`], with its vocabulary
+    /// rule and its attribute grammar ([`Error::InvalidArgument`] for a key or
+    /// value no format reads back, or a bad range). The covered inline nodes
+    /// are printed under the container by the format's own serializer, so a
+    /// mark inside the range rides along. [`Error::NotEditable`] for an empty
+    /// range with no span to re-style, or a range cutting a node the gesture
+    /// cannot slice. [`Error::UnsupportedFormat`] where the format would not
+    /// read the printed span back: AsciiDoc, whose `[#id.role]#text#` keeps
+    /// an id and a role and drops any other key, and Markdown without
+    /// [`MarkdownExtensions::html_elements`] — ask [`Format::supports_with`].
+    pub fn wrap_range_attrs(
+        &mut self,
+        start: usize,
+        end: usize,
+        attrs: &[(&str, Option<&str>)],
+    ) -> Result<Change, Error> {
+        let kvs: Vec<ffi::TwigKeyVal> = attrs
+            .iter()
+            .map(|(k, v)| ffi::TwigKeyVal {
+                key: k.as_ptr(),
+                key_len: k.len(),
+                value: v.map_or(std::ptr::null(), |s| s.as_ptr()),
+                value_len: v.map_or(0, |s| s.len()),
+            })
+            .collect();
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_wrap_range_attrs(ed, start, end, kvs.as_ptr(), kvs.len(), out)
         })
     }
 
@@ -5966,6 +6010,39 @@ mod tests {
     }
 
     #[test]
+    fn editor_wrap_range_attrs_spells_a_span_and_re_styles_rather_than_nesting() {
+        let mut dj = Editor::new_str("a big b\n", Format::Djot).expect("editor");
+        dj.wrap_range_attrs(2, 5, &[("class", Some("large"))]).expect("wrap");
+        assert_eq!(dj.source_str().unwrap(), "a [big]{.large} b\n");
+        dj.wrap_range_attrs(3, 6, &[("class", Some("small"))]).expect("re-style");
+        assert_eq!(dj.source_str().unwrap(), "a [big]{.small} b\n");
+        dj.wrap_range_attrs(3, 6, &[]).expect("unwrap");
+        assert_eq!(dj.source_str().unwrap(), "a big b\n");
+
+        let mut html = Editor::new_str("<p>a big b</p>\n", Format::Html).expect("editor");
+        html.wrap_range_attrs(5, 8, &[("class", Some("large"))]).expect("wrap");
+        assert_eq!(html.source_str().unwrap(), "<p>a <span class=\"large\">big</span> b</p>\n");
+
+        // Markdown reads the span back only under `html_elements`; AsciiDoc
+        // has no spelling that keeps every key.
+        assert!(!Format::Markdown.supports(Gesture::WrapRangeAttrs));
+        assert!(!Format::Asciidoc.supports(Gesture::WrapRangeAttrs));
+        let exts = MarkdownExtensions {
+            html_elements: true,
+            ..Default::default()
+        };
+        assert!(Format::Markdown.supports_with(exts, Gesture::WrapRangeAttrs));
+        let mut md = Editor::new_ext(b"a big b\n", Format::Markdown, exts).expect("editor");
+        md.wrap_range_attrs(2, 5, &[("class", Some("large"))]).expect("wrap");
+        assert_eq!(md.source_str().unwrap(), "a <span class=\"large\">big</span> b\n");
+        let mut plain = Editor::new_str("a big b\n", Format::Markdown).expect("editor");
+        assert_eq!(
+            plain.wrap_range_attrs(2, 5, &[("class", Some("large"))]),
+            Err(Error::UnsupportedFormat)
+        );
+    }
+
+    #[test]
     fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
         let exts = MarkdownExtensions {
             directives: true,
@@ -6272,6 +6349,7 @@ mod tests {
             Gesture::InsertTable,
             Gesture::InsertDirective,
             Gesture::SetBlockAttrs,
+            Gesture::WrapRangeAttrs,
         ]);
         all
     }
@@ -6286,7 +6364,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=27).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=28).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -6304,7 +6382,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                28,
+                29,
                 0,
                 &mut supported,
             )
