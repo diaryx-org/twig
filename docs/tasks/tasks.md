@@ -12,6 +12,9 @@ contents:
 - '[Name Markdown''s configurations as dialects](/docs/tasks/markdown-dialects.md)'
 - '[Decide whether twig carries a runtime-language contract](/docs/tasks/runtime-languages.md)'
 - '[A block inserted after a split at a paragraph''s end leaves two blank lines behind it](/docs/tasks/block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines.md)'
+- '[djot writes a heading''s attributes after its text, where its parser reads them as the text''s](/docs/tasks/djot-heading-attributes-are-written-where-the-parser-reads-them-as-the-texts.md)'
+- '[djot writes a reference definition''s attributes where the reparse then fails to read the definition](/docs/tasks/djot-reference-definition-attributes-break-its-reparse.md)'
+- '[AsciiDoc does not write a table''s title](/docs/tasks/asciidoc-does-not-write-a-tables-title.md)'
 ---
 
 # Tasks
