@@ -72,13 +72,16 @@
 //!
 //! Refinements only ever make an answer WORSE: the table is the ceiling.
 //!
-//! ── What is NOT covered yet ────────────────────────────────────────────────
-//! Attributes are the declared next axis: Markdown's serializer writes a
-//! `{...}` block for a directive and nothing anywhere else, so a djot
-//! paragraph's `{#id .cls}` is lost with no warning today. That needs its own
-//! per-format answer and its own probe, so it is named here rather than guessed
-//! at. `nodeFidelity` is where it would land — attributes are a side table, so
-//! `Kind` cannot see them either.
+//! ── The attribute axis ─────────────────────────────────────────────────────
+//! A node's attributes are a side table `Kind` cannot see, and a target can
+//! keep the node while losing them: Markdown's serializer writes a `{...}`
+//! block for a directive and nothing anywhere else, so a djot paragraph's
+//! `{#id .cls}` used to be lost with no warning. `attrsFidelity` is the second
+//! measured table — per target, per kind, per KEY CLASS — and `analyze`
+//! reports a second `Warning`, `subject == .attrs`, naming the keys, for a
+//! node that survives while its attributes do not. Only asked of a node the
+//! kind table calls faithful: a node that degrades or drops takes its
+//! attributes with it and is reported once, at the node.
 //!
 //! fig's `Warning.cause` (`format_limitation` vs `explicit_option`) is also
 //! absent, because twig has no serializer option that drops anything — every
@@ -130,21 +133,37 @@ pub const Warning = struct {
     /// Sentinel-terminated, so the C ABI can hand it out as a `const char *`
     /// without copying.
     kind: [:0]const u8,
+    /// What is lost: the node itself, or — the node surviving — only some of
+    /// its attributes. See `attrsFidelity`.
+    subject: Subject = .node,
+    /// For `subject == .attrs`: the keys that do not survive, in the node's own
+    /// order. Arena-owned by `analyze`. Empty for a `.node` warning.
+    attrs: []const []const u8 = &.{},
+
+    pub const Subject = enum { node, attrs };
 
     /// The default human-readable message, no trailing newline. Bindings may
     /// render their own from the structured fields instead.
     pub fn render(self: Warning, writer: *Writer, target: Target) Writer.Error!void {
-        switch (self.fidelity) {
-            .faithful => unreachable, // never recorded
-            .degraded => {
-                try writer.print("`{s}` at ", .{self.kind});
-                try writeLoc(writer, self.path);
-                try writer.print(" is not spelled by {s} and will reparse as something else", .{@tagName(target)});
+        try writer.print("`{s}` at ", .{self.kind});
+        try writeLoc(writer, self.path);
+        switch (self.subject) {
+            .node => switch (self.fidelity) {
+                .faithful => unreachable, // never recorded
+                .degraded => try writer.print(" is not spelled by {s} and will reparse as something else", .{@tagName(target)}),
+                .dropped => try writer.print(" is dropped entirely ({s} cannot write it)", .{@tagName(target)}),
             },
-            .dropped => {
-                try writer.print("`{s}` at ", .{self.kind});
-                try writeLoc(writer, self.path);
-                try writer.print(" is dropped entirely ({s} cannot write it)", .{@tagName(target)});
+            .attrs => {
+                try writer.writeAll(" carries attributes (");
+                for (self.attrs, 0..) |key, i| {
+                    if (i > 0) try writer.writeAll(", ");
+                    try writer.writeAll(key);
+                }
+                switch (self.fidelity) {
+                    .faithful => unreachable, // never recorded
+                    .degraded => try writer.print(") that {s} writes where its parser does not read them back", .{@tagName(target)}),
+                    .dropped => try writer.print(") that {s} cannot write; they are dropped", .{@tagName(target)}),
+                }
             },
         }
     }
@@ -195,12 +214,41 @@ const Collector = struct {
                 .path = path,
                 .kind = kind.kindName(),
             });
+        } else {
+            try self.noteAttrs(id, path);
         }
         var it = self.ast.children(id);
         var i: usize = 0;
         while (it.next()) |child| : (i += 1) {
             try self.walk(child.id, try childPath(self.arena, path, i));
         }
+    }
+
+    /// The attribute half of `walk`, for a node the kind table keeps: one
+    /// warning naming every key `attrsFidelity` says is lost, at the worse of
+    /// the two answers when they differ. Nothing for a node with no attributes,
+    /// and nothing when every key survives.
+    fn noteAttrs(self: *Collector, id: Node.Id, path: []const u8) AnalyzeError!void {
+        const attrs = self.ast.attrsOf(id);
+        if (attrs.isEmpty()) return;
+        const kind = self.ast.nodes[id].kind;
+        const table = attrsFidelity(self.target, kind);
+        var lost: std.ArrayList([]const u8) = .empty;
+        var f: Fidelity = .faithful;
+        for (attrs.entries) |kv| {
+            const kf = table.forKey(kv.key);
+            if (!kf.isLossy()) continue;
+            try lost.append(self.arena, try self.arena.dupe(u8, kv.key));
+            f = worst(f, kf);
+        }
+        if (lost.items.len == 0) return;
+        try self.warnings.append(self.arena, .{
+            .fidelity = f,
+            .path = path,
+            .kind = kind.kindName(),
+            .subject = .attrs,
+            .attrs = try lost.toOwnedSlice(self.arena),
+        });
     }
 };
 
@@ -709,6 +757,305 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
         .link,
         .image,
         => .faithful,
+    };
+}
+
+// ── the attribute axis ─────────────────────────────────────────────────────
+//
+// What each target does with a node's ATTRIBUTES — the side table `Kind`
+// cannot see, and the axis the module header used to name as "not covered
+// yet". Measured the way the kind table is: `test "the attribute table matches
+// what the serializers actually do"` puts four attributes on every probed node,
+// round-trips it through each target, and asks PER KEY whether the value came
+// back on the node (`faithful`), was written somewhere the target's own parser
+// does not read as that node's attribute (`degraded` — djot writes a heading's
+// block on its text and reads it as the text's; AsciiDoc moves a section
+// title's onto the section), or was never written (`dropped`).
+//
+// The answer is per KEY CLASS, because the formats are ragged at exactly that
+// grain: AsciiDoc's inline `[#id.role]` keeps an id and a class on a mark and
+// has nowhere for a `data-k`; its link macro keeps a role and drops the id.
+// Three classes — `id`, `class`, and everything else — are what the spellings
+// distinguish, plus `title`, the one key a format spells from the side table
+// in a position of its own (Markdown's `[label]: dest "title"`). The probe's two
+// "other" keys, `data-k` and `title`, are there to catch a fifth.
+//
+// Only asked of a node the KIND table calls faithful. A node that degrades or
+// drops takes its attributes with it and is reported once, at the node — so
+// each per-target function below answers for the kinds that survive there, and
+// answers `.dropped` for the rest, where the answer is never consulted. The
+// switches are exhaustive anyway, for the reason the kind table's are.
+
+/// One target's answer about one kind's attributes, per key class.
+pub const AttrsFidelity = struct {
+    id: Fidelity,
+    class: Fidelity,
+    other: Fidelity,
+    /// The `title` key where it differs from `other`; `null` means it does not.
+    title: ?Fidelity = null,
+
+    pub fn all(f: Fidelity) AttrsFidelity {
+        return .{ .id = f, .class = f, .other = f };
+    }
+
+    pub fn forKey(self: AttrsFidelity, key: []const u8) Fidelity {
+        if (std.mem.eql(u8, key, "id")) return self.id;
+        if (std.mem.eql(u8, key, "class")) return self.class;
+        if (std.mem.eql(u8, key, "title")) return self.title orelse self.other;
+        return self.other;
+    }
+};
+
+/// How `kind`'s attributes survive a conversion to `target`. See the note
+/// above; the kind-level `fidelity` is the ceiling, and this is consulted only
+/// under it.
+pub fn attrsFidelity(target: Target, kind: Node.Kind) AttrsFidelity {
+    return switch (target) {
+        .xml => .all(.dropped),
+        .djot => djotAttrsFidelity(kind),
+        .markdown => markdownAttrsFidelity(kind),
+        .html => htmlAttrsFidelity(kind),
+        .asciidoc => asciidocAttrsFidelity(kind),
+    };
+}
+
+/// Djot can spell an attribute block on any block or inline, and its
+/// serializer writes one in exactly three places.
+fn djotAttrsFidelity(kind: Node.Kind) AttrsFidelity {
+    return switch (kind) {
+        // The line before a paragraph; the line before a fenced div, or after
+        // a bracketed span. Read back in full.
+        .para, .container => .all(.faithful),
+        // Written AFTER the heading's text on the same line — `## x{#id}` —
+        // which djot reads as an inline attribute block on the TEXT, not a
+        // block attribute on the heading. The block spelling is the line
+        // before, as for a paragraph, and the serializer does not write it.
+        .heading => .all(.degraded),
+        // `[label]: dest{#id}` — written, and the reparse then fails to read
+        // the definition at all, so nothing comes back as the reference's.
+        .reference => .all(.degraded),
+        // Every other kind carries its attributes into the serializer and out
+        // the far side of nothing: no `{…}` is written for a quote, a list, a
+        // fence, a table, a link, an image or a mark, though djot could hold
+        // one on each.
+        .doc,
+        .thematic_break,
+        .section,
+        .code_block,
+        .raw_block,
+        .metadata,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .line_block,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .line,
+        .row,
+        .cell,
+        .column,
+        .caption,
+        .footnote,
+        .citation,
+        .substitution,
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .text_leaf,
+        .raw_inline,
+        .smart_punctuation,
+        .link,
+        .image,
+        .inline_mark,
+        .markup_leaf,
+        .processing_instruction,
+        => .all(.dropped),
+    };
+}
+
+/// Markdown's serializer writes a `{…}` block for a directive and nowhere
+/// else, and a directive is a container the default parser does not read
+/// back — so today no attribute on any kind survives a conversion to Markdown.
+/// This is the table the presentation-as-attributes proposal changes.
+fn markdownAttrsFidelity(kind: Node.Kind) AttrsFidelity {
+    return switch (kind) {
+        // The one exception: a reference definition's title is part of its
+        // spelling, `[label]: dest "title"`, and comes back.
+        .reference => .{ .id = .dropped, .class = .dropped, .other = .dropped, .title = .faithful },
+        .doc,
+        .para,
+        .heading,
+        .thematic_break,
+        .section,
+        .code_block,
+        .raw_block,
+        .metadata,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .line_block,
+        .table,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .line,
+        .row,
+        .cell,
+        .column,
+        .caption,
+        .footnote,
+        .citation,
+        .substitution,
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .text_leaf,
+        .raw_inline,
+        .smart_punctuation,
+        .link,
+        .image,
+        .inline_mark,
+        .container,
+        .markup_leaf,
+        .processing_instruction,
+        => .all(.dropped),
+    };
+}
+
+/// HTML writes every attribute into the tag it renders, so a kind with an
+/// element keeps them all and a kind without one has nowhere to put them.
+fn htmlAttrsFidelity(kind: Node.Kind) AttrsFidelity {
+    return switch (kind) {
+        .para,
+        .heading,
+        .thematic_break,
+        .section,
+        .code_block,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .table,
+        .list_item,
+        .row,
+        .cell,
+        .caption,
+        .link,
+        .image,
+        .inline_mark,
+        .container,
+        .text_leaf,
+        => .all(.faithful),
+        // Rendered as a bare `<br>`, whatever it carries.
+        .hard_break => .all(.dropped),
+        // No element of their own: plain text, a comment, a doctype, a
+        // processing instruction — and the kinds HTML does not keep anyway.
+        .doc,
+        .raw_block,
+        .metadata,
+        .task_list,
+        .definition_list,
+        .line_block,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .line,
+        .column,
+        .footnote,
+        .reference,
+        .citation,
+        .substitution,
+        .str,
+        .soft_break,
+        .non_breaking_space,
+        .raw_inline,
+        .smart_punctuation,
+        .markup_leaf,
+        .processing_instruction,
+        => .all(.dropped),
+    };
+}
+
+/// AsciiDoc's block attribute line — `[#id.role,key=value]` above the block
+/// — carries everything and is read back in full; its inline spellings carry
+/// less, and one block's line is read as another's.
+fn asciidocAttrsFidelity(kind: Node.Kind) AttrsFidelity {
+    return switch (kind) {
+        .para,
+        .thematic_break,
+        .code_block,
+        .raw_block,
+        .block_quote,
+        .bullet_list,
+        .ordered_list,
+        .task_list,
+        .definition_list,
+        .line_block,
+        .container,
+        => .all(.faithful),
+        // The same line, minus the `.Title` line the other blocks get: a
+        // table's title is not written.
+        .table => .{ .id = .faithful, .class = .faithful, .other = .faithful, .title = .dropped },
+        // A section title's attribute line is the SECTION's: Asciidoctor and
+        // twig both read `[#id]` above `== Title` as the section's id, and
+        // the heading node comes back bare.
+        .heading => .all(.degraded),
+        // The block image macro's `[alt,id=…]` list comes back on the
+        // paragraph the macro parses into.
+        .image => .all(.degraded),
+        // `[#id.role]` before a formatting pair keeps an id and a role; the
+        // grammar has no slot for any other key. The same prefix before a
+        // `#mark#` or a quoted pair is written and read as a styled span (or
+        // as text), so there the id and role are written and lost.
+        .inline_mark => |m| switch (m) {
+            .emph, .strong, .superscript, .subscript => .{ .id = .faithful, .class = .faithful, .other = .dropped },
+            .mark, .double_quoted, .single_quoted => .{ .id = .degraded, .class = .degraded, .other = .dropped },
+            .insert, .delete => .all(.dropped),
+        },
+        .text_leaf => |l| switch (l.kind) {
+            .verbatim => .{ .id = .faithful, .class = .faithful, .other = .dropped },
+            .symb, .inline_math, .display_math, .url, .email, .footnote_reference, .citation_reference, .substitution_reference => .all(.dropped),
+        },
+        // The link macro's attribute list keeps a role and nothing else.
+        .link => .{ .id = .dropped, .class = .faithful, .other = .dropped },
+        .doc,
+        .section,
+        .metadata,
+        .list_item,
+        .task_list_item,
+        .definition_list_item,
+        .term,
+        .definition,
+        .line,
+        .row,
+        .cell,
+        .column,
+        .caption,
+        .footnote,
+        .reference,
+        .citation,
+        .substitution,
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .raw_inline,
+        .smart_punctuation,
+        .markup_leaf,
+        .processing_instruction,
+        => .all(.dropped),
     };
 }
 
@@ -1281,4 +1628,215 @@ test "every inline mark and text leaf is probed against the table" {
             }
         }
     }
+}
+
+// ── the attribute probe ────────────────────────────────────────────────────
+
+/// The four keys every probed node carries: one per class the table
+/// distinguishes, and a second "other" key to catch a format that treats
+/// `title` specially where the table says it does not.
+const attr_probe_keys = [_]AST.KeyVal{
+    .{ .key = "id", .value = "idv" },
+    .{ .key = "class", .value = "clsv" },
+    .{ .key = "data-k", .value = "datav" },
+    .{ .key = "title", .value = "titlev" },
+};
+
+/// The first node in a builder whose kind tag matches `kind`'s — `probedNode`
+/// before `finish`, so the probe can set attributes on it.
+fn probedBuilderNode(b: *const AST.Builder, kind: Node.Kind) ?Node.Id {
+    for (b.nodes.items, 0..) |n, i| {
+        if (std.meta.activeTag(n.kind) == std.meta.activeTag(kind)) return @intCast(i);
+    }
+    return null;
+}
+
+/// What one key of the probe did on a round-trip: on the node it started on,
+/// somewhere in the output the reparse did not read as that, or nowhere.
+fn observedAttrFidelity(back: *const AST, node: ?Node.Id, src: []const u8, kv: AST.KeyVal) Fidelity {
+    const value = kv.value.?;
+    if (node) |id| {
+        if (back.attrsOf(id).get(kv.key)) |v| {
+            // A class can be merged with one the target adds (a name carried
+            // as a class), so it is looked for rather than compared.
+            const kept = if (std.mem.eql(u8, kv.key, "class")) std.mem.indexOf(u8, v, value) != null else std.mem.eql(u8, v, value);
+            if (kept) return .faithful;
+        }
+    }
+    return if (std.mem.indexOf(u8, src, value) != null) .degraded else .dropped;
+}
+
+/// The attribute half of the probe over one built document: for every target
+/// that keeps the node, each of the four keys must do what `attrsFidelity`
+/// says.
+fn expectAttrsMeasured(allocator: Allocator, label: []const u8, ast: *const AST, kind: Node.Kind, want: AST.KindRef, stale: *bool) !void {
+    for (round_trippable) |target| {
+        if (nodeFidelity(target, ast, probedNode(ast, kind).?) != .faithful) continue;
+        const src = try format.targetEntryFor(target).serializeFromAst.?(allocator, ast);
+        defer allocator.free(src);
+        const cfg = format.ParseConfig{};
+        var back = try format.entryFor(target.asFormat().?).parseToAst(&cfg, allocator, src);
+        defer back.deinit();
+        var found: ?Node.Id = null;
+        for (back.ast.nodes, 0..) |n, i| {
+            if (want.matches(n.kind)) {
+                found = @intCast(i);
+                break;
+            }
+        }
+        const table = attrsFidelity(target, kind);
+        for (attr_probe_keys) |kv| {
+            const claimed = table.forKey(kv.key);
+            const observed = observedAttrFidelity(&back.ast, found, src, kv);
+            if (claimed != observed) {
+                std.debug.print(
+                    "\nattrsFidelity({s}, {s}) claims .{s} for `{s}`, but a round-trip observes .{s}\n--- output ---\n{s}\n",
+                    .{ @tagName(target), label, @tagName(claimed), kv.key, @tagName(observed), src },
+                );
+                stale.* = true;
+            }
+        }
+    }
+}
+
+test "the attribute table matches what the serializers actually do" {
+    const allocator = testing.allocator;
+    const attrs: AST.Attrs = .{ .entries = &attr_probe_keys };
+    // Every mismatch is printed before the test fails, so one run reads the
+    // whole difference between the table and the serializers.
+    var stale = false;
+
+    // A paragraph is not among the kind probes — every inline probe already
+    // sits in one — but it is the block the attribute question is asked of
+    // first.
+    {
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const root = try blockDoc(&b, .para, &.{try str(&b, "x")});
+        try b.setAttrs(probedBuilderNode(&b, .para).?, attrs);
+        var ast = try b.finish(root);
+        defer ast.deinit();
+        try expectAttrsMeasured(allocator, "para", &ast, .para, .{ .tag = .para }, &stale);
+    }
+    for (probes) |p| {
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const root = try p.build(&b);
+        try b.setAttrs(probedBuilderNode(&b, p.kind).?, attrs);
+        var ast = try b.finish(root);
+        defer ast.deinit();
+        try expectAttrsMeasured(allocator, p.label, &ast, p.kind, p.want, &stale);
+    }
+    inline for (comptime std.enums.values(AST.InlineMark)) |m| {
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const root = try inlineDoc(&b, .{ .inline_mark = m }, &.{try str(&b, "x")});
+        try b.setAttrs(probedBuilderNode(&b, .{ .inline_mark = m }).?, attrs);
+        var ast = try b.finish(root);
+        defer ast.deinit();
+        try expectAttrsMeasured(allocator, "mark " ++ @tagName(m), &ast, .{ .inline_mark = m }, .{ .mark = m }, &stale);
+    }
+    const leaf_text = std.StaticStringMap([]const u8).initComptime(.{
+        .{ "symb", "name" },
+        .{ "verbatim", "c" },
+        .{ "inline_math", "a+b" },
+        .{ "display_math", "a+b" },
+        .{ "url", "https://e.com" },
+        .{ "email", "a@e.com" },
+        .{ "footnote_reference", "1" },
+        .{ "citation_reference", "CIT1" },
+        .{ "substitution_reference", "RST" },
+    });
+    inline for (comptime std.enums.values(AST.TextLeafKind)) |k| {
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const n = try b.addLeaf(.{ .text_leaf = .{ .kind = k, .text = leaf_text.get(@tagName(k)).? } });
+        const root = try b.addContainer(.doc, &.{try b.addContainer(.para, &.{n})});
+        try b.setAttrs(n, attrs);
+        var ast = try b.finish(root);
+        defer ast.deinit();
+        const kind: Node.Kind = .{ .text_leaf = .{ .kind = k, .text = "" } };
+        try expectAttrsMeasured(allocator, "leaf " ++ @tagName(k), &ast, kind, .{ .text_leaf = k }, &stale);
+    }
+    if (stale) return error.AttributeTableStale;
+}
+
+test "a djot paragraph's class converted to Markdown is reported as dropped, naming the key" {
+    const Djot = @import("languages/djot/djot.zig");
+    var doc = try Djot.parse(testing.allocator, "{.center data-size=\"large\"}\nhello\n");
+    defer doc.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const md = try analyze(arena.allocator(), &doc.ast, doc.ast.root, .markdown);
+    try testing.expectEqual(@as(usize, 1), md.len);
+    try testing.expectEqual(Warning.Subject.attrs, md[0].subject);
+    try testing.expectEqual(Fidelity.dropped, md[0].fidelity);
+    try testing.expectEqualStrings("para", md[0].kind);
+    try testing.expectEqual(@as(usize, 2), md[0].attrs.len);
+    try testing.expectEqualStrings("class", md[0].attrs[0]);
+    try testing.expectEqualStrings("data-size", md[0].attrs[1]);
+
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try md[0].render(&out.writer, .markdown);
+    try testing.expectEqualStrings(
+        "`para` at `0` carries attributes (class, data-size) that markdown cannot write; they are dropped",
+        out.written(),
+    );
+
+    // The same paragraph to HTML and AsciiDoc keeps both keys: nothing to say.
+    for ([_]Target{ .html, .asciidoc, .djot }) |t| {
+        const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, t);
+        try testing.expectEqual(@as(usize, 0), w.len);
+    }
+}
+
+test "a key the target keeps is not named beside one it loses" {
+    // AsciiDoc's inline `[#id.role]` keeps an id and a role on emphasis and
+    // has no slot for anything else — so only the third key is reported.
+    const Html = @import("languages/html/html.zig");
+    var doc = try Html.parse(testing.allocator, "<p><em id=\"a\" class=\"b\" data-k=\"v\">x</em></p>");
+    defer doc.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, .asciidoc);
+    try testing.expectEqual(@as(usize, 1), w.len);
+    try testing.expectEqual(Warning.Subject.attrs, w[0].subject);
+    try testing.expectEqualStrings("emph", w[0].kind);
+    try testing.expectEqual(@as(usize, 1), w[0].attrs.len);
+    try testing.expectEqualStrings("data-k", w[0].attrs[0]);
+}
+
+test "a lossy node's attributes are reported once, with the node" {
+    // A named container is degraded in djot (its name becomes a class); its
+    // attributes go with it and are not reported a second time.
+    const Html = @import("languages/html/html.zig");
+    var doc = try Html.parse(testing.allocator, "<video controls src=\"a.mp4\"></video>");
+    defer doc.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, .djot);
+    try testing.expect(w.len >= 1);
+    for (w) |warning| try testing.expectEqual(Warning.Subject.node, warning.subject);
+}
+
+test "a degraded attribute renders as written-but-unread" {
+    // djot writes a heading's attributes after its text, where its own parser
+    // reads them as the text's.
+    const Html = @import("languages/html/html.zig");
+    var doc = try Html.parse(testing.allocator, "<h2 class=\"x\">t</h2>");
+    defer doc.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, .djot);
+    try testing.expectEqual(@as(usize, 1), w.len);
+    try testing.expectEqual(Fidelity.degraded, w[0].fidelity);
+    var out: Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try w[0].render(&out.writer, .djot);
+    try testing.expectEqualStrings(
+        "`heading` at `0` carries attributes (class) that djot writes where its parser does not read them back",
+        out.written(),
+    );
 }

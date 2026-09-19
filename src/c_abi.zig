@@ -274,6 +274,16 @@ pub const TWIG_FIDELITY_FAITHFUL: c_int = 0;
 pub const TWIG_FIDELITY_DEGRADED: c_int = 1;
 /// Nothing is emitted at all: the node and its subtree leave no trace.
 pub const TWIG_FIDELITY_DROPPED: c_int = 2;
+/// The node survives; some of its ATTRIBUTES are written where the target's
+/// parser does not read them back as that node's (djot spells a heading's on
+/// its text; AsciiDoc moves a section title's onto the section). Which keys
+/// is not carried on the wire — the node at `path` has them, and
+/// `twig.diagnostics.attrsFidelity` says per key — so a consumer that wants
+/// the list asks the tree. A code rather than a field, because the
+/// `TwigWarning` layout is frozen (see the header's ABI contract).
+pub const TWIG_FIDELITY_ATTRS_DEGRADED: c_int = 3;
+/// The node survives; some of its attributes are not written at all.
+pub const TWIG_FIDELITY_ATTRS_DROPPED: c_int = 4;
 
 /// `TwigFlatNode.container_origin`: nothing recorded an origin for this node.
 /// Either it is not a `container`, or no parser produced it (a
@@ -888,10 +898,17 @@ pub export fn twig_document_diagnostics(
     };
     for (warnings, out) |w, *slot| {
         slot.* = .{
-            .fidelity = switch (w.fidelity) {
-                .faithful => TWIG_FIDELITY_FAITHFUL, // never recorded
-                .degraded => TWIG_FIDELITY_DEGRADED,
-                .dropped => TWIG_FIDELITY_DROPPED,
+            .fidelity = switch (w.subject) {
+                .node => switch (w.fidelity) {
+                    .faithful => TWIG_FIDELITY_FAITHFUL, // never recorded
+                    .degraded => TWIG_FIDELITY_DEGRADED,
+                    .dropped => TWIG_FIDELITY_DROPPED,
+                },
+                .attrs => switch (w.fidelity) {
+                    .faithful => TWIG_FIDELITY_FAITHFUL, // never recorded
+                    .degraded => TWIG_FIDELITY_ATTRS_DEGRADED,
+                    .dropped => TWIG_FIDELITY_ATTRS_DROPPED,
+                },
             },
             .path_ptr = if (w.path.len == 0) null else w.path.ptr,
             .path_len = w.path.len,

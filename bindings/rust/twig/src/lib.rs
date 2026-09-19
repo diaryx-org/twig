@@ -3184,15 +3184,26 @@ pub enum Fidelity {
     Degraded,
     /// Nothing is emitted at all: the node and its subtree leave no trace.
     Dropped,
+    /// The node survives; some of its **attributes** are written where the
+    /// target's parser does not read them back as that node's — djot spells
+    /// a heading's on its text, AsciiDoc moves a section title's onto the
+    /// section. Which keys is not carried across the C boundary: the node at
+    /// [`Warning::path`] has them, and a consumer that wants the list reads
+    /// them from the tree.
+    AttrsDegraded,
+    /// The node survives; some of its attributes are not written at all.
+    AttrsDropped,
 }
 
 impl Fidelity {
     /// Only the lossy codes have a variant — a faithful node is never reported
     /// as a warning, so there is nothing for it to map to. An unknown code
-    /// reads as [`Fidelity::Degraded`], the weaker of the two claims.
+    /// reads as [`Fidelity::Degraded`], the weakest of the claims.
     fn from_c(v: c_int) -> Self {
         match v {
             ffi::TWIG_FIDELITY_DROPPED => Fidelity::Dropped,
+            ffi::TWIG_FIDELITY_ATTRS_DEGRADED => Fidelity::AttrsDegraded,
+            ffi::TWIG_FIDELITY_ATTRS_DROPPED => Fidelity::AttrsDropped,
             _ => Fidelity::Degraded,
         }
     }
@@ -4128,6 +4139,25 @@ mod tests {
             .find(|w| w.kind == Kind::Comment)
             .expect("a warning about the comment");
         assert_eq!(comment.fidelity, Fidelity::Dropped);
+    }
+
+    #[test]
+    fn diagnostics_report_a_surviving_nodes_lost_attributes() {
+        // A djot paragraph carrying a class converts to Markdown as a bare
+        // paragraph: the node survives, the class does not, and the warning
+        // says which of the two it is about.
+        let mut doc = Document::parse_str("{.center}\nhello\n", Format::Djot).expect("parse djot");
+        assert_eq!(
+            doc.diagnostics(Target::Markdown).expect("markdown diagnostics"),
+            vec![Warning {
+                fidelity: Fidelity::AttrsDropped,
+                path: "0".to_string(),
+                kind: Kind::Para,
+            }]
+        );
+        // HTML and AsciiDoc keep a paragraph's class: nothing to report.
+        assert_eq!(doc.diagnostics(Target::Html).expect("html"), Vec::new());
+        assert_eq!(doc.diagnostics(Target::Asciidoc).expect("asciidoc"), Vec::new());
     }
 
     #[test]
