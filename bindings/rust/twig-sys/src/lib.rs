@@ -118,6 +118,14 @@ pub enum TwigFormat {
     Gfm = 7,
 }
 
+/// `TWIG_FORMAT_RUNTIME_BASE`: the first format code that names a language
+/// registered at runtime rather than compiled in. Reserved ahead of the
+/// registration entry points, which are a later minor; every [`TwigFormat`]
+/// member is below it, and a code in the range is refused with
+/// `TWIG_STATUS_UNSUPPORTED_FORMAT` until they exist.
+pub const TWIG_FORMAT_RUNTIME_BASE: c_int = 4096;
+const _: () = assert!((TwigFormat::Gfm as c_int) < TWIG_FORMAT_RUNTIME_BASE);
+
 /// Markdown extension flags for the `md_flags` bitmask of `twig_parse_ext` and
 /// `twig_editor_create_ext`.
 pub const TWIG_MD_DIRECTIVES: u32 = 1 << 0;
