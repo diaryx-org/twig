@@ -588,6 +588,39 @@ pub const Syntax = struct {
     /// `assertCoherent` says nothing about it.
     cell_line_break: ?[]const u8 = null,
 
+    /// Whether a NAMED LEAF CONTAINER — a `container` with `form =
+    /// .block_leaf` and a `name` — printed through `renderBlock` reparses to a
+    /// container that still carries that name: as the node's own `name`
+    /// (Markdown's `::name`, HTML's `<name></name>`), or as a `class`
+    /// attribute where the format has nowhere else to put it (djot's `:::`
+    /// fence is anonymous and carries its identity as a class; AsciiDoc spells
+    /// one it has no macro for as an open block whose STYLE is the name, which
+    /// parses back as a class too).
+    ///
+    /// THE NAME is the whole of the claim; the attributes survive only where
+    /// the format's spelling has room for them. AsciiDoc is the case that
+    /// forces the distinction: a name it spells NATIVELY is written in that
+    /// native form, and `page-break` is `<<<`, which has nowhere to put a
+    /// `src` — the name comes back, the attributes do not. Nor is the reparsed
+    /// `form` part of it (HTML classifies only `div` and `span`, so an unknown
+    /// element comes back with `form = null`), nor the label, which only
+    /// Markdown and djot keep, nor the name's CASE, which HTML folds.
+    ///
+    /// `false` = printing one would mint bytes the parser hands back as
+    /// something else — Markdown without its directives extension reads
+    /// `::name` as a paragraph of literal text — so `Editor.insertDirective`
+    /// is `error.UnsupportedFormat` there. That is the same rule
+    /// `Delims.authorable` states for `==mark==`, which is why this claim is a
+    /// field rather than a property of the renderer: it moves with the PARSE
+    /// CONFIG, and Markdown's table set states it per option combination (see
+    /// `markdown/syntax.zig`'s `forOptions`).
+    ///
+    /// Measured rather than asserted: `languages/harness.zig` prints a named
+    /// leaf fragment through every table that makes this claim and reparses
+    /// the print. Implies `renderBlock != null` — there is no other way to
+    /// print one — which `assertCoherent` pins.
+    names_leaf_containers: bool = false,
+
     // ── Renderers ──────────────────────────────────────────────────────────
     // The spellings that are not a table. Every field above is bytes an
     // algorithm in `ast/editor.zig` writes; each field here is the algorithm's
@@ -790,6 +823,10 @@ pub const Syntax = struct {
             std.debug.assert(self.heading_marker != null);
             std.debug.assert(self.code_fence != null);
         }
+        // A named leaf container has exactly one way to reach the source — the
+        // fragment renderer — so a table claiming the reparse without carrying
+        // the printer states a promise nothing could keep.
+        if (self.names_leaf_containers) std.debug.assert(self.renderBlock != null);
     }
 };
 
@@ -805,5 +842,6 @@ test "a parse-only format spells nothing" {
     try std.testing.expect(s.renderBlock == null);
     try std.testing.expect(s.table_spelling == null);
     try std.testing.expect(s.block_separator == null);
+    try std.testing.expect(!s.names_leaf_containers);
     s.assertCoherent();
 }

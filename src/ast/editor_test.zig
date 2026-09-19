@@ -45,6 +45,12 @@ var highlight_cfg: format.ParseConfig = .{ .markdown = .{ .highlight = true } };
 var highlight_colors_cfg: format.ParseConfig = .{
     .markdown = .{ .highlight = true, .highlight_colors = true },
 };
+/// The third of them, for the same reason as the first two: Markdown reads
+/// `::name` back as a container only under `ParseOptions.directives`, so a
+/// gesture that mints one has to run against an editor whose own reparse sees
+/// it. Without the flag those bytes are a paragraph of colons, which is what
+/// `insertDirective`'s refusal below asserts.
+var directives_cfg: format.ParseConfig = .{ .markdown = .{ .directives = true } };
 
 const KindTag = std.meta.Tag(AST.Node.Kind);
 
@@ -1428,6 +1434,224 @@ test "insertTable: a format with no table spelling refuses before it reads anyth
     defer fx.deinit();
     try testing.expectError(error.UnsupportedFormat, fx.ed.insertTable(4, 1, 1));
     try fx.expectSource("<p>ab</p>\n");
+}
+
+/// The name a reparsed container carries, wherever the format put it: its own
+/// `name`, or the `class` that holds it where the format has no other place
+/// (djot's fence is anonymous, AsciiDoc's open block carries a style). The
+/// disjunction `Syntax.names_leaf_containers` claims, asked of a real tree.
+fn expectContainerCarrying(fx: *Fixture, name: []const u8) !void {
+    const ast = fx.ed.astView();
+    for (ast.nodes, 0..) |n, i| {
+        if (std.meta.activeTag(n.kind) != .container) continue;
+        if (std.mem.eql(u8, n.kind.container.name, name)) return;
+        const class = ast.attrsOf(@intCast(i)).get("class") orelse continue;
+        if (std.mem.indexOf(u8, class, name) != null) return;
+    }
+    return error.NoContainerCarryingTheName;
+}
+
+test "insertDirective: a named leaf container of its own, after the caret's block" {
+    var fx = try Fixture.initWith("a\n\nb\n", .markdown, &directives_cfg);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "page-break", null, &.{});
+    try fx.expectSource("a\n\n::page-break\n\nb\n");
+    // A directive to the parser, not a paragraph that starts with two colons —
+    // which is what the same bytes are without the extension, and the whole
+    // reason the gate exists.
+    const id = fx.find(.{ .container_named = "page-break" }) orelse return error.NoDirective;
+    try testing.expectEqual(AST.Form.block_leaf, fx.ed.astView().nodes[id].kind.container.form.?);
+}
+
+test "insertDirective: a caret on the blank line between blocks adds no second blank" {
+    // The separator that is already there is the one the block gets; the
+    // gesture writes what is missing and nothing more (`insertBlockAfter`).
+    var fx = try Fixture.initWith("a\n\nb\n", .markdown, &directives_cfg);
+    defer fx.deinit();
+    try fx.ed.insertDirective(2, "page-break", null, &.{});
+    try fx.expectSource("a\n\n::page-break\n\nb\n");
+    try testing.expect(fx.find(.{ .container_named = "page-break" }) != null);
+}
+
+test "insertDirective: an unterminated last line is ended before the blank" {
+    var fx = try Fixture.initWith("a", .markdown, &directives_cfg);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "page-break", null, &.{});
+    try fx.expectSource("a\n\n::page-break\n");
+    try testing.expect(fx.find(.{ .container_named = "page-break" }) != null);
+}
+
+test "insertDirective: inside a quote every line carries the marker" {
+    var md = try Fixture.initWith("> a\n", .markdown, &directives_cfg);
+    defer md.deinit();
+    try md.ed.insertDirective(2, "page-break", null, &.{});
+    try md.expectSource("> a\n>\n> ::page-break\n");
+    try testing.expect(md.find(.{ .container_named = "page-break" }) != null);
+
+    // Djot's spelling is TWO lines, which is the case a prefix written once
+    // would get wrong: a marker on the opener alone ends the quote before the
+    // closing fence, leaving `:::` outside it as a block of its own.
+    var dj = try Fixture.init("> a\n", .djot);
+    defer dj.deinit();
+    try dj.ed.insertDirective(2, "page-break", null, &.{});
+    try dj.expectSource("> a\n>\n> ::: page-break\n> :::\n");
+    const quote = dj.find(.{ .tag = .block_quote }) orelse return error.NoQuote;
+    const ast = dj.ed.astView();
+    var inside = false;
+    var c = ast.nodes[quote].first_child;
+    while (c) |id| : (c = ast.nodes[id].next_sibling) {
+        if (std.meta.activeTag(ast.nodes[id].kind) == .container) inside = true;
+    }
+    try testing.expect(inside);
+}
+
+test "insertDirective: an empty document is a legitimate place for one" {
+    var fx = try Fixture.initWith("", .markdown, &directives_cfg);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "page-break", null, &.{});
+    try fx.expectSource("::page-break\n");
+    try testing.expect(fx.find(.{ .container_named = "page-break" }) != null);
+}
+
+test "insertDirective: a label and attributes ride into the format's own spelling" {
+    var fx = try Fixture.initWith("a\n", .markdown, &directives_cfg);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "embed", "Contents", &.{.{ .key = "src", .value = "x.html" }});
+    // The serializer quotes a value it cannot read back bare; the assertion is
+    // its spelling, not a second guess at one.
+    try fx.expectSource("a\n\n::embed[Contents]{src=\"x.html\"}\n");
+    const id = fx.find(.{ .container_named = "embed" }) orelse return error.NoDirective;
+    const ast = fx.ed.astView();
+    try testing.expectEqualStrings("x.html", ast.attrsOf(id).get("src").?);
+    // The label is the container's inline children, which is where the
+    // brackets printed it from.
+    const child = ast.nodes[id].first_child orelse return error.NoLabel;
+    try testing.expectEqualStrings("Contents", ast.nodes[child].kind.str);
+}
+
+test "insertDirective: without the directives extension Markdown refuses, and touches nothing" {
+    // The gate's whole point: these bytes reparse as a paragraph of colons
+    // there, so writing them would be a gesture the document cannot hold.
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.insertDirective(0, "page-break", null, &.{}));
+    try fx.expectSource("a\n");
+
+    var cm = try Fixture.init("a\n", .commonmark);
+    defer cm.deinit();
+    try testing.expectError(error.UnsupportedFormat, cm.ed.insertDirective(0, "page-break", null, &.{}));
+    try cm.expectSource("a\n");
+}
+
+test "insertDirective: djot spells an empty fence, whose name comes back as a class" {
+    var fx = try Fixture.init("a\n", .djot);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "page-break", null, &.{});
+    try fx.expectSource("a\n\n::: page-break\n:::\n");
+    // Djot's div is ANONYMOUS — it carries its identity as a class — so the
+    // reparsed container is nameless and the class is where the name is. That
+    // is the caveat `Syntax.names_leaf_containers` states.
+    try expectContainerCarrying(&fx, "page-break");
+    const id = fx.find(.{ .tag = .container }) orelse return error.NoContainer;
+    try testing.expectEqualStrings("", fx.ed.astView().nodes[id].kind.container.name);
+}
+
+test "insertDirective: HTML spells a tag pair its parser names" {
+    var fx = try Fixture.init("<p>a</p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "page-break", null, &.{});
+    try fx.expectSource("<p>a</p>\n\n<page-break></page-break>\n");
+    // An unknown element is a container named for its tag — no table needed,
+    // which is why HTML claims the field while spelling no directive syntax.
+    try testing.expect(fx.find(.{ .container_named = "page-break" }) != null);
+}
+
+test "insertDirective: AsciiDoc writes the spelling it has, and an open block where it has none" {
+    // `page-break` is a name AsciiDoc spells natively — `<<<` — and the
+    // serializer writes that rather than a generic block. The gesture does not
+    // know or care: it hands the node over and splices what comes back.
+    var fx = try Fixture.init("a\n", .asciidoc);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "page-break", null, &.{});
+    try fx.expectSource("a\n\n<<<\n");
+    try testing.expect(fx.find(.{ .container_named = "page-break" }) != null);
+
+    // A name it has no spelling for becomes an open block carrying the name as
+    // its STYLE, which reparses as a class — djot's caveat in AsciiDoc's
+    // spelling.
+    var em = try Fixture.init("a\n", .asciidoc);
+    defer em.deinit();
+    try em.ed.insertDirective(0, "embed", null, &.{.{ .key = "src", .value = "x.html" }});
+    try em.expectSource("a\n\n[embed,src=x.html]\n--\n--\n");
+    try expectContainerCarrying(&em, "embed");
+    const id = em.find(.{ .tag = .container }) orelse return error.NoContainer;
+    try testing.expectEqualStrings("x.html", em.ed.astView().attrsOf(id).get("src").?);
+}
+
+test "insertDirective: a name outside the directive grammar is refused, and touches nothing" {
+    var fx = try Fixture.initWith("a\n", .markdown, &directives_cfg);
+    defer fx.deinit();
+    // There is no `::` without a name, so an empty one is the caller's error
+    // rather than a nameless directive.
+    try testing.expectError(error.InvalidName, fx.ed.insertDirective(0, "", null, &.{}));
+    // A line end would end the block inside its own opener, leaving the tail as
+    // ordinary text — the same reason `insertLink` refuses one in a destination.
+    try testing.expectError(error.InvalidName, fx.ed.insertDirective(0, "a\nb", null, &.{}));
+    // And the three that look harmless and are not. Each one is a DIFFERENT
+    // wrong document per format, which is why the grammar is checked in the
+    // editor rather than left to the serializer: `::a b` is a paragraph
+    // holding an INLINE directive named `a`, `::]{` is no container at all,
+    // and `::1x` is a paragraph (a name starts with a letter, which is what
+    // keeps `:30` from being one).
+    try testing.expectError(error.InvalidName, fx.ed.insertDirective(0, "a b", null, &.{}));
+    try testing.expectError(error.InvalidName, fx.ed.insertDirective(0, "]{", null, &.{}));
+    try testing.expectError(error.InvalidName, fx.ed.insertDirective(0, "1x", null, &.{}));
+    // A colon is the one Markdown's own `scanName` would take and djot would
+    // not — `::: a:b` reparses as a paragraph — so a format-neutral gesture
+    // refuses it too.
+    try testing.expectError(error.InvalidName, fx.ed.insertDirective(0, "a:b", null, &.{}));
+    try testing.expectError(error.InvalidRange, fx.ed.insertDirective(9, "a", null, &.{}));
+    try fx.expectSource("a\n");
+
+    // What the grammar DOES admit, in every claiming format: letters, digits,
+    // `-` and `_` after a leading letter.
+    for ([_]format.Format{ .djot, .html, .asciidoc }) |fmt| {
+        var ok = try Fixture.init(if (fmt == .html) "<p>a</p>\n" else "a\n", fmt);
+        defer ok.deinit();
+        try ok.ed.insertDirective(0, "x_embed-9", null, &.{});
+        try expectContainerCarrying(&ok, "x_embed-9");
+    }
+}
+
+test "insertDirective: a label the brackets cannot hold is refused, and touches nothing" {
+    var fx = try Fixture.initWith("a\n", .markdown, &directives_cfg);
+    defer fx.deinit();
+    try testing.expectError(error.InvalidLabel, fx.ed.insertDirective(0, "a", "x\ny", &.{}));
+    // A bracket closes the `[…]` early: `::page-break[]]` reparses as an
+    // INLINE directive with a stray `]` beside it, not as the block that was
+    // asked for. Same reasoning as `insertFootnote`'s reference brackets.
+    try testing.expectError(error.InvalidLabel, fx.ed.insertDirective(0, "page-break", "]", &.{}));
+    try testing.expectError(error.InvalidLabel, fx.ed.insertDirective(0, "page-break", "[x", &.{}));
+    try fx.expectSource("a\n");
+
+    // An EMPTY label is legitimate, and is a different document from no label.
+    try fx.ed.insertDirective(0, "note", "", &.{});
+    try fx.expectSource("a\n\n::note[]\n");
+    try testing.expect(fx.find(.{ .container_named = "note" }) != null);
+}
+
+test "insertDirective: AsciiDoc's native spelling keeps the name and drops the attributes" {
+    // `<<<` is three characters with nowhere to hang a `src`, so the claim
+    // `Syntax.names_leaf_containers` makes is the NAME's and not the
+    // attributes'. Pinned here so the loss is stated rather than discovered:
+    // the same name written as an open block (`insertDirective: AsciiDoc
+    // writes the spelling it has`) carries them fine.
+    var fx = try Fixture.init("a\n", .asciidoc);
+    defer fx.deinit();
+    try fx.ed.insertDirective(0, "page-break", null, &.{.{ .key = "src", .value = "x.html" }});
+    try fx.expectSource("a\n\n<<<\n");
+    const id = fx.find(.{ .container_named = "page-break" }) orelse return error.NoDirective;
+    try testing.expect(fx.ed.astView().attrsOf(id).get("src") == null);
 }
 
 test "insertLineBreak: splices an in-cell <br> that reparses as a hard_break (markdown)" {
@@ -3308,6 +3532,7 @@ const all_gestures = blk: {
         .table_move_row,
         .table_move_column,
         .insert_table,
+        .insert_directive,
     };
 };
 
@@ -3356,6 +3581,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .table_move_row => ed.tableMoveRow(0, true),
         .table_move_column => ed.tableMoveColumn(0, true),
         .insert_table => ed.insertTable(0, 1, 1),
+        .insert_directive => ed.insertDirective(0, "page-break", null, &.{}),
     };
 }
 
