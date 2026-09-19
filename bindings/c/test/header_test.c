@@ -332,6 +332,27 @@ static void test_new_block_gestures_link_and_edit(void) {
     CHECK(out_len == 42 &&
           memcmp(out, "a\n\n::x[]\n\n::embed[Contents]{src=\"x.html\"}\n", 42) == 0);
 
+    // A block's attributes: gated on TWIG_MD_HTML_ELEMENTS, which `dir` was
+    // not created with, so the call refuses; with the flag the paragraph is
+    // wrapped in a div carrying them.
+    const TwigKeyVal center[] = {
+        {(const uint8_t *)"class", 5, (const uint8_t *)"center", 6},
+    };
+    CHECK(twig_editor_set_block_attrs(dir, 0, center, 1, &change)
+          == TWIG_STATUS_UNSUPPORTED_FORMAT);
+    static const char attr_src[] = "hello\n";
+    TwigEditor *attr_ed = NULL;
+    CHECK(twig_editor_create_ext((const uint8_t *)attr_src, sizeof(attr_src) - 1,
+                                 TWIG_FORMAT_MARKDOWN, TWIG_MD_HTML_ELEMENTS,
+                                 &attr_ed) == TWIG_STATUS_OK);
+    if (attr_ed != NULL) {
+        CHECK(twig_editor_set_block_attrs(attr_ed, 0, center, 1, &change) == TWIG_STATUS_OK);
+        CHECK(twig_editor_source(attr_ed, &out, &out_len) == TWIG_STATUS_OK);
+        CHECK(out_len == 36 &&
+              memcmp(out, "<div class=\"center\">\n\nhello\n\n</div>\n", 36) == 0);
+        twig_editor_destroy(attr_ed);
+    }
+
     // There is no `::` without a name, and a name is an ASCII letter followed
     // by letters, digits, `-` and `_`: `a b` would be an inline directive
     // inside a paragraph, not the block that was asked for.

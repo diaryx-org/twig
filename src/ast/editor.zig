@@ -56,6 +56,7 @@ const ContainerSpelling = syntax_mod.ContainerSpelling;
 /// The renderers' types, unwrapped from their optional fields — what a gesture
 /// holds once it has dispatched on presence.
 const RenderTextFn = @typeInfo(@FieldType(Syntax, "renderText")).optional.child;
+const attrs_writer = @import("../attrs_writer.zig");
 const RenderBlockFn = @typeInfo(@FieldType(Syntax, "renderBlock")).optional.child;
 
 /// The node `setBlock`'s render path builds for a `BlockKind`.
@@ -142,6 +143,12 @@ pub const Editor = struct {
         /// otherwise be, so anything outside that alphabet reparses as
         /// something else. See `checkDirectiveName`.
         InvalidName,
+        /// An attribute no format reads back as one: a key outside the grammar
+        /// they share (an ASCII letter or `_`, then letters, digits, `-`, `_`
+        /// and `:`), a BARE key with no value (djot's `{…}` has no spelling
+        /// for one, so it would come back as text), or a value carrying a
+        /// line end or a double quote. See `checkAttr`.
+        InvalidAttribute,
         /// The `Syntax` table has no spelling for this gesture in this format.
         UnsupportedFormat,
         /// No block covers the offset/range this gesture needs one for.
@@ -271,6 +278,7 @@ pub const Editor = struct {
         table_move_column,
         insert_table,
         insert_directive,
+        set_block_attrs,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -357,6 +365,10 @@ pub const Editor = struct {
             // pins the first onto the second, so this cannot answer true with
             // nothing to print through.
             .insert_directive => syntax.names_leaf_containers and syntax.renderBlock != null,
+            // The same two halves: a shape the attributes come back in, and
+            // the renderer that prints them. `assertCoherent` pins the second
+            // onto the first, as for the directive.
+            .set_block_attrs => syntax.block_attrs != null and syntax.renderBlock != null,
         };
     }
 
@@ -1570,6 +1582,216 @@ pub const Editor = struct {
         }
 
         return self.commitSplice(pos, pos, out.items);
+    }
+
+    // ── Block attributes ───────────────────────────────────────────────────
+
+    /// Replace the attribute set of the block `offset` sits in — a paragraph
+    /// or heading, the block `setBlock` rewrites — with `attrs`. REPLACE, not
+    /// merge: a caller reads the node's attributes, edits the list and passes
+    /// it back whole, which is the contract `Builder.setAttrs` and the C ABI's
+    /// `twig_builder_set_attrs` already have, and an empty list clears them.
+    ///
+    /// What a key MEANS is the host's, not twig's — this is `insertDirective`'s
+    /// rule applied to a block's presentation: a rich-text editor's centred
+    /// paragraph is `setBlockAttrs(off, &.{.{ .key = "class", .value =
+    /// "center" }})`, and twig spells the pair and interprets neither half.
+    /// See `docs/proposals/presentation-as-attributes.md`.
+    ///
+    /// THREE SPELLINGS, chosen by `Syntax.block_attrs` and the table's fields:
+    ///
+    ///   * `native` with an `attr_spelling` — djot: the format spells a
+    ///     block's attributes on the line BEFORE it, and the document recorded
+    ///     where (`Document.attrsSpan`). That line is rewritten, inserted with
+    ///     the block's own quote prefix, or removed, and the block's bytes are
+    ///     not touched. The alphabet path, preferred for the reason `setBlock`
+    ///     prefers a marker.
+    ///   * `native` otherwise — HTML's tag, AsciiDoc's `[…]` line: the block
+    ///     is rebuilt with the new set and printed through `renderBlock`, as
+    ///     `setBlockByRender` prints a heading, so its bytes are re-spelled by
+    ///     the format.
+    ///   * `wrapped` — Markdown under `html_elements`: the block is printed
+    ///     inside a container the format spells as `<div …>` around it. When
+    ///     the block is already the SOLE CHILD of such a wrapper, the wrapper's
+    ///     attributes are replaced instead of a second one nesting, and an
+    ///     empty set unwraps it — the rule `insertLink` applies to a link
+    ///     covering the range, for the same reason.
+    ///
+    /// `error.UnsupportedFormat` where the table makes no claim, before
+    /// anything is read. `error.NoBlock` when no paragraph or heading holds
+    /// `offset`; `error.InvalidRange` for an offset past the source;
+    /// `error.InvalidAttribute` for a key or value no format reads back (see
+    /// `checkAttr`). `error.NotEditable` where the alphabet path cannot place
+    /// the line — a block that starts on a list item's marker line — or where
+    /// the document's attributes came from more than one `{…}` block and no
+    /// single span describes them, and where the wrap path would need a list
+    /// item's continuation indent it cannot reproduce.
+    pub fn setBlockAttrs(self: *Editor, offset: usize, attrs: []const AST.KeyVal) Error!void {
+        const shape = self.syntax.block_attrs orelse return error.UnsupportedFormat;
+        // `assertCoherent` pins this non-null wherever the claim above is
+        // made, so the `orelse` is the compiler's requirement.
+        const render = self.syntax.renderBlock orelse return error.UnsupportedFormat;
+        if (offset > self.sourceBytes().len) return error.InvalidRange;
+        for (attrs) |kv| try checkAttr(kv);
+        const block = locate.innermostBlock(&self.splicer.doc, offset) orelse return error.NoBlock;
+        return switch (shape) {
+            .native => if (self.syntax.attr_spelling) |sp|
+                self.setBlockAttrsByLine(block, attrs, sp)
+            else
+                self.setNodeAttrsByRender(block, attrs, render),
+            .wrapped => self.setBlockAttrsByWrap(block, attrs, render),
+        };
+    }
+
+    /// `setBlockAttrs` where the format spells a block's attributes as a line
+    /// before it: rewrite that line in place.
+    fn setBlockAttrsByLine(self: *Editor, block: AST.Node.Id, attrs: []const AST.KeyVal, sp: syntax_mod.AttrSpelling) Error!void {
+        const doc = &self.splicer.doc;
+        const src = self.sourceBytes();
+        const allocator = self.splicer.allocator;
+        const existing = doc.attrsSpan(block);
+        // Attributes the node has but no single span describes — djot merges
+        // consecutive `{…}` blocks into one set — are not ours to rewrite: a
+        // new line would sit beside the old ones.
+        if (existing == null and !doc.ast.attrsOf(block).isEmpty()) return error.NotEditable;
+
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        if (attrs.len != 0) attrs_writer.write(&out.writer, .{ .entries = attrs }, sp, "") catch return error.OutOfMemory;
+
+        if (existing) |es| {
+            if (attrs.len != 0) return self.commitSplice(es.start, es.end, out.written());
+            // Clearing takes the whole line when the block was alone on it —
+            // a quote's marker at most beside it — so no blank line is left
+            // where the attributes were.
+            const ls = locate.lineStartAt(src, es.start);
+            const le = locate.lineEndAt(src, es.end); // past the newline
+            const prefix = containerPrefix(src, es.start);
+            const before = src[ls..es.start];
+            const alone = std.mem.startsWith(u8, before, prefix) and
+                locate.isBlankLine(before[prefix.len..]) and
+                locate.isBlankLine(locate.lineBody(src[es.end..le]));
+            if (!alone) return self.commitSplice(es.start, es.end, "");
+            return self.commitSplice(ls, le, "");
+        }
+        if (attrs.len == 0) return;
+        // A fresh line above the block, carrying the block's own quote
+        // prefix. A block that starts on a list item's marker line has no
+        // line above it that is its own — the marker is there — so that is
+        // refused rather than written before the marker, where it would be
+        // the list's.
+        const bs = doc.span(block).start;
+        const ls = locate.lineStartAt(src, bs);
+        const prefix = containerPrefix(src, bs);
+        const content_start = @max(bs, ls + prefix.len);
+        if (!locate.isBlankLine(src[ls + prefix.len .. content_start])) return error.NotEditable;
+        var line: std.ArrayList(u8) = .empty;
+        defer line.deinit(allocator);
+        try line.appendSlice(allocator, prefix);
+        try line.appendSlice(allocator, out.written());
+        try line.append(allocator, '\n');
+        return self.commitSplice(ls, ls, line.items);
+    }
+
+    /// `setBlockAttrs` over a format whose attributes live on the block's own
+    /// spelling and which has no line to rewrite: rebuild the block with the
+    /// new set and print it, `setBlockByRender`'s path with the kind kept.
+    fn setNodeAttrsByRender(self: *Editor, block: AST.Node.Id, attrs: []const AST.KeyVal, render: RenderBlockFn) Error!void {
+        const doc = &self.splicer.doc;
+        const allocator = self.splicer.allocator;
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        var kids: std.ArrayList(AST.Node.Id) = .empty;
+        defer kids.deinit(allocator);
+        var child = doc.ast.nodes[block].first_child;
+        while (child) |c| : (child = doc.ast.nodes[c].next_sibling) {
+            try kids.append(allocator, try b.graftSubtree(&doc.ast, c));
+        }
+        const root = try b.addContainer(doc.ast.nodes[block].kind, kids.items);
+        if (attrs.len != 0) try b.setAttrs(root, .{ .entries = attrs });
+        const span = doc.span(block);
+        return self.spliceRendered(&b, root, render, span.start, span.end);
+    }
+
+    /// `setBlockAttrs` where the attributes come back on a container around
+    /// the block — Markdown's `<div>`: print the block inside one, or rewrite
+    /// the one it is already the sole child of.
+    fn setBlockAttrsByWrap(self: *Editor, block: AST.Node.Id, attrs: []const AST.KeyVal, render: RenderBlockFn) Error!void {
+        const doc = &self.splicer.doc;
+        const ast = &doc.ast;
+        const allocator = self.splicer.allocator;
+        const block_span = doc.span(block);
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, block_span.start, &chain);
+        // The wrapper: the block's parent when that is a div — a fenced
+        // container that is anonymous or named `div`, and not one the parser
+        // read as a directive — with the block as its only child.
+        var wrapper: ?AST.Node.Id = null;
+        for (chain.items, 0..) |id, i| {
+            if (id != block or i == 0) continue;
+            const parent = chain.items[i - 1];
+            const c = switch (ast.nodes[parent].kind) {
+                .container => |c| c,
+                else => break,
+            };
+            if (c.form != .block_fenced) break;
+            if (c.name.len != 0 and !std.mem.eql(u8, c.name, "div")) break;
+            if (doc.containerOrigin(parent) == .directive) break;
+            if (ast.nodes[parent].first_child != block or ast.nodes[block].next_sibling != null) break;
+            wrapper = parent;
+            break;
+        }
+        // The printed lines take the block's quote prefix; a list item's
+        // continuation indent is not one `containerPrefix` reproduces.
+        if (insideListItem(doc, chain.items)) return error.NotEditable;
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const grafted = try b.graftSubtree(ast, block);
+        const target = if (wrapper) |w| doc.span(w) else block_span;
+        if (attrs.len == 0) {
+            // Nothing to wrap in: the block alone, over the wrapper if any.
+            if (wrapper == null) return;
+            return self.spliceRenderedPrefixed(&b, grafted, render, target);
+        }
+        const root = try b.addContainer(.{ .container = .{ .name = "div", .form = .block_fenced } }, &.{grafted});
+        try b.setAttrs(root, .{ .entries = attrs });
+        return self.spliceRenderedPrefixed(&b, root, render, target);
+    }
+
+    /// `spliceRendered` for a fragment of several lines going into a quote:
+    /// every line after the first takes the quote prefix the first already
+    /// sits behind, a blank line its marker alone.
+    fn spliceRenderedPrefixed(self: *Editor, b: *const AST.Builder, root: AST.Node.Id, render: RenderBlockFn, target: Span) Error!void {
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+        const prefix = containerPrefix(src, target.start);
+        const blank = std.mem.trimEnd(u8, prefix, " ");
+        // A Markdown block's span starts at column zero, quote marker
+        // included; the first printed line goes after that marker, which is
+        // then the prefix every later line copies.
+        const start = @max(target.start, locate.lineStartAt(src, target.start) + prefix.len);
+        const view = b.view(root);
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try renderNode(allocator, render, &view, root, &out.writer);
+        const rendered = std.mem.trimEnd(u8, out.written(), "\r\n");
+        if (prefix.len == 0) return self.commitSplice(start, target.end, rendered);
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(allocator);
+        var lines = std.mem.splitScalar(u8, rendered, '\n');
+        var first = true;
+        while (lines.next()) |l| {
+            if (!first) {
+                try text.append(allocator, '\n');
+                try text.appendSlice(allocator, if (l.len == 0) blank else prefix);
+            }
+            first = false;
+            try text.appendSlice(allocator, l);
+        }
+        return self.commitSplice(start, target.end, text.items);
     }
 
     // ── Splitting a block ────────────────────────────────────────────────────
@@ -3472,6 +3694,22 @@ fn checkInfoString(fence: syntax_mod.CodeFence, lang: []const u8) Editor.Error!v
 /// Case is not checked, because it is not a refusal: HTML folds a tag name, so
 /// an upper-case name comes back lower-cased there while every other format
 /// keeps it. That is a spelling difference, not a lost node.
+/// The grammar an attribute must fit for every format to read it back: a key
+/// that is an ASCII letter or `_` followed by letters, digits, `-`, `_` and
+/// `:` (the intersection of djot's, Markdown's and HTML's attribute names), a
+/// value — a BARE key is HTML's alone; djot's `{…}` has no spelling for one
+/// and reads the whole block as text — and no line end or double quote in
+/// it, the two bytes a quoted value cannot hold in every spelling at once.
+fn checkAttr(kv: AST.KeyVal) Editor.Error!void {
+    if (kv.key.len == 0) return error.InvalidAttribute;
+    if (!std.ascii.isAlphabetic(kv.key[0]) and kv.key[0] != '_') return error.InvalidAttribute;
+    for (kv.key[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != ':') return error.InvalidAttribute;
+    }
+    const value = kv.value orelse return error.InvalidAttribute;
+    if (std.mem.indexOfAny(u8, value, "\r\n\"") != null) return error.InvalidAttribute;
+}
+
 fn checkDirectiveName(name: []const u8) Editor.Error!void {
     if (name.len == 0) return error.InvalidName;
     if (!std.ascii.isAlphabetic(name[0])) return error.InvalidName;
