@@ -666,6 +666,7 @@ const Renderer = struct {
         if (ncols == 0) ncols = 1;
         // The caption is the table's title — when it says anything (a GFM
         // table carries an empty one).
+        var titled = false;
         var kids = self.ast.children(id);
         while (kids.next()) |c| if (self.ast.nodes[c.id].kind == .caption) {
             const e = try self.edges(c.id);
@@ -674,14 +675,24 @@ const Renderer = struct {
             try self.emitByte('.');
             try self.emit(e.text);
             try self.emitByte('\n');
+            titled = true;
+        };
+        // The table's own attributes, minus what is spelled here.
+        const a = self.attrs(id);
+        // A `title` attribute is the same line when no caption took it — a
+        // table converted from a format that holds the title as an attribute.
+        // The parser reads the line back as a caption, as it does every
+        // `.Title` on a table, not as the attribute.
+        if (!titled) if (a.get("title")) |t| {
+            try self.emitByte('.');
+            try self.emit(t);
+            try self.emitByte('\n');
         };
         var cols_buf: [24]u8 = undefined;
         const cols = std.fmt.bufPrint(&cols_buf, "cols={d}", .{ncols}) catch unreachable;
         var line: std.ArrayList(u8) = .empty;
         defer line.deinit(self.allocator);
         if (header) try line.appendSlice(self.allocator, "%header");
-        // The table's own attributes, minus what is spelled here.
-        const a = self.attrs(id);
         if (a.get("id")) |i| {
             try line.append(self.allocator, '#');
             try line.appendSlice(self.allocator, i);
@@ -1311,6 +1322,27 @@ test "a Markdown tree converts: headings, marks, a fenced code block, a task lis
     const out = try serializeAstAlloc(testing.allocator, &md.ast);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("= T\n\nsome *bold* `code` https://x.org[link]\n\n[source,py]\n----\nx\n----\n\n* [x] a\n\n[%header,cols=1]\n|===\n|h\n\n|c\n|===\n", out);
+}
+
+test "a table's `title` attribute is its `.Title` line, unless a caption already is" {
+    // Every other block's `title` became its `.Title` line through
+    // `writeBlockAttrs`; the table arm spells its own line and left the key
+    // out, so a titled table converted from HTML lost the title with only
+    // the attribute probe to say so. The parser reads the line back as a
+    // caption, the way it reads every `.Title` on a table.
+    const Html = @import("../html/html.zig");
+    var doc = try Html.parse(testing.allocator, "<table title=\"Figures\"><tr><td>a</td></tr></table><table title=\"Lost\"><caption>Cap</caption><tr><td>b</td></tr></table>");
+    defer doc.deinit();
+    const out = try serializeAstAlloc(testing.allocator, &doc.ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(".Figures\n[cols=1]\n|===\n|a\n|===\n\n.Cap\n[cols=1]\n|===\n|b\n|===\n", out);
+    var back = try parser.parse(testing.allocator, out);
+    defer back.deinit();
+    var captions: usize = 0;
+    for (back.ast.nodes) |n| if (n.kind == .caption) {
+        captions += 1;
+    };
+    try testing.expectEqual(@as(usize, 2), captions);
 }
 
 test "a mark next to a word falls back to the unconstrained form so it still reparses" {

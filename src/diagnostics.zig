@@ -1008,9 +1008,10 @@ fn asciidocAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         .line_block,
         .container,
         => .all(.faithful),
-        // The same line, minus the `.Title` line the other blocks get: a
-        // table's title is not written.
-        .table => .{ .id = .faithful, .class = .faithful, .other = .faithful, .title = .dropped },
+        // The same line and the same `.Title` line — which the parser reads
+        // back as the table's CAPTION, the one block whose title is a child
+        // and not an attribute.
+        .table => .{ .id = .faithful, .class = .faithful, .other = .faithful, .title = .degraded },
         // A section title's attribute line is the SECTION's: Asciidoctor and
         // twig both read `[#id]` above `== Title` as the section's id, and
         // the heading node comes back bare.
