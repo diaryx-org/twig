@@ -4,11 +4,19 @@ description: 'Every other block''s `title` attribute becomes a `.Title` line abo
 author: adammharris
 created: 2026-09-18
 updated: 2026-09-18
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # AsciiDoc does not write a table's title
+
+**Status: done** on 2026-09-18, in `fix(asciidoc): a table's title
+attribute is written as its .Title line`. The probe records `.degraded`,
+not `.faithful`: the parser reads a `.Title` on a table back as its
+*caption* — the one block whose title is a child and not an attribute —
+so the value comes back on the table, as the structure AsciiDoc has for
+it, and not as the key. A caption already present takes the line and the
+attribute yields to it.
 
 Found by the attribute probe in `diagnostics.zig` (`1bc22e1`), which
 records it as `attrsFidelity(.asciidoc, .table).title == .dropped` beside
