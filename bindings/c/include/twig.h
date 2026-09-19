@@ -16,7 +16,8 @@ extern "C" {
 //     enums) only ever gain new
 //     values appended at the end. An existing value is NEVER renumbered or
 //     reused — so a new document format, or a new export-only output target, is
-//     TWIG_FORMAT_* = <next int>, leaving every prior code untouched.
+//     TWIG_FORMAT_* = <next int>, leaving every prior code untouched and
+//     staying below TWIG_FORMAT_RUNTIME_BASE.
 //   - New functions (e.g. a future twig_editor_undo) are added; existing
 //     signatures never change in place.
 //   - The struct layouts below are frozen. Any change to a struct's fields —
@@ -86,6 +87,17 @@ extern "C" {
 // strict CommonMark cannot author the `~~x~~` the other two can.
 #define TWIG_FORMAT_COMMONMARK 6
 #define TWIG_FORMAT_GFM 7
+
+// Codes at or above this value name a language REGISTERED AT RUNTIME rather
+// than compiled in (docs/proposals/runtime-languages.md). They are assigned
+// per process, in registration order, and are never pinned here: a caller that
+// persists a format persists its name. Every compiled-in TWIG_FORMAT_* code is
+// below it, and always will be — the append-only rule above appends beneath
+// this line. Reserved ahead of the registration entry points, which are a
+// later minor, so that no compiled code can ever be argued to collide with a
+// runtime one. Until those entry points exist, a code in this range is refused
+// with TWIG_STATUS_UNSUPPORTED_FORMAT like any other unknown code.
+#define TWIG_FORMAT_RUNTIME_BASE 4096
 
 // Markdown extension flags for the `md_flags` bitmask of twig_parse_ext and
 // twig_editor_create_ext (ignored for non-Markdown formats). Each is an opt-in,
