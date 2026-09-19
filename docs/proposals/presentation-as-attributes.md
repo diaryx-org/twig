@@ -1,6 +1,6 @@
 ---
 title: "Proposal: presentation as attributes"
-status: accepted
+status: implemented
 author: adammharris
 created: 2026-09-18
 updated: 2026-09-18
@@ -10,6 +10,24 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 # Presentation as attributes
 
 ## Status
+
+`implemented` on 2026-09-18, in the sequence's order: the attribute axis of
+`diagnostics.zig` in `1bc22e1`, the Markdown serializer's `<div>` and
+`<span>` in `3a9e9a1`, the parser pairing and the two measured claims in
+`e632cd6`, `setBlockAttrs` in `6390255` and `wrapRangeAttrs` in `e956f9f`,
+each with its C and Rust surface (gesture codes 27 and 28). Three things the
+text below did not foresee. `Syntax.block_attrs` is not a boolean but a
+three-state — `native`, `wrapped`, or absent — because the editor needs the
+shape to know whether to look for a sole-child wrapper; `inline_attrs` is
+the boolean. AsciiDoc claims the block gesture and not the inline one: its
+`[#id.role]#text#` keeps an id and a role and has no slot for a third key,
+and a gesture that dropped one silently is what the gates exist to prevent.
+And the measurement found three serializer defects beside the axis it was
+built for, filed as tasks rather than fixed here: djot writes a heading's
+attributes after its text, where its parser reads them as the text's; djot
+writes a reference definition's attributes where the reparse then fails to
+read the definition at all; AsciiDoc does not write a table's title. leaf's
+vocabulary proposal is the next step, and it is leaf's.
 
 `accepted` on 2026-09-18, on three decisions. Twig carries the keys and
 interprets none of them; what `center` means is the host's, and the
