@@ -307,7 +307,82 @@ const Renderer = struct {
         }
     }
 
+    /// Whether a `div`- or `span`-named container, or an anonymous one, is
+    /// written as its HTML tag. The two names are HTML's own, and a tag is
+    /// the one Markdown spelling every reader agrees on for a wrapper with
+    /// attributes — so a tree with no recorded origin (a conversion from
+    /// another format, a built tree) takes it. The exception is a container
+    /// the Markdown parser itself read as a DIRECTIVE, `:::div{…}` or
+    /// `:span[…]{…}`, which the canonical serializer writes back as it found
+    /// it: an author's spelling is theirs, and `Document.containerOrigin` is
+    /// what records it.
+    fn spellsAsTag(self: *Renderer, id: Node.Id, c: Node.Kind.Container) bool {
+        const form = c.form orelse return false;
+        const html_name = switch (form) {
+            .block_fenced => c.name.len == 0 or std.mem.eql(u8, c.name, "div"),
+            .inline_text => c.name.len == 0 or std.mem.eql(u8, c.name, "span"),
+            .block_leaf => false,
+        };
+        if (!html_name) return false;
+        return self.doc.containerOrigin(id) != .directive;
+    }
+
+    /// Whether `kind`'s attributes have to ride on a `<div>` around it: every
+    /// block Markdown spells natively, since none of those spellings has a
+    /// place for an attribute. A `container` carries its own (on the fence or
+    /// the tag); `metadata` must stay the first block and is never wrapped;
+    /// the definitions are written elsewhere.
+    fn wrapsForAttrs(kind: Node.Kind) bool {
+        return switch (kind) {
+            .para,
+            .heading,
+            .thematic_break,
+            .section,
+            .code_block,
+            .raw_block,
+            .block_quote,
+            .bullet_list,
+            .ordered_list,
+            .task_list,
+            .definition_list,
+            .line_block,
+            .table,
+            => true,
+            else => false,
+        };
+    }
+
+    /// `<tag attrs>`, on its own line under the prefix, or `</tag>`.
+    fn writeTagLine(self: *Renderer, ctx: Ctx, tag: []const u8, attrs: ?Node.Id) Writer.Error!void {
+        try self.writePrefix(ctx);
+        if (attrs) |id| {
+            try self.writer.print("<{s}", .{tag});
+            try attrs_writer.writeHtmlAttrs(self.writer, self.ast.attrsOf(id));
+            try self.writer.writeAll(">\n");
+        } else {
+            try self.writer.print("</{s}>\n", .{tag});
+        }
+    }
+
+    /// A block that carries attributes Markdown has no spelling for is written
+    /// inside a `<div>` that carries them — an HTML block, blank-separated
+    /// from its content so the content stays Markdown, which every renderer
+    /// that passes raw HTML through reads as a div around the block and every
+    /// renderer that strips it reads as the block alone. The reparse under
+    /// `html_elements` pairs the two tags into a container whose sole child is
+    /// the block; under the default options they are two raw blocks, which is
+    /// what `diagnostics.zig` reports as `degraded`.
     fn renderBlock(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
+        const kind = self.ast.nodes[id].kind;
+        if (!wrapsForAttrs(kind) or self.ast.attrsOf(id).isEmpty()) return self.renderBlockBare(id, ctx);
+        try self.writeTagLine(ctx, "div", id);
+        try self.writeBlankLine(ctx);
+        try self.renderBlockBare(id, ctx);
+        try self.writeBlankLine(ctx);
+        try self.writeTagLine(ctx, "div", null);
+    }
+
+    fn renderBlockBare(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
         const node = self.ast.nodes[id];
         switch (node.kind) {
             .doc => try self.renderBlocks(id, ctx, true),
@@ -521,19 +596,28 @@ const Renderer = struct {
                         try self.writer.writeByte('\n');
                     },
                     .block_fenced => {
-                        try self.writePrefix(ctx);
-                        // djot's fenced div is anonymous — it carries its
-                        // identity as a class, so the fence takes no name.
-                        if (c.name.len == 0) {
-                            try self.writer.writeAll("::: \n");
-                            const p = Prefix{ .parent = ctx.prefix, .segment = "  " };
-                            try self.renderBlocks(id, .{ .prefix = &p }, true);
-                        } else {
-                            try self.writer.print(":::{s}", .{c.name});
-                            try self.writeDirectiveAttrs(id);
-                            try self.writer.writeByte('\n');
-                            try self.renderBlocks(id, ctx, true);
+                        // A div — HTML's, or djot's anonymous fenced div,
+                        // which used to be written as a nameless `::: ` that
+                        // dropped its attributes — is the tag, blank-separated
+                        // from its content as `renderBlock`'s wrap is. See
+                        // `spellsAsTag` for the one case that is not.
+                        if (self.spellsAsTag(id, c)) {
+                            try self.writeTagLine(ctx, "div", id);
+                            if (c.text) |text| {
+                                try html_lang.writeElementText(self.writer, "div", text);
+                            } else if (self.ast.nodes[id].first_child != null) {
+                                try self.writeBlankLine(ctx);
+                                try self.renderBlocks(id, ctx, true);
+                                try self.writeBlankLine(ctx);
+                            }
+                            try self.writeTagLine(ctx, "div", null);
+                            return;
                         }
+                        try self.writePrefix(ctx);
+                        try self.writer.print(":::{s}", .{c.name});
+                        try self.writeDirectiveAttrs(id);
+                        try self.writer.writeByte('\n');
+                        try self.renderBlocks(id, ctx, true);
                         try self.writePrefix(ctx);
                         try self.writer.writeAll(":::\n");
                     },
@@ -692,11 +776,21 @@ const Renderer = struct {
                 if (im.destination) |dest| try self.writer.print("({s})", .{dest}) else if (im.reference) |lab| try self.writer.print("[{s}]", .{lab});
             },
             .container => |c| {
-                // djot's bracketed span carries its identity in `attrs`, so
-                // Markdown — which has no `[…]{…}` — drops the wrapper and
-                // keeps the text.
-                if (c.name.len == 0) {
-                    try self.renderInlineChildren(id, ctx);
+                // A span — HTML's, or djot's bracketed span, whose identity is
+                // its `{…}` — is the tag, the one inline wrapper every Markdown
+                // reader renders with the Markdown inside it intact. An
+                // anonymous one with NO attributes has nothing to say and
+                // yields its text, as it always did. See `spellsAsTag`.
+                if (self.spellsAsTag(id, c)) {
+                    if (c.name.len == 0 and self.ast.attrsOf(id).isEmpty()) {
+                        try self.renderInlineChildren(id, ctx);
+                        return;
+                    }
+                    try self.writer.writeAll("<span");
+                    try attrs_writer.writeHtmlAttrs(self.writer, self.ast.attrsOf(id));
+                    try self.writer.writeByte('>');
+                    if (c.text) |text| try html_lang.writeElementText(self.writer, "span", text) else try self.renderInlineChildren(id, ctx);
+                    try self.writer.writeAll("</span>");
                     return;
                 }
                 // An UNCLASSIFIED container is an HTML/XML element, and the
@@ -1130,4 +1224,126 @@ test "directive round-trips are stable (parse->print->parse->print)" {
         defer testing.allocator.free(second);
         try testing.expectEqualStrings(first, second);
     }
+}
+
+// ── attributes: the div and the span ───────────────────────────────────
+
+const Djot = @import("../djot/djot.zig");
+
+fn djotToMarkdown(src: []const u8) ![]u8 {
+    var doc = try Djot.parse(testing.allocator, src);
+    defer doc.deinit();
+    return serializeAstAlloc(testing.allocator, &doc.ast);
+}
+
+fn htmlToMarkdown(src: []const u8) ![]u8 {
+    var doc = try html_lang.parse(testing.allocator, src);
+    defer doc.deinit();
+    return serializeAstAlloc(testing.allocator, &doc.ast);
+}
+
+test "an attributed paragraph is written inside a div that carries the attributes" {
+    // The class used to be dropped with no warning. Now it rides on a `<div>`
+    // around the paragraph, blank-separated so the paragraph stays Markdown.
+    const out = try djotToMarkdown("{.center data-size=\"large\"}\nhello\n");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("<div class=\"center\" data-size=\"large\">\n\nhello\n\n</div>\n", out);
+}
+
+test "every natively spelled block wraps the same way, a fence and a list included" {
+    const out = try djotToMarkdown("{.note}\n```\nx\n```\n\n{.steps}\n- one\n- two\n");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(
+        "<div class=\"note\">\n\n```\nx\n```\n\n</div>\n\n<div class=\"steps\">\n\n- one\n- two\n\n</div>\n",
+        out,
+    );
+    // djot gives a heading's attribute block to the SECTION it opens, so the
+    // section is what wraps, and a block inside it wraps within.
+    const sec = try djotToMarkdown("{#top}\n## Title\n\n{.steps}\n- one\n");
+    defer testing.allocator.free(sec);
+    try testing.expect(std.mem.startsWith(u8, sec, "<div id=\"top\">\n\n## Title\n\n<div class=\"steps\">\n\n- one\n\n</div>\n\n</div>\n"));
+}
+
+test "the wrap carries a quote's prefix on every line, the blanks included" {
+    const out = try djotToMarkdown("> {.c}\n> hello\n");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("> <div class=\"c\">\n>\n> hello\n>\n> </div>\n", out);
+}
+
+test "a block with no attributes is not wrapped" {
+    const out = try djotToMarkdown("hello\n");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("hello\n", out);
+}
+
+test "djot's anonymous div is a <div> carrying its class, not a nameless fence" {
+    // `::: center` used to come out as `::: ` — a fence with nothing on it,
+    // the class gone.
+    const out = try djotToMarkdown("::: center\ninside\n:::\n");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("<div class=\"center\">\n\ninside\n\n</div>\n", out);
+}
+
+test "an HTML div is a <div> in Markdown, not a directive named div" {
+    const out = try htmlToMarkdown("<div class=\"c\"><p>x</p><p>y</p></div>");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("<div class=\"c\">\n\nx\n\ny\n\n</div>\n", out);
+}
+
+test "djot's bracketed span and HTML's span are both a <span> carrying the attributes" {
+    const dj = try djotToMarkdown("a [big _text_]{.large} b\n");
+    defer testing.allocator.free(dj);
+    try testing.expectEqualStrings("a <span class=\"large\">big *text*</span> b\n", dj);
+
+    const h = try htmlToMarkdown("<p>a <span class=\"large\">big</span> b</p>");
+    defer testing.allocator.free(h);
+    try testing.expectEqualStrings("a <span class=\"large\">big</span> b\n", h);
+}
+
+test "an anonymous span with nothing to say still yields its text" {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const span = try b.addContainer(.{ .container = .{ .name = "", .form = .inline_text } }, &.{try b.addLeaf(.{ .str = "x" })});
+    const para = try b.addContainer(.para, &.{span});
+    var ast = try b.finish(try b.addContainer(.doc, &.{para}));
+    defer ast.deinit();
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("x\n", out);
+}
+
+test "a div or span the Markdown parser read as a directive is written back as one" {
+    // The author's spelling is theirs: `Document.containerOrigin` says the
+    // container came from `:::div`, so the canonical serializer keeps it,
+    // where a conversion (no origin) takes the tag.
+    const div = try serializeWith(":::div{.c}\nx\n:::\n", directives_on);
+    defer testing.allocator.free(div);
+    try testing.expectEqualStrings(":::div{.c}\nx\n:::\n", div);
+    const span = try serializeWith("a :span[x]{.l} b\n", directives_on);
+    defer testing.allocator.free(span);
+    try testing.expectEqualStrings("a :span[x]{.l} b\n", span);
+}
+
+test "every other name keeps the directive spelling" {
+    const out = try djotToMarkdown("::: note\ninside\n:::\n");
+    defer testing.allocator.free(out);
+    // djot's own div is anonymous and classed, so this is the anonymous
+    // case; a NAMED container from HTML is the one that keeps `:::`.
+    try testing.expectEqualStrings("<div class=\"note\">\n\ninside\n\n</div>\n", out);
+    // An unclassified element passes through as its tag, as it always did,
+    // its content written as Markdown inside.
+    const aside = try htmlToMarkdown("<aside class=\"n\"><p>x</p></aside>");
+    defer testing.allocator.free(aside);
+    try testing.expectEqualStrings("<aside class=\"n\">x\n</aside>\n", aside);
+    // And a NAMED fenced container that is not a div keeps the fence.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const p = try b.addContainer(.para, &.{try b.addLeaf(.{ .str = "x" })});
+    const box = try b.addContainer(.{ .container = .{ .name = "box", .form = .block_fenced } }, &.{p});
+    try b.setAttrs(box, .{ .entries = &.{.{ .key = "class", .value = "c" }} });
+    var ast = try b.finish(try b.addContainer(.doc, &.{box}));
+    defer ast.deinit();
+    const fence = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(fence);
+    try testing.expectEqualStrings(":::box{.c}\nx\n:::\n", fence);
 }

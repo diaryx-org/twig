@@ -442,7 +442,8 @@ static void test_diagnostics_report_what_a_conversion_loses(void) {
     twig_document_destroy(doc);
 
     // A node that survives while its ATTRIBUTES do not is the fourth and fifth
-    // code: the paragraph converts to Markdown, its class does not.
+    // code: the paragraph converts to Markdown, its class rides on a `<div>`
+    // the default parser reads as raw HTML beside it.
     const char *classed = "{.center}\nhello\n";
     TwigDocument *doc2 = NULL;
     CHECK(twig_parse((const uint8_t *)classed, strlen(classed), TWIG_FORMAT_DJOT, &doc2) ==
@@ -451,7 +452,7 @@ static void test_diagnostics_report_what_a_conversion_loses(void) {
           TWIG_STATUS_OK);
     CHECK(len == 1);
     if (len == 1) {
-        CHECK(warnings[0].fidelity == TWIG_FIDELITY_ATTRS_DROPPED);
+        CHECK(warnings[0].fidelity == TWIG_FIDELITY_ATTRS_DEGRADED);
         CHECK(strcmp(warnings[0].kind, "para") == 0);
     }
     CHECK(twig_document_diagnostics(doc2, TWIG_FORMAT_HTML, &warnings, &len) ==

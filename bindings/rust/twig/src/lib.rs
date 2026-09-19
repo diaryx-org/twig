@@ -4143,16 +4143,27 @@ mod tests {
 
     #[test]
     fn diagnostics_report_a_surviving_nodes_lost_attributes() {
-        // A djot paragraph carrying a class converts to Markdown as a bare
-        // paragraph: the node survives, the class does not, and the warning
-        // says which of the two it is about.
+        // A djot paragraph carrying a class converts to Markdown as a `<div>`
+        // around the paragraph, which Markdown's default parser reads as raw
+        // HTML beside it: the node survives, the class is written where it is
+        // not read back, and the warning says which of the two it is about.
         let mut doc = Document::parse_str("{.center}\nhello\n", Format::Djot).expect("parse djot");
         assert_eq!(
             doc.diagnostics(Target::Markdown).expect("markdown diagnostics"),
             vec![Warning {
-                fidelity: Fidelity::AttrsDropped,
+                fidelity: Fidelity::AttrsDegraded,
                 path: "0".to_string(),
                 kind: Kind::Para,
+            }]
+        );
+        // An emphasis carrying one has nowhere to put it.
+        let mut em = Document::parse_str("_x_{.big}\n", Format::Djot).expect("parse djot");
+        assert_eq!(
+            em.diagnostics(Target::Markdown).expect("markdown diagnostics"),
+            vec![Warning {
+                fidelity: Fidelity::AttrsDropped,
+                path: "0/0".to_string(),
+                kind: Kind::Emph,
             }]
         );
         // HTML and AsciiDoc keep a paragraph's class: nothing to report.
