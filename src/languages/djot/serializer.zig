@@ -6,6 +6,8 @@ const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
 const dj_syntax = @import("syntax.zig");
 const attrs_writer = @import("../../attrs_writer.zig");
+const select = @import("../../ast/select.zig");
+const parser = @import("parser.zig");
 const Document = @import("../../document.zig");
 const AST = djot.AST;
 const Node = AST.Node;
@@ -51,6 +53,17 @@ fn fenceTicks(text: []const u8, min: usize) usize {
     return best;
 }
 
+/// Whether `id` is what `parser.slugify` and its uniquifier would have made
+/// of a title whose slug is `slug`: the slug itself, or the slug and a
+/// `-N` suffix. An empty slug is uniquified from `s`.
+fn isGeneratedId(id: []const u8, slug: []const u8) bool {
+    const base = if (slug.len > 0) slug else "s";
+    if (std.mem.eql(u8, id, base)) return slug.len > 0;
+    if (id.len < base.len + 2 or !std.mem.startsWith(u8, id, base) or id[base.len] != '-') return false;
+    for (id[base.len + 1 ..]) |c| if (!std.ascii.isDigit(c)) return false;
+    return true;
+}
+
 const Renderer = struct {
     allocator: Allocator,
     doc: *const Document,
@@ -80,6 +93,50 @@ const Renderer = struct {
     fn writeDjotAttrs(self: *Renderer, id: Node.Id) Writer.Error!void {
         const sp = dj_syntax.table.attr_spelling orelse return;
         try attrs_writer.write(self.writer, self.ast.attrsOf(id), sp, "");
+    }
+
+    /// A section's attributes are written as the line before its heading.
+    /// That is where the parser read them from: `{#id .c}` above `## t` is
+    /// the SECTION's set whenever it names an id (`parser.zig`'s
+    /// `closeHeading`, after djot.js), and the heading itself comes back
+    /// bare. A section with no heading has nowhere to put the line and
+    /// keeps nothing.
+    fn writeSectionAttrs(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
+        const heading = self.ast.nodes[id].first_child orelse return;
+        if (self.ast.nodes[heading].kind != .heading) return;
+        try self.writeTitleAttrs(id, heading, ctx);
+    }
+
+    /// The attribute line above a heading, for the set `owner` carries — the
+    /// heading's own, or its section's. The parser gives every heading an id
+    /// derived from its title's text, on the section when one wraps it and
+    /// on the heading otherwise; an id that still reads as that derivation
+    /// (`slug`, or `slug-N` from the uniquifier) is left out, since writing
+    /// it would turn a generated id into an authored one on every heading.
+    /// An authored id that happens to equal the derivation is regenerated to
+    /// the same value on reparse, which is the one case the two cannot be
+    /// told apart and the one where it does not matter.
+    fn writeTitleAttrs(self: *Renderer, owner: Node.Id, heading: Node.Id, ctx: Ctx) Writer.Error!void {
+        const attrs = self.ast.attrsOf(owner);
+        if (attrs.isEmpty()) return;
+
+        var kept: std.ArrayList(AST.KeyVal) = .empty;
+        defer kept.deinit(self.allocator);
+        for (attrs.entries) |kv| {
+            if (std.mem.eql(u8, kv.key, "id")) {
+                const text = select.textOf(self.allocator, self.ast, heading) catch return error.WriteFailed;
+                defer self.allocator.free(text);
+                const slug = parser.slugify(self.allocator, std.mem.trim(u8, text, " \t\r\n")) catch return error.WriteFailed;
+                defer self.allocator.free(slug);
+                if (kv.value != null and isGeneratedId(kv.value.?, slug)) continue;
+            }
+            kept.append(self.allocator, kv) catch return error.WriteFailed;
+        }
+        if (kept.items.len == 0) return;
+        const sp = dj_syntax.table.attr_spelling orelse return;
+        try self.writePrefix(ctx);
+        try attrs_writer.write(self.writer, .{ .entries = kept.items }, sp, "");
+        try self.writer.writeByte('\n');
     }
 
     fn renderBlocks(self: *Renderer, parent: Node.Id, ctx: Ctx, blank_between: bool) Writer.Error!void {
@@ -315,7 +372,10 @@ const Renderer = struct {
         const node = self.ast.nodes[id];
         switch (node.kind) {
             .doc => try self.renderBlocks(id, ctx, true),
-            .section => try self.renderBlocks(id, ctx, true),
+            .section => {
+                try self.writeSectionAttrs(id, ctx);
+                try self.renderBlocks(id, ctx, true);
+            },
             .para => {
                 if (self.ast.attrsOf(id).entries.len > 0) {
                     try self.writePrefix(ctx);
@@ -327,12 +387,16 @@ const Renderer = struct {
                 try self.writer.writeByte('\n');
             },
             .heading => |h| {
+                // The line before, as for a paragraph. `## t{.x}` is the
+                // inline spelling: djot reads a brace block after inline
+                // content as that content's, so the heading came back bare
+                // and its `str` carried the set.
+                try self.writeTitleAttrs(id, id, ctx);
                 try self.writePrefix(ctx);
                 var i: u32 = 0;
                 while (i < h.level) : (i += 1) try self.writer.writeByte('#');
                 try self.writer.writeByte(' ');
                 try self.renderInlineChildren(id, ctx);
-                try self.writeDjotAttrs(id);
                 try self.writer.writeByte('\n');
             },
             .thematic_break => {
@@ -1090,4 +1154,60 @@ test "serializeAstAlloc: a bare inline container writes no brackets of its own" 
     const out = try serializeAstAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("x\n", out);
+}
+
+test "serializeAlloc: a heading's attributes go ABOVE the `#` line, and a generated id is not written" {
+    // `## t{.x}` is the inline spelling: djot reads a brace block after
+    // inline content as that content's, so the heading came back bare and
+    // its `str` carried the class. The block spelling is the line before —
+    // and it is where the parser reads an authored `{#h .x}` back as the
+    // SECTION's, so the section's set is written there too, minus the id
+    // the parser derived from the title (`t`, then `t-1` for a duplicate),
+    // which every heading has and no author wrote.
+    const src =
+        \\{.x #h}
+        \\## t
+        \\
+        \\## t
+        \\
+        \\## t
+        \\
+        \\{.z}
+        \\### sub
+        \\
+        \\> ## quoted
+        \\
+    ;
+    var doc = try djot.parse(testing.allocator, src);
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+
+    var back = try djot.parse(testing.allocator, out);
+    defer back.deinit();
+    var seen_sections: usize = 0;
+    var seen_z = false;
+    for (back.ast.nodes, 0..) |n, i| {
+        const attrs = back.ast.attrsOf(@intCast(i));
+        switch (n.kind) {
+            .section => {
+                seen_sections += 1;
+                if (attrs.get("class")) |c| {
+                    try testing.expectEqualStrings("x", c);
+                    try testing.expectEqualStrings("h", attrs.get("id").?);
+                }
+            },
+            // A block naming no id stays the heading's.
+            .heading => if (attrs.get("class")) |c| {
+                try testing.expectEqualStrings("z", c);
+                seen_z = true;
+            },
+            // Every `{…}` was read as a block's, never as the title text's.
+            .str => try testing.expect(attrs.isEmpty()),
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(usize, 4), seen_sections);
+    try testing.expect(seen_z);
 }

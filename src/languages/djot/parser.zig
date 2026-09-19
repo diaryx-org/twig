@@ -1614,25 +1614,33 @@ fn addStringContent(allocator: Allocator, tb: *TreeBuilder, first: ?Node.Id, buf
 
 // ── heading auto-id slugification ───────────────────────────────────────
 
-fn TreeBuilderGetUniqueIdentifier(self: *TreeBuilder, s: []const u8) Allocator.Error![]u8 {
+/// The identifier djot derives from a heading's text before any uniquifying
+/// suffix: punctuation and whitespace runs become one `-`, and the ends are
+/// trimmed of it. Public so the serializer can tell a section id the parser
+/// generated from one an author wrote. Caller frees.
+pub fn slugify(allocator: Allocator, s: []const u8) Allocator.Error![]u8 {
     var base = std.ArrayList(u8).empty;
-    defer base.deinit(self.allocator);
+    defer base.deinit(allocator);
     var last_was_sep = false;
     for (s) |c| {
         if (isIdentifierExcluded(c) or isSpaceByteFree(c)) {
             if (!last_was_sep and base.items.len > 0) {
-                try base.append(self.allocator, '-');
+                try base.append(allocator, '-');
                 last_was_sep = true;
             }
         } else {
-            try base.append(self.allocator, c);
+            try base.append(allocator, c);
             last_was_sep = false;
         }
     }
     while (base.items.len > 0 and base.items[base.items.len - 1] == '-') _ = base.pop();
     var start: usize = 0;
     while (start < base.items.len and base.items[start] == '-') start += 1;
-    const trimmed = try self.allocator.dupe(u8, base.items[start..]);
+    return allocator.dupe(u8, base.items[start..]);
+}
+
+fn TreeBuilderGetUniqueIdentifier(self: *TreeBuilder, s: []const u8) Allocator.Error![]u8 {
+    const trimmed = try slugify(self.allocator, s);
     defer self.allocator.free(trimmed);
 
     if (trimmed.len > 0 and !self.identifiers.contains(trimmed)) {

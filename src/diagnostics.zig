@@ -768,9 +768,9 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
 // what the serializers actually do"` puts four attributes on every probed node,
 // round-trips it through each target, and asks PER KEY whether the value came
 // back on the node (`faithful`), was written somewhere the target's own parser
-// does not read as that node's attribute (`degraded` — djot writes a heading's
-// block on its text and reads it as the text's; AsciiDoc moves a section
-// title's onto the section), or was never written (`dropped`).
+// does not read as that node's attribute (`degraded` — djot and AsciiDoc both
+// read a heading's attribute line back as the SECTION's), or was never
+// written (`dropped`).
 //
 // The answer is per KEY CLASS, because the formats are ragged at exactly that
 // grain: AsciiDoc's inline `[#id.role]` keeps an id and a class on a mark and
@@ -820,16 +820,17 @@ pub fn attrsFidelity(target: Target, kind: Node.Kind) AttrsFidelity {
 }
 
 /// Djot can spell an attribute block on any block or inline, and its
-/// serializer writes one in exactly three places.
+/// serializer writes one in exactly four places.
 fn djotAttrsFidelity(kind: Node.Kind) AttrsFidelity {
     return switch (kind) {
-        // The line before a paragraph; the line before a fenced div, or after
-        // a bracketed span. Read back in full.
-        .para, .container => .all(.faithful),
-        // Written AFTER the heading's text on the same line — `## x{#id}` —
-        // which djot reads as an inline attribute block on the TEXT, not a
-        // block attribute on the heading. The block spelling is the line
-        // before, as for a paragraph, and the serializer does not write it.
+        // The line before a paragraph or a section's heading; the line before
+        // a fenced div, or after a bracketed span. Read back in full.
+        .para, .container, .section => .all(.faithful),
+        // Written as the line before the heading, which is djot's block
+        // spelling — and, as in AsciiDoc, a block that names an id is the
+        // SECTION's when djot reads it back (the parser moves the whole set,
+        // after djot.js), so the heading node comes back bare. Without an id
+        // the set stays on the heading; the probe carries one.
         .heading => .all(.degraded),
         // `[label]: dest{#id}` — written, and the reparse then fails to read
         // the definition at all, so nothing comes back as the reference's.
@@ -840,7 +841,6 @@ fn djotAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         // one on each.
         .doc,
         .thematic_break,
-        .section,
         .code_block,
         .raw_block,
         .metadata,
@@ -1843,8 +1843,9 @@ test "a lossy node's attributes are reported once, with the node" {
 }
 
 test "a degraded attribute renders as written-but-unread" {
-    // djot writes a heading's attributes after its text, where its own parser
-    // reads them as the text's.
+    // djot writes a heading's attributes on the line before it, where its
+    // own parser reads a block naming an id as the section's. The table
+    // answers per kind, so a class-only heading is reported the same way.
     const Html = @import("languages/html/html.zig");
     var doc = try Html.parse(testing.allocator, "<h2 class=\"x\">t</h2>");
     defer doc.deinit();

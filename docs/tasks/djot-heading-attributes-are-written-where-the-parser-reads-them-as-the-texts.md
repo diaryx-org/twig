@@ -4,11 +4,22 @@ description: '`## x{#id .c}` is what the djot serializer prints for a heading ca
 author: adammharris
 created: 2026-09-18
 updated: 2026-09-18
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # djot writes a heading's attributes after its text, where its parser reads them as the text's
+
+**Status: done** on 2026-09-18, in `fix(djot): a heading's attributes are
+written on the line before it, and a section's with them`. The probe does
+not record `.faithful` after all: the block it writes names an id, and djot
+reads a heading's block that names an id as the *section's* — the parser
+moves the whole set, after djot.js — so the heading comes back bare and the
+table's honest answer is `.degraded`, for the reason AsciiDoc's already was.
+What the fix reaches is the round-trip: the section's set is written on the
+same line before the heading, minus the id the parser derived from the
+title, so `{#h .x}\n## t` is `{#h .x}\n## t` again, where it had been
+`## t` — the section's attributes were dropped outright before this.
 
 Found by the attribute probe in `diagnostics.zig` (`1bc22e1`), which
 records the answer as `attrsFidelity(.djot, .heading) == .degraded`: written,
