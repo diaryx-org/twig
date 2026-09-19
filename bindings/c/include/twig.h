@@ -1020,6 +1020,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_SET_MARK_COLOR = 24,
     TWIG_GESTURE_INSERT_TABLE = 25,
     TWIG_GESTURE_INSERT_DIRECTIVE = 26,
+    TWIG_GESTURE_SET_BLOCK_ATTRS = 27,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1607,6 +1608,55 @@ TwigStatus twig_editor_insert_directive(
     size_t name_len,
     const uint8_t *label_ptr,
     size_t label_len,
+    const TwigKeyVal *attrs_ptr,
+    size_t attrs_len,
+    TwigChange *out_change
+);
+
+// Replace the attribute set of the block `offset` sits in — a paragraph or a
+// heading, the block twig_editor_set_block rewrites — with `attrs`, the same
+// (key, value) array twig_builder_set_attrs takes. REPLACE, not merge: read the
+// node's attributes, edit the list, pass it back whole; attrs_len == 0 (with
+// any attrs_ptr) clears them.
+//
+// What a key MEANS is the host's, as a directive's name is. A rich-text
+// editor's centred paragraph is one call with {"class", "center"}, its larger
+// type another with {"data-size", "large"}; twig spells the pair in the
+// format's own attribute syntax and interprets neither half. A class or a
+// data- key survives every format twig writes; a `style` does too, as a
+// string, and which of them a host should write is argued in
+// docs/proposals/presentation-as-attributes.md.
+//
+// The spelling is the format's: djot's `{…}` line before the block (rewritten
+// in place, the block's own bytes untouched), HTML's tag and AsciiDoc's `[…]`
+// line (the block re-printed with the new set), and in MARKDOWN a `<div …>`
+// around the block, blank-separated — the one Markdown spelling every reader
+// renders, and one twig's parser pairs back into a container only under
+// TWIG_MD_HTML_ELEMENTS. When the block is already the sole child of such a
+// div, that div's attributes are replaced rather than a second div nested,
+// and an empty set unwraps it.
+//
+// An attribute must be one every format reads back: a key that is an ASCII
+// letter or `_` followed by letters, digits, `-`, `_` and `:`; a non-NULL
+// value (djot has no bare attribute — `{hidden}` is text there); and no line
+// end or double quote in the value. TWIG_STATUS_INVALID_ARGUMENT otherwise,
+// and for an offset past the source or a NULL attrs_ptr with a non-zero
+// attrs_len. TWIG_STATUS_NOT_FOUND when no paragraph or heading holds
+// `offset`. TWIG_STATUS_NOT_EDITABLE where the spelling cannot be placed: a
+// djot block that starts on a list item's marker line, or whose attributes
+// came from more than one `{…}` block; a Markdown block inside a list item,
+// whose continuation indent the wrap does not reproduce.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT where the format's parser would not read the
+// printed attributes back, before anything is read. Ask
+// twig_format_supports_ext with TWIG_GESTURE_SET_BLOCK_ATTRS — and _ext is the
+// call that matters, because for Markdown the answer is the parse config's:
+// twig_format_supports (default options) answers 0 and
+// twig_format_supports_ext with TWIG_MD_HTML_ELEMENTS answers 1, exactly as
+// TWIG_GESTURE_INSERT_DIRECTIVE behaves with TWIG_MD_DIRECTIVES.
+TwigStatus twig_editor_set_block_attrs(
+    TwigEditor *editor,
+    size_t offset,
     const TwigKeyVal *attrs_ptr,
     size_t attrs_len,
     TwigChange *out_change

@@ -1704,6 +1704,7 @@ fn statusOfEditorError(err: twig.Editor.Error) TwigStatus {
         error.InvalidColor,
         error.InvalidShape,
         error.InvalidName,
+        error.InvalidAttribute,
         => .invalid_argument,
         error.UnsupportedFormat => .unsupported_format,
         error.NoBlock => .not_found,
@@ -2864,6 +2865,7 @@ const TwigGesture = enum(c_int) {
     set_mark_color = 24,
     insert_table = 25,
     insert_directive = 26,
+    set_block_attrs = 27,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2896,6 +2898,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         24 => .set_mark_color,
         25 => .insert_table,
         26 => .insert_directive,
+        27 => .set_block_attrs,
         else => null,
     };
 }
@@ -3154,6 +3157,48 @@ pub export fn twig_editor_insert_directive(
     }
 
     handle.editor.insertDirective(offset, name, label, entries) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Replace the attribute set of the block `offset` sits in — a paragraph or
+/// heading — with `attrs`, the `(key, value)` array `twig_builder_set_attrs`
+/// takes; `attrs_len == 0` clears them. Replace, not merge. The spelling is the
+/// format's: djot's `{…}` line before the block, HTML's tag, AsciiDoc's `[…]`
+/// line, and in Markdown a `<div …>` around the block — or that div's own
+/// attributes when the block is already its sole child. See
+/// `twig.Editor.setBlockAttrs`.
+///
+/// `unsupported_format` where the format's parser would not read the printed
+/// attributes back (Markdown without `TWIG_MD_HTML_ELEMENTS`);
+/// `invalid_argument` for an offset past the source, a NULL `attrs_ptr` with a
+/// non-zero length, or an attribute no format reads back — a key outside the
+/// shared grammar, a NULL value, or a value carrying a line end or a double
+/// quote; `not_found` when no paragraph or heading holds `offset`;
+/// `not_editable` where the spelling cannot be placed (see the Zig doc).
+pub export fn twig_editor_set_block_attrs(
+    ed: ?*TwigEditor,
+    offset: usize,
+    attrs_ptr: ?[*]const TwigKeyVal,
+    attrs_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const allocator = activeAllocator();
+    var entries: []twig.AST.KeyVal = &.{};
+    defer if (entries.len != 0) allocator.free(entries);
+    if (attrs_len != 0) {
+        const c_kvs = (attrs_ptr orelse return .invalid_argument)[0..attrs_len];
+        entries = allocator.alloc(twig.AST.KeyVal, attrs_len) catch return .out_of_memory;
+        for (c_kvs, entries) |c, *e| {
+            const key = sliceOf(c.key, c.key_len) orelse return .invalid_argument;
+            const value: ?[]const u8 = if (c.value) |vp| vp[0..c.value_len] else null;
+            e.* = .{ .key = key, .value = value };
+        }
+    }
+    handle.editor.setBlockAttrs(offset, entries) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;
@@ -5806,6 +5851,44 @@ test "twig_editor: a coloured highlight is two gestures over a flagged editor" {
         twig_editor_toggle_inline(plain.ed, 2, 6, @intFromEnum(TwigInlineKind.mark), null),
     );
     try plain.expectSource("a word b\n");
+}
+
+test "twig_editor_set_block_attrs: gated on TWIG_MD_HTML_ELEMENTS, and the div is what the reparse reads" {
+    var out: c_int = -1;
+    const md = @intFromEnum(TwigFormat.markdown);
+    const gesture = @intFromEnum(TwigGesture.set_block_attrs);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(md, gesture, 0, &out));
+    try std.testing.expectEqual(@as(c_int, 0), out);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(md, TWIG_MD_HTML_ELEMENTS, gesture, 0, &out));
+    try std.testing.expectEqual(@as(c_int, 1), out);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.djot), gesture, 0, &out));
+    try std.testing.expectEqual(@as(c_int, 1), out);
+
+    const src = "hello\n";
+    const attrs = [_]TwigKeyVal{.{ .key = "class", .key_len = 5, .value = "center", .value_len = 6 }};
+    var plain: ?*TwigEditor = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_create(src.ptr, src.len, md, &plain));
+    defer twig_editor_destroy(plain);
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_set_block_attrs(plain, 0, &attrs, 1, null));
+
+    var ed: ?*TwigEditor = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_create_ext(src.ptr, src.len, md, TWIG_MD_HTML_ELEMENTS, &ed));
+    defer twig_editor_destroy(ed);
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_set_block_attrs(ed, 0, &attrs, 1, &change));
+    var text: ?[*]const u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_source(ed, &text, &len));
+    try std.testing.expectEqualStrings("<div class=\"center\">\n\nhello\n\n</div>\n", text.?[0..len]);
+    // Clearing from inside the paragraph unwraps it; a NULL array with a zero
+    // length is "no attributes", a non-zero length without one is an error.
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_set_block_attrs(ed, 23, null, 1, null));
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_set_block_attrs(ed, 23, null, 0, null));
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_source(ed, &text, &len));
+    try std.testing.expectEqualStrings("hello\n", text.?[0..len]);
+    // A bare attribute is one no lightweight format reads back.
+    const bare = [_]TwigKeyVal{.{ .key = "hidden", .key_len = 6, .value = null, .value_len = 0 }};
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_set_block_attrs(ed, 0, &bare, 1, null));
 }
 
 test "twig_format_supports: a kind is read in the gesture's own space, or rejected" {

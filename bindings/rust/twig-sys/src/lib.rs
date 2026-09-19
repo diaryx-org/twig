@@ -673,6 +673,13 @@ unsafe extern "C" {
         attrs_len: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_set_block_attrs(
+        editor: *mut TwigEditor,
+        offset: usize,
+        attrs_ptr: *const TwigKeyVal,
+        attrs_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
     pub fn twig_editor_insert_link(
         editor: *mut TwigEditor,
         start: usize,

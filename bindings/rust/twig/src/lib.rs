@@ -807,6 +807,11 @@ pub enum Gesture {
     /// [`Format::supports_with`] rather than [`Format::supports`], which
     /// answers for default options and so answers `false` there.
     InsertDirective,
+    /// Replace a block's attribute set — [`Editor::set_block_attrs`].
+    /// Supported where the format's parser reads a block's printed attributes
+    /// back, which for Markdown means [`MarkdownExtensions::html_elements`]:
+    /// ask [`Format::supports_with`] rather than [`Format::supports`].
+    SetBlockAttrs,
 }
 
 impl Gesture {
@@ -843,6 +848,7 @@ impl Gesture {
             Gesture::SetMarkColor => (24, 0),
             Gesture::InsertTable => (25, 0),
             Gesture::InsertDirective => (26, 0),
+            Gesture::SetBlockAttrs => (27, 0),
         }
     }
 }
@@ -2361,6 +2367,63 @@ impl Editor {
                 kvs.len(),
                 out,
             )
+        })
+    }
+
+    /// Replace the attribute set of the block `offset` sits in — a paragraph
+    /// or heading, the block [`Editor::set_block`] rewrites — with `attrs`,
+    /// the `(key, Some(value))` list [`Builder::set_attrs`] takes. **Replace,
+    /// not merge**: read the node's attributes, edit the list, pass it back
+    /// whole; an empty list clears them.
+    ///
+    /// What a key *means* is yours, as a directive's name is: a centred
+    /// paragraph is `set_block_attrs(off, &[("class", Some("center"))])` and
+    /// twig spells the pair without interpreting either half. The spelling is
+    /// the format's — djot's `{…}` line before the block, rewritten in place
+    /// with the block's bytes untouched; HTML's tag and AsciiDoc's `[…]` line,
+    /// the block re-printed; and in Markdown a `<div …>` around the block,
+    /// blank-separated, which every Markdown renderer passes through and
+    /// twig's own parser pairs back into a container only under
+    /// [`MarkdownExtensions::html_elements`]. A block already the sole child
+    /// of such a div has the div's attributes replaced instead, and an empty
+    /// list unwraps it.
+    ///
+    /// An attribute must be one every format reads back: a key that is an
+    /// ASCII letter or `_` followed by letters, digits, `-`, `_` and `:`, a
+    /// `Some` value (djot has no bare attribute), and no line end or double
+    /// quote in it. [`Error::InvalidArgument`] otherwise, or for an `offset`
+    /// past the source. [`Error::NotFound`] when no paragraph or heading holds
+    /// `offset`. [`Error::NotEditable`] where the spelling cannot be placed: a
+    /// djot block starting on a list item's marker line, or whose attributes
+    /// came from more than one `{…}` block; a Markdown block inside a list
+    /// item. [`Error::UnsupportedFormat`] where the format would not read the
+    /// printed attributes back, before anything is read — for Markdown the
+    /// parse config's answer, so [`Format::supports`] reports `false` while
+    /// [`Format::supports_with`] reports `true`:
+    ///
+    /// ```no_run
+    /// # use twig::{Format, Gesture, MarkdownExtensions};
+    /// let exts = MarkdownExtensions { html_elements: true, ..Default::default() };
+    /// assert!(!Format::Markdown.supports(Gesture::SetBlockAttrs));
+    /// assert!(Format::Markdown.supports_with(exts, Gesture::SetBlockAttrs));
+    /// assert!(Format::Djot.supports(Gesture::SetBlockAttrs));
+    /// ```
+    pub fn set_block_attrs(
+        &mut self,
+        offset: usize,
+        attrs: &[(&str, Option<&str>)],
+    ) -> Result<Change, Error> {
+        let kvs: Vec<ffi::TwigKeyVal> = attrs
+            .iter()
+            .map(|(k, v)| ffi::TwigKeyVal {
+                key: k.as_ptr(),
+                key_len: k.len(),
+                value: v.map_or(std::ptr::null(), |s| s.as_ptr()),
+                value_len: v.map_or(0, |s| s.len()),
+            })
+            .collect();
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_set_block_attrs(ed, offset, kvs.as_ptr(), kvs.len(), out)
         })
     }
 
@@ -5849,6 +5912,60 @@ mod tests {
     }
 
     #[test]
+    fn editor_set_block_attrs_spells_per_format_and_replaces_rather_than_merging() {
+        // djot: the line before the block, rewritten in place; the block's
+        // bytes are never touched.
+        let mut dj = Editor::new_str("hello _em_\n", Format::Djot).expect("editor");
+        dj.set_block_attrs(0, &[("class", Some("center"))]).expect("class");
+        assert_eq!(dj.source_str().unwrap(), "{.center}\nhello _em_\n");
+        dj.set_block_attrs(12, &[("data-size", Some("large"))]).expect("size");
+        assert_eq!(dj.source_str().unwrap(), "{data-size=\"large\"}\nhello _em_\n");
+        dj.set_block_attrs(22, &[]).expect("clear");
+        assert_eq!(dj.source_str().unwrap(), "hello _em_\n");
+
+        // HTML: the tag; AsciiDoc: its attribute line.
+        let mut html = Editor::new_str("<p>a</p>\n", Format::Html).expect("editor");
+        html.set_block_attrs(4, &[("class", Some("c"))]).expect("class");
+        assert_eq!(html.source_str().unwrap(), "<p class=\"c\">a</p>\n");
+        let mut adoc = Editor::new_str("hello\n", Format::Asciidoc).expect("editor");
+        adoc.set_block_attrs(0, &[("class", Some("c"))]).expect("class");
+        assert_eq!(adoc.source_str().unwrap(), "[.c]\nhello\n");
+
+        // Markdown: refused without the flag; a div with it, rewritten rather
+        // than nested on a second call, unwrapped by an empty list.
+        assert!(!Format::Markdown.supports(Gesture::SetBlockAttrs));
+        let exts = MarkdownExtensions {
+            html_elements: true,
+            ..Default::default()
+        };
+        assert!(Format::Markdown.supports_with(exts, Gesture::SetBlockAttrs));
+        let mut plain = Editor::new_str("hello\n", Format::Markdown).expect("editor");
+        assert_eq!(
+            plain.set_block_attrs(0, &[("class", Some("c"))]),
+            Err(Error::UnsupportedFormat)
+        );
+        let mut md = Editor::new_ext(b"hello\n", Format::Markdown, exts).expect("editor");
+        md.set_block_attrs(0, &[("class", Some("c"))]).expect("class");
+        assert_eq!(md.source_str().unwrap(), "<div class=\"c\">\n\nhello\n\n</div>\n");
+        md.set_block_attrs(20, &[("class", Some("d"))]).expect("reclass");
+        assert_eq!(md.source_str().unwrap(), "<div class=\"d\">\n\nhello\n\n</div>\n");
+        md.set_block_attrs(20, &[]).expect("clear");
+        assert_eq!(md.source_str().unwrap(), "hello\n");
+
+        // An attribute no format reads back is refused before anything is
+        // written.
+        assert_eq!(
+            dj.set_block_attrs(0, &[("hidden", None)]),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(
+            dj.set_block_attrs(0, &[("a b", Some("x"))]),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(dj.source_str().unwrap(), "hello _em_\n");
+    }
+
+    #[test]
     fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
         let exts = MarkdownExtensions {
             directives: true,
@@ -6154,6 +6271,7 @@ mod tests {
             Gesture::TableMoveColumn,
             Gesture::InsertTable,
             Gesture::InsertDirective,
+            Gesture::SetBlockAttrs,
         ]);
         all
     }
@@ -6168,7 +6286,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=26).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=27).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -6186,7 +6304,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                27,
+                28,
                 0,
                 &mut supported,
             )

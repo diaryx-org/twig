@@ -51,6 +51,11 @@ var highlight_colors_cfg: format.ParseConfig = .{
 /// it. Without the flag those bytes are a paragraph of colons, which is what
 /// `insertDirective`'s refusal below asserts.
 var directives_cfg: format.ParseConfig = .{ .markdown = .{ .directives = true } };
+/// And the fourth: a `<div>` around a block and a `<span>` around a run are
+/// raw HTML to Markdown's default parser and a container under
+/// `ParseOptions.html_elements`, so the two attribute gestures run against an
+/// editor whose reparse pairs the tags.
+var html_elements_cfg: format.ParseConfig = .{ .markdown = .{ .html_elements = true } };
 
 const KindTag = std.meta.Tag(AST.Node.Kind);
 
@@ -3533,6 +3538,7 @@ const all_gestures = blk: {
         .table_move_column,
         .insert_table,
         .insert_directive,
+        .set_block_attrs,
     };
 };
 
@@ -3582,6 +3588,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .table_move_column => ed.tableMoveColumn(0, true),
         .insert_table => ed.insertTable(0, 1, 1),
         .insert_directive => ed.insertDirective(0, "page-break", null, &.{}),
+        .set_block_attrs => ed.setBlockAttrs(0, &.{.{ .key = "class", .value = "c" }}),
     };
 }
 
@@ -3687,4 +3694,134 @@ test "supports is the per-gesture answer authorable() cannot give" {
     try testing.expect(!Editor.supports(format.syntaxFor(.markdown), .{ .toggle_inline = .mark }));
     try testing.expect(Editor.supports(format.syntaxFor(.markdown), .insert_line_break));
     try testing.expect(!Editor.supports(format.syntaxFor(.djot), .insert_line_break));
+}
+
+// ── setBlockAttrs ──────────────────────────────────────────────────────────
+
+const class_c = [_]AST.KeyVal{.{ .key = "class", .value = "c" }};
+const size_large = [_]AST.KeyVal{.{ .key = "data-size", .value = "large" }};
+
+test "setBlockAttrs: djot writes the attribute line before the block, rewrites it, and removes it" {
+    var fx = try Fixture.init("hello _em_\n", .djot);
+    defer fx.deinit();
+    try fx.ed.setBlockAttrs(0, &class_c);
+    try fx.expectSource("{.c}\nhello _em_\n");
+    const para = fx.find(.{ .tag = .para }).?;
+    try testing.expectEqualStrings("c", fx.ed.astView().attrsOf(para).get("class").?);
+
+    // Replace, not merge: the class goes, the size arrives; the block's own
+    // bytes are untouched throughout.
+    try fx.ed.setBlockAttrs(6, &size_large);
+    try fx.expectSource("{data-size=\"large\"}\nhello _em_\n");
+    try fx.ed.setBlockAttrs(22, &.{});
+    try fx.expectSource("hello _em_\n");
+    // Clearing what is already clear is a no-op.
+    try fx.ed.setBlockAttrs(0, &.{});
+    try fx.expectSource("hello _em_\n");
+}
+
+test "setBlockAttrs: djot carries a quote's marker onto the line, and takes it away with it" {
+    var fx = try Fixture.init("> hello\n", .djot);
+    defer fx.deinit();
+    try fx.ed.setBlockAttrs(3, &class_c);
+    try fx.expectSource("> {.c}\n> hello\n");
+    try fx.ed.setBlockAttrs(10, &.{});
+    try fx.expectSource("> hello\n");
+}
+
+test "setBlockAttrs: djot refuses a block that starts on a list item's marker line" {
+    // The line above is the list's, not the paragraph's: a `{…}` written
+    // there would attach to the list.
+    var fx = try Fixture.init("- hello\n", .djot);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.setBlockAttrs(3, &class_c));
+    try fx.expectSource("- hello\n");
+}
+
+test "setBlockAttrs: djot refuses attributes assembled from more than one block" {
+    var fx = try Fixture.init("{.a}\n{.b}\nhello\n", .djot);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.setBlockAttrs(12, &class_c));
+}
+
+test "setBlockAttrs: HTML re-prints the element with the new set" {
+    var fx = try Fixture.init("<p>a <em>b</em></p>\n", .html);
+    defer fx.deinit();
+    try fx.ed.setBlockAttrs(4, &class_c);
+    try fx.expectSource("<p class=\"c\">a <em>b</em></p>\n");
+    try fx.ed.setBlockAttrs(4, &.{});
+    try fx.expectSource("<p>a <em>b</em></p>\n");
+}
+
+test "setBlockAttrs: AsciiDoc writes its attribute line, and a heading keeps its level" {
+    var fx = try Fixture.init("hello\n", .asciidoc);
+    defer fx.deinit();
+    try fx.ed.setBlockAttrs(0, &class_c);
+    try fx.expectSource("[.c]\nhello\n");
+    const para = fx.find(.{ .tag = .para }).?;
+    try testing.expectEqualStrings("c", fx.ed.astView().attrsOf(para).get("class").?);
+    try fx.ed.setBlockAttrs(6, &.{});
+    try fx.expectSource("hello\n");
+}
+
+test "setBlockAttrs: Markdown wraps the block in a div, rewrites the div, and unwraps it" {
+    var fx = try Fixture.initWith("hello\n", .markdown, &html_elements_cfg);
+    defer fx.deinit();
+    try fx.ed.setBlockAttrs(0, &class_c);
+    try fx.expectSource("<div class=\"c\">\n\nhello\n\n</div>\n");
+    // The reparse pairs the tags: a div whose sole child is the paragraph.
+    const div = fx.find(.{ .container_named = "div" }).?;
+    try testing.expectEqualStrings("c", fx.ed.astView().attrsOf(div).get("class").?);
+    const para = fx.ed.astView().nodes[div].first_child.?;
+    try testing.expect(fx.ed.astView().nodes[para].kind == .para);
+    try testing.expect(fx.ed.astView().nodes[para].next_sibling == null);
+
+    // A second call from inside the paragraph rewrites the wrapper, and
+    // does not nest a second one.
+    try fx.ed.setBlockAttrs(20, &size_large);
+    try fx.expectSource("<div data-size=\"large\">\n\nhello\n\n</div>\n");
+    try fx.ed.setBlockAttrs(26, &.{});
+    try fx.expectSource("hello\n");
+}
+
+test "setBlockAttrs: Markdown's wrap carries a quote's marker on every line, the blanks included" {
+    var fx = try Fixture.initWith("> hello\n", .markdown, &html_elements_cfg);
+    defer fx.deinit();
+    try fx.ed.setBlockAttrs(3, &class_c);
+    try fx.expectSource("> <div class=\"c\">\n>\n> hello\n>\n> </div>\n");
+    try fx.ed.setBlockAttrs(22, &.{});
+    try fx.expectSource("> hello\n");
+}
+
+test "setBlockAttrs: a directive-origin div is not the wrapper a block sits in" {
+    // `:::div{.c}` is the author's directive; a block inside it gets a div of
+    // its own rather than the directive's attributes rewritten.
+    var cfg: format.ParseConfig = .{ .markdown = .{ .directives = true, .html_elements = true } };
+    var fx = try Fixture.initWith(":::div{.c}\nhello\n:::\n", .markdown, &cfg);
+    defer fx.deinit();
+    try fx.ed.setBlockAttrs(12, &size_large);
+    try fx.expectSource(":::div{.c}\n<div data-size=\"large\">\n\nhello\n\n</div>\n:::\n");
+}
+
+test "setBlockAttrs: without html_elements Markdown refuses, and touches nothing" {
+    var fx = try Fixture.init("hello\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.setBlockAttrs(0, &class_c));
+    try fx.expectSource("hello\n");
+}
+
+test "setBlockAttrs: the caret must be in a paragraph or heading, and the attributes must be readable" {
+    var fx = try Fixture.init("", .djot);
+    defer fx.deinit();
+    try testing.expectError(error.NoBlock, fx.ed.setBlockAttrs(0, &class_c));
+    try testing.expectError(error.InvalidRange, fx.ed.setBlockAttrs(1, &class_c));
+
+    var dj = try Fixture.init("hello\n", .djot);
+    defer dj.deinit();
+    try testing.expectError(error.InvalidAttribute, dj.ed.setBlockAttrs(0, &.{.{ .key = "a b", .value = "x" }}));
+    try testing.expectError(error.InvalidAttribute, dj.ed.setBlockAttrs(0, &.{.{ .key = "", .value = "x" }}));
+    try testing.expectError(error.InvalidAttribute, dj.ed.setBlockAttrs(0, &.{.{ .key = "k", .value = null }}));
+    try testing.expectError(error.InvalidAttribute, dj.ed.setBlockAttrs(0, &.{.{ .key = "k", .value = "a\nb" }}));
+    try testing.expectError(error.InvalidAttribute, dj.ed.setBlockAttrs(0, &.{.{ .key = "k", .value = "a\"b" }}));
+    try dj.expectSource("hello\n");
 }
