@@ -2,11 +2,12 @@
 title: Proposals
 description: Arguments for a change to twig, one file each — a case that may lose
 created: 2026-09-09
-updated: 2026-09-16
+updated: 2026-09-18
 part_of: '[Twig](/README.md)'
 contents:
 - '[A twig-native document markup language](twig-native-language.md)'
 - '[Editable HTML block elements](editable-html-block-elements.md)'
+- '[Proposal: presentation as attributes](presentation-as-attributes.md)'
 - '[Proposal: hard line breaks inside table cells](in-cell-line-breaks.md)'
 - '[Proposal: format-correct literal text insertion](literal-text-insertion.md)'
 ---
