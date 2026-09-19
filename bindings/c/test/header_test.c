@@ -440,6 +440,24 @@ static void test_diagnostics_report_what_a_conversion_loses(void) {
           TWIG_STATUS_UNSUPPORTED_FORMAT);
 
     twig_document_destroy(doc);
+
+    // A node that survives while its ATTRIBUTES do not is the fourth and fifth
+    // code: the paragraph converts to Markdown, its class does not.
+    const char *classed = "{.center}\nhello\n";
+    TwigDocument *doc2 = NULL;
+    CHECK(twig_parse((const uint8_t *)classed, strlen(classed), TWIG_FORMAT_DJOT, &doc2) ==
+          TWIG_STATUS_OK);
+    CHECK(twig_document_diagnostics(doc2, TWIG_FORMAT_MARKDOWN, &warnings, &len) ==
+          TWIG_STATUS_OK);
+    CHECK(len == 1);
+    if (len == 1) {
+        CHECK(warnings[0].fidelity == TWIG_FIDELITY_ATTRS_DROPPED);
+        CHECK(strcmp(warnings[0].kind, "para") == 0);
+    }
+    CHECK(twig_document_diagnostics(doc2, TWIG_FORMAT_HTML, &warnings, &len) ==
+          TWIG_STATUS_OK);
+    CHECK(len == 0);
+    twig_document_destroy(doc2);
 }
 
 static void test_definitions_are_reachable_only_through_their_own_call(void) {

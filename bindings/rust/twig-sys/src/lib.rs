@@ -186,6 +186,8 @@ pub struct TwigWarning {
 pub const TWIG_FIDELITY_FAITHFUL: c_int = 0;
 pub const TWIG_FIDELITY_DEGRADED: c_int = 1;
 pub const TWIG_FIDELITY_DROPPED: c_int = 2;
+pub const TWIG_FIDELITY_ATTRS_DEGRADED: c_int = 3;
+pub const TWIG_FIDELITY_ATTRS_DROPPED: c_int = 4;
 
 /// The sentinel `node_id` for "no such node" in a [`TwigFlatNode`] link field.
 pub const TWIG_NO_NODE: u32 = u32::MAX;
