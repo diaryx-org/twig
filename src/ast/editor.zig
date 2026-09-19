@@ -125,12 +125,23 @@ pub const Editor = struct {
         /// format has no spelling for, which is not one an editor may write:
         /// the bytes would be content, not a colour.
         InvalidColor,
-        /// A footnote label this format cannot hold: empty, or carrying a line
-        /// end or a reference bracket.
+        /// A label this format cannot hold. For a footnote: empty, or carrying
+        /// a line end or a reference bracket. For a directive: carrying a line
+        /// end or a square bracket, either of which closes the `[…]` the label
+        /// is written in. An EMPTY directive label is legitimate — `::name[]`
+        /// — and is a different document from no label at all, which is
+        /// spelled by passing `null`.
         InvalidLabel,
         /// A table shape no pipe format spells: zero columns, or zero body rows
         /// under the header.
         InvalidShape,
+        /// A directive name outside the grammar every format reads one back
+        /// by: an ASCII letter followed by letters, digits, `-` and `_`. A
+        /// name is the whole identity of the node being written — there is no
+        /// `::` without one — and it is written where a delimiter would
+        /// otherwise be, so anything outside that alphabet reparses as
+        /// something else. See `checkDirectiveName`.
+        InvalidName,
         /// The `Syntax` table has no spelling for this gesture in this format.
         UnsupportedFormat,
         /// No block covers the offset/range this gesture needs one for.
@@ -259,6 +270,7 @@ pub const Editor = struct {
         table_move_row,
         table_move_column,
         insert_table,
+        insert_directive,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -339,6 +351,12 @@ pub const Editor = struct {
             .table_move_column,
             .insert_table,
             => syntax.table_spelling != null,
+            // Both halves, and neither implies the other here: the renderer is
+            // how the bytes are written, and the claim is whether the parser
+            // hands them back as the container they were. `assertCoherent`
+            // pins the first onto the second, so this cannot answer true with
+            // nothing to print through.
+            .insert_directive => syntax.names_leaf_containers and syntax.renderBlock != null,
         };
     }
 
@@ -1405,10 +1423,101 @@ pub const Editor = struct {
         return self.insertBlockAfter(offset, bytes);
     }
 
+    /// Insert a LEAF DIRECTIVE — Markdown's `::name[label]{attrs}` — as its own
+    /// block after the block `offset` sits in.
+    ///
+    /// What a name MEANS is the host application's, not twig's: this writes a
+    /// named `container` with `form = .block_leaf` and asks the format to
+    /// spell it. A rich-text editor's page break is `insertDirective(off,
+    /// "page-break", null, &.{})`, and the same call with `"embed"` and a
+    /// `src` is an embed — twig has no vocabulary of directive names and reads
+    /// none back.
+    ///
+    /// The placement is `insertThematicBreak`'s, decision for decision, shared
+    /// with it and `insertTable` as `insertBlockAfter`: after the caret's
+    /// block rather than at the caret, blank-separated on both sides, a
+    /// quote's prefix on every line — djot's two-line fence included — and
+    /// column zero after a list item.
+    ///
+    /// The bytes are the format's own, through the FRAGMENT RENDERER: the node
+    /// is built with `AST.Builder`, `label` becomes its single inline child
+    /// (which is what the `[label]` brackets print from), `attrs` are set on
+    /// it, and `Syntax.renderBlock` spells the result. So the spelling is the
+    /// serializer's — `::name` in Markdown, an empty `::: name` fence in djot,
+    /// `<name></name>` in HTML — and stays that way when a serializer's does.
+    ///
+    /// Gated on `Syntax.names_leaf_containers`, which is the narrower question
+    /// than "can this format print one": every format with a renderer prints
+    /// SOMETHING for a named leaf, and the gate asks whether the parser hands
+    /// that back as a container carrying the name. In Markdown the answer is
+    /// the parse config's — `::name` is a paragraph of colons without
+    /// `ParseOptions.directives` — so an editor over a document parsed without
+    /// the extension gets `error.UnsupportedFormat` here, exactly as
+    /// `setMarkColor` does without `highlight_colors`.
+    ///
+    /// `error.InvalidName` for a name outside `checkDirectiveName`'s grammar —
+    /// an ASCII letter then letters, digits, `-` and `_` — which is checked
+    /// here rather than per format because a name is written where a delimiter
+    /// would otherwise be, and anything else reparses as something other than
+    /// the container it was meant to be. `error.InvalidLabel` for a label
+    /// carrying a line end or a square bracket, either of which closes the
+    /// `[…]` early. `error.InvalidRange` for an `offset` past the source.
+    /// There is no `error.NoBlock` — an empty document is a legitimate place
+    /// for one, as it is for a rule.
+    pub fn insertDirective(
+        self: *Editor,
+        offset: usize,
+        name: []const u8,
+        label: ?[]const u8,
+        attrs: []const AST.KeyVal,
+    ) Error!void {
+        if (!self.syntax.names_leaf_containers) return error.UnsupportedFormat;
+        // `assertCoherent` pins this non-null wherever the claim above is
+        // made, so the `orelse` is the compiler's requirement rather than a
+        // second gate; `supports` states both halves for the same reason.
+        const render = self.syntax.renderBlock orelse return error.UnsupportedFormat;
+        if (offset > self.sourceBytes().len) return error.InvalidRange;
+        try checkDirectiveName(name);
+        // A label is written inside `[…]`, so a bracket closes it early and
+        // the tail becomes ordinary text beside the directive — the same
+        // reasoning `insertFootnote` applies to its own reference brackets.
+        if (label) |l| {
+            if (std.mem.indexOfAny(u8, l, "\r\n[]") != null) return error.InvalidLabel;
+        }
+        const allocator = self.splicer.allocator;
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        // A label is the container's INLINE CHILDREN, which is where every
+        // serializer looks for it: Markdown prints `[` … `]` around them and
+        // writes nothing at all when there are none, so "no label" is an
+        // absent child rather than an empty one.
+        var child: [1]AST.Node.Id = undefined;
+        var children: []const AST.Node.Id = child[0..0];
+        if (label) |l| {
+            child[0] = try b.addLeaf(.{ .str = l });
+            children = child[0..1];
+        }
+        const root = try b.addContainer(
+            .{ .container = .{ .name = name, .form = .block_leaf } },
+            children,
+        );
+        if (attrs.len != 0) try b.setAttrs(root, .{ .entries = attrs });
+
+        const view = b.view(root);
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        try renderNode(allocator, render, &view, root, &out.writer);
+        // No trim here, unlike `spliceRendered`: `insertBlockAfter`
+        // re-terminates every line itself and trims the renderer's trailing
+        // newline on the way in.
+        return self.insertBlockAfter(offset, out.written());
+    }
+
     /// Write `body` — one or more `\n`-terminated lines — as a block of its
     /// own after the block `offset` sits in: the shared placement behind
-    /// `insertThematicBreak` and `insertTable`, whose doc comments own the
-    /// reasoning for each decision made here.
+    /// `insertThematicBreak`, `insertTable` and `insertDirective`, whose doc
+    /// comments own the reasoning for each decision made here.
     fn insertBlockAfter(self: *Editor, offset: usize, body: []const u8) Error!void {
         const src = self.sourceBytes();
         const allocator = self.splicer.allocator;
@@ -3339,6 +3448,36 @@ fn checkInfoString(fence: syntax_mod.CodeFence, lang: []const u8) Editor.Error!v
     if (std.mem.indexOfAny(u8, lang, "\r\n") != null) return error.InvalidLanguage;
     if (std.mem.indexOfScalar(u8, lang, fence.char) != null) return error.InvalidLanguage;
     if (std.mem.indexOfAny(u8, lang, fence.info_forbids) != null) return error.InvalidLanguage;
+}
+
+/// Refuse a directive name that would not come back as the name of a
+/// container. The grammar is `markdown/attributes.zig`'s `scanName` — an ASCII
+/// letter, then letters, digits, `-` and `_` — minus the colon that one also
+/// admits, and it is checked HERE, once, rather than per format, because a
+/// name is written where a delimiter would otherwise be in every spelling of
+/// one. The failures are not subtle and they differ per format, which is
+/// exactly why the editor takes the intersection:
+///
+///   * A SPACE: Markdown reads `::a b` as a paragraph holding an INLINE
+///     directive named `a`, djot reads `::: a b` as a paragraph of literal
+///     colons, and HTML truncates `<a b>` to a tag named `a` with an
+///     attribute. Three different wrong answers from one gesture.
+///   * A BRACKET or a brace: `::]{ ` is no container at all, in any of them.
+///   * A LEADING DIGIT: Markdown's own `scanName` requires a letter, so
+///     `::1x` is a paragraph — the rule that keeps `:30` from being a name.
+///   * A COLON is the one Markdown itself would accept, and djot would not:
+///     its class grammar has none, so `::: a:b` reparses as a paragraph. A
+///     format-neutral gesture cannot mint a name only some formats read.
+///
+/// Case is not checked, because it is not a refusal: HTML folds a tag name, so
+/// an upper-case name comes back lower-cased there while every other format
+/// keeps it. That is a spelling difference, not a lost node.
+fn checkDirectiveName(name: []const u8) Editor.Error!void {
+    if (name.len == 0) return error.InvalidName;
+    if (!std.ascii.isAlphabetic(name[0])) return error.InvalidName;
+    for (name[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return error.InvalidName;
+    }
 }
 
 // ── Task-checkbox internals ────────────────────────────────────────────────

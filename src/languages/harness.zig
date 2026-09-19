@@ -170,6 +170,80 @@ fn expectRenderBlock(entry: format.Entry) !void {
     try expectFragmentReparses(entry, render, &m, image, .image, "a cat");
 }
 
+/// The parse configs a `names_leaf_containers` claim can be made under. A
+/// claim is a claim about a TABLE, and Markdown has one table per option
+/// combination — `::name` is a paragraph of colons without
+/// `ParseOptions.directives` — so the check below asks every table the registry
+/// row can produce for these, and parses each with the very config that table
+/// came from. Every other row answers the same table for both, and is checked
+/// once.
+const named_container_configs = [_]format.ParseConfig{
+    .{},
+    .{ .markdown = .{ .directives = true } },
+};
+
+/// The table `entry` holds for `cfg` — `format.syntaxForConfig` without the
+/// `Format` round trip, since the harness already has the row in hand.
+fn tableFor(entry: format.Entry, cfg: *const format.ParseConfig) *const Syntax {
+    const pick = entry.syntaxFor orelse return entry.syntax;
+    return pick(cfg);
+}
+
+/// What `Editor.insertDirective` assumes of a table claiming
+/// `Syntax.names_leaf_containers`: a named LEAF CONTAINER carrying an
+/// attribute, printed through `renderBlock`, reparses to a container that
+/// still carries the name — as its own `name`, or as a `class` where the
+/// format has nowhere else to put one (djot's fence is anonymous; AsciiDoc's
+/// open block carries the name as its style) — with its attributes intact.
+///
+/// The name is `x-embed` and not the obvious `embed`, because `embed` is a
+/// VOID element in HTML: the serializer writes `<embed src="…">` with no
+/// closing tag, so the contract would pass without ever exercising the
+/// `<name></name>` tag pair the gesture actually mints. A name no format
+/// spells natively is what makes this a test of the generic path.
+///
+/// The name and the attributes are the whole claim, and the attributes only
+/// where the spelling has room — see the field's doc, and AsciiDoc's `<<<`.
+/// The reparsed `form` is not part of it: HTML leaves an unknown element
+/// unclassified (`form = null`), which is the honest answer there and no
+/// obstacle to the gesture. Nor is the label, which only Markdown and djot
+/// keep.
+fn expectNamedLeafContainer(entry: format.Entry, cfg: *const format.ParseConfig) !void {
+    const render = tableFor(entry, cfg).renderBlock.?;
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const label = try b.addLeaf(.{ .str = "Contents" });
+    const root = try b.addContainer(
+        .{ .container = .{ .name = "x-embed", .form = .block_leaf } },
+        &.{label},
+    );
+    try b.setAttrs(root, .{ .entries = &.{.{ .key = "src", .value = "x.html" }} });
+    const view = b.view(root);
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try render(testing.allocator, &view, root, &out.writer);
+    errdefer std.debug.print("\n--- directive fragment source ---\n{s}\n", .{out.written()});
+
+    var parsed = try entry.parse(cfg, testing.allocator, out.written());
+    defer parsed.deinit();
+    const ast = &parsed.doc.ast;
+    for (ast.nodes, 0..) |n, i| {
+        const c = switch (n.kind) {
+            .container => |c| c,
+            else => continue,
+        };
+        const named = std.mem.eql(u8, c.name, "x-embed") or blk: {
+            const class = ast.attrsOf(@intCast(i)).get("class") orelse break :blk false;
+            break :blk std.mem.indexOf(u8, class, "x-embed") != null;
+        };
+        if (!named) continue;
+        const src = ast.attrsOf(@intCast(i)).get("src") orelse return error.DirectiveLostItsAttrs;
+        try testing.expectEqualStrings("x.html", src);
+        return;
+    }
+    return error.DirectiveDidNotReparse;
+}
+
 /// Print `root` of `b` through `render`, parse the print, and find a node of
 /// `tag` whose text is `text` — the reparse promise each gesture fragment
 /// rests on. A link or image also has to read its destination back.
@@ -213,6 +287,22 @@ test "harness: every declared renderer keeps the engine's promise" {
         errdefer std.debug.print("\n{s}: renderer contract\n", .{@tagName(entry.id)});
         if (entry.syntax.renderText != null) try expectRenderText(entry);
         if (entry.syntax.renderBlock != null) try expectRenderBlock(entry);
+
+        // The directive claim, per table rather than per row — and each table
+        // only once, since a row whose spelling does not move with the config
+        // answers the same address for every entry in the list.
+        var seen: [named_container_configs.len]*const Syntax = undefined;
+        var n: usize = 0;
+        next: for (&named_container_configs) |*cfg| {
+            const t = tableFor(entry, cfg);
+            if (!t.names_leaf_containers) continue;
+            for (seen[0..n]) |s| {
+                if (s == t) continue :next;
+            }
+            seen[n] = t;
+            n += 1;
+            try expectNamedLeafContainer(entry, cfg);
+        }
     }
 }
 

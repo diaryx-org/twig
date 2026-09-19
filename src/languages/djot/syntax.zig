@@ -129,6 +129,13 @@ pub const table: syntax.Syntax = .{
     .renderText = syntax.renderTextByAlphabet,
     .renderBlock = syntax.renderBlockVia(serializer.serializeAstAlloc),
     .spellsAutolink = spellsAutolink,
+    // A named leaf container round-trips as a CLASS: djot's fenced div is
+    // anonymous, so the serializer writes `::: name` and the parser reads that
+    // name back as `class=name` on a nameless container. That is the caveat
+    // `Syntax.names_leaf_containers` admits — the name survives, and which
+    // field it survives in is the format's own business — and it is why the
+    // claim is worded "carries the name" rather than "is named".
+    .names_leaf_containers = true,
     // No `cell_line_break`: djot has no native in-cell hard break, and spelling
     // one as `<br>` would emit non-idiomatic djot that any other djot reader
     // renders as literal `<br>` text. So it stays `null` — `insertLineBreak`

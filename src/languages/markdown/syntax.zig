@@ -179,9 +179,9 @@ const base: syntax.Syntax = .{
 // reparses with — so the spelling an editor may write and the spelling its own
 // reparse reads back cannot disagree.
 //
-// They are DERIVED from `base` rather than written out. Six near-copies of one
-// two-hundred-line literal is where the sixth quietly differs in an escape
-// alphabet, and the difference between them is three fields.
+// They are DERIVED from `base` rather than written out. Twelve near-copies of
+// one two-hundred-line literal is where the twelfth quietly differs in an
+// escape alphabet, and the difference between them is four fields.
 //
 // What is NOT keyed here is the serializer's question. Converting a djot
 // `mark` down to Markdown spells `==x==` whatever the parse config said,
@@ -208,13 +208,19 @@ const Highlights = enum(u2) { none, marks, colors };
 
 /// `base` with the extension-gated answers filled in — the whole difference
 /// between one table here and the next.
-fn derive(comptime strikethrough: bool, comptime highlights: Highlights) syntax.Syntax {
+fn derive(comptime strikethrough: bool, comptime highlights: Highlights, comptime directives: bool) syntax.Syntax {
     var t = base;
     setAuthorable(&t, .delete, strikethrough);
     setAuthorable(&t, .mark, highlights != .none);
     if (highlights == .colors) {
         t.mark_colors = .{ .attr_key = highlight.attr_key, .colors = &color_spellings };
     }
+    // The serializer prints `::name[label]{attrs}` under any options — that is
+    // how a djot div converts down — but only `ParseOptions.directives` reads
+    // it back as a container. Without the flag it is a paragraph of literal
+    // colons, so `insertDirective` may not mint it, exactly as `toggleInline`
+    // may not mint `==x==` without `highlight`.
+    t.names_leaf_containers = directives;
     return t;
 }
 
@@ -224,13 +230,18 @@ fn setAuthorable(t: *syntax.Syntax, comptime m: AST.InlineMark, yes: bool) void 
     t.inline_delims.set(m, d);
 }
 
-/// Every table Markdown is authored by, indexed `[strikethrough][highlights]`.
-/// Small on purpose: only the flags that move an ANSWER are keys, so `math`
-/// and `directives` — which add nodes no gesture authors — are not here.
-const tables: [2][3]syntax.Syntax = blk: {
-    var out: [2][3]syntax.Syntax = undefined;
+/// Every table Markdown is authored by, indexed
+/// `[strikethrough][highlights][directives]`. Small on purpose: only the flags
+/// that move an ANSWER are keys, so `math` and `html_elements` — which add
+/// nodes no gesture authors — are not here. `directives` is a key because
+/// `Editor.insertDirective` authors one: it used not to be, and this comment
+/// used to say so.
+const tables: [2][3][2]syntax.Syntax = blk: {
+    var out: [2][3][2]syntax.Syntax = undefined;
     for ([_]bool{ false, true }, 0..) |st, i| {
-        for (std.enums.values(Highlights), 0..) |h, j| out[i][j] = derive(st, h);
+        for (std.enums.values(Highlights), 0..) |h, j| {
+            for ([_]bool{ false, true }, 0..) |dir, k| out[i][j][k] = derive(st, h, dir);
+        }
     }
     const frozen = out;
     break :blk frozen;
@@ -258,7 +269,7 @@ pub fn forOptions(opts: Options) *const syntax.Syntax {
         .colors
     else
         .marks;
-    return &tables[@intFromBool(opts.strikethrough)][@intFromEnum(h)];
+    return &tables[@intFromBool(opts.strikethrough)][@intFromEnum(h)][@intFromBool(opts.directives)];
 }
 
 test "markdown SPELLS every mark and AUTHORS the ones its parse config reads back" {
@@ -296,11 +307,11 @@ test "markdown SPELLS every mark and AUTHORS the ones its parse config reads bac
 }
 
 test "every derived table differs from base in the authorable flags and nothing else" {
-    // The claim that makes deriving safe: `derive` touches three fields, so a
+    // The claim that makes deriving safe: `derive` touches four fields, so a
     // future edit to it cannot quietly change an escape alphabet or a marker
-    // in one table out of six.
+    // in one table out of twelve.
     for (&tables) |*row| {
-        for (row) |*t| {
+        for (&row.*) |*plane| for (plane) |*t| {
             t.assertCoherent();
             for (std.enums.values(AST.InlineMark)) |m| {
                 const b = base.inline_delims.get(m).?;
@@ -318,12 +329,16 @@ test "every derived table differs from base in the authorable flags and nothing 
             // A palette only ever rides on an authorable mark, which
             // `assertCoherent` also pins from the other side.
             if (t.mark_colors != null) try std.testing.expect(t.inline_delims.get(.mark).?.authorable);
-        }
+            // And the directive claim only ever rides on the renderer that
+            // prints one — the other implication `assertCoherent` pins.
+            if (t.names_leaf_containers) try std.testing.expect(t.renderBlock != null);
+        };
     }
-    // `base` itself is nobody's answer: it states neither gated flag.
+    // `base` itself is nobody's answer: it states no gated flag at all.
     try std.testing.expect(!base.inline_delims.get(.mark).?.authorable);
     try std.testing.expect(!base.inline_delims.get(.delete).?.authorable);
     try std.testing.expect(base.mark_colors == null);
+    try std.testing.expect(!base.names_leaf_containers);
 }
 
 test "the colour palette offers every circle highlight.zig knows" {
@@ -380,16 +395,37 @@ test "forOptions: each flag moves exactly its own mark" {
     // Colours are inert without a highlight to colour, as in the parser.
     try std.testing.expectEqual(table, forOptions(.{ .highlight_colors = true }));
 
-    // Six configurations, six distinct tables — the set has no duplicate a
-    // caller could reach two ways.
-    const all = [_]*const syntax.Syntax{
-        forOptions(.{ .strikethrough = false }),
-        forOptions(.{ .strikethrough = false, .highlight = true }),
-        forOptions(.{ .strikethrough = false, .highlight = true, .highlight_colors = true }),
-        forOptions(.{}),
-        hi,
-        colors,
-    };
+    // Directives are the third axis, and they move only their own answer:
+    // `::name` is a paragraph of colons under the defaults and a container
+    // with the flag on, so a gesture may mint one only on the right.
+    try std.testing.expect(!table.names_leaf_containers);
+    const dir = forOptions(.{ .directives = true });
+    try std.testing.expect(dir.names_leaf_containers);
+    try std.testing.expect(dir != table);
+    try std.testing.expect(dir.inline_delims.get(.delete).?.authorable);
+    try std.testing.expect(!dir.inline_delims.get(.mark).?.authorable);
+    // A flag that keys no table still changes nothing about which one is
+    // returned — the point of the set being small.
+    try std.testing.expectEqual(table, forOptions(.{ .math = true }));
+    try std.testing.expectEqual(dir, forOptions(.{ .directives = true, .math = true }));
+
+    // Twelve configurations, twelve distinct tables — the set has no duplicate
+    // a caller could reach two ways.
+    var all: [12]*const syntax.Syntax = undefined;
+    var n: usize = 0;
+    for ([_]bool{ false, true }) |st| {
+        for ([_][2]bool{ .{ false, false }, .{ true, false }, .{ true, true } }) |h| {
+            for ([_]bool{ false, true }) |d| {
+                all[n] = forOptions(.{
+                    .strikethrough = st,
+                    .highlight = h[0],
+                    .highlight_colors = h[1],
+                    .directives = d,
+                });
+                n += 1;
+            }
+        }
+    }
     for (all, 0..) |a, i| {
         for (all[i + 1 ..]) |b| try std.testing.expect(a != b);
     }

@@ -141,6 +141,14 @@ pub const table: syntax.Syntax = .{
     // The spellings no table can hold — see this file's doc comment.
     .renderText = renderText,
     .renderBlock = renderBlock,
+    // An unknown element is the one HTML shape that needs no table at all: the
+    // parser reads `<page-break></page-break>` back as a container whose
+    // `name` is the tag, attributes and all, so a named leaf container printed
+    // through `renderBlock` reparses carrying its name. (The reparsed `form`
+    // is `null` — this parser classifies only `div` and `span`, because
+    // whether any other tag is a block is a property of the stylesheet — which
+    // is outside what `Syntax.names_leaf_containers` claims.)
+    .names_leaf_containers = true,
 
     // ── Deliberately absent ────────────────────────────────────────────────
     // `heading_marker`, `container_spelling`, `code_fence`, `link_*_escapes`:

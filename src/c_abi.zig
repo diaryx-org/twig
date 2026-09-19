@@ -1686,6 +1686,7 @@ fn statusOfEditorError(err: twig.Editor.Error) TwigStatus {
         error.InvalidLabel,
         error.InvalidColor,
         error.InvalidShape,
+        error.InvalidName,
         => .invalid_argument,
         error.UnsupportedFormat => .unsupported_format,
         error.NoBlock => .not_found,
@@ -2845,6 +2846,7 @@ const TwigGesture = enum(c_int) {
     table_move_column = 23,
     set_mark_color = 24,
     insert_table = 25,
+    insert_directive = 26,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2876,6 +2878,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         23 => .table_move_column,
         24 => .set_mark_color,
         25 => .insert_table,
+        26 => .insert_directive,
         else => null,
     };
 }
@@ -3080,6 +3083,60 @@ pub export fn twig_editor_insert_table(
     const handle = asEditor(raw);
 
     handle.editor.insertTable(offset, rows, cols) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Insert a leaf directive — `::name[label]{attrs}` — as its own block after
+/// the block at `offset`. See `twig.h` for the semantics and
+/// `twig.Editor.insertDirective` for the implementation: the placement is
+/// `twig_editor_insert_thematic_break`'s, and the bytes are the format's own
+/// spelling through its fragment renderer.
+///
+/// A NULL `label_ptr` with a zero length is NO LABEL, which is the distinction
+/// `sliceOf` cannot make for an optional string: it answers an empty slice
+/// there, and an empty label (`::name[]`) is a different document from a
+/// directive without one.
+pub export fn twig_editor_insert_directive(
+    ed: ?*TwigEditor,
+    offset: usize,
+    name_ptr: ?[*]const u8,
+    name_len: usize,
+    label_ptr: ?[*]const u8,
+    label_len: usize,
+    attrs_ptr: ?[*]const TwigKeyVal,
+    attrs_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const name = sliceOf(name_ptr, name_len) orelse return .invalid_argument;
+    const label: ?[]const u8 = if (label_ptr) |p|
+        p[0..label_len]
+    else if (label_len == 0)
+        null
+    else
+        return .invalid_argument;
+
+    const allocator = activeAllocator();
+    // The decode array borrows the caller's bytes and is only needed for the
+    // duration of the call — `Builder.setAttrs`, one layer down, copies every
+    // key and value into owned storage. Same contract as
+    // `twig_builder_set_attrs`, which is where this shape comes from.
+    var entries: []twig.AST.KeyVal = &.{};
+    defer if (entries.len != 0) allocator.free(entries);
+    if (attrs_len != 0) {
+        const c_kvs = (attrs_ptr orelse return .invalid_argument)[0..attrs_len];
+        entries = allocator.alloc(twig.AST.KeyVal, attrs_len) catch return .out_of_memory;
+        for (c_kvs, entries) |c, *e| {
+            const key = sliceOf(c.key, c.key_len) orelse return .invalid_argument;
+            const value: ?[]const u8 = if (c.value) |vp| vp[0..c.value_len] else null;
+            e.* = .{ .key = key, .value = value };
+        }
+    }
+
+    handle.editor.insertDirective(offset, name, label, entries) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;

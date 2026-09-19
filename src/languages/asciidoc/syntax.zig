@@ -121,6 +121,21 @@ pub const table: syntax.Syntax = .{
     .renderText = syntax.renderTextByAlphabet,
     .renderBlock = syntax.renderBlockVia(serializer.serializeAstAlloc),
     .spellsAutolink = spellsAutolink,
+    // A named leaf container survives as a STYLE, which is djot's class caveat
+    // in AsciiDoc's spelling: a name the serializer has no macro for is written
+    // as an open block carrying it, `[name]\n--\n--`, and the parser reads that
+    // style back as `class=name` on an `open` container. Where the name IS one
+    // AsciiDoc spells natively the native form is written instead —
+    // `page-break` is `<<<`, which reparses as a container actually named
+    // `page-break`. Neither is special-cased; the serializer decides, and the
+    // gesture splices what it gets.
+    //
+    // The NAME is all this claims, and AsciiDoc is why the field's doc says so:
+    // `<<<` is three characters with nowhere to hang an attribute, so a
+    // `page-break` carrying `src=x.html` keeps its name and loses the `src`.
+    // An open block does carry them, so the loss is a property of the native
+    // spellings rather than of the format.
+    .names_leaf_containers = true,
 
     // ── Deliberately absent ────────────────────────────────────────────────
     // `link_text_escapes`, `link_dest_escapes`, `footnote`, `table_spelling`,

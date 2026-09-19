@@ -1010,6 +1010,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_TABLE_MOVE_COLUMN = 23,
     TWIG_GESTURE_SET_MARK_COLOR = 24,
     TWIG_GESTURE_INSERT_TABLE = 25,
+    TWIG_GESTURE_INSERT_DIRECTIVE = 26,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1539,6 +1540,66 @@ TwigStatus twig_editor_insert_table(
     size_t offset,
     size_t rows,
     size_t cols,
+    TwigChange *out_change
+);
+
+// Insert a LEAF DIRECTIVE — Markdown's `::name[label]{attrs}` — as its own
+// block after the block `offset` sits in. The placement is
+// twig_editor_insert_thematic_break's, decision for decision: after the caret's
+// block rather than at the caret, blank-line separated on both sides, carrying
+// a block quote's prefix on EVERY line (djot's spelling is two lines, and a
+// marker on the opener alone would leave the closing fence outside the quote),
+// and at column zero after a list item.
+//
+// What a name MEANS is the host application's. Twig writes a named container
+// and reads one back; it has no vocabulary of directive names, so `page-break`
+// and `embed` are the caller's words and nothing here interprets them. The
+// bytes are the format's own spelling of that node, through its fragment
+// renderer: `::name[label]{attrs}` in Markdown, an empty `::: name` fence in
+// djot (whose div is anonymous, so the name comes back as a CLASS), and
+// `<name></name>` in HTML.
+//
+// `name` is required. `label` is optional in this ABI's usual spelling with one
+// wrinkle: a NULL label_ptr with label_len == 0 is NO LABEL, which is a
+// different document from an empty one (`::name` against `::name[]`), so a
+// non-NULL pointer with a zero length writes the empty label. `attrs` is the
+// same (key, value) array twig_builder_set_attrs takes, with a NULL value for a
+// bare attribute; attrs_len == 0 (with any attrs_ptr) writes none.
+//
+// A NAME is an ASCII letter followed by letters, digits, `-` and `_` — the
+// grammar every format reads one back by, checked before anything is written
+// because a name goes where a delimiter would otherwise be. `page-break` and
+// `x-embed` are names; `a b`, `a:b`, `]{` and `1x` are not, and each is a
+// DIFFERENT wrong document per format (`::a b` is a paragraph holding an inline
+// directive named `a`, `::: a:b` is a paragraph of colons, `<a b>` is a tag
+// named `a`). A LABEL may not carry a line end or a square bracket, either of
+// which closes the `[...]` it is written in.
+//
+// TWIG_STATUS_INVALID_ARGUMENT for a name outside that grammar (an empty one
+// included), a label carrying a line end or a bracket, an `offset` past the
+// source, a NULL name_ptr with a non-zero length, or a NULL attrs_ptr with a
+// non-zero attrs_len. There is no TWIG_STATUS_NOT_FOUND: an empty document is a
+// fine place for a directive.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT where the format's parser would not read the
+// printed bytes back as a container carrying the name, checked before anything
+// is read. Ask twig_format_supports_ext with TWIG_GESTURE_INSERT_DIRECTIVE —
+// and _ext is the call that matters here, because for MARKDOWN the answer is
+// the parse config's: `::name` is a paragraph of literal colons without
+// TWIG_MD_DIRECTIVES, so twig_format_supports (default options) answers 0 for
+// Markdown and twig_format_supports_ext with TWIG_MD_DIRECTIVES answers 1 —
+// exactly as TWIG_GESTURE_SET_MARK_COLOR behaves with TWIG_MD_HIGHLIGHT_COLORS.
+// The editor must have been created with the same flag (twig_editor_create_ext)
+// or the call itself refuses. Fills out_change on success if non-NULL.
+TwigStatus twig_editor_insert_directive(
+    TwigEditor *editor,
+    size_t offset,
+    const uint8_t *name_ptr,
+    size_t name_len,
+    const uint8_t *label_ptr,
+    size_t label_len,
+    const TwigKeyVal *attrs_ptr,
+    size_t attrs_len,
     TwigChange *out_change
 );
 

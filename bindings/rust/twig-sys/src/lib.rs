@@ -660,6 +660,17 @@ unsafe extern "C" {
         cols: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_insert_directive(
+        editor: *mut TwigEditor,
+        offset: usize,
+        name_ptr: *const u8,
+        name_len: usize,
+        label_ptr: *const u8,
+        label_len: usize,
+        attrs_ptr: *const TwigKeyVal,
+        attrs_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
     pub fn twig_editor_insert_link(
         editor: *mut TwigEditor,
         start: usize,

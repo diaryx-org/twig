@@ -801,6 +801,12 @@ pub enum Gesture {
     /// Mint a fresh table — [`Editor::insert_table`]. Behind the same gate as
     /// the seven table edits: a format that can re-spell a table can write one.
     InsertTable,
+    /// Write a leaf directive — [`Editor::insert_directive`]. Supported where
+    /// the format's parser reads a printed named container back as one, which
+    /// for Markdown means [`MarkdownExtensions::directives`]: ask
+    /// [`Format::supports_with`] rather than [`Format::supports`], which
+    /// answers for default options and so answers `false` there.
+    InsertDirective,
 }
 
 impl Gesture {
@@ -836,6 +842,7 @@ impl Gesture {
             Gesture::TableMoveColumn => (23, 0),
             Gesture::SetMarkColor => (24, 0),
             Gesture::InsertTable => (25, 0),
+            Gesture::InsertDirective => (26, 0),
         }
     }
 }
@@ -2265,6 +2272,91 @@ impl Editor {
     ) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_insert_table(ed, offset, rows, cols, out)
+        })
+    }
+
+    /// Insert a **leaf directive** — Markdown's `::name[label]{attrs}` — as its
+    /// own block after the block `offset` sits in.
+    ///
+    /// The placement is [`Editor::insert_thematic_break`]'s, decision for
+    /// decision: after the caret's block rather than at the caret, blank-line
+    /// separated on both sides, a block quote's prefix on **every** line (djot
+    /// spells this over two lines, and a marker on the opener alone would leave
+    /// the closing fence outside the quote), and column zero after a list item.
+    ///
+    /// What a name *means* is the application's. Twig writes a named container
+    /// and reads one back; `"page-break"` and `"embed"` are your words and
+    /// nothing here interprets them. The bytes are the format's own spelling of
+    /// that node: `::name{…}` in Markdown, an empty `::: name` fence in djot
+    /// (whose div is anonymous, so the name comes back as a *class*),
+    /// `<name>…</name>` in HTML.
+    ///
+    /// `label` is the bracketed text, `None` for none — a different document
+    /// from `Some("")` (`::name` against `::name[]`). `attrs` is the
+    /// `(key, Some(value))` / `(key, None)` pair list [`Builder::set_attrs`]
+    /// takes.
+    ///
+    /// A `name` is an ASCII letter followed by letters, digits, `-` and `_` —
+    /// the grammar every format reads one back by, checked before anything is
+    /// written because a name goes where a delimiter would otherwise be.
+    /// `"page-break"` and `"x-embed"` are names; `"a b"`, `"a:b"`, `"]{"` and
+    /// `"1x"` are not, and each is a *different* wrong document per format
+    /// (`::a b` is a paragraph holding an inline directive named `a`,
+    /// `::: a:b` is a paragraph of colons). A `label` may not carry a line end
+    /// or a square bracket, either of which closes the `[…]` early.
+    ///
+    /// [`Error::InvalidArgument`] for a name outside that grammar (an empty one
+    /// included), such a label, or an `offset` past the source. There is no
+    /// [`Error::NotFound`]: an empty document is a fine place for one.
+    /// [`Error::UnsupportedFormat`] where the format would not read the printed
+    /// bytes back as a container carrying the name, before anything is read —
+    /// and for Markdown that is the parse config's answer, so
+    /// [`Format::supports`] reports `false` while [`Format::supports_with`]
+    /// reports `true`:
+    ///
+    /// ```no_run
+    /// # use twig::{Format, Gesture, MarkdownExtensions};
+    /// let exts = MarkdownExtensions { directives: true, ..Default::default() };
+    /// assert!(!Format::Markdown.supports(Gesture::InsertDirective));
+    /// assert!(Format::Markdown.supports_with(exts, Gesture::InsertDirective));
+    /// ```
+    ///
+    /// The editor must have been created with the same extensions
+    /// ([`Editor::new_ext`]) or the call itself refuses.
+    pub fn insert_directive(
+        &mut self,
+        offset: usize,
+        name: &str,
+        label: Option<&str>,
+        attrs: &[(&str, Option<&str>)],
+    ) -> Result<Change, Error> {
+        let kvs: Vec<ffi::TwigKeyVal> = attrs
+            .iter()
+            .map(|(k, v)| ffi::TwigKeyVal {
+                key: k.as_ptr(),
+                key_len: k.len(),
+                value: v.map_or(std::ptr::null(), |s| s.as_ptr()),
+                value_len: v.map_or(0, |s| s.len()),
+            })
+            .collect();
+        // A null label pointer with a zero length is "no label" across this
+        // boundary; a non-null one with a zero length is an empty label. Going
+        // through the `Option` rather than through a `&str` is what keeps the
+        // two distinct.
+        let label_ptr = label.map_or(std::ptr::null(), |s| s.as_ptr());
+        let label_len = label.map_or(0, |s| s.len());
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_insert_directive(
+                ed,
+                offset,
+                name.as_ptr(),
+                name.len(),
+                label_ptr,
+                label_len,
+                kvs.as_ptr(),
+                kvs.len(),
+                out,
+            )
         })
     }
 
@@ -5712,6 +5804,107 @@ mod tests {
     }
 
     #[test]
+    fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
+        let exts = MarkdownExtensions {
+            directives: true,
+            ..Default::default()
+        };
+        let mut md = Editor::new_ext(b"a\n\nb\n", Format::Markdown, exts).expect("editor");
+        md.insert_directive(0, "page-break", None, &[])
+            .expect("directive");
+        assert_eq!(md.source_str().unwrap(), "a\n\n::page-break\n\nb\n");
+        // A directive to the parser, not a paragraph that starts with colons.
+        assert_eq!(md.query("directive").expect("query").len(), 1);
+
+        // A label and an attribute, in the serializer's own spelling — the
+        // value is quoted because that is what the Markdown serializer writes.
+        let mut em = Editor::new_ext(b"a\n", Format::Markdown, exts).expect("editor");
+        em.insert_directive(0, "embed", Some("Contents"), &[("src", Some("x.html"))])
+            .expect("directive");
+        assert_eq!(
+            em.source_str().unwrap(),
+            "a\n\n::embed[Contents]{src=\"x.html\"}\n"
+        );
+        assert_eq!(em.query("directive").expect("query").len(), 1);
+
+        // Djot's div is anonymous, so its spelling is an empty `:::` fence
+        // carrying the name — which is why the gate asks about the NAME
+        // surviving rather than about the syntax.
+        let mut dj = Editor::new_str("a\n", Format::Djot).expect("editor");
+        dj.insert_directive(0, "page-break", None, &[])
+            .expect("directive");
+        assert_eq!(dj.source_str().unwrap(), "a\n\n::: page-break\n:::\n");
+
+        // `None` is no label and `Some("")` is an empty one — two different
+        // documents, which is the whole reason the parameter is an `Option`
+        // rather than a `&str`.
+        let mut none = Editor::new_ext(b"", Format::Markdown, exts).expect("editor");
+        none.insert_directive(0, "x", None, &[]).expect("directive");
+        assert_eq!(none.source_str().unwrap(), "::x\n");
+        let mut empty = Editor::new_ext(b"", Format::Markdown, exts).expect("editor");
+        empty
+            .insert_directive(0, "x", Some(""), &[])
+            .expect("directive");
+        assert_eq!(empty.source_str().unwrap(), "::x[]\n");
+    }
+
+    #[test]
+    fn editor_insert_directive_needs_the_extension_it_will_be_read_back_with() {
+        // Without the flag `::page-break` is a paragraph of colons, so the
+        // gesture refuses rather than minting bytes one press cannot undo.
+        let mut plain = Editor::new_str("a\n", Format::Markdown).expect("editor");
+        assert_eq!(
+            plain.insert_directive(0, "page-break", None, &[]),
+            Err(Error::UnsupportedFormat)
+        );
+        assert_eq!(plain.source_str().unwrap(), "a\n");
+
+        assert!(!Format::Markdown.supports(Gesture::InsertDirective));
+        assert!(Format::Markdown.supports_with(
+            MarkdownExtensions {
+                directives: true,
+                ..Default::default()
+            },
+            Gesture::InsertDirective
+        ));
+        // Djot needs no extension; XML spells nothing at all.
+        assert!(Format::Djot.supports(Gesture::InsertDirective));
+        assert!(!Format::Xml.supports(Gesture::InsertDirective));
+
+        // An empty name is the caller's error, not a nameless directive.
+        let mut ext = Editor::new_ext(
+            b"a\n",
+            Format::Markdown,
+            MarkdownExtensions {
+                directives: true,
+                ..Default::default()
+            },
+        )
+        .expect("editor");
+        assert_eq!(
+            ext.insert_directive(0, "", None, &[]),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(
+            ext.insert_directive(0, "a\nb", None, &[]),
+            Err(Error::InvalidArgument)
+        );
+        // A name goes where a delimiter would otherwise be, so the grammar is
+        // checked rather than left to the serializer: `::a b` would reparse as
+        // a paragraph holding an inline directive named `a`.
+        assert_eq!(
+            ext.insert_directive(0, "a b", None, &[]),
+            Err(Error::InvalidArgument)
+        );
+        // And a bracket in the label closes the `[…]` early.
+        assert_eq!(
+            ext.insert_directive(0, "page-break", Some("]"), &[]),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(ext.source_str().unwrap(), "a\n");
+    }
+
+    #[test]
     fn document_html_elements_make_embedded_img_queryable() {
         let src = "text <img src=\"a.png\" alt=\"x\"> more\n";
         // Without the flag, the `<img>` is opaque raw HTML — no `image` node.
@@ -5915,6 +6108,7 @@ mod tests {
             Gesture::TableMoveRow,
             Gesture::TableMoveColumn,
             Gesture::InsertTable,
+            Gesture::InsertDirective,
         ]);
         all
     }
@@ -5929,7 +6123,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=25).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=26).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -5947,7 +6141,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                26,
+                27,
                 0,
                 &mut supported,
             )

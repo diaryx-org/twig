@@ -296,7 +296,56 @@ static void test_new_block_gestures_link_and_edit(void) {
     CHECK(twig_editor_source(editor, &out, &out_len) == TWIG_STATUS_OK);
     CHECK(out_len > 8);
 
+    // A directive is the one gesture here whose answer is the EDITOR'S flags:
+    // this handle was created without TWIG_MD_DIRECTIVES, so `::page-break`
+    // would reparse as a paragraph of colons and the call refuses.
+    CHECK(twig_editor_insert_directive(editor, 6, (const uint8_t *)"page-break", 10,
+                                       NULL, 0, NULL, 0, &change)
+          == TWIG_STATUS_UNSUPPORTED_FORMAT);
+
     twig_editor_destroy(editor);
+
+    // The same call with the flag on, and the optional halves both exercised:
+    // a label, and one attribute in the array twig_builder_set_attrs takes.
+    static const char dir_src[] = "a\n";
+    TwigEditor *dir = NULL;
+    CHECK(twig_editor_create_ext((const uint8_t *)dir_src, sizeof(dir_src) - 1,
+                                 TWIG_FORMAT_MARKDOWN, TWIG_MD_DIRECTIVES,
+                                 &dir) == TWIG_STATUS_OK);
+    if (dir == NULL) return;
+    const TwigKeyVal dir_attrs[] = {
+        {(const uint8_t *)"src", 3, (const uint8_t *)"x.html", 6},
+    };
+    CHECK(twig_editor_insert_directive(dir, 0, (const uint8_t *)"embed", 5,
+                                       (const uint8_t *)"Contents", 8,
+                                       dir_attrs, 1, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(dir, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 35 &&
+          memcmp(out, "a\n\n::embed[Contents]{src=\"x.html\"}\n", 35) == 0);
+    // NULL-vs-empty on the label, which is the one wire convention a compile
+    // check cannot see: a NULL pointer is NO label and a non-NULL one with a
+    // zero length is an EMPTY label, so the same call writes `::x` or `::x[]`.
+    CHECK(twig_editor_insert_directive(dir, 0, (const uint8_t *)"x", 1,
+                                       (const uint8_t *)"", 0, NULL, 0, &change)
+          == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(dir, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 42 &&
+          memcmp(out, "a\n\n::x[]\n\n::embed[Contents]{src=\"x.html\"}\n", 42) == 0);
+
+    // There is no `::` without a name, and a name is an ASCII letter followed
+    // by letters, digits, `-` and `_`: `a b` would be an inline directive
+    // inside a paragraph, not the block that was asked for.
+    CHECK(twig_editor_insert_directive(dir, 0, (const uint8_t *)"", 0, NULL, 0,
+                                       NULL, 0, NULL)
+          == TWIG_STATUS_INVALID_ARGUMENT);
+    CHECK(twig_editor_insert_directive(dir, 0, (const uint8_t *)"a b", 3, NULL, 0,
+                                       NULL, 0, NULL)
+          == TWIG_STATUS_INVALID_ARGUMENT);
+    // And a bracket in the label closes the `[...]` early.
+    CHECK(twig_editor_insert_directive(dir, 0, (const uint8_t *)"x", 1,
+                                       (const uint8_t *)"]", 1, NULL, 0, NULL)
+          == TWIG_STATUS_INVALID_ARGUMENT);
+    twig_editor_destroy(dir);
 
     // Splitting a list item repeats its marker, so the second half is a sibling
     // item and not a paragraph that ends the list. A table refuses.
@@ -563,6 +612,22 @@ static void test_format_capability_matches_the_gestures(void) {
     CHECK(twig_format_supports(TWIG_FORMAT_DJOT, TWIG_GESTURE_INSERT_TABLE, 0,
                                &supported) == TWIG_STATUS_OK);
     CHECK(supported == 1);
+    // A directive is the second gesture whose Markdown answer moves with the
+    // flags, after TWIG_GESTURE_SET_MARK_COLOR: 0 for default options, 1 with
+    // TWIG_MD_DIRECTIVES. Djot's fence needs no extension and answers 1 flat.
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, TWIG_GESTURE_INSERT_DIRECTIVE,
+                               0, &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    CHECK(twig_format_supports_ext(TWIG_FORMAT_MARKDOWN, TWIG_MD_DIRECTIVES,
+                                   TWIG_GESTURE_INSERT_DIRECTIVE, 0,
+                                   &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_DJOT, TWIG_GESTURE_INSERT_DIRECTIVE, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_XML, TWIG_GESTURE_INSERT_DIRECTIVE, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
 
     // And the 0 is the answer the call itself gives, over a real HTML table —
     // the edit that used to return OK having replaced it with pipe text.
