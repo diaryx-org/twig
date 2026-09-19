@@ -680,6 +680,14 @@ unsafe extern "C" {
         attrs_len: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_wrap_range_attrs(
+        editor: *mut TwigEditor,
+        start: usize,
+        end: usize,
+        attrs_ptr: *const TwigKeyVal,
+        attrs_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
     pub fn twig_editor_insert_link(
         editor: *mut TwigEditor,
         start: usize,

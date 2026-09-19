@@ -344,6 +344,15 @@ const Renderer = struct {
                 try self.renderBlocks(id, .{ .prefix = &p }, true);
             },
             .container => |c| {
+                // An inline container reaching block position — the fragment
+                // root `Editor.wrapRangeAttrs` renders — is its inline
+                // spelling on a line of its own, not a fence around it.
+                if (c.form == .inline_text) {
+                    try self.writePrefix(ctx);
+                    try self.renderInline(id, ctx);
+                    try self.writer.writeByte('\n');
+                    return;
+                }
                 // A div's attributes attach to the line BEFORE the fence.
                 // `::: {#i .c}` is not that spelling — djot reads everything
                 // after the colons as the class line, so the brace block never

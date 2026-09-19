@@ -279,6 +279,7 @@ pub const Editor = struct {
         insert_table,
         insert_directive,
         set_block_attrs,
+        wrap_range_attrs,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -369,6 +370,7 @@ pub const Editor = struct {
             // the renderer that prints them. `assertCoherent` pins the second
             // onto the first, as for the directive.
             .set_block_attrs => syntax.block_attrs != null and syntax.renderBlock != null,
+            .wrap_range_attrs => syntax.inline_attrs and syntax.renderBlock != null,
         };
     }
 
@@ -1738,7 +1740,7 @@ pub const Editor = struct {
             };
             if (c.form != .block_fenced) break;
             if (c.name.len != 0 and !std.mem.eql(u8, c.name, "div")) break;
-            if (doc.containerOrigin(parent) == .directive) break;
+            if (c.name.len != 0 and doc.containerOrigin(parent) == .directive) break;
             if (ast.nodes[parent].first_child != block or ast.nodes[block].next_sibling != null) break;
             wrapper = parent;
             break;
@@ -1759,6 +1761,109 @@ pub const Editor = struct {
         const root = try b.addContainer(.{ .container = .{ .name = "div", .form = .block_fenced } }, &.{grafted});
         try b.setAttrs(root, .{ .entries = attrs });
         return self.spliceRenderedPrefixed(&b, root, render, target);
+    }
+
+    /// Wrap `[start, end)` in an anonymous inline container carrying `attrs`
+    /// — djot's `[text]{…}`, HTML's and Markdown's `<span …>` — or, when the
+    /// range lies inside one already, REPLACE that container's attributes
+    /// instead of nesting a second; an empty set there unwraps it. That is the
+    /// rule `insertLink` applies to a link covering the range, for the same
+    /// reason: re-styling is the common gesture, and it must not build
+    /// `[[text]{.a}]{.b}`. An anonymous span and one named `span` are the
+    /// same node here — HTML and Markdown hand the name back, djot does not —
+    /// and a `:span[…]` the Markdown parser read as a directive is neither.
+    ///
+    /// The inline half of `setBlockAttrs`, with the same vocabulary rule: twig
+    /// spells the pairs and interprets none. The bytes are the format's,
+    /// through `renderBlock` over the container — the covered inline nodes
+    /// grafted under it as `insertLinkByRender` grafts them under a link — so
+    /// a mark inside the range rides along. Unwrapping splices the node's
+    /// CONTENT bytes over the node, which needs no renderer and keeps them.
+    ///
+    /// `error.UnsupportedFormat` where `Syntax.inline_attrs` is not claimed —
+    /// AsciiDoc, whose `[#id.role]#text#` keeps two keys and drops a third,
+    /// and Markdown without `html_elements`; `error.InvalidRange` for a bad
+    /// range; `error.InvalidAttribute` as `setBlockAttrs`; `error.NotEditable`
+    /// for an empty range with no span to re-style, or a range that cuts a
+    /// node it cannot slice (see `coveredInlines`).
+    pub fn wrapRangeAttrs(self: *Editor, span: Span, attrs: []const AST.KeyVal) Error!void {
+        if (!self.syntax.inline_attrs) return error.UnsupportedFormat;
+        const render = self.syntax.renderBlock orelse return error.UnsupportedFormat;
+        try self.checkRange(span.start, span.end);
+        for (attrs) |kv| try checkAttr(kv);
+        const doc = &self.splicer.doc;
+        const ast = self.astView();
+        const allocator = self.splicer.allocator;
+        const src = self.sourceBytes();
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.ancestorChain(allocator, doc, span.start, &chain);
+        // The innermost attributed span covering the range.
+        var existing: ?AST.Node.Id = null;
+        var i = chain.items.len;
+        while (i > 0) {
+            i -= 1;
+            const id = chain.items[i];
+            const c = switch (ast.nodes[id].kind) {
+                .container => |c| c,
+                else => continue,
+            };
+            if (c.form != .inline_text) continue;
+            if (c.name.len != 0 and !std.mem.eql(u8, c.name, "span")) continue;
+            // djot's own span is anonymous and, being lightweight markup,
+            // carries the `directive` origin too; the one to leave alone is a
+            // NAMED span with it — Markdown's `:span[…]` directive.
+            if (c.name.len != 0 and doc.containerOrigin(id) == .directive) continue;
+            const sp = doc.span(id);
+            if (sp.start <= span.start and sp.end >= span.end) {
+                existing = id;
+                break;
+            }
+        }
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        var kids: std.ArrayList(AST.Node.Id) = .empty;
+        defer kids.deinit(allocator);
+        var target = span;
+        if (existing) |id| {
+            target = doc.span(id);
+            if (target.start == 0 and target.end == 0) return error.NotEditable;
+            // djot's `{…}` follows the brackets OUTSIDE the node's span, and
+            // the document recorded where; a set merged from several blocks
+            // has no single span and is not ours to rewrite. HTML's and
+            // Markdown's attributes sit inside the tag, inside the span — the
+            // formats whose `block_attrs` path is the line rewrite are the
+            // ones whose attributes lie outside, as `setBlockAttrs` reads it.
+            if (doc.attrsSpan(id)) |as| {
+                target = Span.init(@min(target.start, as.start), @max(target.end, as.end));
+            } else if (self.syntax.block_attrs == .native and self.syntax.attr_spelling != null and !ast.attrsOf(id).isEmpty()) {
+                return error.NotEditable;
+            }
+            if (attrs.len == 0) {
+                const cs = doc.contentSpan(id) orelse return error.NotEditable;
+                return self.commitSplice(target.start, target.end, src[cs.start..cs.end]);
+            }
+            var child = ast.nodes[id].first_child;
+            while (child) |c| : (child = ast.nodes[c].next_sibling) {
+                try kids.append(allocator, try b.graftSubtree(ast, c));
+            }
+        } else {
+            if (attrs.len == 0) return;
+            if (span.end == span.start) return error.NotEditable;
+            const covered = try coveredInlines(allocator, doc, span.start, span.end);
+            defer allocator.free(covered);
+            for (covered) |piece| {
+                try kids.append(allocator, if (piece.text) |t|
+                    try b.addLeaf(.{ .str = t })
+                else
+                    try b.graftSubtree(ast, piece.node));
+            }
+        }
+        const root = try b.addContainer(.{ .container = .{ .name = "", .form = .inline_text } }, kids.items);
+        try b.setAttrs(root, .{ .entries = attrs });
+        return self.spliceRendered(&b, root, render, target.start, target.end);
     }
 
     /// `spliceRendered` for a fragment of several lines going into a quote:

@@ -1021,6 +1021,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_INSERT_TABLE = 25,
     TWIG_GESTURE_INSERT_DIRECTIVE = 26,
     TWIG_GESTURE_SET_BLOCK_ATTRS = 27,
+    TWIG_GESTURE_WRAP_RANGE_ATTRS = 28,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1657,6 +1658,35 @@ TwigStatus twig_editor_insert_directive(
 TwigStatus twig_editor_set_block_attrs(
     TwigEditor *editor,
     size_t offset,
+    const TwigKeyVal *attrs_ptr,
+    size_t attrs_len,
+    TwigChange *out_change
+);
+
+// Wrap [start, end) in an anonymous inline container carrying `attrs` —
+// djot's `[text]{…}`, HTML's and Markdown's `<span …>` — or, when the range
+// already lies inside such a span, REPLACE that span's attributes rather than
+// nest a second; attrs_len == 0 there unwraps it, keeping the content bytes.
+// That is twig_editor_insert_link's rule for a link covering the range, for
+// the same reason. A span named `span` and an anonymous one are the same node
+// here; a `:span[...]` the Markdown parser read as a directive is neither.
+//
+// The inline half of twig_editor_set_block_attrs, with its vocabulary rule and
+// its attribute grammar (TWIG_STATUS_INVALID_ARGUMENT for a key or value no
+// format reads back, a bad range, or a NULL attrs_ptr with a non-zero length).
+// The covered inline nodes are printed under the container by the format's
+// own serializer, so a mark inside the range rides along.
+// TWIG_STATUS_NOT_EDITABLE for an empty range with no span to re-style, or a
+// range that cuts through a node the gesture cannot slice.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT where the format's parser would not read the
+// printed span back: AsciiDoc, whose `[#id.role]#text#` keeps an id and a role
+// and drops any other key, and Markdown without TWIG_MD_HTML_ELEMENTS. Ask
+// twig_format_supports_ext with TWIG_GESTURE_WRAP_RANGE_ATTRS.
+TwigStatus twig_editor_wrap_range_attrs(
+    TwigEditor *editor,
+    size_t start,
+    size_t end,
     const TwigKeyVal *attrs_ptr,
     size_t attrs_len,
     TwigChange *out_change
