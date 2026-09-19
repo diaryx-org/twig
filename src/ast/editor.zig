@@ -2167,7 +2167,10 @@ pub const Editor = struct {
     ///     `</div>`, a djot `:::` fence). `a_top` is the LCA's own child
     ///     holding A, so this is exactly what has to be re-closed after the
     ///     text that was pulled in. A is necessarily the last leaf in those
-    ///     containers, since B follows it immediately.
+    ///     containers, since B follows it immediately. Its trailing SEPARATOR
+    ///     LINES are trimmed first — see `trimTailSeparators`, without which a
+    ///     Markdown quote's own trailing `>` line travelled past the joined
+    ///     text and piled up there.
     ///   * **Everything else between them vanishes**: the blank line, B's
     ///     markers (`# `, `- `), B's attribute line (djot's `{…}`,
     ///     AsciiDoc's `[…]`), B's opening tags (`<div class="center">`,
@@ -2207,6 +2210,11 @@ pub const Editor = struct {
     ///     that is still inside it, and there is no single obvious thing to do
     ///     instead — split the container in two, or drag the rest out with B —
     ///     so this is the one shape the gesture refuses rather than guesses at.
+    ///   * **The GAP between A and B holds anything but separation** — see
+    ///     `gapIsClean`. The splice destroys everything between the two that
+    ///     is on neither's chain, and a definition is not in the tree at all,
+    ///     so nothing above can notice it. This is the guard, and it is read
+    ///     off the SOURCE for that reason.
     ///
     /// `error.InvalidRange` when `offset` is past the source.
     ///
@@ -2256,12 +2264,22 @@ pub const Editor = struct {
 
         // Where the two chains diverge. Both start at the root and neither is a
         // prefix of the other — A is a leaf, so B cannot be inside it, and B is
-        // not A — so this index exists in both.
+        // not A — so this index exists in both. It is never 0: the root is the
+        // first element of both chains, so the loop below runs at least once.
+        // Running off the end of either chain would mean one block is inside
+        // the other, which the two facts above rule out; refusing beats
+        // indexing past the end should a future kind make it reachable.
         var i: usize = 0;
         while (i < a_chain.items.len and i < b_chain.items.len and
             a_chain.items[i] == b_chain.items[i]) i += 1;
-        if (i == 0 or i >= a_chain.items.len or i >= b_chain.items.len) return error.NotEditable;
+        if (i >= a_chain.items.len or i >= b_chain.items.len) return error.NotEditable;
         const a_top = a_chain.items[i];
+        const b_top = b_chain.items[i];
+
+        // Everything between the two that is on neither chain is about to be
+        // destroyed. This is the one guard against that, and the shapes it
+        // catches are ones no walk above could have — see `gapIsClean`.
+        if (!gapIsClean(doc, src, a_chain.items[0..i], a_top, b_top)) return error.NotEditable;
 
         // B's own closing markup goes; a delimited container it is leaving
         // takes its closers with it, and the OUTERMOST such container is the
@@ -2278,7 +2296,8 @@ pub const Editor = struct {
 
         const a_content = blockContent(doc, a);
         const b_content = blockContent(doc, b);
-        const a_tail = src[a_content.end..doc.span(a_top).end];
+        const a_tail = trimTailSeparators(src[a_content.end..doc.span(a_top).end]);
+        const b_text = src[b_content.start..b_content.end];
 
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
@@ -2289,20 +2308,29 @@ pub const Editor = struct {
         // `<h1>a\nb</h1>` is the one heading it should be.
         if (std.meta.activeTag(doc.ast.nodes[a].kind) == .heading and doc.markerSpan(a) != null) {
             try out.append(allocator, ' ');
+            // B may be several lines; the heading is one. Each of B's line
+            // ends becomes the space that continues the sentence, or `# T` +
+            // `xx`/`yy` would be a heading `# T xx` with `yy` left below it
+            // as a paragraph — two blocks, from a gesture that reports having
+            // made one.
+            try appendAsOneLine(allocator, b_text, &out);
         } else {
             try out.appendSlice(allocator, join);
             _ = try locate.continuationPrefix(allocator, doc, a_content.start, &out);
+            try appendAsContinuation(allocator, self.syntax, b_text, &out);
         }
-        try out.appendSlice(allocator, src[b_content.start..b_content.end]);
         try out.appendSlice(allocator, a_tail);
 
         // The removed region ran to the end of a line in every format whose
         // block span covers its own terminator (djot's does, Markdown's does
         // not), and A's tail only ends at one when A's container did. Put the
         // terminator back when B's removal took it and the tail did not supply
-        // it, so the document keeps the line structure it had.
+        // it, so the document keeps the line structure it had. `out` is never
+        // empty — the separator above is at least one byte — but the index is
+        // guarded rather than argued, since a `line_join` of `""` would make
+        // the argument false and the panic real.
         if (r_end > a_content.end and src[r_end - 1] == '\n' and
-            out.items[out.items.len - 1] != '\n') try out.append(allocator, '\n');
+            (out.items.len == 0 or out.items[out.items.len - 1] != '\n')) try out.append(allocator, '\n');
 
         return self.commitSplice(a_content.end, r_end, out.items);
     }
@@ -3423,7 +3451,185 @@ fn blockContent(doc: *const Document, id: AST.Node.Id) Span {
     if (doc.markerSpan(id)) |m| {
         if (m.end >= sp.start and m.end <= sp.end) return Span.init(m.end, sp.end);
     }
+    // Neither: the INLINE CHILDREN are where the text is, and the block's own
+    // span is not. AsciiDoc is the format that forces this — a paragraph's
+    // span opens at its METADATA (`[.lead]`, a `.Title` line), which is markup
+    // and not content, and nothing records where it ends. Handing the whole
+    // span back spliced those bytes into the middle of the joined line, so
+    // `above` + `[.lead]`/`below` read `above`/`[.lead]`/`below` with the
+    // attribute line now literal text. The first child's start and the last
+    // child's end are the same relation `node_content_spans` states, read off
+    // the tree where no span table answers.
+    var it = doc.children(id);
+    const first = it.next() orelse return sp;
+    var last = first.id;
+    while (it.next()) |child| last = child.id;
+    const start = doc.span(first.id).start;
+    const end = doc.span(last).end;
+    if (start >= sp.start and end <= sp.end and start <= end) return Span.init(start, end);
     return sp;
+}
+
+/// A's tail with its trailing SEPARATOR LINES removed — what is left is the
+/// closing markup and the closers `joinBlocks`'s doc comment says travel past
+/// the joined text, and nothing else.
+///
+/// A container's span can reach past its last block: a Markdown `block_quote`
+/// covers its own trailing marker lines (`> a\n>\n` is `0..5`), so the tail of
+/// `a` there is `"\n>\n"` — a `>` line that, written after the joined text,
+/// left a stray quote line below it, and piled one up per join. Those lines
+/// separate; they close nothing.
+///
+/// WHOLE LINES only, which is the whole care needed here: `</div>` ends in a
+/// `>`, and a byte-wise trim over the same alphabet would eat it and unclose
+/// the div. The line end this drops is put back by `joinBlocks`'s
+/// trailing-terminator rule wherever the removal took one.
+fn trimTailSeparators(tail: []const u8) []const u8 {
+    var end = tail.len;
+    while (std.mem.lastIndexOfScalar(u8, tail[0..end], '\n')) |nl| {
+        if (!isSeparatorRun(tail[nl + 1 .. end])) break;
+        end = nl;
+    }
+    return tail[0..end];
+}
+
+/// Whether `bytes` are only what SEPARATES two blocks: line ends, spaces, tabs
+/// and quote markers. A `>` is separation because a quote's marker is on every
+/// line of it, blank ones included.
+fn isSeparatorRun(bytes: []const u8) bool {
+    for (bytes) |c| switch (c) {
+        ' ', '\t', '\r', '\n', '>' => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// Whether the region between A's and B's topmost ancestors below the LCA
+/// holds nothing the join would destroy. `joinBlocks`'s one data-loss guard.
+///
+/// The splice writes `[A.ce, R_end)` out of A's tail and B's content alone, so
+/// whatever else lies in there is gone. Neither walk that found A and B can
+/// see all of it. `precedingLeafBlock` steps over any node HOLDING NO LEAF
+/// BLOCK — an empty `<div>`, a bare `>`, a bare `-`, an empty djot `:::`
+/// fence — and a Markdown LINK REFERENCE DEFINITION (`[ref]: /zed`), a
+/// FOOTNOTE DEFINITION (`[^n]: note`) and a djot CAPTION (`^ caption`) are not
+/// in the tree at all: Markdown keeps a definition as a lookup table and not
+/// as a node, so no tree walk could be written that sees one. `alpha` +
+/// `[ref]: /zed` + `beta` joined to `alpha\nbeta\n` and the definition, along
+/// with every link that resolved through it, was simply gone.
+///
+/// So the region is read twice, once against each thing that can be true of
+/// it:
+///
+///   * **No node that HOLDS BLOCKS may overlap it** other than the two
+///     blocks' COMMON ANCESTORS, which necessarily do. `holdsBlocks` is the
+///     same classifier `precedingLeafBlock` descends by, and that is why it is
+///     the right one: a node in the gap holding a leaf block WOULD BE A, so
+///     what can be in there is exactly what that walk stepped over. It is
+///     also why a bare `>` is refused where the `>` of a quote holding both
+///     blocks is not — the bytes are identical and the tree is not. Inline
+///     nodes are passed over: HTML keeps the newline between two elements as
+///     a `str`, and the byte rule below is what judges those bytes.
+///   * **What is left may only SEPARATE**, by `isSeparatorRun` — with B's own
+///     PREAMBLE peeled off the right first. That preamble is the run of
+///     non-blank whole lines directly above B with no blank line between: a
+///     djot attribute line (`{.center}`) sits there, outside the span the
+///     parser gives B, and B's attributes are discarded by design. A
+///     definition is a block, so a blank line divides it from B and the peel
+///     never reaches one — and the node check above holds it anyway.
+///
+/// A's extent reaching PAST B's start is false here too. Nothing produces it
+/// now that djot's section spans are right, and it would make A's tail a slice
+/// running through B.
+fn gapIsClean(
+    doc: *const Document,
+    src: []const u8,
+    common: []const AST.Node.Id,
+    a_top: AST.Node.Id,
+    b_top: AST.Node.Id,
+) bool {
+    const start = doc.span(a_top).end;
+    const b_start = doc.span(b_top).start;
+    if (start > b_start or b_start > src.len) return false;
+
+    for (doc.ast.nodes, 0..) |_, idx| {
+        const id: AST.Node.Id = @intCast(idx);
+        const sp = doc.span(id);
+        if (sp.start >= b_start or sp.end <= start) continue;
+        if (!holdsBlocks(doc, id)) continue;
+        if (std.mem.indexOfScalar(AST.Node.Id, common, id) == null) return false;
+    }
+
+    var end = b_start;
+    while (end > start and src[end - 1] == '\n') {
+        const line_start = locate.lineStartAt(src, end - 1);
+        if (line_start < start) break;
+        if (isSeparatorRun(src[line_start .. end - 1])) break;
+        end = line_start;
+    }
+    return isSeparatorRun(src[start..end]);
+}
+
+/// B's content written as ONE LINE — what a marker heading A can hold. Each of
+/// B's line ends becomes a single space, and the CONTINUATION PREFIX behind it
+/// (a list item's indent, a quote's `> `) goes with it, since a heading's one
+/// line sits behind its own prefix already.
+fn appendAsOneLine(
+    allocator: Allocator,
+    text: []const u8,
+    out: *std.ArrayList(u8),
+) Allocator.Error!void {
+    var rest = text;
+    while (std.mem.indexOfScalar(u8, rest, '\n')) |nl| {
+        try out.appendSlice(allocator, std.mem.trimEnd(u8, rest[0..nl], " \t\r"));
+        try out.append(allocator, ' ');
+        rest = rest[nl + 1 ..];
+        var k: usize = 0;
+        while (k < rest.len and (rest[k] == ' ' or rest[k] == '\t' or rest[k] == '>')) k += 1;
+        rest = rest[k..];
+    }
+    try out.appendSlice(allocator, rest);
+}
+
+/// B's content written as a CONTINUATION LINE of A, which is one byte more
+/// than verbatim in exactly one shape.
+///
+/// A line of `=` or `-` under a paragraph is a SETEXT UNDERLINE, and it is the
+/// only line-start construct that rewrites the block ABOVE it rather than
+/// opening one of its own: `above` + `===` joined to `above\n===\n` reparsed
+/// as a single heading and no paragraph at all — B's text became A's spelling.
+/// A backslash on its first byte is what `insertLiteral` writes for the same
+/// bytes at the same position, and `\` before ASCII punctuation is that
+/// character in every format stating the alphabet, so the gate is
+/// `block_start_escapes` being stated at all.
+///
+/// Nothing else is escaped, and that is deliberate: `#`, `>`, `-` + space, a
+/// table's `|` all open a BLOCK of their own as a continuation line, so the
+/// join merely fails to merge two blocks into one — it does not rewrite A.
+fn appendAsContinuation(
+    allocator: Allocator,
+    syntax: *const Syntax,
+    text: []const u8,
+    out: *std.ArrayList(u8),
+) Allocator.Error!void {
+    if (syntax.block_start_escapes != null and isUnderlineLine(text)) {
+        const lead = text.len - std.mem.trimStart(u8, text, " \t").len;
+        try out.appendSlice(allocator, text[0..lead]);
+        try out.append(allocator, '\\');
+        try out.appendSlice(allocator, text[lead..]);
+        return;
+    }
+    try out.appendSlice(allocator, text);
+}
+
+/// Whether `text`'s FIRST line is a run of `=` or a run of `-` and nothing
+/// else — a setext underline, whichever level it spells.
+fn isUnderlineLine(text: []const u8) bool {
+    const first = text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
+    const trimmed = std.mem.trim(u8, first, " \t\r");
+    if (trimmed.len == 0) return false;
+    for (trimmed) |c| if (c != trimmed[0]) return false;
+    return trimmed[0] == '=' or trimmed[0] == '-';
 }
 
 /// Whether `id` is a heading spelled by an UNDERLINE rather than by a marker —

@@ -535,12 +535,14 @@ pub const Syntax = struct {
     /// lines at all would spell it `null`, and so does a parse-only table,
     /// which is what makes `Editor.supports(.join_blocks)` false for XML.
     ///
-    /// No `assertCoherent` invariant hangs off it, unlike `block_separator`'s
-    /// pair of implications: everything else a join needs — the container
-    /// prefix, a heading's own marker, the closing markup it carries past the
-    /// joined text — is read out of the DOCUMENT, never re-spelled from this
-    /// table. That is why the answer here can be true where `.split_block`
-    /// is false rather than the two moving together.
+    /// One implication hangs off it, and only in the one direction:
+    /// `block_separator != null` implies this is non-null, because a blank
+    /// line between two blocks is a line join and one line end more. The
+    /// converse is false — HTML joins where it cannot split — which is the
+    /// whole reason this is a second field. Nothing else a join needs is
+    /// pinned here: the container prefix, a heading's own marker and the
+    /// closing markup it carries past the joined text are read out of the
+    /// DOCUMENT, never re-spelled from this table.
     line_join: ?[]const u8 = null,
 
     /// The bytes a link's TEXT position must have backslash-escaped for the text
@@ -867,6 +869,16 @@ pub const Syntax = struct {
         if (self.block_separator != null) {
             std.debug.assert(self.heading_marker != null);
             std.debug.assert(self.code_fence != null);
+            // And it can continue one onto its next line. A block separator IS
+            // a line join and one line end more — the blank line between two
+            // blocks is the terminator of the first plus an empty line — so a
+            // format that could end a block but not continue one would be
+            // spelling the wider gesture out of the narrower one's parts while
+            // reporting the narrower unsupported. `Editor.supports` would then
+            // offer a caret editor an Enter with no Backspace. The implication
+            // is one-way: HTML joins where it cannot split, which is the whole
+            // reason `line_join` is a second field.
+            std.debug.assert(self.line_join != null);
         }
         // A named leaf container has exactly one way to reach the source — the
         // fragment renderer — so a table claiming the reparse without carrying

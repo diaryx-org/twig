@@ -2739,9 +2739,13 @@ impl Editor {
     /// block, a table, a rule: there is no text to join into), when either
     /// block is in a **table cell**, when B is a **setext heading** (whose
     /// underline is how it is spelled at all — [`Editor::set_block`] normalises
-    /// one to ATX, which makes this work), and when B would have to leave a
+    /// one to ATX, which makes this work), when B would have to leave a
     /// **delimited** container that still has content after it, which is the
-    /// one shape this refuses rather than guesses at.
+    /// one shape this refuses rather than guesses at, and when the **gap**
+    /// between A and B holds anything but separation — an empty container, or
+    /// a definition the splice would destroy and no tree walk could see
+    /// (Markdown keeps a link reference and a footnote definition as a lookup
+    /// table, not as a node).
     /// [`Error::InvalidArgument`] when `offset` is past the source.
     ///
     /// [`Error::UnsupportedFormat`] where a block cannot span lines at all —
