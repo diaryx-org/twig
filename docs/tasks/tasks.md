@@ -15,6 +15,8 @@ contents:
 - '[djot writes a heading''s attributes after its text, where its parser reads them as the text''s](/docs/tasks/djot-heading-attributes-are-written-where-the-parser-reads-them-as-the-texts.md)'
 - '[djot writes a reference definition''s attributes where the reparse then fails to read the definition](/docs/tasks/djot-reference-definition-attributes-break-its-reparse.md)'
 - '[AsciiDoc does not write a table''s title](/docs/tasks/asciidoc-does-not-write-a-tables-title.md)'
+- '[`href`, `src` and `alt` are reported as attributes the Markdown target dropped](/docs/tasks/html-link-and-image-attributes-are-reported-as-dropped.md)'
+- '[A degraded node''s attributes are reported on neither axis](/docs/tasks/a-degraded-nodes-attributes-are-reported-on-neither-axis.md)'
 ---
 
 # Tasks
