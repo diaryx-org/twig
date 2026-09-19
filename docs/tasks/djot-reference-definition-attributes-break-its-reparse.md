@@ -4,11 +4,15 @@ description: '`[label]: dest{#id .c}` is what the djot serializer prints for a `
 author: adammharris
 created: 2026-09-18
 updated: 2026-09-18
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # djot writes a reference definition's attributes where the reparse then fails to read the definition
+
+**Status: done** on 2026-09-18, in `fix(djot): a reference definition's
+attributes are written on the line before it`. The probe records
+`.faithful` for `(.djot, .reference)`.
 
 Found by the attribute probe in `diagnostics.zig` (`1bc22e1`), which
 records the answer as `attrsFidelity(.djot, .reference) == .degraded` and

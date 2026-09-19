@@ -311,9 +311,13 @@ const Renderer = struct {
                     // Printing those too would add explicit duplicate nodes.
                     if (!in_refs) continue;
                     if (wrote_any) try self.writer.writeByte('\n');
-                    try self.writer.print("[{s}]: {s}", .{ r.label, r.destination });
-                    try self.writeDjotAttrs(n.id);
-                    try self.writer.writeByte('\n');
+                    // The line before, as for any block: `[label]: dest{.x}`
+                    // is a line djot does not read as a definition at all.
+                    if (self.ast.attrsOf(n.id).entries.len > 0) {
+                        try self.writeDjotAttrs(n.id);
+                        try self.writer.writeByte('\n');
+                    }
+                    try self.writer.print("[{s}]: {s}\n", .{ r.label, r.destination });
                     wrote_any = true;
                 },
                 .footnote => |f| {
@@ -1210,4 +1214,22 @@ test "serializeAlloc: a heading's attributes go ABOVE the `#` line, and a genera
     }
     try testing.expectEqual(@as(usize, 4), seen_sections);
     try testing.expect(seen_z);
+}
+
+test "serializeAlloc: a reference definition's attributes go ABOVE the definition" {
+    // `[label]: /dest{.x}` is a line djot does not read as a definition at
+    // all, so a definition that round-tripped bare failed to round-trip
+    // attributed.
+    var doc = try djot.parse(testing.allocator, "[a][label]\n\n{.x #r}\n[label]: /dest\n");
+    defer doc.deinit();
+    const out = try serializeAlloc(testing.allocator, &doc);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("[a][label]\n\n{.x #r}\n[label]: /dest\n", out);
+
+    var back = try djot.parse(testing.allocator, out);
+    defer back.deinit();
+    const id = back.labels.references.get("label").?;
+    try testing.expectEqualStrings("/dest", back.ast.nodes[id].kind.reference.destination);
+    try testing.expectEqualStrings("x", back.ast.attrsOf(id).get("class").?);
+    try testing.expectEqualStrings("r", back.ast.attrsOf(id).get("id").?);
 }

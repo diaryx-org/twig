@@ -820,21 +820,19 @@ pub fn attrsFidelity(target: Target, kind: Node.Kind) AttrsFidelity {
 }
 
 /// Djot can spell an attribute block on any block or inline, and its
-/// serializer writes one in exactly four places.
+/// serializer writes one in exactly five places.
 fn djotAttrsFidelity(kind: Node.Kind) AttrsFidelity {
     return switch (kind) {
-        // The line before a paragraph or a section's heading; the line before
-        // a fenced div, or after a bracketed span. Read back in full.
-        .para, .container, .section => .all(.faithful),
+        // The line before a paragraph, a reference definition or a section's
+        // heading; the line before a fenced div, or after a bracketed span.
+        // Read back in full.
+        .para, .container, .reference, .section => .all(.faithful),
         // Written as the line before the heading, which is djot's block
         // spelling — and, as in AsciiDoc, a block that names an id is the
         // SECTION's when djot reads it back (the parser moves the whole set,
         // after djot.js), so the heading node comes back bare. Without an id
         // the set stays on the heading; the probe carries one.
         .heading => .all(.degraded),
-        // `[label]: dest{#id}` — written, and the reparse then fails to read
-        // the definition at all, so nothing comes back as the reference's.
-        .reference => .all(.degraded),
         // Every other kind carries its attributes into the serializer and out
         // the far side of nothing: no `{…}` is written for a quote, a list, a
         // fence, a table, a link, an image or a mark, though djot could hold
