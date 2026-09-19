@@ -3172,6 +3172,117 @@ test "join_blocks: a marker heading is one line, so what continues it is a space
     try testing.expectEqual(@as(usize, 0), countKind(&dj, .para));
 }
 
+test "join_blocks: a multi-line B joined into a marker heading becomes one line" {
+    // A marker heading is ONE LINE by its own spelling, so B's own line ends
+    // cannot survive into it: `# T` + `xx`/`yy` wrote `# T xx`/`yy` — a
+    // heading and a paragraph, two blocks, from a gesture reporting it had
+    // made one.
+    var fx = try Fixture.init("# T\n\nxx\nyy\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(6);
+    try fx.expectSource("# T xx yy\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&fx, .para));
+
+    var adoc = try Fixture.init("== T\n\naa\nbb\n", .asciidoc);
+    defer adoc.deinit();
+    try adoc.ed.joinBlocks(7);
+    try adoc.expectSource("== T aa bb\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&adoc, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&adoc, .para));
+
+    // The CONTINUATION PREFIX each of B's lines sits behind goes with the line
+    // end it follows — the heading's line carries its own prefix already.
+    var quoted = try Fixture.init("# T\n\n> xx\n> yy\n", .markdown);
+    defer quoted.deinit();
+    try quoted.ed.joinBlocks(8);
+    try quoted.expectSource("# T xx yy\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&quoted, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&quoted, .block_quote));
+}
+
+test "join_blocks: B's first line may not become A's setext underline" {
+    // The one line-start construct that rewrites the block ABOVE it instead of
+    // opening one of its own. `above` + `===` wrote `above\n===\n`, which
+    // reparses as a heading and no paragraph at all — B's text became A's
+    // spelling, and the caller's two paragraphs became one heading.
+    var fx = try Fixture.init("above\n\n===\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(8);
+    try fx.expectSource("above\n\\===\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .para));
+    try testing.expectEqual(@as(usize, 0), countKind(&fx, .heading));
+
+    // The level-two spelling is the same trap, and `-` is also a thematic
+    // break, so the escape is on the run rather than on the byte.
+    var dashes = try Fixture.init("above\n\n--\n", .markdown);
+    defer dashes.deinit();
+    try dashes.ed.joinBlocks(8);
+    try dashes.expectSource("above\n\\--\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dashes, .para));
+    try testing.expectEqual(@as(usize, 0), countKind(&dashes, .heading));
+
+    // It is B's CONTENT that lands on the new line, so a heading B whose text
+    // is a run of `=` is the same trap wearing a `# ` that goes with the rest
+    // of B's markup.
+    var heading = try Fixture.init("above\n\n# ===\n", .markdown);
+    defer heading.deinit();
+    try heading.ed.joinBlocks(9);
+    try heading.expectSource("above\n\\===\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&heading, .para));
+    try testing.expectEqual(@as(usize, 0), countKind(&heading, .heading));
+
+    // And nothing wider than that: the run is the whole test, so text that
+    // merely holds an `=` keeps the bytes the caller typed.
+    var ordinary = try Fixture.init("above\n\na = b\n", .markdown);
+    defer ordinary.deinit();
+    try ordinary.ed.joinBlocks(7);
+    try ordinary.expectSource("above\na = b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&ordinary, .para));
+}
+
+test "join_blocks: A's tail carries closing markup, never separator lines" {
+    // A Markdown `block_quote`'s span covers its own trailing marker lines, so
+    // the tail of `a` in `> a\n>\n` is `"\n>\n"` — which is not closing markup
+    // at all. Written past the joined text it left a stray `>` line below it,
+    // and a second join piled up another.
+    var fx = try Fixture.init("> a\n>\n\n> b\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.joinBlocks(8);
+    try fx.expectSource("> a\n> b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .block_quote));
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .para));
+
+    // Several of them, and one with trailing space: every trailing line that
+    // only separates goes, and the whole LINE goes — a byte-wise trim over the
+    // same alphabet would eat the `>` that closes a `</div>`.
+    var several = try Fixture.init("> a\n>\n> \n\nb\n", .markdown);
+    defer several.deinit();
+    try several.ed.joinBlocks(10);
+    try several.expectSource("> a\n> b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&several, .para));
+
+    // djot's `section` ends at its last child, so A's tail there is the line
+    // end of its own last line and nothing more. Two blocks under ONE section,
+    // where the heading that was B used to be copied out past the joined text
+    // as well as left where it stood.
+    var dj = try Fixture.init("# H\n\npara\n\n# H2\n\nx\n", .djot);
+    defer dj.deinit();
+    try dj.ed.joinBlocks(13);
+    try dj.expectSource("# H\n\npara\nH2\n\nx\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .section));
+    try testing.expectEqual(@as(usize, 2), countKind(&dj, .para));
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .heading));
+
+    // And the same two sections with nothing between the headings.
+    var headings = try Fixture.init("# alpha\n\n# beta\n", .djot);
+    defer headings.deinit();
+    try headings.ed.joinBlocks(9);
+    try headings.expectSource("# alpha beta\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&headings, .section));
+    try testing.expectEqual(@as(usize, 1), countKind(&headings, .heading));
+}
+
 test "join_blocks: a setext heading A carries its underline past the joined text" {
     // Its content may already span lines, so it takes the line end like a
     // paragraph — and the `===` is tail, which is what keeps the result a
@@ -3209,6 +3320,23 @@ test "join_blocks: B's markers go, and the joined text takes A's presentation" {
     try into.ed.joinBlocks(24);
     try into.expectSource("above\n\n{.center}\nhello\nbelow\n");
     try testing.expectEqual(@as(usize, 2), countKind(&into, .para));
+
+    // AsciiDoc puts B's metadata INSIDE B's own span and records no content
+    // span to divide it from the text, so the whole span came through as
+    // content and `[.lead]` landed in the joined paragraph as literal text.
+    // The inline children are where the text is when no span table says.
+    var attr = try Fixture.init("above\n\n[.lead]\nbelow\n", .asciidoc);
+    defer attr.deinit();
+    try attr.ed.joinBlocks(15);
+    try attr.expectSource("above\nbelow\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&attr, .para));
+
+    // A block TITLE is the same shape and the same answer.
+    var title = try Fixture.init("above\n\n.Cap\nbelow\n", .asciidoc);
+    defer title.deinit();
+    try title.ed.joinBlocks(12);
+    try title.expectSource("above\nbelow\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&title, .para));
 }
 
 test "join_blocks: the container prefix is what keeps the joined line inside" {
@@ -3320,6 +3448,65 @@ test "join_blocks: inside a delimited container, only the last block may leave" 
     try testing.expectEqual(@as(usize, 2), countKind(&last, .para));
 }
 
+test "join_blocks: a gap it cannot see across is refused, not destroyed" {
+    // Everything between A and B that is on neither chain is destroyed by the
+    // splice, and neither walk that finds them can see all of it.
+    //
+    // A Markdown LINK REFERENCE DEFINITION is not a node — the parser keeps it
+    // as a lookup table — so no tree walk could be written that sees one. This
+    // joined to `alpha\nbeta\n` and took the definition, and every link that
+    // resolved through it, with it.
+    const ref = "alpha\n\n[ref]: /zed\n\nbeta\n";
+    var ref_fx = try Fixture.init(ref, .markdown);
+    defer ref_fx.deinit();
+    try testing.expectError(error.NotEditable, ref_fx.ed.joinBlocks(20));
+    try ref_fx.expectSource(ref);
+
+    const note = "alpha\n\n[^n]: note\n\nbeta\n";
+    var note_fx = try Fixture.init(note, .markdown);
+    defer note_fx.deinit();
+    try testing.expectError(error.NotEditable, note_fx.ed.joinBlocks(19));
+    try note_fx.expectSource(note);
+
+    // A djot CAPTION is dropped by the parser rather than recorded, which is
+    // the same position from the other side: bytes with no node over them.
+    const caption = "alpha\n\n^ caption\n\nbeta\n";
+    var caption_fx = try Fixture.init(caption, .djot);
+    defer caption_fx.deinit();
+    try testing.expectError(error.NotEditable, caption_fx.ed.joinBlocks(18));
+    try caption_fx.expectSource(caption);
+
+    // The other half: a container HOLDING NO LEAF BLOCK is in the tree, and
+    // `precedingLeafBlock` steps straight over it looking for text.
+    const div = "alpha\n\n<div>\n\n</div>\n\nbeta\n";
+    var div_fx = try Fixture.initWith(div, .markdown, &html_elements_cfg);
+    defer div_fx.deinit();
+    try testing.expectError(error.NotEditable, div_fx.ed.joinBlocks(22));
+    try div_fx.expectSource(div);
+
+    const fence = "alpha\n\n:::\n:::\n\nbeta\n";
+    var fence_fx = try Fixture.init(fence, .djot);
+    defer fence_fx.deinit();
+    try testing.expectError(error.NotEditable, fence_fx.ed.joinBlocks(16));
+    try fence_fx.expectSource(fence);
+
+    // An empty QUOTE is why the guard is not bytes alone: `>` is exactly what
+    // a quote holding both blocks puts between its own paragraphs, so these
+    // gap bytes are indistinguishable from the ones the test above joins
+    // across. The tree tells them apart.
+    const quote = "alpha\n\n>\n\nbeta\n";
+    var quote_fx = try Fixture.init(quote, .markdown);
+    defer quote_fx.deinit();
+    try testing.expectError(error.NotEditable, quote_fx.ed.joinBlocks(10));
+    try quote_fx.expectSource(quote);
+
+    const bullet = "alpha\n\n-\n\nbeta\n";
+    var bullet_fx = try Fixture.init(bullet, .markdown);
+    defer bullet_fx.deinit();
+    try testing.expectError(error.NotEditable, bullet_fx.ed.joinBlocks(10));
+    try bullet_fx.expectSource(bullet);
+}
+
 test "join_blocks: a prefix container leaves what follows B where it is" {
     // A list has no closing bytes, so joining the first item's text out of it
     // does not drag the rest along — the remaining items are still a list. Two
@@ -3390,6 +3577,10 @@ test "join_blocks: a block with no text to join into is NotEditable" {
     try testing.expectError(error.NotEditable, rule.ed.joinBlocks(12));
     try rule.expectSource("above\n\n***\n\nbelow\n");
 
+    // A paragraph under a TABLE is this same refusal and not the table rule:
+    // the leaf block above it is the last cell's `str`, and a `str` is neither
+    // a `para` nor a `heading`. What the table rules answer is a caret INSIDE
+    // one, which is the test below.
     const after_table = "| a | b |\n|---|---|\n| c | d |\n\nbelow\n";
     var below = try Fixture.init(after_table, .markdown);
     defer below.deinit();
@@ -3407,6 +3598,27 @@ test "join_blocks: a caret in a table is NotEditable, not NoBlock" {
     defer fx.deinit();
     try testing.expectError(error.NotEditable, fx.ed.joinBlocks(22));
     try fx.expectSource(src);
+
+    // Every row of it, header included, and whichever cell: the position
+    // answer does not depend on where in the grid the caret is.
+    var header = try Fixture.init(src, .markdown);
+    defer header.deinit();
+    try testing.expectError(error.NotEditable, header.ed.joinBlocks(2));
+    try testing.expectError(error.NotEditable, header.ed.joinBlocks(26));
+    try header.expectSource(src);
+
+    // And in the other format that has a grid, whose cells are spelled
+    // differently and answer the same. `passesThroughTable` sits behind this
+    // as a chain test rather than a position one, for a format whose cells
+    // hold a `para`: none here does, so the position rule is what fires, and
+    // the chain rule is the backstop that keeps the answer right if one ever
+    // does.
+    const adoc = "|===\na| para here\n|===\n\nbelow\n";
+    var cell = try Fixture.init(adoc, .asciidoc);
+    defer cell.deinit();
+    try testing.expectError(error.NotEditable, cell.ed.joinBlocks(10));
+    try testing.expectError(error.NotEditable, cell.ed.joinBlocks(25));
+    try cell.expectSource(adoc);
 }
 
 test "join_blocks: a setext heading B is NotEditable, not silently unwritten" {

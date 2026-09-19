@@ -1951,9 +1951,13 @@ TwigStatus twig_editor_split_block(
 // a table, a rule, a raw block: there is no text to join into), when either
 // block is in a TABLE CELL, when B is a SETEXT heading (whose underline is how
 // it is spelled at all — twig_editor_set_block normalises one to ATX, which
-// makes this work), and when B would have to leave a DELIMITED container that
+// makes this work), when B would have to leave a DELIMITED container that
 // still has content after it, which is the one shape this refuses rather than
-// guesses at. TWIG_STATUS_INVALID_ARGUMENT when `offset` is past the source.
+// guesses at, and when the GAP between A and B holds anything but separation —
+// an empty container, or a definition the splice would destroy and no tree walk
+// could see (Markdown keeps a link reference and a footnote definition as a
+// lookup table, not as a node).
+// TWIG_STATUS_INVALID_ARGUMENT when `offset` is past the source.
 //
 // TWIG_STATUS_UNSUPPORTED_FORMAT where a block cannot span lines, checked before
 // the source is read. This is a DIFFERENT and WIDER gate than
