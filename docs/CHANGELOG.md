@@ -90,6 +90,28 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.7.0
+
+### Added
+
+- **editor** — join a block into the block before it, per format ([`3a5d769`](https://github.com/diaryx-org/twig/commit/3a5d76953f4f0bbece0d7478b3910cc12df94eff))
+
+### Fixed
+
+- **djot** — a section's span ends before the heading that closes it ([`5a1aa06`](https://github.com/diaryx-org/twig/commit/5a1aa068d21f0876dab1eb595a3fff8fa2096ebe))
+- **editor** — joinBlocks refuses a gap it cannot see across, and A's tail carries only closing markup ([`5140ec2`](https://github.com/diaryx-org/twig/commit/5140ec2f56a640342d59070b0a70157034bb310a))
+
+### Behavioural changes
+
+- A djot `section`'s span now ends at its last child
+  rather than at the end of the heading that closes it. For
+  `"# H\n\npara\n\n# H2\n\nx\n"` the first section reported `0..16` —
+  covering the second section's `# H2` heading, and overlapping that
+  section's own `11..19` — and now reports `0..10`. The last section of
+  a document, which is closed at end of input rather than by a heading,
+  is unchanged, as is every `content_span`.
+
+
 ## 3.6.0
 
 ### Added
