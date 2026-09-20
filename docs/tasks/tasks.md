@@ -3,7 +3,7 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-15
-updated: 2026-09-18
+updated: 2026-09-19
 part_of: '[Twig](/README.md)'
 contents:
 - '[References and footnotes become `Document` columns, so `ParsedDoc` can stop being a union](/docs/tasks/side-tables-as-document-columns.md)'
