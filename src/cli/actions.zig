@@ -104,7 +104,7 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\
         \\options:
         \\  -i, --input <format>   override input-format detection
-        \\                         (djot/dj, markdown/md, commonmark, gfm, xml,
+        \\                         (djot/dj, markdown/md, commonmark, gfm, xml, svg,
         \\                         html/htm, asciidoc/adoc)
         \\  -o, --output <format>  select convert's output (html, ast, canonical)
         \\  --dry-run              (edit) print the result instead of writing it

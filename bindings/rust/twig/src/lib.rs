@@ -54,6 +54,15 @@ pub enum Format {
     /// [`Format::Markdown`] itself stays Twig's default flavor, CommonMark
     /// plus the default-on extensions.
     Gfm,
+    /// SVG: a **dialect** of [`Format::Xml`] — the same parser, serializer,
+    /// [`Target`] and spelling table, under a name of its own so a `.svg`
+    /// file is recognised on sight and a document records what it was
+    /// opened as. Twig knows nothing about what a `<rect>` means; what makes
+    /// an SVG an SVG is its consumer's business (a canvas editor reading the
+    /// elements it draws), and the variant exists so that consumer has a
+    /// format to name. It writes as [`Target::Xml`], and the one gesture it
+    /// supports is [`Gesture::SetNodeAttrs`], as XML does.
+    Svg,
 }
 
 impl From<Format> for ffi::TwigFormat {
@@ -66,6 +75,7 @@ impl From<Format> for ffi::TwigFormat {
             Format::Asciidoc => ffi::TwigFormat::Asciidoc,
             Format::Commonmark => ffi::TwigFormat::Commonmark,
             Format::Gfm => ffi::TwigFormat::Gfm,
+            Format::Svg => ffi::TwigFormat::Svg,
         }
     }
 }
@@ -73,13 +83,14 @@ impl From<Format> for ffi::TwigFormat {
 impl Format {
     /// The language this format is a dialect of, or `None` for a language
     /// itself: `Some(Format::Markdown)` for [`Format::Commonmark`] and
-    /// [`Format::Gfm`], `None` for everything else. A dialect shares its
-    /// language's [`Target`] (`Target::from`), which is what makes serializing
-    /// a GFM document as [`Target::Markdown`] a round trip rather than a
-    /// conversion.
+    /// [`Format::Gfm`], `Some(Format::Xml)` for [`Format::Svg`], `None` for
+    /// everything else. A dialect shares its language's [`Target`]
+    /// (`Target::from`), which is what makes serializing a GFM document as
+    /// [`Target::Markdown`] a round trip rather than a conversion.
     pub fn dialect_of(self) -> Option<Format> {
         match self {
             Format::Commonmark | Format::Gfm => Some(Format::Markdown),
+            Format::Svg => Some(Format::Xml),
             _ => None,
         }
     }
@@ -140,7 +151,7 @@ impl From<Format> for Target {
         match value {
             Format::Djot => Target::Djot,
             Format::Markdown | Format::Commonmark | Format::Gfm => Target::Markdown,
-            Format::Xml => Target::Xml,
+            Format::Xml | Format::Svg => Target::Xml,
             Format::Html => Target::Html,
             Format::Asciidoc => Target::Asciidoc,
         }
@@ -3976,6 +3987,17 @@ mod tests {
         assert_eq!(Format::Gfm.dialect_of(), Some(Format::Markdown));
         assert_eq!(Format::Commonmark.dialect_of(), Some(Format::Markdown));
         assert_eq!(Format::Markdown.dialect_of(), None);
+        // And xml's one dialect, which writes as xml and takes xml's gesture.
+        assert_eq!(Format::Svg.dialect_of(), Some(Format::Xml));
+        assert_eq!(Target::from(Format::Svg), Target::Xml);
+        let mut svg =
+            Document::parse_str("<svg><rect x=\"1\"/></svg>", Format::Svg).expect("parse svg");
+        assert_eq!(
+            String::from_utf8_lossy(&svg.serialize(Format::Xml).expect("serialize")),
+            "<svg><rect x=\"1\"/></svg>"
+        );
+        assert!(Format::Svg.supports(Gesture::SetNodeAttrs));
+        assert!(!Format::Svg.is_authorable());
         assert_eq!(Target::from(Format::Gfm), Target::Markdown);
         let mut gfm = Document::parse_str("* a ~~b~~\n", Format::Gfm).expect("parse gfm");
         let back = gfm.serialize(Format::Gfm).expect("serialize");
@@ -6757,10 +6779,10 @@ mod tests {
 
         // A format that spells no prose answers false to every caret gesture,
         // so the coarse predicate agrees there — it only misleads in the middle
-        // of the range. The one gesture XML supports is the node-addressed
-        // one, which no caret asks for and `is_authorable` deliberately does
-        // not count.
-        for fmt in [Format::Xml] {
+        // of the range. The one gesture XML (and its svg dialect) supports is
+        // the node-addressed one, which no caret asks for and `is_authorable`
+        // deliberately does not count.
+        for fmt in [Format::Xml, Format::Svg] {
             assert!(!fmt.is_authorable());
             for g in all_gestures() {
                 assert_eq!(
