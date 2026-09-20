@@ -373,7 +373,7 @@ static void test_new_block_gestures_link_and_edit(void) {
           == TWIG_STATUS_OK && supported == 0);
     static const char svg_src[] = "<svg><rect x=\"1\"/></svg>";
     TwigEditor *svg_ed = NULL;
-    CHECK(twig_editor_create((const uint8_t *)svg_src, sizeof(svg_src) - 1, TWIG_FORMAT_XML, &svg_ed)
+    CHECK(twig_editor_create((const uint8_t *)svg_src, sizeof(svg_src) - 1, TWIG_FORMAT_SVG, &svg_ed)
           == TWIG_STATUS_OK);
     if (svg_ed != NULL) {
         const TwigFlatNode *nodes = NULL;

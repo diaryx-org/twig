@@ -4100,7 +4100,7 @@ test "insertFootnote: a parse-only format spells none" {
 /// place the gesture would succeed.
 fn minimalSource(fmt: format.Format) []const u8 {
     return switch (fmt) {
-        .xml, .html => "<r>ab</r>",
+        .xml, .svg, .html => "<r>ab</r>",
         else => "ab\n",
     };
 }

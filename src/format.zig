@@ -97,6 +97,14 @@ pub const Format = enum {
     /// conventions (`align=` on a cell, not `style=`). A dialect of
     /// `markdown`, as `commonmark` is.
     gfm,
+    /// SVG: a DIALECT of `xml` — the same parser, serializer, `Target` and
+    /// `Syntax`, under a name of its own so a `.svg` file is recognised on
+    /// sight, `-i svg` and `TWIG_FORMAT_SVG` can say it in one word, and
+    /// `ParsedDoc.format` records what was opened. Twig knows nothing about
+    /// what a `<rect>` means and never will; what makes an SVG an SVG is its
+    /// consumer's business (a canvas editor reading the elements it draws),
+    /// and the row exists so that consumer has a format to name.
+    svg,
 };
 
 /// Every format Twig can WRITE — what `-o`/`--output` names beyond its three
@@ -144,6 +152,7 @@ pub const Target = enum {
 pub fn targetFor(fmt: Format) Target {
     return switch (fmt) {
         .commonmark, .gfm => .markdown,
+        .svg => .xml,
         inline else => |f| @field(Target, @tagName(f)),
     };
 }
@@ -280,6 +289,13 @@ const Gfm = MarkdownDialect(.gfm, Markdown.ParseOptions.gfm);
 fn parseXml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
     const cfg = ParseConfig.from(ctx);
     return .{ .format = .xml, .config = cfg.*, .doc = try Xml.parse(allocator, source) };
+}
+
+/// XML's parse under the `svg` row: the same tree, and `format` says which
+/// row it came through — the one thing a dialect adapter differs in.
+fn parseSvg(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
+    const cfg = ParseConfig.from(ctx);
+    return .{ .format = .svg, .config = cfg.*, .doc = try Xml.parse(allocator, source) };
 }
 
 fn parseHtml(ctx: *const anyopaque, allocator: Allocator, source: []const u8) anyerror!ParsedDoc {
@@ -532,6 +548,25 @@ pub const registry = [_]Entry{
         // records, which is the one gesture a tree-shaped editor over an XML
         // document (a canvas over an SVG) needs from the format. See
         // `languages/xml/syntax.zig`.
+        .syntax = &@import("languages/xml/syntax.zig").table,
+    },
+    .{
+        // SVG — a dialect of xml, as `gfm` is of markdown: one parser, one
+        // serializer, one `Target`, one `Syntax`, and a row so the name
+        // exists. Unlike Markdown's dialects it declares an extension,
+        // because `.svg` is unambiguous where `.md` is not; the rule the
+        // dialect test holds is that a dialect never claims an extension its
+        // language does. Its samples are documents shaped the way a drawing
+        // tool writes them, so the engine contract — and the `node_attrs`
+        // claim it shares with xml — is measured over those.
+        .id = .svg,
+        .dialect_of = .xml,
+        .samples = Xml.svg_samples,
+        .extensions = &.{"svg"},
+        .parse = parseSvg,
+        .parseToAst = parseToAstXml,
+        .renderHtml = renderHtmlGeneric,
+        .serializeCanonical = serializeCanonicalXml,
         .syntax = &@import("languages/xml/syntax.zig").table,
     },
     .{
@@ -804,13 +839,17 @@ test "every Format is also a Target, and the two agree in both directions" {
 
 test "a dialect is a row over its language's parser, not a language" {
     // What `dialect_of` promises: a language row is nobody's dialect, a
-    // dialect's language is a language row, and the dialect declares no
-    // extensions — a `.md` file is the default flavor until `-i` says
-    // otherwise. And the name resolves as a format in its own right.
+    // dialect's language is a language row, and the dialect claims no
+    // extension its language does — a `.md` file is the default flavor until
+    // `-i` says otherwise, while `.svg` names its row on sight because
+    // nothing else reads it. And the name resolves as a format in its own
+    // right.
     for (&registry) |*e| {
         const lang = e.dialect_of orelse continue;
         try std.testing.expect(entryFor(lang).dialect_of == null);
-        try std.testing.expectEqual(@as(usize, 0), e.extensions.len);
+        for (e.extensions) |ext| {
+            for (entryFor(lang).extensions) |own| try std.testing.expect(!std.mem.eql(u8, ext, own));
+        }
         try std.testing.expectEqual(targetFor(lang), targetFor(e.id));
         try std.testing.expectEqual(e.id, parseFormatName(@tagName(e.id)).?);
     }
@@ -819,6 +858,30 @@ test "a dialect is a row over its language's parser, not a language" {
     try std.testing.expect(entryFor(.markdown).dialect_of == null);
     try std.testing.expectEqual(Target.markdown, parseTargetName("gfm").?);
     try std.testing.expect(detectFromExtension("a.md") == .markdown);
+    try std.testing.expectEqual(Format.xml, entryFor(.svg).dialect_of.?);
+    try std.testing.expectEqual(Target.xml, parseTargetName("svg").?);
+    try std.testing.expect(detectFromExtension("drawing.svg") == .svg);
+    try std.testing.expect(detectFromExtension("feed.xml") == .xml);
+}
+
+test "the svg row is xml under its own name, and records it" {
+    const src = "<svg viewBox=\"0 0 1 1\"><rect x=\"0\"/></svg>";
+    const cfg: ParseConfig = .{};
+    var doc = try entryFor(.svg).parse(&cfg, std.testing.allocator, src);
+    defer doc.deinit();
+    try std.testing.expectEqual(Format.svg, doc.format);
+    var as_xml = try entryFor(.xml).parse(&cfg, std.testing.allocator, src);
+    defer as_xml.deinit();
+    try std.testing.expect(doc.doc.ast.eql(as_xml.doc.ast));
+    // Same spelling table: the node gesture is the one door in, and a prose
+    // editor still opens it read-only.
+    try std.testing.expectEqual(syntaxFor(.xml), syntaxFor(.svg));
+    try std.testing.expect(!syntaxFor(.svg).authorable());
+    try std.testing.expect(syntaxFor(.svg).node_attrs != null);
+    // And a canonical print writes as xml: the one serializer.
+    const printed = try entryFor(.svg).serializeCanonical.?(std.testing.allocator, &doc);
+    defer std.testing.allocator.free(printed);
+    try std.testing.expectEqualStrings(src, printed);
 }
 
 test "the dialect rows parse what their names say, and record it" {
