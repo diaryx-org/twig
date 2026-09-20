@@ -90,6 +90,13 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.8.0
+
+### Added
+
+- **c-abi** — reserve the runtime format range ([`79f45b7`](https://github.com/diaryx-org/twig/commit/79f45b7466203384df15361c69298cc9d1436d47))
+
+
 ## 3.7.0
 
 ### Added
