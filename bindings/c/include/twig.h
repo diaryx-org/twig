@@ -1023,6 +1023,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_SET_BLOCK_ATTRS = 27,
     TWIG_GESTURE_WRAP_RANGE_ATTRS = 28,
     TWIG_GESTURE_JOIN_BLOCKS = 29,
+    TWIG_GESTURE_SET_NODE_ATTRS = 30,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -1688,6 +1689,37 @@ TwigStatus twig_editor_wrap_range_attrs(
     TwigEditor *editor,
     size_t start,
     size_t end,
+    const TwigKeyVal *attrs_ptr,
+    size_t attrs_len,
+    TwigChange *out_change
+);
+
+// Replace the attribute set of the element `node_id` — an id from
+// twig_editor_nodes, valid against the CURRENT tree, so read the tree again
+// after any successful edit — with `attrs`, the same (key, value) array
+// twig_editor_set_block_attrs takes; attrs_len == 0 clears them. Replace, not
+// merge. The run is written on the element's own start tag, at the span
+// twig_document_attrs_span reports, as ` key="value"` pairs with `&`, `<`,
+// `>` and `"` as entities; nothing else in the element moves, its children
+// included — a <g> holding a thousand paths is not re-printed to change its
+// transform. An element with no attributes yet has the run inserted right
+// after its name.
+//
+// The node-addressed sibling of twig_editor_set_block_attrs, for the caller
+// that holds a tree rather than a caret: a canvas over an SVG naming the
+// shape it is dragging. TWIG_STATUS_UNSUPPORTED_FORMAT where the format keeps
+// a node's attributes anywhere but on the node's own tag — every format but
+// TWIG_FORMAT_XML today; ask twig_format_supports with
+// TWIG_GESTURE_SET_NODE_ATTRS, which answers 1 for XML while
+// twig_format_is_authorable still answers 0 there (no caret gesture works, and
+// a prose editor still opens XML read-only). TWIG_STATUS_INVALID_ARGUMENT for
+// an id past the tree, a NULL attrs_ptr with a non-zero attrs_len, or an
+// attribute no format reads back (the block gesture's rule);
+// TWIG_STATUS_NOT_EDITABLE for a node that is not an element — a text run, a
+// comment.
+TwigStatus twig_editor_set_node_attrs(
+    TwigEditor *editor,
+    uint32_t node_id,
     const TwigKeyVal *attrs_ptr,
     size_t attrs_len,
     TwigChange *out_change

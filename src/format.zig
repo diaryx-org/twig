@@ -524,8 +524,15 @@ pub const registry = [_]Entry{
         // Why converting INTO xml from another format isn't meaningful yet is
         // now a fact about the xml TARGET row (`targets`, below), not this one.
         //
-        // No `syntax`: XML has no lightweight inline markup to toggle and no
-        // line-prefix containers, so it is parse-and-render only.
+        // A table with ONE claim in it. XML has no lightweight inline markup
+        // to toggle and no line-prefix containers, so every prose gesture
+        // stays unsupported and `authorable()` stays false — an editor opens
+        // it read-only and offers no toolbar. What it does spell is an
+        // element's attributes, on the element itself at a span its parser
+        // records, which is the one gesture a tree-shaped editor over an XML
+        // document (a canvas over an SVG) needs from the format. See
+        // `languages/xml/syntax.zig`.
+        .syntax = &@import("languages/xml/syntax.zig").table,
     },
     .{
         .id = .html,
