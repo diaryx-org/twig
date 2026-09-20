@@ -658,6 +658,24 @@ pub const Syntax = struct {
     /// implying `renderBlock != null`, which `assertCoherent` pins.
     block_attrs: ?BlockAttrs = null,
 
+    /// Whether a node's attributes live on the node's OWN opening spelling,
+    /// at the span its parser records (`Document.attrsSpan`), written as a
+    /// tag interior — XML's ` key="value"` run, with `&`, `<`, `>` and `"`
+    /// as entities — so `Editor.setNodeAttrs` can rewrite that span alone
+    /// and leave every other byte of the node, its children included, where
+    /// it is. `null` = the gesture is `error.UnsupportedFormat`.
+    ///
+    /// The node-addressed sibling of `block_attrs`, and a different claim:
+    /// that one finds a BLOCK by offset and re-prints it or rewrites the
+    /// line before it, which is what a caret editor over prose wants; this
+    /// one takes a node id and splices, because the caller that wants it
+    /// holds a tree and not a caret — a canvas editor over an SVG names the
+    /// shape it is dragging, and no byte position stands for it. Measured
+    /// by `languages/harness.zig` rather than asserted: an element of every
+    /// sample, given `claim_attrs`, reparses carrying them, and given none
+    /// reparses carrying none.
+    node_attrs: ?NodeAttrs = null,
+
     /// Whether an ANONYMOUS INLINE CONTAINER carrying attributes, printed
     /// through `renderBlock`, reparses to an inline container carrying them —
     /// anonymous (djot's `[text]{…}`) or named `span` (HTML's and Markdown's
@@ -888,6 +906,17 @@ pub const Syntax = struct {
         if (self.block_attrs != null) std.debug.assert(self.renderBlock != null);
         if (self.inline_attrs) std.debug.assert(self.renderBlock != null);
     }
+};
+
+/// How a node's own attributes are spelled — see `Syntax.node_attrs`. The
+/// run itself is `attrs_writer.writeHtmlAttrs`'s and is not a field here: a
+/// tag interior is the one shape a recorded attribute span has ever held,
+/// and a second spelling earns a field when a parser records one.
+pub const NodeAttrs = struct {
+    /// What the node's opening spelling begins with, before its name — the
+    /// `<` of a tag. The first attribute of a node that has none is inserted
+    /// `open.len + name.len` bytes into the node, where the parser reads it.
+    open: []const u8 = "<",
 };
 
 /// The shape a block's attributes come back in — see `Syntax.block_attrs`.

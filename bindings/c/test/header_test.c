@@ -368,6 +368,42 @@ static void test_new_block_gestures_link_and_edit(void) {
         twig_editor_destroy(attr_ed);
     }
 
+    // A node's attributes, by id rather than by offset: XML's start tag is
+    // rewritten in place, and the prose gesture's gate stays closed there.
+    int supported = -1;
+    CHECK(twig_format_supports(TWIG_FORMAT_XML, TWIG_GESTURE_SET_NODE_ATTRS, 0, &supported)
+          == TWIG_STATUS_OK && supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_XML, TWIG_GESTURE_SET_BLOCK_ATTRS, 0, &supported)
+          == TWIG_STATUS_OK && supported == 0);
+    CHECK(twig_format_supports(TWIG_FORMAT_MARKDOWN, TWIG_GESTURE_SET_NODE_ATTRS, 0, &supported)
+          == TWIG_STATUS_OK && supported == 0);
+    static const char svg_src[] = "<svg><rect x=\"1\"/></svg>";
+    TwigEditor *svg_ed = NULL;
+    CHECK(twig_editor_create((const uint8_t *)svg_src, sizeof(svg_src) - 1, TWIG_FORMAT_XML, &svg_ed)
+          == TWIG_STATUS_OK);
+    if (svg_ed != NULL) {
+        const TwigFlatNode *nodes = NULL;
+        size_t n = 0;
+        uint32_t rect = TWIG_NO_NODE;
+        CHECK(twig_editor_nodes(svg_ed, &nodes, &n) == TWIG_STATUS_OK);
+        for (size_t i = 0; i < n; i++) {
+            if (nodes[i].name_ptr != NULL && nodes[i].name_len == 4 &&
+                memcmp(nodes[i].name_ptr, "rect", 4) == 0) rect = nodes[i].id;
+        }
+        CHECK(rect != TWIG_NO_NODE);
+        const TwigKeyVal moved[] = {
+            {(const uint8_t *)"x", 1, (const uint8_t *)"10", 2},
+            {(const uint8_t *)"fill", 4, (const uint8_t *)"red", 3},
+        };
+        CHECK(twig_editor_set_node_attrs(svg_ed, rect, moved, 2, &change) == TWIG_STATUS_OK);
+        CHECK(twig_editor_source(svg_ed, &out, &out_len) == TWIG_STATUS_OK);
+        CHECK(out_len == 36 && memcmp(out, "<svg><rect x=\"10\" fill=\"red\"/></svg>", 36) == 0);
+        CHECK(twig_editor_set_node_attrs(svg_ed, rect, NULL, 0, &change) == TWIG_STATUS_OK);
+        CHECK(twig_editor_source(svg_ed, &out, &out_len) == TWIG_STATUS_OK);
+        CHECK(out_len == 18 && memcmp(out, "<svg><rect/></svg>", 18) == 0);
+        twig_editor_destroy(svg_ed);
+    }
+
     // There is no `::` without a name, and a name is an ASCII letter followed
     // by letters, digits, `-` and `_`: `a b` would be an inline directive
     // inside a paragraph, not the block that was asked for.

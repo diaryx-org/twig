@@ -4143,6 +4143,7 @@ const all_gestures = blk: {
         .insert_directive,
         .set_block_attrs,
         .wrap_range_attrs,
+        .set_node_attrs,
     };
 };
 
@@ -4195,6 +4196,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .insert_directive => ed.insertDirective(0, "page-break", null, &.{}),
         .set_block_attrs => ed.setBlockAttrs(0, &.{.{ .key = "class", .value = "c" }}),
         .wrap_range_attrs => ed.wrapRangeAttrs(whole, &.{.{ .key = "class", .value = "c" }}),
+        .set_node_attrs => ed.setNodeAttrs(0, &.{.{ .key = "class", .value = "c" }}),
     };
 }
 
@@ -4266,11 +4268,15 @@ test "supports is the per-gesture answer authorable() cannot give" {
     try testing.expect(Editor.supports(html, .join_blocks));
     try testing.expect(!Editor.supports(html, .renumber_ordered_lists));
 
-    // A format that spells nothing answers false to every gesture, so
+    // A format that spells no prose answers false to every caret gesture, so
     // `authorable()` and `supports` agree there — the coarse predicate is only
-    // ever misleading in the middle of the range.
+    // ever misleading in the middle of the range. The one gesture XML does
+    // support is the node-addressed one, which no caret ever asks for and
+    // which `authorable()` deliberately does not count: a tree editor asks
+    // `supports` for it, and a prose editor still opens XML read-only.
+    try testing.expect(!format.syntaxFor(.xml).authorable());
     for (all_gestures) |g| {
-        try testing.expect(!Editor.supports(format.syntaxFor(.xml), g));
+        try testing.expectEqual(g == .set_node_attrs, Editor.supports(format.syntaxFor(.xml), g));
     }
 
     // AsciiDoc sits in the middle of the range the other way round from
@@ -4355,6 +4361,57 @@ test "setBlockAttrs: djot refuses attributes assembled from more than one block"
     var fx = try Fixture.init("{.a}\n{.b}\nhello\n", .djot);
     defer fx.deinit();
     try testing.expectError(error.NotEditable, fx.ed.setBlockAttrs(12, &class_c));
+}
+
+test "setNodeAttrs: XML rewrites the start tag's interior and nothing else" {
+    // The children — a nested element, a comment, the whitespace text runs
+    // that hold the indentation — are not re-printed: only the bytes between
+    // the name and the closer move.
+    var fx = try Fixture.init("<svg>\n  <g  id=\"a\"  fill='red' >\n    <rect x=\"1\"/><!-- c -->\n  </g>\n</svg>\n", .xml);
+    defer fx.deinit();
+    const g = fx.find(.{ .container_named = "g" }).?;
+    try fx.ed.setNodeAttrs(g, &.{ .{ .key = "id", .value = "a" }, .{ .key = "transform", .value = "translate(2 3)" } });
+    try fx.expectSource("<svg>\n  <g id=\"a\" transform=\"translate(2 3)\">\n    <rect x=\"1\"/><!-- c -->\n  </g>\n</svg>\n");
+    const g2 = fx.find(.{ .container_named = "g" }).?;
+    try testing.expectEqualStrings("translate(2 3)", fx.ed.astView().attrsOf(g2).get("transform").?);
+    try testing.expect(fx.ed.astView().attrsOf(g2).get("fill") == null);
+
+    // A self-closing element keeps its closer; a value's specials come back
+    // as entities and reparse to the bytes that were asked for.
+    const rect = fx.find(.{ .container_named = "rect" }).?;
+    try fx.ed.setNodeAttrs(rect, &.{.{ .key = "data-note", .value = "a < b & c" }});
+    try fx.expectSource("<svg>\n  <g id=\"a\" transform=\"translate(2 3)\">\n    <rect data-note=\"a &lt; b &amp; c\"/><!-- c -->\n  </g>\n</svg>\n");
+    const rect2 = fx.find(.{ .container_named = "rect" }).?;
+    try testing.expectEqualStrings("a < b & c", fx.ed.astView().attrsOf(rect2).get("data-note").?);
+
+    // An empty set removes the run, whitespace and all; clearing an element
+    // that has none is a no-op; and a first attribute lands after the name.
+    try fx.ed.setNodeAttrs(fx.find(.{ .container_named = "g" }).?, &.{});
+    try fx.expectSource("<svg>\n  <g>\n    <rect data-note=\"a &lt; b &amp; c\"/><!-- c -->\n  </g>\n</svg>\n");
+    try fx.ed.setNodeAttrs(fx.find(.{ .container_named = "svg" }).?, &.{});
+    try fx.expectSource("<svg>\n  <g>\n    <rect data-note=\"a &lt; b &amp; c\"/><!-- c -->\n  </g>\n</svg>\n");
+    try fx.ed.setNodeAttrs(fx.find(.{ .container_named = "svg" }).?, &.{.{ .key = "viewBox", .value = "0 0 10 10" }});
+    try fx.expectSource("<svg viewBox=\"0 0 10 10\">\n  <g>\n    <rect data-note=\"a &lt; b &amp; c\"/><!-- c -->\n  </g>\n</svg>\n");
+}
+
+test "setNodeAttrs: refuses what is not an element, an unknown id, and an attribute no format reads back" {
+    var fx = try Fixture.init("<r>text<!-- c --></r>", .xml);
+    defer fx.deinit();
+    const text = fx.find(.{ .tag = .str }).?;
+    try testing.expectError(error.NotEditable, fx.ed.setNodeAttrs(text, &class_c));
+    const comment = fx.find(.{ .markup_leaf = .comment }).?;
+    try testing.expectError(error.NotEditable, fx.ed.setNodeAttrs(comment, &class_c));
+    const past: AST.Node.Id = @intCast(fx.ed.astView().nodes.len);
+    try testing.expectError(error.InvalidRange, fx.ed.setNodeAttrs(past, &class_c));
+    const r = fx.find(.{ .container_named = "r" }).?;
+    try testing.expectError(error.InvalidAttribute, fx.ed.setNodeAttrs(r, &.{.{ .key = "1x", .value = "v" }}));
+    try testing.expectError(error.InvalidAttribute, fx.ed.setNodeAttrs(r, &.{.{ .key = "x", .value = null }}));
+    try fx.expectSource("<r>text<!-- c --></r>");
+    // A prose format spells a block's attributes and not a node's: the gate
+    // answers before an id is looked at.
+    var md = try Fixture.init("hello\n", .djot);
+    defer md.deinit();
+    try testing.expectError(error.UnsupportedFormat, md.ed.setNodeAttrs(0, &class_c));
 }
 
 test "setBlockAttrs: HTML re-prints the element with the new set" {
