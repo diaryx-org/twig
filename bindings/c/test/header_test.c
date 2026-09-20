@@ -401,6 +401,20 @@ static void test_new_block_gestures_link_and_edit(void) {
         CHECK(twig_editor_set_node_attrs(svg_ed, rect, NULL, 0, &change) == TWIG_STATUS_OK);
         CHECK(twig_editor_source(svg_ed, &out, &out_len) == TWIG_STATUS_OK);
         CHECK(out_len == 18 && memcmp(out, "<svg><rect/></svg>", 18) == 0);
+        // Reorder by locator: the moved node lands next to its anchor, and the
+        // two locators are resolved against the same tree.
+        CHECK(twig_editor_insert_after(svg_ed, (const uint8_t *)"0.0", 3,
+                                       (const uint8_t *)"<circle/>", 9) == TWIG_STATUS_OK);
+        CHECK(twig_editor_move_after(svg_ed, (const uint8_t *)"0.0", 3,
+                                     (const uint8_t *)"0.1", 3) == TWIG_STATUS_OK);
+        CHECK(twig_editor_source(svg_ed, &out, &out_len) == TWIG_STATUS_OK);
+        CHECK(out_len == 27 && memcmp(out, "<svg><circle/><rect/></svg>", 27) == 0);
+        CHECK(twig_editor_move_before(svg_ed, (const uint8_t *)"0.1", 3,
+                                      (const uint8_t *)"0.0", 3) == TWIG_STATUS_OK);
+        CHECK(twig_editor_source(svg_ed, &out, &out_len) == TWIG_STATUS_OK);
+        CHECK(out_len == 27 && memcmp(out, "<svg><rect/><circle/></svg>", 27) == 0);
+        CHECK(twig_editor_move_after(svg_ed, (const uint8_t *)"0.0", 3,
+                                     (const uint8_t *)"0", 1) == TWIG_STATUS_INVALID_ARGUMENT);
         twig_editor_destroy(svg_ed);
     }
 

@@ -601,6 +601,121 @@ pub const Splicer = struct {
         try self.replaceAtSpan(span, interior);
     }
 
+    /// Where `moveNode` puts the node relative to its anchor.
+    pub const Placement = enum { before, after };
+
+    /// Move node `id` to immediately before or after node `anchor` — the
+    /// z-order change of a canvas, the reorder of a list — in ONE splice over
+    /// the range that covers both, with the bytes between them copied
+    /// verbatim in their new order. One reparse, one undo step, and a reparse
+    /// that fails rolls the whole move back rather than leaving the node
+    /// deleted and not yet re-inserted.
+    ///
+    /// The node travels with the WHITESPACE RUN before it: the line break and
+    /// indentation a pretty-printed document separates siblings with, which
+    /// in XML is a text node of its own and in a lightweight format lies in
+    /// no node at all. Placed after the anchor the run stays ahead of the
+    /// node (`gap A` lands after `B`); placed before it the run follows the
+    /// node (`A gap` lands ahead of `B`) — so in either direction every
+    /// sibling keeps a separator on the side it had one, and `<g>\n  <a/>\n
+    /// <b/>\n</g>` reorders to `<g>\n  <b/>\n  <a/>\n</g>` and not to a line
+    /// holding both. The rule is about bytes, not structure: a block quote's
+    /// `> ` prefixes are not whitespace and do not travel, so a paragraph
+    /// inside one is not this op's to move. The run is bounded by the
+    /// previous sibling's end, unless that sibling is itself whitespace-only
+    /// text (XML's separator node), which the run is.
+    ///
+    /// `error.OverlappingNodes` when the two are the same node or one's span
+    /// holds the other's: there is no sibling order to change. Nothing
+    /// requires them to be siblings otherwise — a node moved next to a node
+    /// in another container lands in that container, which is a reparent.
+    pub fn moveNode(self: *Splicer, path: []const usize, anchor_path: []const usize, place: Placement) !void {
+        const id = try self.doc.ast.getIdByPath(path);
+        const anchor = try self.doc.ast.getIdByPath(anchor_path);
+        try self.moveNodeById(id, anchor, place);
+    }
+    pub fn moveNodeById(self: *Splicer, id: Node.Id, anchor: Node.Id, place: Placement) !void {
+        const a = try self.nodeSpan(id);
+        const b = try self.nodeSpan(anchor);
+        const unit = Span.init(self.leadingGapStart(id, a.start), a.end);
+        if (unit.start < b.end and b.start < unit.end) return error.OverlappingNodes;
+
+        // Each slice aliases `self.source`; `replaceAtSpan` copies the
+        // assembled buffer before retiring the old source, so this is safe.
+        const src = self.source.items;
+        const gap = src[unit.start..a.start];
+        const node = src[a.start..a.end];
+        const other = src[b.start..b.end];
+        const a_first = unit.end <= b.start;
+        const between = if (a_first) src[unit.end..b.start] else src[b.end..unit.start];
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        try buf.ensureTotalCapacityPrecise(self.allocator, unit.len() + between.len + other.len);
+        if (a_first) buf.appendSliceAssumeCapacity(between);
+        switch (place) {
+            .after => {
+                buf.appendSliceAssumeCapacity(other);
+                buf.appendSliceAssumeCapacity(gap);
+                buf.appendSliceAssumeCapacity(node);
+            },
+            .before => {
+                buf.appendSliceAssumeCapacity(node);
+                buf.appendSliceAssumeCapacity(gap);
+                buf.appendSliceAssumeCapacity(other);
+            },
+        }
+        if (!a_first) buf.appendSliceAssumeCapacity(between);
+        const whole = if (a_first) Span.init(unit.start, b.end) else Span.init(b.start, unit.end);
+        try self.replaceAtSpan(whole, buf.items);
+    }
+
+    /// Where the whitespace run ahead of node `id` (whose span starts at
+    /// `start`) begins — see `moveNodeById`. Walks back over whitespace bytes,
+    /// no further than the end of the previous sibling unless that sibling
+    /// is whitespace-only text, and no further than the parent's interior.
+    fn leadingGapStart(self: *Splicer, id: Node.Id, start: usize) usize {
+        const src = self.source.items;
+        var floor: usize = 0;
+        if (parentOf(&self.doc.ast, id)) |parent| {
+            if (self.doc.contentSpan(parent)) |cs| floor = cs.start;
+            var prev: ?Node.Id = null;
+            var child = self.doc.ast.nodes[parent].first_child;
+            while (child) |c| : (child = self.doc.ast.nodes[c].next_sibling) {
+                if (c == id) break;
+                prev = c;
+            }
+            if (prev) |p| {
+                const ps = self.doc.span(p);
+                const blank = switch (self.doc.ast.nodes[p].kind) {
+                    .str => |t| std.mem.trim(u8, t, " \t\r\n").len == 0,
+                    else => false,
+                };
+                if (!blank) floor = @max(floor, ps.end);
+            }
+        }
+        var at = start;
+        while (at > floor) : (at -= 1) {
+            switch (src[at - 1]) {
+                ' ', '\t', '\r', '\n' => {},
+                else => break,
+            }
+        }
+        return at;
+    }
+
+    /// The parent of `id`, by walking the arena — `Node` links down and
+    /// sideways only. `null` for the root.
+    fn parentOf(ast: *const AST, id: Node.Id) ?Node.Id {
+        for (ast.nodes, 0..) |n, i| {
+            var child = n.first_child;
+            while (child) |c| : (child = ast.nodes[c].next_sibling) {
+                if (c == id) return @intCast(i);
+            }
+        }
+        return null;
+    }
+
     // ── range-oriented rich-text ops (the "toolbar") ────────────────────────
     // These stay language-agnostic: the caller (which knows the format) supplies
     // the delimiter bytes and the target `Node.Kind` tag, so this engine never
@@ -909,6 +1024,60 @@ test "insertBefore / insertAfter / deleteNode" {
 
     try ed.insertBefore(&.{ 0, 0 }, "<y/>");
     try testing.expectEqualStrings("<r><y/><x/><b/></r>", ed.sourceBytes());
+}
+
+test "moveNode reorders siblings in one splice, carrying the whitespace ahead of the node" {
+    var ed = try Splicer.init(testing.allocator, "<g>\n  <a/>\n  <b/>\n  <c/>\n</g>", &test_ctx, parseXml);
+    defer ed.deinit();
+    // Children of <g>: ws, a, ws, b, ws, c, ws — so a is 0.1, b is 0.3, c is 0.5.
+    try ed.moveNode(&.{ 0, 1 }, &.{ 0, 5 }, .after);
+    try testing.expectEqualStrings("<g>\n  <b/>\n  <c/>\n  <a/>\n</g>", ed.sourceBytes());
+    try testing.expectEqual(@as(usize, 1), ed.undo_stack.items.len);
+    // And back to the front, ahead of what is now first.
+    try ed.moveNode(&.{ 0, 5 }, &.{ 0, 1 }, .before);
+    try testing.expectEqualStrings("<g>\n  <a/>\n  <b/>\n  <c/>\n</g>", ed.sourceBytes());
+    // Adjacent, in both directions.
+    try ed.moveNode(&.{ 0, 1 }, &.{ 0, 3 }, .after);
+    try testing.expectEqualStrings("<g>\n  <b/>\n  <a/>\n  <c/>\n</g>", ed.sourceBytes());
+    try ed.moveNode(&.{ 0, 3 }, &.{ 0, 1 }, .before);
+    try testing.expectEqualStrings("<g>\n  <a/>\n  <b/>\n  <c/>\n</g>", ed.sourceBytes());
+    // One undo step per move.
+    _ = try ed.undo();
+    try testing.expectEqualStrings("<g>\n  <b/>\n  <a/>\n  <c/>\n</g>", ed.sourceBytes());
+}
+
+test "moveNode with no whitespace to carry, and across containers" {
+    var ed = try Splicer.init(testing.allocator, "<r><a/><b/><p><c/></p></r>", &test_ctx, parseXml);
+    defer ed.deinit();
+    try ed.moveNode(&.{ 0, 0 }, &.{ 0, 1 }, .after);
+    try testing.expectEqualStrings("<r><b/><a/><p><c/></p></r>", ed.sourceBytes());
+    // Next to a node in another container is a reparent.
+    try ed.moveNode(&.{ 0, 1 }, &.{ 0, 2, 0 }, .before);
+    try testing.expectEqualStrings("<r><b/><p><a/><c/></p></r>", ed.sourceBytes());
+    // A text sibling's trailing space is the text's, not the node's gap.
+    var t = try Splicer.init(testing.allocator, "<r>hi <a/><b/></r>", &test_ctx, parseXml);
+    defer t.deinit();
+    try t.moveNode(&.{ 0, 1 }, &.{ 0, 2 }, .after);
+    try testing.expectEqualStrings("<r>hi <b/><a/></r>", t.sourceBytes());
+}
+
+test "moveNode carries a lightweight format's blank-line separator too" {
+    var ed = try Splicer.init(testing.allocator, "A\n\nB\n\nC\n", &test_ctx, parseMarkdown);
+    defer ed.deinit();
+    try ed.moveNode(&.{1}, &.{2}, .after);
+    try testing.expectEqualStrings("A\n\nC\n\nB\n", ed.sourceBytes());
+    try ed.moveNode(&.{2}, &.{0}, .before);
+    try testing.expectEqualStrings("B\n\nA\n\nC\n", ed.sourceBytes());
+}
+
+test "moveNode refuses a node and its own ancestor, or itself" {
+    var ed = try Splicer.init(testing.allocator, "<r><a><b/></a></r>", &test_ctx, parseXml);
+    defer ed.deinit();
+    try testing.expectError(error.OverlappingNodes, ed.moveNode(&.{ 0, 0, 0 }, &.{ 0, 0 }, .after));
+    try testing.expectError(error.OverlappingNodes, ed.moveNode(&.{ 0, 0 }, &.{ 0, 0, 0 }, .before));
+    try testing.expectError(error.OverlappingNodes, ed.moveNode(&.{ 0, 0 }, &.{ 0, 0 }, .after));
+    try testing.expectEqualStrings("<r><a><b/></a></r>", ed.sourceBytes());
+    try testing.expectEqual(@as(usize, 0), ed.undo_stack.items.len);
 }
 
 test "deleteNode on a quote takes its own trailing marker lines with it" {
