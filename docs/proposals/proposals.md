@@ -2,7 +2,7 @@
 title: Proposals
 description: Arguments for a change to twig, one file each — a case that may lose
 created: 2026-09-09
-updated: 2026-09-19
+updated: 2026-09-20
 part_of: '[Twig](/README.md)'
 contents:
 - '[A twig-native document markup language](twig-native-language.md)'
@@ -11,6 +11,7 @@ contents:
 - '[Proposal: hard line breaks inside table cells](in-cell-line-breaks.md)'
 - '[Proposal: format-correct literal text insertion](literal-text-insertion.md)'
 - '[Proposal: runtime languages](runtime-languages.md)'
+- '[Proposal: the tree gestures a canvas over an SVG needs](tree-gestures-for-a-canvas.md)'
 ---
 # Proposals
 
