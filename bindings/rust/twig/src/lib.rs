@@ -822,6 +822,13 @@ pub enum Gesture {
     /// line between two of its `<p>`s is not what separates them. Ask for this
     /// one rather than reading the split's answer for both.
     JoinBlocks,
+    /// Replace an element's attribute set by node id — [`Editor::set_node_attrs`].
+    /// Supported where the format keeps a node's attributes on the node's own
+    /// tag at a span its parser records: XML, and no prose format. The one
+    /// gesture a tree-shaped editor asks for and a caret never does, which is
+    /// why [`Format::is_authorable`] stays `false` for XML while this answers
+    /// `true`.
+    SetNodeAttrs,
 }
 
 impl Gesture {
@@ -861,6 +868,7 @@ impl Gesture {
             Gesture::SetBlockAttrs => (27, 0),
             Gesture::WrapRangeAttrs => (28, 0),
             Gesture::JoinBlocks => (29, 0),
+            Gesture::SetNodeAttrs => (30, 0),
         }
     }
 }
@@ -2436,6 +2444,57 @@ impl Editor {
             .collect();
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_set_block_attrs(ed, offset, kvs.as_ptr(), kvs.len(), out)
+        })
+    }
+
+    /// Replace the attribute set of the element `node` — an id from
+    /// [`Editor::nodes`], valid against the **current** tree, so read the tree
+    /// again after any successful edit — with `attrs`, the same list
+    /// [`Editor::set_block_attrs`] takes; an empty list clears them. Replace,
+    /// not merge.
+    ///
+    /// The node-addressed sibling of [`Editor::set_block_attrs`], for the
+    /// caller that holds a tree rather than a caret: a canvas editor over an
+    /// SVG names the `<rect>` it is dragging, and no byte offset stands for
+    /// it. The run is written on the element's own start tag, at the span
+    /// [`Document::attrs_span`] reports, as ` key="value"` pairs with `&`,
+    /// `<`, `>` and `"` as entities. Nothing else in the element moves, its
+    /// children included — a `<g>` holding a thousand paths is not re-printed
+    /// to change its `transform`. An element with no attributes yet has the
+    /// run inserted right after its name.
+    ///
+    /// [`Error::UnsupportedFormat`] where the format keeps a node's attributes
+    /// anywhere but on the node's own tag — every format but [`Format::Xml`]
+    /// today; [`Format::supports`] with [`Gesture::SetNodeAttrs`] says which.
+    /// [`Error::InvalidArgument`] for an id past the tree or an attribute no
+    /// format reads back (the rule [`Editor::set_block_attrs`] states);
+    /// [`Error::NotEditable`] for a node that is not an element — a text run,
+    /// a comment.
+    ///
+    /// ```no_run
+    /// # use twig::{Editor, Format, Kind};
+    /// let mut ed = Editor::new_str("<svg><rect x=\"1\"/></svg>", Format::Xml)?;
+    /// let rect = ed.nodes()?.into_iter().find(|n| n.name.as_deref() == Some("rect")).unwrap();
+    /// ed.set_node_attrs(rect.id, &[("x", Some("10")), ("fill", Some("red"))])?;
+    /// assert_eq!(ed.source_str()?, "<svg><rect x=\"10\" fill=\"red\"/></svg>");
+    /// # Ok::<(), twig::Error>(())
+    /// ```
+    pub fn set_node_attrs(
+        &mut self,
+        node: NodeId,
+        attrs: &[(&str, Option<&str>)],
+    ) -> Result<Change, Error> {
+        let kvs: Vec<ffi::TwigKeyVal> = attrs
+            .iter()
+            .map(|(k, v)| ffi::TwigKeyVal {
+                key: k.as_ptr(),
+                key_len: k.len(),
+                value: v.map_or(std::ptr::null(), |s| s.as_ptr()),
+                value_len: v.map_or(0, |s| s.len()),
+            })
+            .collect();
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_set_node_attrs(ed, node.0, kvs.as_ptr(), kvs.len(), out)
         })
     }
 
@@ -6079,6 +6138,88 @@ mod tests {
     }
 
     #[test]
+    fn editor_set_node_attrs_rewrites_an_xml_tag_by_id_and_nothing_else() {
+        assert!(Format::Xml.supports(Gesture::SetNodeAttrs));
+        assert!(!Format::Xml.is_authorable());
+        assert!(!Format::Html.supports(Gesture::SetNodeAttrs));
+        assert!(!Format::Djot.supports(Gesture::SetNodeAttrs));
+
+        let src = "<svg>\n  <g id=\"a\">\n    <rect x=\"1\" y=\"2\"/>\n  </g>\n</svg>\n";
+        let mut ed = Editor::new_str(src, Format::Xml).expect("editor");
+        let rect = |ed: &mut Editor| {
+            ed.nodes()
+                .expect("nodes")
+                .into_iter()
+                .find(|n| n.name.as_deref() == Some("rect"))
+                .expect("a rect")
+                .id
+        };
+        let id = rect(&mut ed);
+        let change = ed
+            .set_node_attrs(
+                id,
+                &[("x", Some("10")), ("y", Some("2")), ("fill", Some("#f00"))],
+            )
+            .expect("set");
+        assert_eq!(
+            ed.source_str().unwrap(),
+            "<svg>\n  <g id=\"a\">\n    <rect x=\"10\" y=\"2\" fill=\"#f00\"/>\n  </g>\n</svg>\n"
+        );
+        // The change is the tag's interior alone: the `<g>` around it and the
+        // whitespace runs are not re-printed.
+        assert_eq!(change.old, 28..40);
+        assert_eq!(change.new, 28..53);
+        // Ids are the current tree's: read them again after an edit.
+        let id = rect(&mut ed);
+        assert_eq!(
+            ed.nodes()
+                .unwrap()
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap()
+                .attrs,
+            vec![
+                ("x".to_string(), Some("10".to_string())),
+                ("y".to_string(), Some("2".to_string())),
+                ("fill".to_string(), Some("#f00".to_string())),
+            ]
+        );
+        ed.set_node_attrs(id, &[]).expect("clear");
+        assert_eq!(
+            ed.source_str().unwrap(),
+            "<svg>\n  <g id=\"a\">\n    <rect/>\n  </g>\n</svg>\n"
+        );
+        // A text run is no element; an id past the tree is no node; a bare
+        // attribute is one no format reads back; and a prose format refuses
+        // before looking.
+        let text = ed
+            .nodes()
+            .unwrap()
+            .into_iter()
+            .find(|n| n.kind == Kind::Str)
+            .expect("a text run")
+            .id;
+        assert_eq!(
+            ed.set_node_attrs(text, &[("a", Some("b"))]),
+            Err(Error::NotEditable)
+        );
+        let past = NodeId(ed.nodes().unwrap().len() as u32 + 5);
+        assert_eq!(
+            ed.set_node_attrs(past, &[("a", Some("b"))]),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(
+            ed.set_node_attrs(id, &[("hidden", None)]),
+            Err(Error::InvalidArgument)
+        );
+        let mut md = Editor::new_str("hello\n", Format::Markdown).expect("editor");
+        assert_eq!(
+            md.set_node_attrs(NodeId(0), &[("a", Some("b"))]),
+            Err(Error::UnsupportedFormat)
+        );
+    }
+
+    #[test]
     fn editor_set_block_attrs_spells_per_format_and_replaces_rather_than_merging() {
         // djot: the line before the block, rewritten in place; the block's
         // bytes are never touched.
@@ -6474,6 +6615,7 @@ mod tests {
             Gesture::SetBlockAttrs,
             Gesture::WrapRangeAttrs,
             Gesture::JoinBlocks,
+            Gesture::SetNodeAttrs,
         ]);
         all
     }
@@ -6488,7 +6630,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=29).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=30).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -6506,7 +6648,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                30,
+                31,
                 0,
                 &mut supported,
             )
@@ -6545,12 +6687,19 @@ mod tests {
         assert!(Format::Markdown.supports(Gesture::TableInsertRow));
         assert!(Format::Djot.supports(Gesture::SplitBlock));
 
-        // A format that spells nothing answers false everywhere, so the coarse
-        // predicate agrees there — it only misleads in the middle of the range.
+        // A format that spells no prose answers false to every caret gesture,
+        // so the coarse predicate agrees there — it only misleads in the middle
+        // of the range. The one gesture XML supports is the node-addressed
+        // one, which no caret asks for and `is_authorable` deliberately does
+        // not count.
         for fmt in [Format::Xml] {
             assert!(!fmt.is_authorable());
             for g in all_gestures() {
-                assert!(!fmt.supports(g), "{fmt:?} claims to spell {g:?}");
+                assert_eq!(
+                    fmt.supports(g),
+                    g == Gesture::SetNodeAttrs,
+                    "{fmt:?} on {g:?}"
+                );
             }
         }
         // AsciiDoc is in the middle of the range the other way round from

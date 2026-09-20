@@ -247,6 +247,37 @@ fn expectBlockAttrs(entry: format.Entry, cfg: *const format.ParseConfig, shape: 
     return error.BlockDidNotReparse;
 }
 
+/// The first element-origin container of `doc` — what a parser made of a
+/// tag, as opposed to a directive or a fenced div — or null when the sample
+/// has none.
+fn firstElement(doc: *const Document) ?AST.Node.Id {
+    for (doc.ast.nodes, 0..) |n, i| {
+        const id: AST.Node.Id = @intCast(i);
+        if (n.kind == .container and doc.containerOrigin(id) == .element) return id;
+    }
+    return null;
+}
+
+/// What `Editor.setNodeAttrs` assumes of a table claiming `Syntax.node_attrs`:
+/// over every sample, the first element given `claim_attrs` reparses
+/// carrying them, and given none reparses carrying none. A sample whose
+/// first element has no attributes covers the insertion after the name; one
+/// whose element has some covers the rewrite of the recorded span — which is
+/// why a claiming format's samples should hold both.
+fn expectNodeAttrs(entry: format.Entry, cfg: *const format.ParseConfig) !void {
+    const table = tableFor(entry, cfg);
+    for (entry.samples) |sample| {
+        var editor = try Editor.init(testing.allocator, sample, cfg, entry.parseToAst, table);
+        defer editor.deinit();
+        const first = firstElement(&editor.splicer.doc) orelse continue;
+        try editor.setNodeAttrs(first, claim_attrs.entries);
+        errdefer std.debug.print("\n--- attributed source ---\n{s}\n", .{editor.sourceBytes()});
+        try expectClaimAttrs(editor.astView(), firstElement(&editor.splicer.doc).?);
+        try editor.setNodeAttrs(firstElement(&editor.splicer.doc).?, &.{});
+        try testing.expect(editor.astView().attrsOf(firstElement(&editor.splicer.doc).?).isEmpty());
+    }
+}
+
 /// What `Editor.wrapRangeAttrs` assumes of a table claiming
 /// `Syntax.inline_attrs`: an ANONYMOUS inline container carrying
 /// `claim_attrs`, printed through `renderBlock` as the fragment root — which
@@ -403,6 +434,7 @@ test "harness: every declared renderer keeps the engine's promise" {
             if (t.names_leaf_containers) try expectNamedLeafContainer(entry, cfg);
             if (t.block_attrs) |shape| try expectBlockAttrs(entry, cfg, shape);
             if (t.inline_attrs) try expectInlineAttrs(entry, cfg);
+            if (t.node_attrs != null) try expectNodeAttrs(entry, cfg);
         }
     }
 }
