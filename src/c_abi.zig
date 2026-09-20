@@ -2890,6 +2890,7 @@ const TwigGesture = enum(c_int) {
     set_block_attrs = 27,
     wrap_range_attrs = 28,
     join_blocks = 29,
+    set_node_attrs = 30,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2925,6 +2926,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         27 => .set_block_attrs,
         28 => .wrap_range_attrs,
         29 => .join_blocks,
+        30 => .set_node_attrs,
         else => null,
     };
 }
@@ -3227,6 +3229,58 @@ pub export fn twig_editor_set_block_attrs(
     handle.editor.setBlockAttrs(offset, entries) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Replace the attribute set of the element `node_id` — an id from
+/// `twig_editor_nodes`, valid against the CURRENT tree, so read the tree
+/// again after any successful edit — with `attrs`, the same `(key, value)`
+/// array `twig_editor_set_block_attrs` takes; `attrs_len == 0` clears them.
+/// Replace, not merge. The run is written on the element's own start tag,
+/// at the span `twig_document_attrs_span` reports, as ` key="value"` pairs
+/// with `&`, `<`, `>` and `"` as entities; nothing else in the element moves,
+/// its children included. An element with no attributes yet has the run
+/// inserted right after its name. See `twig.Editor.setNodeAttrs`.
+///
+/// The node-addressed sibling of `twig_editor_set_block_attrs`, for the
+/// caller that holds a tree rather than a caret — a canvas over an SVG naming
+/// the shape it is dragging. `unsupported_format` where the format keeps a
+/// node's attributes anywhere but on the node's own tag (every format but
+/// XML today; ask `twig_format_supports` with `TWIG_GESTURE_SET_NODE_ATTRS`);
+/// `invalid_argument` for an id past the tree, a NULL `attrs_ptr` with a
+/// non-zero length, or an attribute no format reads back (as the block
+/// gesture); `not_editable` for a node that is not an element — a text run,
+/// a comment.
+pub export fn twig_editor_set_node_attrs(
+    ed: ?*TwigEditor,
+    node_id: u32,
+    attrs_ptr: ?[*]const TwigKeyVal,
+    attrs_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const allocator = activeAllocator();
+    var entries: []twig.AST.KeyVal = &.{};
+    defer if (entries.len != 0) allocator.free(entries);
+    if (attrs_len != 0) {
+        const c_kvs = (attrs_ptr orelse return .invalid_argument)[0..attrs_len];
+        entries = allocator.alloc(twig.AST.KeyVal, attrs_len) catch return .out_of_memory;
+        for (c_kvs, entries) |c, *e| {
+            const key = sliceOf(c.key, c.key_len) orelse return .invalid_argument;
+            const value: ?[]const u8 = if (c.value) |vp| vp[0..c.value_len] else null;
+            e.* = .{ .key = key, .value = value };
+        }
+    }
+    handle.editor.setNodeAttrs(node_id, entries) catch |err|
+        return statusOfEditorError(err);
+    // A no-op clear (no attributes to remove) changes nothing, and so leaves
+    // no `lastChange` behind for the slot; report an empty change at 0 rather
+    // than the previous edit's.
+    if (out_change) |slot| slot.* = if (handle.editor.lastChange()) |ch| changeC(ch) else .{
+        .old = .{ .start = 0, .end = 0 },
+        .new = .{ .start = 0, .end = 0 },
+    };
     return .ok;
 }
 
@@ -6090,6 +6144,60 @@ test "twig_editor_set_block_attrs: gated on TWIG_MD_HTML_ELEMENTS, and the div i
     // A bare attribute is one no lightweight format reads back.
     const bare = [_]TwigKeyVal{.{ .key = "hidden", .key_len = 6, .value = null, .value_len = 0 }};
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_set_block_attrs(ed, 0, &bare, 1, null));
+}
+
+test "twig_editor_set_node_attrs: XML's tag is rewritten in place, by node id, and every prose format refuses" {
+    var out: c_int = -1;
+    const gesture = @intFromEnum(TwigGesture.set_node_attrs);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.xml), gesture, 0, &out));
+    try std.testing.expectEqual(@as(c_int, 1), out);
+    for ([_]TwigFormat{ .djot, .markdown, .html, .asciidoc, .commonmark, .gfm }) |fmt| {
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(fmt), gesture, 0, &out));
+        try std.testing.expectEqual(@as(c_int, 0), out);
+    }
+
+    var fx = try EditorFixture.init("<svg>\n  <rect x=\"1\" y=\"2\"/>\n</svg>\n");
+    defer fx.deinit();
+    // The rect, found the way a canvas would: by walking the flat tree.
+    var nodes: ?[*]const TwigFlatNode = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nodes, &len));
+    var rect: ?u32 = null;
+    for (nodes.?[0..len]) |n| {
+        if (n.name_ptr) |name| {
+            if (std.mem.eql(u8, name[0..n.name_len], "rect")) rect = n.id;
+        }
+    }
+    const moved = [_]TwigKeyVal{
+        .{ .key = "x", .key_len = 1, .value = "10", .value_len = 2 },
+        .{ .key = "y", .key_len = 1, .value = "2", .value_len = 1 },
+        .{ .key = "fill", .key_len = 4, .value = "#f00", .value_len = 4 },
+    };
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_set_node_attrs(fx.ed, rect.?, &moved, moved.len, &change));
+    try fx.expectSource("<svg>\n  <rect x=\"10\" y=\"2\" fill=\"#f00\"/>\n</svg>\n");
+    // The change is the tag's interior: from after the name to the closer.
+    try std.testing.expectEqual(@as(usize, 13), change.old.start);
+    try std.testing.expectEqual(@as(usize, 25), change.old.end);
+    try std.testing.expectEqual(@as(usize, 38), change.new.end);
+
+    // Ids are the current tree's; the rect keeps its id here because the
+    // parse is the same shape, but a caller reads the tree again regardless.
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_set_node_attrs(fx.ed, rect.?, null, 0, &change));
+    try fx.expectSource("<svg>\n  <rect/>\n</svg>\n");
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_set_node_attrs(fx.ed, rect.?, null, 1, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_set_node_attrs(fx.ed, @intCast(len + 5), &moved, 1, null));
+    // A text run is no element.
+    var text: ?u32 = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nodes, &len));
+    for (nodes.?[0..len]) |n| {
+        if (std.mem.eql(u8, std.mem.span(n.kind), "str")) text = n.id;
+    }
+    try std.testing.expectEqual(TwigStatus.not_editable, twig_editor_set_node_attrs(fx.ed, text.?, &moved, 1, null));
+
+    var md = try EditorFixture.initFmt("hello\n", .markdown);
+    defer md.deinit();
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_set_node_attrs(md.ed, 0, &moved, 1, null));
 }
 
 test "twig_editor_wrap_range_attrs: gated like the block gesture, and the span is what the reparse reads" {

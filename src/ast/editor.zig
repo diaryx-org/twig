@@ -281,6 +281,7 @@ pub const Editor = struct {
         insert_directive,
         set_block_attrs,
         wrap_range_attrs,
+        set_node_attrs,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -382,6 +383,10 @@ pub const Editor = struct {
             // onto the first, as for the directive.
             .set_block_attrs => syntax.block_attrs != null and syntax.renderBlock != null,
             .wrap_range_attrs => syntax.inline_attrs and syntax.renderBlock != null,
+            // One half only: the run is written by a fixed algorithm
+            // (`attrs_writer.writeHtmlAttrs`) into a span the parser recorded,
+            // so no renderer is consulted and none has to be present.
+            .set_node_attrs => syntax.node_attrs != null,
         };
     }
 
@@ -1908,6 +1913,56 @@ pub const Editor = struct {
             try text.appendSlice(allocator, l);
         }
         return self.commitSplice(start, target.end, text.items);
+    }
+
+    // ── Node attributes ────────────────────────────────────────────────────
+
+    /// Replace the attribute set of node `id` with `attrs` — an element,
+    /// addressed by id rather than by offset because the caller that wants
+    /// this holds a tree and not a caret: a canvas editor over an SVG names
+    /// the shape it is dragging, and no byte position stands for it. Ids are
+    /// the CURRENT tree's, as the splicer's node ops take them, and a
+    /// successful edit reparses, so read the tree again before the next call.
+    ///
+    /// The run is written where the format keeps it: on the node's own
+    /// opening spelling, at the span the parser recorded
+    /// (`Document.attrsSpan`), as a tag interior — ` key="value"` pairs with
+    /// `&`, `<`, `>` and `"` as entities. Every other byte of the node, its
+    /// children included, stays where it is; a `<g>` holding a thousand paths
+    /// is not re-printed to move it. A node with no attributes yet has no
+    /// span, so the run is inserted right after the name, where the parser
+    /// reads the first one. Replace, not merge, as `setBlockAttrs`: read the
+    /// node's attributes, edit the list, pass it back whole. An empty set
+    /// removes the run, and removing what is already absent is a no-op.
+    ///
+    /// `error.UnsupportedFormat` where `Syntax.node_attrs` is not claimed,
+    /// before anything is read. `error.InvalidRange` for an id no node has;
+    /// `error.InvalidAttribute` as `setBlockAttrs` (see `checkAttr`);
+    /// `error.NotEditable` for a node that is not an element — a text run, a
+    /// comment, a container some other format's parser made — and for an
+    /// element whose attributes the parser gave no span to, which no parser
+    /// in the tree does but a grafted tree could.
+    pub fn setNodeAttrs(self: *Editor, id: AST.Node.Id, attrs: []const AST.KeyVal) Error!void {
+        const spelling = self.syntax.node_attrs orelse return error.UnsupportedFormat;
+        const doc = &self.splicer.doc;
+        if (id >= doc.ast.nodes.len) return error.InvalidRange;
+        for (attrs) |kv| try checkAttr(kv);
+        const c = switch (doc.ast.nodes[id].kind) {
+            .container => |c| c,
+            else => return error.NotEditable,
+        };
+        if (doc.containerOrigin(id) != .element) return error.NotEditable;
+        const existing = doc.attrsSpan(id);
+        if (existing == null and !doc.ast.attrsOf(id).isEmpty()) return error.NotEditable;
+
+        var out: Writer.Allocating = .init(self.splicer.allocator);
+        defer out.deinit();
+        attrs_writer.writeHtmlAttrs(&out.writer, .{ .entries = attrs }) catch return error.OutOfMemory;
+
+        if (existing) |es| return self.commitSplice(es.start, es.end, out.written());
+        if (attrs.len == 0) return;
+        const at = doc.span(id).start + spelling.open.len + c.name.len;
+        return self.commitSplice(at, at, out.written());
     }
 
     // ── Splitting a block ────────────────────────────────────────────────────
