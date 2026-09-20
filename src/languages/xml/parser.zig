@@ -384,11 +384,22 @@ pub const Parser = struct {
         self.pos += 1;
         const name = try self.readName();
 
+        // The start tag's interior after the name — every attribute, with the
+        // whitespace on both sides of the run — is the one range an attribute
+        // edit splices, so it is recorded as the element's attribute span (see
+        // `Document.attrs_spans`). It ends where `parseAttributes` stops: on
+        // the `>` or the `/` of the closer, past any trailing whitespace, so
+        // replacing the range with a fresh ` key="value"` run (or with nothing)
+        // leaves a well-formed tag either way. An element with no attributes
+        // records none, as the column's contract requires; the gesture that
+        // adds a first attribute inserts right after the name instead.
+        const attrs_start = self.pos;
         const attrs = try self.parseAttributes();
         defer {
             for (attrs) |kv| self.allocator.free(kv.value.?);
             self.allocator.free(attrs);
         }
+        const attrs_span = Span.init(attrs_start, self.pos);
 
         const c = self.peek() orelse return self.fail(self.pos, "tag was never closed", error.MalformedXml);
         if (c == '/') {
@@ -400,6 +411,7 @@ pub const Parser = struct {
             self.builder.setSpan(id, Span.init(start, self.pos));
             self.builder.setSpelling(id, .{ .container_origin = .element });
             try self.builder.setAttrs(id, .{ .entries = attrs });
+            self.builder.setAttrsSpan(id, attrs_span);
             // `content_span` stays `null`: that's the signal to the
             // serializer that this element was written self-closing (see
             // serializer.zig's module doc comment).
@@ -454,6 +466,7 @@ pub const Parser = struct {
         self.builder.setContentSpan(id, Span.init(content_start, content_end));
         self.builder.setSpelling(id, .{ .container_origin = .element });
         try self.builder.setAttrs(id, .{ .entries = attrs });
+        self.builder.setAttrsSpan(id, attrs_span);
         return id;
     }
 
@@ -620,4 +633,24 @@ test "missing root element" {
     var p = Parser.init(testing.allocator, "<!-- just a comment -->");
     defer p.deinit();
     try testing.expectError(error.MissingRoot, p.parse());
+}
+
+test "an element's attribute span covers the start tag's interior after the name" {
+    // The whitespace on both sides of the run is inside the span, so a splice
+    // that replaces it with a fresh ` key="value"` run — or with nothing —
+    // leaves the tag well-formed; an element without attributes records no
+    // span at all (`Document.attrs_spans`' contract), self-closing or not.
+    const src = "<r><a  x=\"1\" y='2' ><b/></a><c z=\"3\"/><d></d></r>";
+    var doc = try @import("xml.zig").parse(testing.allocator, src);
+    defer doc.deinit();
+    const root = doc.ast.nodes[doc.ast.root].first_child.?;
+    try testing.expectEqual(@as(?Span, null), doc.attrsSpan(root));
+    const a = doc.ast.nodes[root].first_child.?;
+    const a_span = doc.attrsSpan(a).?;
+    try testing.expectEqualStrings("  x=\"1\" y='2' ", src[a_span.start..a_span.end]);
+    try testing.expectEqual(@as(?Span, null), doc.attrsSpan(doc.ast.nodes[a].first_child.?));
+    const c = doc.ast.nodes[a].next_sibling.?;
+    const c_span = doc.attrsSpan(c).?;
+    try testing.expectEqualStrings(" z=\"3\"", src[c_span.start..c_span.end]);
+    try testing.expectEqual(@as(?Span, null), doc.attrsSpan(doc.ast.nodes[c].next_sibling.?));
 }
