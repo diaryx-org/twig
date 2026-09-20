@@ -17,6 +17,7 @@ contents:
 - '[AsciiDoc does not write a table''s title](/docs/tasks/asciidoc-does-not-write-a-tables-title.md)'
 - '[`href`, `src` and `alt` are reported as attributes the Markdown target dropped](/docs/tasks/html-link-and-image-attributes-are-reported-as-dropped.md)'
 - '[A degraded node''s attributes are reported on neither axis](/docs/tasks/a-degraded-nodes-attributes-are-reported-on-neither-axis.md)'
+- '[insert_literal does not escape a dollar under the math extension](/docs/tasks/insert-literal-does-not-escape-a-dollar-under-the-math-extension.md)'
 ---
 
 # Tasks
