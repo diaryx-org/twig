@@ -881,6 +881,40 @@ TwigStatus twig_editor_unwrap(
     size_t locator_len
 );
 
+// Move the node `locator` names to immediately before the node `anchor` names
+// — a canvas's "send backward", a list's reorder — in one splice and one undo
+// step, the bytes between the two copied verbatim in their new order. The
+// node travels with the whitespace run ahead of it (the line break and
+// indentation a pretty-printed document separates siblings with), which lands
+// after it here, so every sibling keeps its separator: `<g>\n  <a/>\n  <b/>\n
+// </g>` reorders to `<g>\n  <b/>\n  <a/>\n</g>`, never to a line holding both.
+// The rule is about bytes, not structure — a block quote's `> ` prefixes do
+// not travel — and the anchor need not be a sibling: next to a node in
+// another container is a reparent.
+//
+// TWIG_STATUS_INVALID_ARGUMENT when either node's span holds the other's, or
+// the two are one node; TWIG_STATUS_NOT_FOUND / _AMBIGUOUS as every other tree
+// op; TWIG_STATUS_EDIT_CONFLICT when the moved document no longer parses, in
+// which case nothing changed.
+TwigStatus twig_editor_move_before(
+    TwigEditor *editor,
+    const uint8_t *locator,
+    size_t locator_len,
+    const uint8_t *anchor,
+    size_t anchor_len
+);
+
+// Move the node `locator` names to immediately after the node `anchor` names
+// — a canvas's "bring forward". The whitespace run ahead of the node travels
+// with it and stays ahead of it. Otherwise twig_editor_move_before.
+TwigStatus twig_editor_move_after(
+    TwigEditor *editor,
+    const uint8_t *locator,
+    size_t locator_len,
+    const uint8_t *anchor,
+    size_t anchor_len
+);
+
 // Prune the document in place: remove every node matching the `drop` selector
 // except those also matching `keep` (pass keep == NULL to spare nothing), then
 // — if `unwrap_kept` is non-zero — unwrap the survivors. Read the result via

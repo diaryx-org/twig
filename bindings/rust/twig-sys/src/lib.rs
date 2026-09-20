@@ -505,6 +505,20 @@ unsafe extern "C" {
         locator: *const u8,
         locator_len: usize,
     ) -> TwigStatus;
+    pub fn twig_editor_move_before(
+        editor: *mut TwigEditor,
+        locator: *const u8,
+        locator_len: usize,
+        anchor: *const u8,
+        anchor_len: usize,
+    ) -> TwigStatus;
+    pub fn twig_editor_move_after(
+        editor: *mut TwigEditor,
+        locator: *const u8,
+        locator_len: usize,
+        anchor: *const u8,
+        anchor_len: usize,
+    ) -> TwigStatus;
     pub fn twig_editor_filter(
         editor: *mut TwigEditor,
         drop: *const u8,

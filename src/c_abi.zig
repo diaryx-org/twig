@@ -1729,6 +1729,7 @@ fn statusOfSplicerError(err: anyerror) TwigStatus {
     return switch (err) {
         error.OutOfMemory => .out_of_memory,
         error.NoNodeSpan, error.NoContentSpan, error.NotAContainer => .not_editable,
+        error.OverlappingNodes => .invalid_argument,
         else => .edit_conflict,
     };
 }
@@ -1959,6 +1960,67 @@ pub export fn twig_editor_unwrap(
     locator_len: usize,
 ) TwigStatus {
     return applyEdit(ed, locator_ptr, locator_len, .unwrap, 0, null, 0);
+}
+
+/// Resolve both locators against the editor's current tree and move the
+/// first node next to the second. Two locators rather than `applyEdit`'s one,
+/// otherwise the same shape: `twig.locator`'s rule, then error mapping.
+fn applyMove(
+    ed: ?*TwigEditor,
+    locator_ptr: ?[*]const u8,
+    locator_len: usize,
+    anchor_ptr: ?[*]const u8,
+    anchor_len: usize,
+    place: twig.Splicer.Placement,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const locator = sliceOf(locator_ptr, locator_len) orelse return .invalid_argument;
+    const anchor = sliceOf(anchor_ptr, anchor_len) orelse return .invalid_argument;
+
+    const allocator = activeAllocator();
+    const splicer = &asEditor(raw).editor.splicer;
+    const id = twig.locator.resolve(allocator, &splicer.doc, locator) catch |err|
+        return statusOfLocatorError(err);
+    const target = twig.locator.resolve(allocator, &splicer.doc, anchor) catch |err|
+        return statusOfLocatorError(err);
+    splicer.moveNodeById(id, target, place) catch |err| return statusOfSplicerError(err);
+    return .ok;
+}
+
+/// Move the node `locator` names to immediately before the node `anchor`
+/// names — a canvas's "send backward", a list's reorder — in one splice and
+/// one undo step, the bytes between the two copied verbatim in their new
+/// order. The node travels with the whitespace run ahead of it (the line
+/// break and indentation a pretty-printed document separates siblings with),
+/// which lands after it here, so every sibling keeps its separator; see
+/// `twig.Splicer.moveNodeById` for the rule and its limits. The anchor need
+/// not be a sibling: next to a node in another container is a reparent.
+///
+/// `invalid_argument` when either node's span holds the other's, or the two
+/// are one node; the locator statuses (`not_found`, `ambiguous`) as every
+/// other tree op; `edit_conflict` when the moved document no longer parses,
+/// in which case nothing changed.
+pub export fn twig_editor_move_before(
+    ed: ?*TwigEditor,
+    locator_ptr: ?[*]const u8,
+    locator_len: usize,
+    anchor_ptr: ?[*]const u8,
+    anchor_len: usize,
+) TwigStatus {
+    return applyMove(ed, locator_ptr, locator_len, anchor_ptr, anchor_len, .before);
+}
+
+/// Move the node `locator` names to immediately after the node `anchor`
+/// names — a canvas's "bring forward". The whitespace run ahead of the node
+/// travels with it and stays ahead of it. Otherwise `twig_editor_move_before`.
+pub export fn twig_editor_move_after(
+    ed: ?*TwigEditor,
+    locator_ptr: ?[*]const u8,
+    locator_len: usize,
+    anchor_ptr: ?[*]const u8,
+    anchor_len: usize,
+) TwigStatus {
+    return applyMove(ed, locator_ptr, locator_len, anchor_ptr, anchor_len, .after);
 }
 
 /// Prune the document in place (`twig.Filter`): remove every node matching the
@@ -5250,6 +5312,37 @@ test "twig_editor: replace_content by index path, losslessly" {
         twig_editor_replace_content(fx.ed, path.ptr, path.len, text.ptr, text.len),
     );
     try fx.expectSource("<a><b>bye</b></a>");
+}
+
+test "twig_editor: move_before / move_after reorder by locator, in one undo step" {
+    var fx = try EditorFixture.init("<svg>\n  <rect/>\n  <circle/>\n</svg>\n");
+    defer fx.deinit();
+    const rect = "element[name=\"rect\"]";
+    const circle = "element[name=\"circle\"]";
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_move_after(fx.ed, rect.ptr, rect.len, circle.ptr, circle.len),
+    );
+    try fx.expectSource("<svg>\n  <circle/>\n  <rect/>\n</svg>\n");
+    try std.testing.expectEqual(
+        TwigStatus.ok,
+        twig_editor_move_before(fx.ed, rect.ptr, rect.len, circle.ptr, circle.len),
+    );
+    try fx.expectSource("<svg>\n  <rect/>\n  <circle/>\n</svg>\n");
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_undo(fx.ed, &change));
+    try fx.expectSource("<svg>\n  <circle/>\n  <rect/>\n</svg>\n");
+    // A node and its ancestor have no sibling order between them.
+    const svg = "element[name=\"svg\"]";
+    try std.testing.expectEqual(
+        TwigStatus.invalid_argument,
+        twig_editor_move_after(fx.ed, rect.ptr, rect.len, svg.ptr, svg.len),
+    );
+    const none = "element[name=\"path\"]";
+    try std.testing.expectEqual(
+        TwigStatus.not_found,
+        twig_editor_move_after(fx.ed, rect.ptr, rect.len, none.ptr, none.len),
+    );
 }
 
 test "twig_editor: insert_child by index and delete" {
