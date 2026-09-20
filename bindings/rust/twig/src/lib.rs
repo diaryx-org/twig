@@ -1703,6 +1703,38 @@ impl Editor {
         Error::from_status(status)
     }
 
+    /// Move the node `locator` names to immediately before the node `anchor`
+    /// names — a canvas's "send backward", a list's reorder — in one splice
+    /// and one undo step, the bytes between the two copied verbatim in their
+    /// new order. The node travels with the whitespace run ahead of it (the
+    /// line break and indentation a pretty-printed document separates
+    /// siblings with), which lands after it here, so every sibling keeps its
+    /// separator: `<g>\n  <a/>\n  <b/>\n</g>` reorders to
+    /// `<g>\n  <b/>\n  <a/>\n</g>`, never to a line holding both. The rule is
+    /// about bytes, not structure — a block quote's `> ` prefixes do not
+    /// travel — and the anchor need not be a sibling: next to a node in
+    /// another container is a reparent.
+    ///
+    /// [`Error::InvalidArgument`] when either node's span holds the other's,
+    /// or the two are one node; [`Error::NotFound`] and [`Error::Ambiguous`]
+    /// as every other tree op; [`Error::EditConflict`] when the moved document
+    /// no longer parses, in which case nothing changed.
+    pub fn move_before(&mut self, locator: &str, anchor: &str) -> Result<(), Error> {
+        self.apply(locator, anchor, |ed, loc, loc_len, a, a_len| unsafe {
+            ffi::twig_editor_move_before(ed, loc, loc_len, a, a_len)
+        })
+    }
+
+    /// Move the node `locator` names to immediately after the node `anchor`
+    /// names — a canvas's "bring forward". The whitespace run ahead of the
+    /// node travels with it and stays ahead of it. Otherwise
+    /// [`Editor::move_before`].
+    pub fn move_after(&mut self, locator: &str, anchor: &str) -> Result<(), Error> {
+        self.apply(locator, anchor, |ed, loc, loc_len, a, a_len| unsafe {
+            ffi::twig_editor_move_after(ed, loc, loc_len, a, a_len)
+        })
+    }
+
     /// Prune the document in place: remove every node matching the `drop`
     /// selector except those also matching `keep` (`None` spares nothing),
     /// then — if `unwrap_kept` — unwrap the survivors. Read the result with
@@ -6104,6 +6136,42 @@ mod tests {
         ed.set_block(0, BlockKind::Heading(1))
             .expect("setext to atx");
         assert_eq!(ed.source_str().unwrap(), "# Title\n\nbody\n");
+    }
+
+    #[test]
+    fn editor_moves_a_node_next_to_another_in_one_step() {
+        let mut ed = Editor::new_str("<svg>\n  <rect/>\n  <circle/>\n</svg>\n", Format::Xml)
+            .expect("editor");
+        ed.move_after("element[name=\"rect\"]", "element[name=\"circle\"]")
+            .expect("after");
+        assert_eq!(
+            ed.source_str().unwrap(),
+            "<svg>\n  <circle/>\n  <rect/>\n</svg>\n"
+        );
+        ed.move_before("element[name=\"rect\"]", "element[name=\"circle\"]")
+            .expect("before");
+        assert_eq!(
+            ed.source_str().unwrap(),
+            "<svg>\n  <rect/>\n  <circle/>\n</svg>\n"
+        );
+        // One undo step per move.
+        ed.undo().expect("undo");
+        assert_eq!(
+            ed.source_str().unwrap(),
+            "<svg>\n  <circle/>\n  <rect/>\n</svg>\n"
+        );
+        assert_eq!(
+            ed.move_after("element[name=\"rect\"]", "element[name=\"svg\"]"),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(
+            ed.move_after("element[name=\"rect\"]", "element[name=\"path\"]"),
+            Err(Error::NotFound)
+        );
+        // Markdown's blank-line separator travels the same way.
+        let mut md = Editor::new_str("A\n\nB\n\nC\n", Format::Markdown).expect("editor");
+        md.move_after("1", "2").expect("after");
+        assert_eq!(md.source_str().unwrap(), "A\n\nC\n\nB\n");
     }
 
     #[test]
