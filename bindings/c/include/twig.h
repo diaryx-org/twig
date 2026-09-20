@@ -86,6 +86,13 @@ extern "C" {
 // strict CommonMark cannot author the `~~x~~` the other two can.
 #define TWIG_FORMAT_COMMONMARK 6
 #define TWIG_FORMAT_GFM 7
+// SVG, a DIALECT of XML the same way: one parser, one serializer, one spelling
+// table, under a code of its own so a caller can name what it opened and a
+// .svg file is recognised on sight. On the write side it means XML. twig knows
+// nothing about what a <rect> means; the code exists so a canvas editor over
+// an SVG has a format to name, and the one gesture that works over it is
+// TWIG_GESTURE_SET_NODE_ATTRS, as over TWIG_FORMAT_XML.
+#define TWIG_FORMAT_SVG 8
 
 // Markdown extension flags for the `md_flags` bitmask of twig_parse_ext and
 // twig_editor_create_ext (ignored for non-Markdown formats). Each is an opt-in,

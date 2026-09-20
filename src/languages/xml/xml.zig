@@ -348,3 +348,14 @@ pub const samples: []const []const u8 = &.{
     "<root key=\"value\">Text <child>inside</child>.</root>",
     "<?xml version=\"1.0\"?><root><!-- comment --><![CDATA[a < b]]></root>",
 };
+
+/// The `svg` dialect row's samples: the same engine contract, over documents
+/// shaped the way a drawing tool writes them — a declaration and a namespace,
+/// a `viewBox`, nested groups with a transform, a self-closing shape carrying
+/// several attributes, path data, text with an entity, and the bare root the
+/// `node_attrs` claim's insertion path needs.
+pub const svg_samples: []const []const u8 = &.{
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><rect x=\"1\" y=\"1\" width=\"3\" height=\"3\" fill=\"#f00\"/></svg>",
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\">\n  <g id=\"layer\" transform=\"translate(1 2)\">\n    <path d=\"M 0 0 L 5 5\" stroke=\"black\"/>\n    <text x=\"1\" y=\"9\">a &amp; b</text>\n  </g>\n</svg>\n",
+    "<svg/>",
+};
