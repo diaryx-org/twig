@@ -116,6 +116,9 @@ pub enum TwigFormat {
     Commonmark = 6,
     /// GitHub-Flavored Markdown, a dialect of `Markdown` the same way.
     Gfm = 7,
+    /// SVG, a dialect of `Xml`: one parser, one serializer, one spelling
+    /// table, under a code of its own. Writes as XML.
+    Svg = 8,
 }
 
 /// `TWIG_FORMAT_RUNTIME_BASE`: the first format code that names a language

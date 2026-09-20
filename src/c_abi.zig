@@ -55,6 +55,10 @@ pub const TwigFormat = enum(c_int) {
     commonmark = 6,
     /// GitHub-Flavored Markdown, a dialect of `markdown` the same way.
     gfm = 7,
+    /// SVG, a DIALECT of `xml`: one parser, one serializer, one spelling
+    /// table, under a code of its own so a caller can name what it opened.
+    /// On the write side it means XML (`intToTarget`).
+    svg = 8,
 };
 
 /// `TWIG_FORMAT_RUNTIME_BASE`: the first wire code that names a language
@@ -458,6 +462,7 @@ fn intToWire(format: c_int) ?TwigFormat {
         @intFromEnum(TwigFormat.asciidoc) => .asciidoc,
         @intFromEnum(TwigFormat.commonmark) => .commonmark,
         @intFromEnum(TwigFormat.gfm) => .gfm,
+        @intFromEnum(TwigFormat.svg) => .svg,
         else => null,
     };
 }
@@ -4645,6 +4650,35 @@ test "twig_parse_ext with TWIG_MD_HTML_ELEMENTS makes an embedded <img> queryabl
     }
 }
 
+test "TWIG_FORMAT_SVG names the xml dialect, and writes as xml" {
+    const src = "<svg viewBox=\"0 0 1 1\"><rect x=\"0\"/></svg>";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_parse(src.ptr, src.len, @intFromEnum(TwigFormat.svg), &doc));
+    defer twig_document_destroy(doc);
+    var out: ?[*]const u8 = null;
+    var len: usize = 0;
+    inline for (.{ TwigFormat.svg, TwigFormat.xml }) |target| {
+        try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, @intFromEnum(target), &out, &len));
+        try std.testing.expectEqualStrings(src, out.?[0..len]);
+    }
+    // An editor over it takes the same gesture xml does, and no other.
+    var fx = try EditorFixture.initFmt(src, .svg);
+    defer fx.deinit();
+    const x = [_]TwigKeyVal{.{ .key = "x", .key_len = 1, .value = "5", .value_len = 1 }};
+    var nodes: ?[*]const TwigFlatNode = null;
+    var n: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(fx.ed, &nodes, &n));
+    var rect: u32 = 0;
+    for (nodes.?[0..n]) |node| {
+        if (node.name_ptr) |name| {
+            if (std.mem.eql(u8, name[0..node.name_len], "rect")) rect = node.id;
+        }
+    }
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_set_node_attrs(fx.ed, rect, &x, 1, null));
+    try fx.expectSource("<svg viewBox=\"0 0 1 1\"><rect x=\"5\"/></svg>");
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_set_block(fx.ed, 0, @intFromEnum(TwigBlockKind.heading), 1, null));
+}
+
 test "TWIG_FORMAT_COMMONMARK and TWIG_FORMAT_GFM name a Markdown dialect, and md_flags lay over it" {
     // Three codes, one parser: strict CommonMark reads `~~x~~` as text and a
     // pipe table as a paragraph, GFM and the default read both, and a flag
@@ -5772,9 +5806,9 @@ test "twig_format_supports: the join's wire code answers for the join, not the s
     // format. HTML is the row where the two block gestures disagree, which is
     // the whole reason `join_blocks` is a code of its own.
     var supported: c_int = -1;
-    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm }) |fmt| {
+    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm, .svg }) |fmt| {
         const code = @intFromEnum(fmt);
-        const src: []const u8 = if (fmt == .xml) "<r>ab</r>" else "ab\n";
+        const src: []const u8 = if (fmt == .xml or fmt == .svg) "<r>ab</r>" else "ab\n";
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
             code,
             @intFromEnum(TwigGesture.join_blocks),
@@ -5971,12 +6005,12 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
     // decode reaches the SAME question. So: ask, then run the gesture on a live
     // editor and check the two agree.
     var supported: c_int = -1;
-    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm }) |fmt| {
+    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm, .svg }) |fmt| {
         const code = @intFromEnum(fmt);
         // Only has to PARSE — every gesture consults the syntax table before it
         // reads a byte of source, so this never has to be somewhere the gesture
         // would succeed. XML is the one format that rejects bare text.
-        const src: []const u8 = if (fmt == .xml) "<r>ab</r>" else "ab\n";
+        const src: []const u8 = if (fmt == .xml or fmt == .svg) "<r>ab</r>" else "ab\n";
 
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
             code,
@@ -6242,8 +6276,10 @@ test "twig_editor_set_block_attrs: gated on TWIG_MD_HTML_ELEMENTS, and the div i
 test "twig_editor_set_node_attrs: XML's tag is rewritten in place, by node id, and every prose format refuses" {
     var out: c_int = -1;
     const gesture = @intFromEnum(TwigGesture.set_node_attrs);
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.xml), gesture, 0, &out));
-    try std.testing.expectEqual(@as(c_int, 1), out);
+    for ([_]TwigFormat{ .xml, .svg }) |fmt| {
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(fmt), gesture, 0, &out));
+        try std.testing.expectEqual(@as(c_int, 1), out);
+    }
     for ([_]TwigFormat{ .djot, .markdown, .html, .asciidoc, .commonmark, .gfm }) |fmt| {
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(fmt), gesture, 0, &out));
         try std.testing.expectEqual(@as(c_int, 0), out);
@@ -6380,7 +6416,7 @@ test "twig_format_is_authorable: the read-only question, and its weakness" {
         );
         try std.testing.expectEqual(@as(c_int, 1), out);
     }
-    for ([_]TwigFormat{.xml}) |fmt| {
+    for ([_]TwigFormat{ .xml, .svg }) |fmt| {
         try std.testing.expectEqual(
             TwigStatus.ok,
             twig_format_is_authorable(@intFromEnum(fmt), &out),
