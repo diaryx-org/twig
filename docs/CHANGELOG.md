@@ -90,6 +90,24 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.8.1
+
+### Added
+
+- **xml** — record every element's attribute span ([`f853c1c`](https://github.com/diaryx-org/twig/commit/f853c1c88d1bd8d8b422a8a31a3f7c6782818265))
+- **editor** — setNodeAttrs rewrites an element's attributes by node id ([`a9f3f01`](https://github.com/diaryx-org/twig/commit/a9f3f01ba0b7ff4f27b7b066203a97f1d5207d01))
+- **splicer** — moveNode reorders a node next to another in one splice ([`7c16fec`](https://github.com/diaryx-org/twig/commit/7c16fec82acfc1c7b88b88446c57b063faefae89))
+- **format** — svg is a dialect row over xml ([`93a2506`](https://github.com/diaryx-org/twig/commit/93a2506602a54fd8c60bf170de2cc710750be296))
+
+### Behavioural changes
+
+- `Document.attrsSpan` on an XML element that has
+  attributes now reports the start tag's interior after the name, where it
+  reported `null`; through the C ABI, `twig_document_attrs_span` reports
+  `ok` with that span where it reported `not_found`. An element without
+  attributes still reports none.
+
+
 ## 3.8.0
 
 ### Added
