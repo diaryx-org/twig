@@ -3,7 +3,7 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-15
-updated: 2026-09-19
+updated: 2026-09-21
 part_of: '[Twig](/README.md)'
 contents:
 - '[References and footnotes become `Document` columns, so `ParsedDoc` can stop being a union](/docs/tasks/side-tables-as-document-columns.md)'
@@ -18,6 +18,7 @@ contents:
 - '[`href`, `src` and `alt` are reported as attributes the Markdown target dropped](/docs/tasks/html-link-and-image-attributes-are-reported-as-dropped.md)'
 - '[A degraded node''s attributes are reported on neither axis](/docs/tasks/a-degraded-nodes-attributes-are-reported-on-neither-axis.md)'
 - '[insert_literal does not escape a dollar under the math extension](/docs/tasks/insert-literal-does-not-escape-a-dollar-under-the-math-extension.md)'
+- '[`move_block` — a block moves between containers and the destination''s prefixes are twig''s to spell](/docs/tasks/move-block-as-an-offset-addressed-gesture.md)'
 ---
 
 # Tasks
