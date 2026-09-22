@@ -2696,8 +2696,8 @@ impl Editor {
     ///
     /// The escaping is positional and per-format, and neither is the caller's to
     /// reproduce. In the backslash formats (Djot, Markdown, AsciiDoc) inline
-    /// specials (`*`, `` ` ``, `[`, `<`…) are escaped anywhere on the line,
-    /// while block markers (`#`, `>`, `-`…) are escaped only where `offset` sits
+    /// specials (`*`, `` ` ``, `[`, `<`…, and `$` under Markdown's `math`
+    /// extension) are escaped anywhere on the line, while block markers (`#`, `>`, `-`…) are escaped only where `offset` sits
     /// in its line's leading whitespace — so an inserted "5 - 3" keeps its `-`
     /// but "- item" at column zero does not become a bullet — and an embedded
     /// newline in `text` re-enters that line-start zone. Inside a code span,
@@ -5797,6 +5797,20 @@ mod tests {
                 .iter()
                 .any(|n| n.kind == Kind::Heading)
         );
+    }
+
+    #[test]
+    fn editor_insert_literal_escapes_a_dollar_only_under_math() {
+        // Under the math extension `$` opens a formula, so it is escaped.
+        let exts = MarkdownExtensions { math: true, ..Default::default() };
+        let mut ed = Editor::new_ext(b"a \n", Format::Markdown, exts).expect("editor");
+        ed.insert_literal(2, "$x$ and $$y$$").expect("literal");
+        assert_eq!(ed.source_str().unwrap(), "a \\$x\\$ and \\$\\$y\\$\\$\n");
+
+        // Without it a `$` is text, and stays bare.
+        let mut plain = Editor::new_str("a \n", Format::Markdown).expect("editor");
+        plain.insert_literal(2, "$x$ and $$y$$").expect("literal");
+        assert_eq!(plain.source_str().unwrap(), "a $x$ and $$y$$\n");
     }
 
     #[test]
