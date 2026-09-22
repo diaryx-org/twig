@@ -4,11 +4,24 @@ description: 'Djot and AsciiDoc write a section''s children and nothing of the s
 author: adammharris
 created: 2026-09-22
 updated: 2026-09-22
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A section with no heading is reported as faithful where it does not come back
+
+## Resolution
+
+Done on 2026-09-22, in the commit `fix(diagnostics): a section with no
+heading is degraded in djot and AsciiDoc`. The probe has a
+`section(headless)` row, and what it measured is what `sectionFidelity` now
+says: `degraded` in djot and AsciiDoc, which write the section's children
+and nothing of it; Markdown already degraded every section, and HTML keeps
+one whatever it holds. On the attribute axis, `nodeAttrsFidelity` is the
+instance-level counterpart of `nodeFidelity`. It answers `dropped` for a
+heading-less section's attributes in djot, where the line they belong on is
+never written. The repro now reports `Degraded` and `AttrsDropped` for
+`lang` in both formats.
 
 Found while closing
 [A degraded node's attributes are reported on neither axis](/docs/tasks/a-degraded-nodes-attributes-are-reported-on-neither-axis.md):
