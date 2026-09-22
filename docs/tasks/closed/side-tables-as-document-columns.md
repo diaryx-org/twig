@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-15
 updated: 2026-09-15
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # References and footnotes become `Document` columns, so `ParsedDoc` can stop being a union
@@ -51,7 +51,7 @@ wrapper over one, and the two serializers on `Entry`/`TargetEntry` either
 merge or the comment explaining why they cannot no longer cites the maps.
 No C ABI change is expected; `twig_document_ast_json` output is unchanged.
 
-Sequenced first: [the harness](/docs/tasks/per-format-harness.md) wants a
+Sequenced first: [the harness](/docs/tasks/closed/per-format-harness.md) wants a
 single `Document` to round-trip, and
-[runtime languages](/docs/tasks/runtime-languages.md) needs the node table
+[runtime languages](/docs/tasks/closed/runtime-languages.md) needs the node table
 to have a shape that can be written down.

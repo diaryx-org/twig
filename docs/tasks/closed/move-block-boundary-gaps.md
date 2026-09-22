@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-21
 updated: 2026-09-21
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # `move_block` reads three boundaries as places the block already is, or as inside a container it is not
@@ -45,7 +45,7 @@ inside the innermost container it touches, and the check that a boundary is
 one the block already sits on.
 
 **What.** leaf's `Doc::move_block_up`/`down` and its drop target
-(`leaf/docs/tasks/move-a-block.md`) name a boundary from the tree and hand
+(`leaf/docs/tasks/closed/move-a-block.md`) name a boundary from the tree and hand
 it over, and three boundaries a person would point at come back refused or
 land somewhere else. Each is Markdown, twig-doc 3.9.0, `Editor::new` then
 `move_block(from, to)`:

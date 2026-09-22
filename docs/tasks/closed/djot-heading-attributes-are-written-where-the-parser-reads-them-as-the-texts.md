@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-18
 updated: 2026-09-18
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # djot writes a heading's attributes after its text, where its parser reads them as the text's

@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-15
 updated: 2026-09-19
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # Decide whether twig carries a runtime-language contract
@@ -36,7 +36,7 @@ so the contract was crossed before it was tagged.
 
 **Where twig stands.** `src/ast/json.zig` already emits kind, span, payload,
 attrs and children per node — a node table on the wire, minus the columns
-[side-tables-as-document-columns](/docs/tasks/side-tables-as-document-columns.md)
+[side-tables-as-document-columns](/docs/tasks/closed/side-tables-as-document-columns.md)
 names. The editor names no format and has no hooks to retire. The C ABI
 addresses formats by a frozen integer. The prebuilt-archive bindings are the
 same shape as fig's, so a `twig-quickjs` over the Rust crate would be built
@@ -45,7 +45,7 @@ the way `fig-quickjs` was.
 **Why it might fit.** The deferred
 [twig-native language](/docs/proposals/twig-native-language.md) proposal is
 the natural first runtime format: prototype the surface syntax as a script,
-iterate it against [the harness](/docs/tasks/per-format-harness.md), and
+iterate it against [the harness](/docs/tasks/closed/per-format-harness.md), and
 compile it into `src/languages/` only once it settles — fig's "same format
 three times" pattern in the other direction. rST is "not a parser yet";
 Org, Typst, Textile and every wiki dialect are the tail.

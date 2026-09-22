@@ -17,7 +17,7 @@ supplies its own, writing entities. `insertLiteral` over an HTML document
 succeeds and reparses to the same `str`. The editor also reports a third
 position, `verbatim`, inside a code span or block, where the alphabet formats
 write the run raw. See
-[Fragment renderers on the format](/docs/tasks/fragment-renderers.md).
+[Fragment renderers on the format](/docs/tasks/closed/fragment-renderers.md).
 
 ## Update (2026-08-30): HTML's `null` is about backslashes, not about parsing
 

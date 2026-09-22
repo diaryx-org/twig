@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-22
 updated: 2026-09-22
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A section with no heading is reported as faithful where it does not come back
@@ -24,7 +24,7 @@ never written. The repro now reports `Degraded` and `AttrsDropped` for
 `lang` in both formats.
 
 Found while closing
-[A degraded node's attributes are reported on neither axis](/docs/tasks/a-degraded-nodes-attributes-are-reported-on-neither-axis.md):
+[A degraded node's attributes are reported on neither axis](/docs/tasks/closed/a-degraded-nodes-attributes-are-reported-on-neither-axis.md):
 the Word fragment from that task converts to djot as a bare paragraph and
 reports nothing about the two sections it lost.
 

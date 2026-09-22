@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-15
 updated: 2026-09-15
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # Name Markdown's configurations as dialects
@@ -66,6 +66,6 @@ dialect. The flag bits stay: a dialect is a name for a configuration, not a
 replacement for one. Whether a dialect is a `Format` variant or a field on
 one is the design question; `Target` should not grow with it.
 
-Filed because [runtime languages](/docs/tasks/runtime-languages.md) would
+Filed because [runtime languages](/docs/tasks/closed/runtime-languages.md) would
 want to address a dialect by name from a `languages.figl`-style file;
 worth doing on its own for `-i gfm`.

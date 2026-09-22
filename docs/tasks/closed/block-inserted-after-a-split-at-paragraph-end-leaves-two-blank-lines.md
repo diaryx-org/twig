@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-18
 updated: 2026-09-18
 status: dropped
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A block inserted after a split at a paragraph's end leaves two blank lines behind it
@@ -13,7 +13,7 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 **Status: dropped** on 2026-09-18, in favour of (2). The fold is not
 written; twig's `insertBlockAfter` keeps leaving spacing it did not write
 alone. The fix is leaf's, as
-[rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines](https://github.com/diaryx-org/leaf/blob/main/docs/tasks/rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines.md):
+[rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines](https://github.com/diaryx-org/leaf/blob/main/docs/tasks/closed/rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines.md):
 do not split when the caret sits at the paragraph's end, since there is
 nothing to part.
 

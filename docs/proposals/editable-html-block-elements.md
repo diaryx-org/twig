@@ -25,7 +25,7 @@ at the blank line between its paragraphs, fixed alongside.
 element is a Markdown or Djot equivalent; twig tells an editor what its
 tokenizer did with an element's body and nothing more; the admitted set needs
 no new diagnostic. The MECHANISM half had closed on 2026-09-15 with
-[Fragment renderers on the format](/docs/tasks/fragment-renderers.md) —
+[Fragment renderers on the format](/docs/tasks/closed/fragment-renderers.md) —
 `Syntax.renderBlock` lets a gesture build a node and have the format print
 it, and `Editor.setBlock` takes that path where there is no heading marker.
 The work is sequenced at the end.
