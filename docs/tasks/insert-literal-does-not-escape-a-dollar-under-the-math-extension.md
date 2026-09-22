@@ -3,12 +3,23 @@ title: insert_literal does not escape a dollar under the math extension
 description: 'With `MarkdownExtensions.math` on, `$…$` opens inline math and `$$…$$` display math, but `insert_literal` leaves a typed `$` as it is — so a WYSIWYG surface that escapes every byte the format reads as markup still mints a formula when the author types one.'
 author: adammharris
 created: 2026-09-19
-updated: 2026-09-19
-status: open
+updated: 2026-09-22
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # insert_literal does not escape a dollar under the math extension
+
+## Resolution
+
+Done on 2026-09-22, in the commit `fix(markdown): a literal typed under the
+math extension escapes its dollars`. `math` is now a fifth axis of the key
+that picks Markdown's syntax table, and the tables with it on add `$` to
+`text_escapes` — and to `link_text_escapes`, since a destination shown as a
+link's text reparses the same way. Every `$` is escaped rather than only one
+that would open a formula, as every `*` is: the alphabet is per byte, and
+`\$` reparses as `$` whether or not it would have opened anything. A document
+parsed without the extension keeps its table, and a bare `$`.
 
 `insert_literal`'s contract is that every byte the format reads as markup is
 escaped the format's way, so a run inserted through it reparses as exactly

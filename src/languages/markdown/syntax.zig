@@ -184,7 +184,7 @@ const base: syntax.Syntax = .{
 //
 // They are DERIVED from `base` rather than written out. Twelve near-copies of
 // one two-hundred-line literal is where the twelfth quietly differs in an
-// escape alphabet, and the difference between them is four fields.
+// escape alphabet, and the difference between them is a handful of fields.
 //
 // What is NOT keyed here is the serializer's question. Converting a djot
 // `mark` down to Markdown spells `==x==` whatever the parse config said,
@@ -210,37 +210,43 @@ const color_spellings = blk: {
 const Highlights = enum(u2) { none, marks, colors };
 
 /// The flags that move an ANSWER, as one key — the address of a table in
-/// the set. Small on purpose: `math` and `html_elements`' cousins that add
-/// nodes no gesture authors are not here. `directives` is a key because
-/// `Editor.insertDirective` authors one, and `html_elements` because
-/// `setBlockAttrs` and `wrapRangeAttrs` mint a `<div>` and a `<span>` only
-/// that flag reads back. At four flags the nested arrays this used to be
-/// gave way to an index, which is what a fifth will add a factor to.
+/// the set. Small on purpose: a flag that adds nodes no gesture authors is not
+/// here. `directives` is a key because `Editor.insertDirective` authors one,
+/// and `html_elements` because `setBlockAttrs` and `wrapRangeAttrs` mint a
+/// `<div>` and a `<span>` only that flag reads back. `math` authors nothing,
+/// but it makes `$` a byte that opens markup, so it moves the escape
+/// alphabets — a literal typed under it must not mint a formula. At four
+/// flags the nested arrays this used to be gave way to an index; the fifth
+/// added a factor to it.
 const Key = struct {
     strikethrough: bool,
     highlights: Highlights,
     directives: bool,
     html_elements: bool,
+    math: bool,
 
-    const count = 2 * 3 * 2 * 2;
+    const count = 2 * 3 * 2 * 2 * 2;
 
     fn index(k: Key) usize {
         var i: usize = @intFromBool(k.strikethrough);
         i = i * 3 + @intFromEnum(k.highlights);
         i = i * 2 + @intFromBool(k.directives);
         i = i * 2 + @intFromBool(k.html_elements);
+        i = i * 2 + @intFromBool(k.math);
         return i;
     }
 
     fn fromIndex(i: usize) Key {
         var rest = i;
+        const math = rest % 2 == 1;
+        rest /= 2;
         const html_elements = rest % 2 == 1;
         rest /= 2;
         const directives = rest % 2 == 1;
         rest /= 2;
         const highlights: Highlights = @enumFromInt(rest % 3);
         rest /= 3;
-        return .{ .strikethrough = rest == 1, .highlights = highlights, .directives = directives, .html_elements = html_elements };
+        return .{ .strikethrough = rest == 1, .highlights = highlights, .directives = directives, .html_elements = html_elements, .math = math };
     }
 
     fn of(opts: Options) Key {
@@ -258,6 +264,7 @@ const Key = struct {
             .highlights = h,
             .directives = opts.directives,
             .html_elements = opts.html_elements,
+            .math = opts.math,
         };
     }
 };
@@ -284,6 +291,13 @@ fn derive(comptime k: Key) syntax.Syntax {
     // `wrapped` shape — rather than on the block.
     t.block_attrs = if (k.html_elements) .wrapped else null;
     t.inline_attrs = k.html_elements;
+    // `$…$` is inline math and `$$…$$` display math only under `math`, so
+    // only there is `$` a byte a literal has to escape — in body text and in
+    // link text alike. Without the flag a bare `$` is text and stays bare.
+    if (k.math) {
+        t.text_escapes = base.text_escapes.? ++ "$";
+        t.link_text_escapes = base.link_text_escapes.? ++ "$";
+    }
     return t;
 }
 
@@ -353,9 +367,10 @@ test "markdown SPELLS every mark and AUTHORS the ones its parse config reads bac
 }
 
 test "every derived table differs from base in the authorable flags and nothing else" {
-    // The claim that makes deriving safe: `derive` touches four fields, so a
-    // future edit to it cannot quietly change an escape alphabet or a marker
-    // in one table out of twelve.
+    // The claim that makes deriving safe: `derive` touches only the gated
+    // fields, so a future edit to it cannot quietly change an escape alphabet
+    // or a marker in one table out of forty-eight. The one alphabet that
+    // moves, moves by exactly `$`, and only under `math`.
     for (&tables) |*t| {
         {
             t.assertCoherent();
@@ -370,7 +385,12 @@ test "every derived table differs from base in the authorable flags and nothing 
                 }
             }
             try std.testing.expectEqual(base.heading_marker, t.heading_marker);
-            try std.testing.expectEqualStrings(base.text_escapes.?, t.text_escapes.?);
+            const k = Key.fromIndex(t - &tables[0]);
+            const text_escapes = if (k.math) base.text_escapes.? ++ "$" else base.text_escapes.?;
+            const link_text_escapes = if (k.math) base.link_text_escapes.? ++ "$" else base.link_text_escapes.?;
+            try std.testing.expectEqualStrings(text_escapes, t.text_escapes.?);
+            try std.testing.expectEqualStrings(link_text_escapes, t.link_text_escapes.?);
+            try std.testing.expectEqualStrings(base.block_start_escapes.?, t.block_start_escapes.?);
             try std.testing.expectEqualStrings(base.thematic_break.?, t.thematic_break.?);
             // A palette only ever rides on an authorable mark, which
             // `assertCoherent` also pins from the other side.
@@ -460,8 +480,16 @@ test "forOptions: each flag moves exactly its own mark" {
     try std.testing.expect(!dir.inline_delims.get(.mark).?.authorable);
     // A flag that keys no table still changes nothing about which one is
     // returned — the point of the set being small.
-    try std.testing.expectEqual(table, forOptions(.{ .math = true }));
-    try std.testing.expectEqual(dir, forOptions(.{ .directives = true, .math = true }));
+    try std.testing.expectEqual(table, forOptions(.{ .footnotes = false }));
+
+    // Math is the fifth, and it moves only the escape alphabets: `$` opens
+    // a formula with the flag on and is text without it.
+    const math = forOptions(.{ .math = true });
+    try std.testing.expect(math != table);
+    try std.testing.expect(std.mem.indexOfScalar(u8, math.text_escapes.?, '$') != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, math.link_text_escapes.?, '$') != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, table.text_escapes.?, '$') == null);
+    try std.testing.expect(forOptions(.{ .directives = true, .math = true }).names_leaf_containers);
 
     // HTML elements are the fourth axis, and they move only the two attribute
     // claims: a `<div>` around a block and a `<span>` around a run are raw
@@ -477,7 +505,7 @@ test "forOptions: each flag moves exactly its own mark" {
     const both = forOptions(.{ .html_elements = true, .directives = true });
     try std.testing.expect(both.names_leaf_containers and both.inline_attrs);
 
-    // Twenty-four configurations, twenty-four distinct tables — the set has
+    // Forty-eight configurations, forty-eight distinct tables — the set has
     // no duplicate a caller could reach two ways.
     var all: [Key.count]*const syntax.Syntax = undefined;
     var n: usize = 0;
@@ -485,14 +513,17 @@ test "forOptions: each flag moves exactly its own mark" {
         for ([_][2]bool{ .{ false, false }, .{ true, false }, .{ true, true } }) |h| {
             for ([_]bool{ false, true }) |d| {
                 for ([_]bool{ false, true }) |e| {
-                    all[n] = forOptions(.{
-                        .strikethrough = st,
-                        .highlight = h[0],
-                        .highlight_colors = h[1],
-                        .directives = d,
-                        .html_elements = e,
-                    });
-                    n += 1;
+                    for ([_]bool{ false, true }) |m| {
+                        all[n] = forOptions(.{
+                            .strikethrough = st,
+                            .highlight = h[0],
+                            .highlight_colors = h[1],
+                            .directives = d,
+                            .html_elements = e,
+                            .math = m,
+                        });
+                        n += 1;
+                    }
                 }
             }
         }

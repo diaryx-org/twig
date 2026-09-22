@@ -56,6 +56,9 @@ var directives_cfg: format.ParseConfig = .{ .markdown = .{ .directives = true } 
 /// `ParseOptions.html_elements`, so the two attribute gestures run against an
 /// editor whose reparse pairs the tags.
 var html_elements_cfg: format.ParseConfig = .{ .markdown = .{ .html_elements = true } };
+/// And the fifth, which authors nothing: under `ParseOptions.math` a `$`
+/// opens a formula, so a literal typed there has to escape one.
+var math_cfg: format.ParseConfig = .{ .markdown = .{ .math = true } };
 
 const KindTag = std.meta.Tag(AST.Node.Kind);
 
@@ -2400,6 +2403,33 @@ test "insert_literal: typed markdown specials all stay literal" {
     try expectVisibleText(&fx, typed ++ "z");
     for ([_]AST.KindRef{ .{ .mark = .emph }, .{ .mark = .strong }, .{ .text_leaf = .verbatim }, .{ .tag = .link }, .{ .tag = .image }, .{ .tag = .raw_inline } }) |k|
         try fx.expectNoNodeOfKind(k);
+}
+
+test "insert_literal: a typed dollar stays literal under the math extension, and bare without it" {
+    const typed = "$x$ and $$y$$";
+    var fx = try Fixture.initWith("a \n", .markdown, &math_cfg);
+    defer fx.deinit();
+    try insertLiteral(&fx, 2, typed);
+    try fx.expectSource("a \\$x\\$ and \\$\\$y\\$\\$\n");
+    try expectVisibleText(&fx, "a " ++ typed);
+    try fx.expectNoNodeOfKind(.{ .text_leaf = .inline_math });
+    try fx.expectNoNodeOfKind(.{ .text_leaf = .display_math });
+
+    // Without the extension a `$` is text, and a backslash before it would
+    // only be noise in the source.
+    var plain = try Fixture.init("a \n", .markdown);
+    defer plain.deinit();
+    try insertLiteral(&plain, 2, typed);
+    try plain.expectSource("a $x$ and $$y$$\n");
+    try expectVisibleText(&plain, "a " ++ typed);
+}
+
+test "insert_link: a destination shown as text keeps its dollars literal under math" {
+    var fx = try Fixture.initWith("a \n", .markdown, &math_cfg);
+    defer fx.deinit();
+    try insertLink(&fx, 2, 2, "u$x$");
+    try fx.expectLinkText("u$x$");
+    try fx.expectLinkDest("u$x$");
 }
 
 test "insert_literal: typed djot specials all stay literal" {
