@@ -1703,7 +1703,9 @@ impl Editor {
     }
 
     /// Delete the located node, tidying surrounding blank lines for a
-    /// whole-line (block) node; an inline node degrades to the exact delete.
+    /// whole-line node — a block, or an element alone on an indented line,
+    /// which goes with its indentation; an inline node degrades to the exact
+    /// delete.
     pub fn delete_smart(&mut self, locator: &str) -> Result<(), Error> {
         let status = unsafe {
             ffi::twig_editor_delete_smart(self.raw.as_ptr(), locator.as_ptr(), locator.len())

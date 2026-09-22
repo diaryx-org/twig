@@ -903,8 +903,10 @@ fn consumeBlankLinesBackward(source: []const u8, from: usize) usize {
 }
 
 /// The range to delete for a "tidy" removal of a node whose exact span is
-/// `span`. If `span` occupies whole lines (starts at a line start and ends at
-/// a line end — i.e. a block), the returned range also swallows the block's
+/// `span`. If `span` occupies whole lines (nothing but spaces and tabs between
+/// it and its line's start and end — a block, or an element on its own
+/// indented line of a pretty-printed XML document), the returned range takes
+/// that indentation and trailing space, and also swallows the line's
 /// terminating newline and the blank-line separator on one side: the trailing
 /// blanks normally (leaving the leading blank as the surviving neighbors'
 /// separator), or — when the block was the LAST thing in the document — the
@@ -916,8 +918,10 @@ fn tidyDeletionSpan(source: []const u8, span: Span) Span {
     var s = span.start;
     var e = span.end;
 
-    const at_line_start = (s == 0) or (s <= len and source[s - 1] == '\n');
-    const at_line_end = (e == len) or (e < len and (source[e] == '\n' or source[e] == '\r'));
+    while (s > 0 and (source[s - 1] == ' ' or source[s - 1] == '\t')) s -= 1;
+    while (e < len and (source[e] == ' ' or source[e] == '\t')) e += 1;
+    const at_line_start = (s == 0) or (source[s - 1] == '\n');
+    const at_line_end = (e == len) or (source[e] == '\n' or source[e] == '\r');
     if (!at_line_start or !at_line_end) return span;
 
     if (e < len and source[e] == '\r') e += 1;
@@ -1312,6 +1316,29 @@ test "tidyDeletionSpan: the only block empties the document" {
 test "tidyDeletionSpan: a mid-line (inline) span is deleted exactly, no line surgery" {
     // "a *b* c\n", delete the "*b*" at [2,5): must NOT swallow the line.
     try expectTidy("a *b* c\n", 2, 5, "a  c\n");
+}
+
+test "tidyDeletionSpan: an indented line goes with its indentation and trailing space" {
+    // An element on its own indented line, as a pretty-printer writes XML.
+    try expectTidy("<r>\n  <a/>\n  <b/>\n</r>\n", 6, 10, "<r>\n  <b/>\n</r>\n");
+    try expectTidy("<r>\n  <a/> \t\n  <b/>\n</r>\n", 6, 10, "<r>\n  <b/>\n</r>\n");
+    // Indented but sharing its line with something else: exact delete.
+    try expectTidy("<r>\n  <a/><b/>\n</r>\n", 6, 10, "<r>\n  <b/>\n</r>\n");
+    try expectTidy("<r>\n  x <a/>\n</r>\n", 8, 12, "<r>\n  x \n</r>\n");
+}
+
+test "deleteNodeSmart takes an XML element's line, indentation and all" {
+    const src = "<svg>\n  <!-- keep me -->\n  <rect/>\n  <g data-id=\"s2\"/>\n</svg>\n";
+    var ed = try Splicer.init(testing.allocator, src, &test_ctx, parseXml);
+    defer ed.deinit();
+    // <svg>'s children: ws, comment, ws, <rect/>, ws, <g/>, ws.
+    try ed.deleteNodeSmart(&.{ 0, 3 });
+    try testing.expectEqualStrings("<svg>\n  <!-- keep me -->\n  <g data-id=\"s2\"/>\n</svg>\n", ed.sourceBytes());
+    _ = try ed.undo();
+    try testing.expectEqualStrings(src, ed.sourceBytes());
+    // The last child takes its line too, leaving the closing tag's own.
+    try ed.deleteNodeSmart(&.{ 0, 5 });
+    try testing.expectEqualStrings("<svg>\n  <!-- keep me -->\n  <rect/>\n</svg>\n", ed.sourceBytes());
 }
 
 // ── undo / redo ──────────────────────────────────────────────────────────────

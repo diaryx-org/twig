@@ -890,7 +890,8 @@ TwigStatus twig_editor_delete(
 );
 
 // Delete the located node, tidying surrounding blank lines for a whole-line
-// (block) node; an inline node degrades to the exact-span delete.
+// node — a block, or an element alone on an indented line, which goes with its
+// indentation; an inline node degrades to the exact-span delete.
 TwigStatus twig_editor_delete_smart(
     TwigEditor *editor,
     const uint8_t *locator,
