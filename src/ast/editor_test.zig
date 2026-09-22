@@ -4835,3 +4835,96 @@ test "wrapRangeAttrs: an empty range with no span to re-style, a bad range, a ba
     try testing.expectError(error.InvalidAttribute, fx.ed.wrapRangeAttrs(Span.init(2, 5), &.{.{ .key = "k", .value = null }}));
     try fx.expectSource("a big b\n");
 }
+
+test "move_block: a boundary that closes a container is read outside it for the block that closes it" {
+    // The last block of a quote dropped at its own end — the one offset that
+    // is both after it and after the quote — leaves the quote; and dropped
+    // on the blank line after a quote it was the only content of, where the
+    // lines that go with it include that blank.
+    var last = try Fixture.init("x\n\n> a\n>\n> b\n\ny\n", .markdown);
+    defer last.deinit();
+    try last.ed.moveBlock(11, 12);
+    try last.expectSource("x\n\n> a\n\nb\n\ny\n");
+    var sole = try Fixture.init("> b\n\ny\n", .markdown);
+    defer sole.deinit();
+    try sole.ed.moveBlock(2, 4);
+    try sole.expectSource("b\n\ny\n");
+    try testing.expectEqual(@as(usize, 0), countKind(&sole, .block_quote));
+
+    // The same for a nested quote's first block at its own start, and for
+    // the last block of an item's tail and the last item of a list — a
+    // sibling, so a one-item list of its own.
+    var first = try Fixture.init("> > a\n", .markdown);
+    defer first.deinit();
+    try first.ed.moveBlock(4, 4);
+    try first.expectSource("> a\n");
+    var tail = try Fixture.init("- a\n\n  c\n", .markdown);
+    defer tail.deinit();
+    try tail.ed.moveBlock(7, 8);
+    try tail.expectSource("- a\n\nc\n");
+    var item = try Fixture.init("- a\n- b\n", .markdown);
+    defer item.deinit();
+    try item.ed.moveBlock(6, 7);
+    try item.expectSource("- a\n\n- b\n");
+
+    // A block that does not close its container sits on nothing but its own
+    // boundary there: before the second of two, after the first of two.
+    var mid = try Fixture.init("x\n\n> a\n>\n> b\n", .markdown);
+    defer mid.deinit();
+    try testing.expectError(error.InvalidArgument, mid.ed.moveBlock(11, 9));
+    try testing.expectError(error.InvalidArgument, mid.ed.moveBlock(11, 11));
+    try testing.expectError(error.InvalidArgument, mid.ed.moveBlock(5, 6));
+    var items = try Fixture.init("- a\n- b\n", .markdown);
+    defer items.deinit();
+    try testing.expectError(error.InvalidArgument, items.ed.moveBlock(2, 3));
+}
+
+test "move_block: a container's marker is before the container; its first content byte is inside" {
+    // Above a quote that opens the document, which no other offset names.
+    var opens = try Fixture.init("> a\n\ny\n", .markdown);
+    defer opens.deinit();
+    try opens.ed.moveBlock(5, 0);
+    try opens.expectSource("y\n\n> a\n");
+
+    // The marker byte and the content byte, one offset apart, are the two
+    // boundaries: the block lands before the quote or in it.
+    var marker = try Fixture.init("x\n\n> a\n", .markdown);
+    defer marker.deinit();
+    try testing.expectError(error.InvalidArgument, marker.ed.moveBlock(0, 3));
+    try marker.ed.moveBlock(0, 5);
+    try marker.expectSource("> x\n>\n> a\n");
+    var out = try Fixture.init("x\n\n> a\n>\n> b\n", .markdown);
+    defer out.deinit();
+    try out.ed.moveBlock(11, 3);
+    try out.expectSource("x\n\nb\n\n> a\n");
+
+    // Nested: the outermost container opening at the offset, so `> > a` at
+    // 0 is before both quotes and at 2 before the inner one alone.
+    var both = try Fixture.init("> > a\n", .markdown);
+    defer both.deinit();
+    try both.ed.moveBlock(4, 0);
+    try both.expectSource("a\n");
+    var inner = try Fixture.init("> > a\n", .markdown);
+    defer inner.deinit();
+    try inner.ed.moveBlock(4, 2);
+    try inner.expectSource("> a\n");
+
+    // A delimited container opens at its first byte, and stands emptied.
+    var html = try Fixture.init("<blockquote>\n<p>a</p>\n</blockquote>\n<p>c</p>\n", .html);
+    defer html.deinit();
+    try html.ed.moveBlock(17, 0);
+    try html.expectSource("<p>a</p>\n<blockquote>\n</blockquote>\n<p>c</p>\n");
+}
+
+test "move_block: the source's length is the document's end, terminated or not" {
+    // Behind a trailing list with no final line end, the length is the last
+    // item's last byte too; it still names the end of the document.
+    var bare = try Fixture.init("p\n\n- a\n- b", .markdown);
+    defer bare.deinit();
+    try bare.ed.moveBlock(0, 10);
+    try bare.expectSource("- a\n- b\n\np");
+    var quote = try Fixture.init("x\n\n> a", .markdown);
+    defer quote.deinit();
+    try quote.ed.moveBlock(0, 6);
+    try quote.expectSource("> a\n\nx");
+}

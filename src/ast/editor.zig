@@ -2432,14 +2432,33 @@ pub const Editor = struct {
     /// ── The boundary ───────────────────────────────────────────────────────
     /// `to` is a position BETWEEN blocks: at or before a block's first content
     /// byte (before it), at or after its last (after it), on a blank line, or
-    /// at the document's end. The block lands there and takes the prefixes of
-    /// the container that boundary is inside — the innermost one, so `to` at
-    /// the start of a quote's first paragraph is inside the quote, and a block
-    /// moved there is quoted. `error.NotEditable` for a `to` interior to a
-    /// block — inside a fence, a table, a paragraph's second line — as
-    /// `setBlock` answers for a blank line there; `error.InvalidArgument` for
-    /// a `to` inside the block being moved, or at the boundary it already sits
-    /// on, which would move nothing.
+    /// the source's length (the document's end, whether or not the last line
+    /// is terminated). The block lands there and takes the prefixes of the
+    /// container that boundary is inside — the innermost one, so `to` at the
+    /// first content byte of a quote's first paragraph is inside the quote,
+    /// and a block moved there is quoted. `error.NotEditable` for a `to`
+    /// interior to a block — inside a fence, a table, a paragraph's second
+    /// line — as `setBlock` answers for a blank line there;
+    /// `error.InvalidArgument` for a `to` inside the block being moved, or at
+    /// a boundary it already sits on, which would move nothing.
+    ///
+    /// A boundary at a container's edge is two boundaries — before its first
+    /// block and before the container, after its last and after the
+    /// container — and each is spelled:
+    ///
+    ///   * At the container's OPENING — at or before its marker, or at the
+    ///     first byte of a delimited container's opening line — is before
+    ///     the container, at its parent's level; the first content byte is
+    ///     inside it. `> > a` at 0 is before both quotes, at 2 before the
+    ///     inner one alone, and at 4 inside both. This is the one offset that
+    ///     can name "above" a quote nothing precedes.
+    ///   * A boundary the block already sits on, when the block is the
+    ///     container's first or last, is read as the boundary before or after
+    ///     the CONTAINER: the last block of a quote dropped at its own end —
+    ///     the one offset that is both after it and after the quote — or on
+    ///     the blank line after the quote, leaves the quote; its first block
+    ///     dropped at its own start leaves it upward. A block between two
+    ///     others has only its own boundary there, and moves nothing.
     ///
     /// Two adjustments where a list item is involved, both because a list holds
     /// items and nothing else:
@@ -2491,20 +2510,32 @@ pub const Editor = struct {
         if (!try nodePath(allocator, doc, unit, &unit_chain)) return error.NoBlock;
         const ancestors = unit_chain.items[0 .. unit_chain.items.len - 1];
         const lines = try unitLines(doc, unit, ancestors);
-        if (to >= lines.start and to < lines.end) return error.InvalidArgument;
+        // Strictly inside the block's own text — its content, or for an
+        // item everything behind its marker up to its last byte, a line end
+        // aside. Its edges are boundaries.
+        const own = if (isListItem(doc.ast.nodes[unit].kind)) blk: {
+            const sp = doc.span(unit);
+            var end = sp.end;
+            if (end > sp.start and src[end - 1] == '\n') end -= 1;
+            break :blk Span.init(if (doc.markerSpan(unit)) |m| m.end else sp.start, end);
+        } else blockContent(doc, unit);
+        if (to > own.start and to < own.end) return error.InvalidArgument;
 
         const unit_is_item = isListItem(doc.ast.nodes[unit].kind);
-        const dest = try resolveBoundary(allocator, self.syntax, doc, to, unit_is_item);
-        if (dest.prev == unit or dest.next == unit) return error.InvalidArgument;
-
-        const removal = removalLines(self.syntax, doc, unit_chain.items, lines);
-        if (dest.pos > removal.start and dest.pos < removal.end) return error.InvalidArgument;
+        var dest = try resolveBoundary(allocator, self.syntax, doc, to, unit);
 
         // The prefix every moved line takes: the destination chain's, minus a
         // list item where the format attaches by a line rather than an indent.
         var dest_chain: std.ArrayList(AST.Node.Id) = .empty;
         defer dest_chain.deinit(allocator);
         if (!try nodePath(allocator, doc, dest.container, &dest_chain)) return error.NotEditable;
+        for (dest_chain.items) |id| if (id == unit) return error.InvalidArgument;
+
+        // A boundary on the separator lines that leave with the block — the
+        // blank line after a quote the block was the only content of — is
+        // the boundary where those lines were.
+        const removal = removalLines(self.syntax, doc, unit_chain.items, lines);
+        if (dest.pos > removal.start and dest.pos < removal.end) dest.pos = removal.start;
         var dest_walk: std.ArrayList(AST.Node.Id) = .empty;
         defer dest_walk.deinit(allocator);
         try prefixChain(allocator, self.syntax, doc, dest_chain.items, &dest_walk);
@@ -4777,31 +4808,41 @@ fn lineHeadIsPrefix(doc: *const Document, chain: []const AST.Node.Id, line_start
 }
 
 /// Resolve `to` to the boundary `moveBlock` lands on — see its doc comment
-/// for the rules, and `Dest` for the answer.
+/// for the rules, and `Dest` for the answer. `unit` is the block moving,
+/// which is what tells a boundary it already sits on from one it does not.
 fn resolveBoundary(
     allocator: Allocator,
     syntax: *const Syntax,
     doc: *const Document,
     to: usize,
-    unit_is_item: bool,
+    unit: AST.Node.Id,
 ) Editor.Error!Dest {
     const src = doc.source;
+    const unit_is_item = isListItem(doc.ast.nodes[unit].kind);
     var chain: std.ArrayList(AST.Node.Id) = .empty;
     defer chain.deinit(allocator);
     try chain.append(allocator, doc.ast.root);
-    var anchor: ?AST.Node.Id = null;
-    while (locate.caretChildContaining(doc, chain.items[chain.items.len - 1], to)) |child| {
-        if (!descendsInto(doc.ast.nodes[child].kind)) {
-            anchor = child;
-            break;
-        }
-        try chain.append(allocator, child);
-    }
     var container = chain.items[chain.items.len - 1];
     var prev: ?AST.Node.Id = null;
     var next: ?AST.Node.Id = null;
     const Side = enum { before, after, gap };
     var side: Side = .gap;
+
+    // The source's length is the document's end, whether or not the last
+    // line is terminated: after the last top-level block, and not inside
+    // it or any container it closes.
+    const at_end = to == src.len and src.len > 0 and src[src.len - 1] != '\n';
+    var anchor: ?AST.Node.Id = null;
+    if (!at_end) {
+        while (locate.caretChildContaining(doc, chain.items[chain.items.len - 1], to)) |child| {
+            if (!descendsInto(doc.ast.nodes[child].kind)) {
+                anchor = child;
+                break;
+            }
+            try chain.append(allocator, child);
+        }
+        container = chain.items[chain.items.len - 1];
+    }
 
     if (anchor) |a| {
         // A block holding opaque text — a fence, a raw block — is interior
@@ -4850,47 +4891,101 @@ fn resolveBoundary(
                 prev = c.id;
             } else if (next == null) next = c.id;
         }
+        if (at_end and prev != null) side = .after;
     }
 
-    // Inside a list item: a boundary before its first block is before the
-    // item, and a moved item is a sibling wherever it is dropped.
-    if (isListItem(doc.ast.nodes[container].kind) and chain.items.len >= 2) {
-        const item = container;
-        const at_head = prev == null or (next != null and next.? == doc.ast.nodes[item].first_child);
-        if (at_head or unit_is_item) {
-            _ = chain.pop();
-            container = chain.items[chain.items.len - 1];
-            if (at_head) {
-                side = .before;
-                prev = prevSibling(doc, container, item);
-                next = item;
-            } else {
-                side = .after;
-                prev = item;
-                next = doc.ast.nodes[item].next_sibling;
+    // At a container's opening — at or before its marker, or its opening
+    // line's first byte where it has lines of its own — is BEFORE the
+    // container, at its parent's level: the boundary inside it is the first
+    // content byte, and this is the one offset that can name the other when
+    // nothing precedes the container. The outermost such container on
+    // `to`'s line, so `> > a` at 0 is before both quotes and at 2 before
+    // the inner one alone.
+    const to_line = locate.lineStartAt(src, to);
+    for (chain.items[1..], 1..) |c, depth| {
+        // A list opens where its first item does; its edge is the list-edge
+        // rule's below, which knows an item joins it there.
+        if (isList(doc.ast.nodes[c].kind)) continue;
+        const open = if (doc.markerSpan(c)) |m| m.start else doc.span(c).start;
+        if (to > open or locate.lineStartAt(src, open) != to_line) continue;
+        chain.items.len = depth;
+        container = chain.items[depth - 1];
+        side = .before;
+        prev = prevSibling(doc, container, c);
+        next = c;
+        break;
+    }
+
+    // The list adjustments, and then the climb: a boundary the block already
+    // sits on — after itself, before itself — is, inside a container, the
+    // same boundary as the one after or before the CONTAINER, read at the
+    // parent's level, which is the reading that moves it. At the top level
+    // it moves nothing. The adjustments run again after the climb, since it
+    // can land at an item's head or a list's edge.
+    var climbed = false;
+    while (true) {
+        // Inside a list item: a boundary before its first block is before the
+        // item, and a moved item is a sibling wherever it is dropped.
+        if (isListItem(doc.ast.nodes[container].kind) and chain.items.len >= 2) {
+            const item = container;
+            const at_head = prev == null or (next != null and next.? == doc.ast.nodes[item].first_child);
+            if (at_head or unit_is_item) {
+                _ = chain.pop();
+                container = chain.items[chain.items.len - 1];
+                if (at_head) {
+                    side = .before;
+                    prev = prevSibling(doc, container, item);
+                    next = item;
+                } else {
+                    side = .after;
+                    prev = item;
+                    next = doc.ast.nodes[item].next_sibling;
+                }
             }
         }
-    }
 
-    // At a list's edge, a block that is not an item is beside the LIST: the
-    // list contributes no prefix, so the boundary is the same place, but its
-    // neighbours are the list's own, which is what tells a block already
-    // there from one that moves.
-    if (!unit_is_item and isList(doc.ast.nodes[container].kind) and chain.items.len >= 2) {
-        const list = container;
-        if (next != null and next.? == doc.ast.nodes[list].first_child) {
-            _ = chain.pop();
-            container = chain.items[chain.items.len - 1];
-            side = .before;
-            prev = prevSibling(doc, container, list);
-            next = list;
-        } else if (next == null) {
-            _ = chain.pop();
-            container = chain.items[chain.items.len - 1];
-            side = .after;
-            prev = list;
-            next = doc.ast.nodes[list].next_sibling;
+        // At a list's edge, a block that is not an item is beside the LIST:
+        // the list contributes no prefix, so the boundary is the same place,
+        // but its neighbours are the list's own, which is what tells a block
+        // already there from one that moves.
+        if (!unit_is_item and isList(doc.ast.nodes[container].kind) and chain.items.len >= 2) {
+            const list = container;
+            if (next != null and next.? == doc.ast.nodes[list].first_child) {
+                _ = chain.pop();
+                container = chain.items[chain.items.len - 1];
+                side = .before;
+                prev = prevSibling(doc, container, list);
+                next = list;
+            } else if (next == null) {
+                _ = chain.pop();
+                container = chain.items[chain.items.len - 1];
+                side = .after;
+                prev = list;
+                next = doc.ast.nodes[list].next_sibling;
+            }
         }
+
+        const after_self = prev != null and prev.? == unit;
+        const before_self = next != null and next.? == unit;
+        if (!after_self and !before_self) break;
+        // Only the container's last block is also after the container, and
+        // only its first is also before it; for any other the boundary is
+        // one it sits on and nothing else.
+        const at_edge = if (after_self) doc.ast.nodes[unit].next_sibling == null else doc.ast.nodes[container].first_child == unit;
+        if (climbed or !at_edge or chain.items.len < 2) return error.InvalidArgument;
+        const c = container;
+        _ = chain.pop();
+        container = chain.items[chain.items.len - 1];
+        if (after_self) {
+            side = .after;
+            prev = c;
+            next = doc.ast.nodes[c].next_sibling;
+        } else {
+            side = .before;
+            prev = prevSibling(doc, container, c);
+            next = c;
+        }
+        climbed = true;
     }
 
     const pos = switch (side) {
