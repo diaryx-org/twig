@@ -90,6 +90,33 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.9.1
+
+### Fixed
+
+- **editor** — move_block reads a container's edges as boundaries outside it ([`a6cdfc9`](https://github.com/diaryx-org/twig/commit/a6cdfc91325bd08caf71a0d7aaea6878d84f07ce))
+
+### Behavioural changes
+
+- `move_block` with `to` at or before a block quote's
+  marker (or a delimited container's first byte) now lands the block
+  before the container, at its parent's level, where it landed inside the
+  container before its first block. `to` at the first content byte is
+  unchanged.
+
+- `move_block` with `to` at the boundary the block
+  already sits on, when the block is its container's first or last, now
+  moves it out of the container — before or after it — where it returned
+  InvalidArgument (or, on the blank line after a one-block quote,
+  InvalidArgument too). At the top level, and for a block between two
+  others, it is still InvalidArgument.
+
+- `move_block` with `to` equal to the source's length,
+  in a source whose last line has no line end, now lands the block after
+  the last top-level block, where it landed inside whatever container that
+  line closed — a trailing list item's tail, a trailing quote.
+
+
 ## 3.9.0
 
 ### Added
