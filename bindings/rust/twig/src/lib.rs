@@ -2884,10 +2884,18 @@ impl Editor {
     /// * `to` is a position **between** blocks: at or before a block's first
     ///   content byte (the block lands before it), at or after its last
     ///   (after it), on a blank line, or the source's length (the document's
-    ///   end). The block takes the prefixes of the container that boundary
-    ///   is inside — the innermost one, so `to` at the start of a quote's
-    ///   first paragraph is inside the quote. Two adjustments where a list
-    ///   item is involved, because a list holds items and nothing else: a
+    ///   end, terminated or not). The block takes the prefixes of the
+    ///   container that boundary is inside — the innermost one, so `to` at
+    ///   the first content byte of a quote's first paragraph is inside the
+    ///   quote, while `to` at or before the quote's marker is before the
+    ///   quote, at its parent's level (`> > a` at 0 is before both quotes,
+    ///   at 2 before the inner one, at 4 inside both). A boundary the block
+    ///   already sits on is read at the container's level when the block is
+    ///   the container's first or last: a quote's last paragraph dropped at
+    ///   its own end, or on the blank line after the quote, leaves the
+    ///   quote; its first dropped at its own start leaves it upward. Two
+    ///   adjustments where a list item is involved, because a list holds
+    ///   items and nothing else: a
     ///   boundary before an item's first block is before the **item**, at
     ///   the list's level, while one after an item's last block is inside
     ///   the item — how a block reaches an item's tail (`to` at the end of
@@ -2909,8 +2917,8 @@ impl Editor {
     /// fence, a table, a paragraph's second line — or when the block shares
     /// a line with something else (an HTML `<p>` written beside another).
     /// [`Error::InvalidArgument`] when `to` is inside the block being moved
-    /// or at the boundary it already sits on, which would move nothing, and
-    /// when either offset is past the source. [`Error::UnsupportedFormat`]
+    /// or at a boundary it already sits on that is no container's edge,
+    /// which would move nothing, and when either offset is past the source. [`Error::UnsupportedFormat`]
     /// where the format has no blocks a caret could name (XML); ask
     /// [`Format::supports`] with [`Gesture::MoveBlock`].
     pub fn move_block(&mut self, from: usize, to: usize) -> Result<Change, Error> {

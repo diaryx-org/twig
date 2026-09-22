@@ -4,11 +4,41 @@ description: "The last block of a quote cannot be dropped on the blank line afte
 author: adammharris
 created: 2026-09-21
 updated: 2026-09-21
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # `move_block` reads three boundaries as places the block already is, or as inside a container it is not
+
+## Resolution
+
+Done on 2026-09-21, in the commit `fix(editor): move_block reads a
+container's edges as boundaries outside it`. Three readings, each one the
+Shape below asked for or found on the way:
+
+- **A container's opening is before it.** `to` at or before a quote's
+  marker — or the first byte of a delimited container's opening line — is
+  before the container at its parent's level; its first content byte is
+  inside. `> > a` at 0 is before both quotes, at 2 before the inner one, at
+  4 inside both. That is case 2, and it is not limited to a container that
+  opens the document. A list's opening is left to the list-edge rule, which
+  knows an item dropped there joins the list.
+- **A boundary the block already sits on is read at the container's
+  level**, when the block is the container's first or last — the one case
+  where it is also the boundary before or after the container. Case 1, at
+  `b`'s own end; also on the blank line after a quote `b` was the only
+  content of, where the lines that leave with `b` include that blank and
+  the boundary is where they were. A block between two others has only
+  its own boundary there and is still `InvalidArgument`.
+- **The source's length is the document's end** whether or not the last
+  line is terminated. Case 3.
+
+The harness has the three for every authorable format; the exact bytes are
+in `editor_test.zig`. leaf's `before`/`after` can now collapse to
+`span.start`/`span.end` for a container; for a block inside a prefix
+container, "before it" is its first content byte — in Markdown a
+paragraph's `span.start` is its line's, and the marker there now reads as
+before the quote.
 
 **Where.** `move_block`'s resolution of `to` — the rule that a boundary is
 inside the innermost container it touches, and the check that a boundary is

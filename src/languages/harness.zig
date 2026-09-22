@@ -415,8 +415,9 @@ fn expectFragmentReparses(
 
 /// Where `Editor.moveBlock` puts the block in a `MoveCase`, named by the
 /// text of the block it lands beside so the offset can be found in any
-/// format's spelling of the same tree.
-const MoveTo = union(enum) { after: []const u8, before: []const u8, doc_end };
+/// format's spelling of the same tree — or the document's two ends, which
+/// are offsets in every spelling.
+const MoveTo = union(enum) { after: []const u8, before: []const u8, doc_start, doc_end };
 
 /// One move over a tree every authorable format can spell: the document as
 /// built, the block to move (by its text), where it goes, and the document
@@ -429,6 +430,9 @@ const MoveCase = struct {
     expected: *const fn (*AST.Builder) Allocator.Error!AST.Node.Id,
     block: []const u8,
     to: MoveTo,
+    /// Both documents without their final line end: the source's length is
+    /// then the last block's own end, and still the document's end.
+    unterminated: bool = false,
 };
 
 const Allocator = std.mem.Allocator;
@@ -512,6 +516,61 @@ const move_cases = [_]MoveCase{
         .block = "y",
         .to = .{ .before = "b" },
     },
+    // The three boundaries `docs/tasks/move-block-boundary-gaps.md` found
+    // read as a place the block already is, or as inside a container it is
+    // not: each is one a caret can name, and each moves the block out.
+    .{
+        .name = "past its own end, out of the quote it closes",
+        .start = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{ try paraOf(b, "a"), try paraOf(b, "y") });
+                return b.addContainer(.doc, &.{ quote, try paraOf(b, "b") });
+            }
+        }.f,
+        .expected = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{try paraOf(b, "a")});
+                return b.addContainer(.doc, &.{ quote, try paraOf(b, "y"), try paraOf(b, "b") });
+            }
+        }.f,
+        .block = "y",
+        .to = .{ .after = "y" },
+    },
+    .{
+        .name = "above a quote that opens the document",
+        .start = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{try paraOf(b, "a")});
+                return b.addContainer(.doc, &.{ quote, try paraOf(b, "y") });
+            }
+        }.f,
+        .expected = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{try paraOf(b, "a")});
+                return b.addContainer(.doc, &.{ try paraOf(b, "y"), quote });
+            }
+        }.f,
+        .block = "y",
+        .to = .doc_start,
+    },
+    .{
+        .name = "to the unterminated end, behind a trailing list",
+        .start = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const l = try listOf(b, true, &.{ try itemOf(b, &.{try paraOf(b, "a")}), try itemOf(b, &.{try paraOf(b, "b")}) });
+                return b.addContainer(.doc, &.{ try paraOf(b, "y"), l });
+            }
+        }.f,
+        .expected = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const l = try listOf(b, true, &.{ try itemOf(b, &.{try paraOf(b, "a")}), try itemOf(b, &.{try paraOf(b, "b")}) });
+                return b.addContainer(.doc, &.{ l, try paraOf(b, "y") });
+            }
+        }.f,
+        .block = "y",
+        .to = .doc_end,
+        .unterminated = true,
+    },
 };
 
 /// `build` printed as `entry`'s own syntax — the canonical spelling of a
@@ -547,16 +606,19 @@ fn expectMoveBlock(entry: format.Entry) !void {
     const config: format.ParseConfig = .{};
     for (&move_cases) |*c| {
         errdefer std.debug.print("\n{s}: move_block {s}\n", .{ @tagName(entry.id), c.name });
-        const start = try printTree(entry, c.start);
-        defer testing.allocator.free(start);
-        const expected = try printTree(entry, c.expected);
-        defer testing.allocator.free(expected);
+        const start_print = try printTree(entry, c.start);
+        defer testing.allocator.free(start_print);
+        const expected_print = try printTree(entry, c.expected);
+        defer testing.allocator.free(expected_print);
+        const start = if (c.unterminated) std.mem.trimEnd(u8, start_print, "\n") else start_print;
+        const expected = if (c.unterminated) std.mem.trimEnd(u8, expected_print, "\n") else expected_print;
         var editor = try Editor.init(testing.allocator, start, &config, entry.parseToAst, entry.syntax);
         defer editor.deinit();
         const from = (try textSpan(&editor.splicer.doc, c.block)).start;
         const to: usize = switch (c.to) {
             .after => |t| (try textSpan(&editor.splicer.doc, t)).end,
             .before => |t| (try textSpan(&editor.splicer.doc, t)).start,
+            .doc_start => 0,
             .doc_end => start.len,
         };
         errdefer std.debug.print("--- start ---\n{s}\n--- from {d} to {d} ---\n", .{ start, from, to });
