@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "twig-doc"
-version = "3.8.1"
+version = "3.9.0"
 dependencies = [
  "twig-sys",
 ]
 
 [[package]]
 name = "twig-sys"
-version = "3.8.1"
+version = "3.9.0"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -22,20 +22,28 @@ dependencies = [
 
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
-version = "3.8.1"
+version = "3.9.0"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
-version = "3.8.1"
+version = "3.9.0"
 
 [[package]]
 name = "twig-sys-macos-arm64"
-version = "3.8.1"
+version = "3.9.0"
 
 [[package]]
 name = "twig-sys-wasm32"
-version = "3.8.1"
+version = "3.9.0"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
-version = "3.8.1"
+version = "3.9.0"
+
+[[patch.unused]]
+name = "plates"
+version = "0.7.3"
+
+[[patch.unused]]
+name = "plates-render"
+version = "0.7.3"
