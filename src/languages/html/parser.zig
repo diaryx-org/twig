@@ -207,7 +207,7 @@ pub const Parser = struct {
             const id = try self.builder.addContainer(kind, no_children);
             self.builder.setSpan(id, Span.init(start, self.pos));
             self.markElementOrigin(id, kind);
-            try self.builder.setAttrs(id, .{ .entries = attrs });
+            try self.setElementAttrs(id, kind, attrs);
             return id;
         }
 
@@ -247,8 +247,38 @@ pub const Parser = struct {
         self.builder.setSpan(id, Span.init(start, self.pos));
         self.builder.setContentSpan(id, Span.init(content_start, content_end));
         self.markElementOrigin(id, kind);
-        try self.builder.setAttrs(id, .{ .entries = attrs });
+        try self.setElementAttrs(id, kind, attrs);
         return id;
+    }
+
+    /// Give an element's node the attributes its kind does not already own.
+    ///
+    /// `semanticKind` promotes `href` to a link's destination, `src` and `alt`
+    /// to an image's destination and alt text, and `start` to an ordered
+    /// list's first number. The node's model is then the one place those facts
+    /// live: a second copy in the attribute bag is what every other target's
+    /// attribute table was measured against — reported as dropped by Markdown
+    /// and djot for markup they write in full, and written by Markdown as a
+    /// `<div start="3">` around a list whose `3.` already said so — and an
+    /// editor gesture rewriting the copy would change nothing any serializer
+    /// reads. A key the model did not take (a `start` that is not a number)
+    /// stays in the bag.
+    fn setElementAttrs(self: *Parser, id: Node.Id, kind: Node.Kind, attrs: []const AST.KeyVal) ParseError!void {
+        const owned: []const []const u8 = switch (kind) {
+            .link => |v| if (v.destination != null) &.{"href"} else &.{},
+            .image => |v| if (v.destination != null) &.{ "src", "alt" } else &.{},
+            .ordered_list => |v| if (v.start != null) &.{"start"} else &.{},
+            else => &.{},
+        };
+        if (owned.len == 0) return self.builder.setAttrs(id, .{ .entries = attrs });
+        var kept: std.ArrayList(AST.KeyVal) = .empty;
+        defer kept.deinit(self.allocator);
+        for (attrs) |kv| {
+            for (owned) |key| {
+                if (std.mem.eql(u8, kv.key, key)) break;
+            } else try kept.append(self.allocator, kv);
+        }
+        try self.builder.setAttrs(id, .{ .entries = kept.items });
     }
 
     /// Record that a generic container came from a TAG, for the nodes where
@@ -346,9 +376,8 @@ pub const Parser = struct {
             if (attrValue(attrs, "src")) |destination| {
                 // The shared `image` model carries alt text as child content,
                 // not as an attribute; give the void node a `str` child so the
-                // serializer reproduces `alt=`. The `src`/`alt` attributes are
-                // still preserved on the node — the serializer dedups them
-                // against the synthesized `src`/`alt` so neither doubles up.
+                // serializer reproduces `alt=`. `setElementAttrs` then leaves
+                // `src` and `alt` out of the bag, since the model owns both.
                 if (attrValue(attrs, "alt")) |alt| {
                     const child = try self.builder.addLeaf(.{ .str = alt });
                     children.* = try self.allocator.dupe(Node.Id, &.{child});
@@ -984,9 +1013,9 @@ test "HTML parser restores Twig printer semantics and ignores layout whitespace"
 
 test "HTML round-trip does not duplicate attributes promoted to semantic fields" {
     // A semantic upgrade (`a`->link, `img`->image, `ol`->ordered_list) pulls
-    // `href`/`src`/`start` into a field *and* keeps the raw attribute; the
-    // serializer must emit each key exactly once. `<img>`'s alt text becomes
-    // node content so it survives the void-element round-trip.
+    // `href`/`src`/`start` into a field and out of the attribute bag; the
+    // serializer spells each key once, from the field. `<img>`'s alt text
+    // becomes node content so it survives the void-element round-trip.
     const cases = [_]struct { in: []const u8, out: []const u8 }{
         .{ .in = "<a href=\"/x\" class=\"c\">hi</a>", .out = "<a href=\"/x\" class=\"c\">hi</a>" },
         .{ .in = "<img src=\"/p.png\" alt=\"pic\" class=\"t\">", .out = "<img alt=\"pic\" src=\"/p.png\" class=\"t\">" },
@@ -1000,6 +1029,33 @@ test "HTML round-trip does not duplicate attributes promoted to semantic fields"
         const html = try @import("serializer.zig").serializeAlloc(testing.allocator, &ast.ast, null);
         defer testing.allocator.free(html);
         try testing.expectEqualStrings(c.out, html);
+    }
+}
+
+test "an attribute the node's model owns is not kept in its bag" {
+    const cases = [_]struct { in: []const u8, kept: []const []const u8 }{
+        .{ .in = "<a href=\"/x\" class=\"c\">hi</a>", .kept = &.{"class"} },
+        .{ .in = "<img src=\"/p.png\" alt=\"pic\" class=\"t\">", .kept = &.{"class"} },
+        .{ .in = "<ol start=\"3\" class=\"l\"><li>x</ol>", .kept = &.{"class"} },
+        // Not a number, so the model did not take it and the bag keeps it.
+        .{ .in = "<ol start=\"iii\"><li>x</ol>", .kept = &.{"start"} },
+        // No `href`, so no link: the anchor is a container and keeps its name.
+        .{ .in = "<a name=\"top\">hi</a>", .kept = &.{"name"} },
+    };
+    for (cases) |c| {
+        var parser = Parser.init(testing.allocator, c.in);
+        defer parser.deinit();
+        var doc = try parser.parse();
+        defer doc.deinit();
+        var found = false;
+        for (doc.ast.nodes, 0..) |_, i| {
+            const attrs = doc.ast.attrsOf(@intCast(i));
+            if (attrs.isEmpty()) continue;
+            found = true;
+            try testing.expectEqual(c.kept.len, attrs.entries.len);
+            for (c.kept, attrs.entries) |key, kv| try testing.expectEqualStrings(key, kv.key);
+        }
+        try testing.expect(found);
     }
 }
 

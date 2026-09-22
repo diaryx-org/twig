@@ -3,12 +3,26 @@ title: "`href`, `src` and `alt` are reported as attributes the Markdown target d
 description: 'The HTML parser keeps a link''s `href` and an image''s `src`/`alt` in the node''s attribute bag *besides* modelling them as the destination and the alt text, so the attribute axis measures them against Markdown''s absent attribute syntax and reports `AttrsDropped` on markup the conversion writes in full.'
 author: adammharris
 created: 2026-09-18
-updated: 2026-09-18
-status: open
+updated: 2026-09-22
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # `href`, `src` and `alt` are reported as attributes the Markdown target dropped
+
+## Resolution
+
+Done on 2026-09-22, in the commit `fix(diagnostics): a degraded node's attributes are reported, and a link's href is not`,
+on the recommended fix: the HTML parser's `setElementAttrs` leaves out of
+the bag what `semanticKind` promoted — `href` from a link, `src` and `alt`
+from an image, `start` from an ordered list — and keeps a key the model did
+not take (`start="iii"`, an `<a>` with no `href`).
+
+The `hrefValue` cost did not apply: `renderAttributes` already let the
+synthesized key win over the bag's, so the bag copy never reached HTML
+output and no `href` survived through it. The HTML→HTML output of all three
+fragments is unchanged. The one HTML difference is `<ol start="1">`, which
+the model spells as the default and now writes as `<ol>`.
 
 Every link and every image in an HTML document reports a loss that did not
 happen. A consumer gating on `diagnostics` cannot tell this false positive

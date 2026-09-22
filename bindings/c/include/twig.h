@@ -356,18 +356,24 @@ typedef struct TwigWarning {
 #define TWIG_FIDELITY_DEGRADED 1
 // Nothing is emitted at all: the node and its subtree leave no trace.
 #define TWIG_FIDELITY_DROPPED 2
-// The node survives; some of its ATTRIBUTES are written where the target's
-// parser does not read them back as that node's (djot spells a heading's on its
-// text; AsciiDoc moves a section title's onto the section). Which keys is not
+// Some of the node's ATTRIBUTES are written where the target's parser does not
+// read them back as that node's (djot spells a heading's on its text; AsciiDoc
+// moves a section title's onto the section). Independent of the node's own
+// answer: a node that degrades and still has its attributes written —
+// Markdown's <div lang=...> for a section it cannot spell — is reported twice
+// at the same path, DEGRADED and then this. Which keys is not
 // carried on the wire — the node at `path` has them — so a consumer that wants
 // the list reads the tree. A code rather than a field, because TwigWarning's
 // layout is frozen (see the ABI contract above). Additive in ABI v6.
 #define TWIG_FIDELITY_ATTRS_DEGRADED 3
-// The node survives; some of its attributes are not written at all.
+// Some of the node's attributes are not written at all. Never reported beside
+// DROPPED: nothing of a dropped node is written, so that one code is the whole
+// answer.
 #define TWIG_FIDELITY_ATTRS_DROPPED 4
 
 // What converting `doc` to `format` would silently LOSE: one TwigWarning per
-// lossy node, in document order, borrowed until the next
+// lossy node — two at one path for a node whose attributes are lost as well as
+// its kind — in document order, borrowed until the next
 // twig_document_diagnostics call on this document or twig_document_destroy.
 //
 // Every serializer degrades or drops a node when the target has no spelling for
