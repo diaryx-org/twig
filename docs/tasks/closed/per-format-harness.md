@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-15
 updated: 2026-09-15
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A per-format harness states what the engine assumes of every format
@@ -56,7 +56,7 @@ under each language's `testdata/` are deliberately not walked here; their
 `conformance.zig` is the reader that knows each one's shape.
 
 This is the precondition for
-[fragment renderers](/docs/tasks/fragment-renderers.md) — a renderer's
+[fragment renderers](/docs/tasks/closed/fragment-renderers.md) — a renderer's
 output has to reparse to the node it was asked for — and for any
-[runtime twin](/docs/tasks/runtime-languages.md) of a compiled format,
+[runtime twin](/docs/tasks/closed/runtime-languages.md) of a compiled format,
 which is checked against the harness and not against prose.

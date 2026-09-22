@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-18
 updated: 2026-09-22
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A degraded node's attributes are reported on neither axis

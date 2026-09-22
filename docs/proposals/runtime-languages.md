@@ -20,7 +20,7 @@ repository over the Rust crate. The one thing cheaper now than later — the
 reserved range of format codes — landed beside this document, in
 `add(c-abi): reserve the runtime format range`. The build is sequenced at
 the end, and closes
-[the task that asked for this decision](/docs/tasks/runtime-languages.md).
+[the task that asked for this decision](/docs/tasks/closed/runtime-languages.md).
 
 "Runtime" throughout means *resolved when the program runs*, as opposed to a
 format compiled into `src/languages/`. It names no engine.

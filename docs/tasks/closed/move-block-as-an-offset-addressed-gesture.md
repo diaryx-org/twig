@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-09-21
 updated: 2026-09-21
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # `move_block` — a block moves between containers and the destination's prefixes are twig's to spell
@@ -24,7 +24,7 @@ a moved list item is always a sibling (nesting stays
 `toggle_block_container`'s), and a delimited container emptied by a move
 stands, since it may carry attributes — where a `>` quote or a list whose
 only content leaves goes with it. leaf's half is
-[leaf/docs/tasks/move-a-block.md](https://github.com/diaryx-org/leaf/blob/main/docs/tasks/move-a-block.md),
+[leaf/docs/tasks/closed/move-a-block.md](https://github.com/diaryx-org/leaf/blob/main/docs/tasks/closed/move-a-block.md),
 and reaches it once this is released and the pin moves.
 
 **Where.** The gesture family beside `set_block`, `toggle_block_container`,
@@ -32,7 +32,7 @@ and reaches it once this is released and the pin moves.
 step, format-aware.
 
 **What.** leaf is growing block drag-and-drop and a keyboard move
-(`leaf/docs/tasks/move-a-block.md`). For a block moved *within* one
+(`leaf/docs/tasks/closed/move-a-block.md`). For a block moved *within* one
 container the two node ops from
 [the canvas proposal](/docs/proposals/tree-gestures-for-a-canvas.md) —
 `move_before` and `move_after`, shipped in 3.8.1 — already do it in one

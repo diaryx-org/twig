@@ -516,7 +516,7 @@ const move_cases = [_]MoveCase{
         .block = "y",
         .to = .{ .before = "b" },
     },
-    // The three boundaries `docs/tasks/move-block-boundary-gaps.md` found
+    // The three boundaries `docs/tasks/closed/move-block-boundary-gaps.md` found
     // read as a place the block already is, or as inside a container it is
     // not: each is one a caret can name, and each moves the block out.
     .{
