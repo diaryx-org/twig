@@ -235,7 +235,7 @@ const Collector = struct {
         const attrs = self.ast.attrsOf(id);
         if (attrs.isEmpty()) return;
         const kind = self.ast.nodes[id].kind;
-        const table = attrsFidelity(self.target, kind).under(node);
+        const table = nodeAttrsFidelity(self.target, self.ast, id, node);
         var lost: std.ArrayList([]const u8) = .empty;
         var f: Fidelity = .faithful;
         for (attrs.entries) |kv| {
@@ -327,19 +327,37 @@ fn metadataFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
     return if (ast.nodes[ast.root].first_child == id) .faithful else .degraded;
 }
 
-/// A section's instance-level answer: whether its title is a LEVEL-ONE one.
+/// A section's instance-level answer: whether it OPENS with a heading, and
+/// whether that heading is a level-one one. `Kind.section` carries neither
+/// (the heading child does), so the table cannot see them.
 ///
-/// Only AsciiDoc cares. A `= Title` line at the top of a document is the
+/// A section in djot and AsciiDoc is a heading and what follows it; the
+/// format has no other spelling for one. HTML's parser makes a section of
+/// `<body>`, `<main>` and `<section>` whatever they hold, and one with no
+/// heading is written as its children alone — nothing reads back as the
+/// section.
+///
+/// AsciiDoc also reads a `= Title` line at the top of a document as the
 /// document's title — a header, not a section — so a level-one section
 /// written there comes back as the header and its body as the document's.
-/// Every deeper section is a section again. `Kind.section` carries no level
-/// (the heading child does), so the table cannot see this.
+/// Every deeper section is a section again.
 fn sectionFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
-    if (target != .asciidoc) return .faithful;
-    const heading = ast.nodes[id].first_child orelse return .faithful;
-    return switch (ast.nodes[heading].kind) {
-        .heading => |h| if (h.level == 1) .degraded else .faithful,
-        else => .faithful,
+    switch (target) {
+        .djot, .asciidoc => {},
+        .markdown, .html, .xml => return .faithful,
+    }
+    const heading = sectionHeading(ast, id) orelse return .degraded;
+    if (target == .asciidoc and heading.level == 1) return .degraded;
+    return .faithful;
+}
+
+/// The heading a section opens with, or null for one that opens with
+/// anything else — the shape HTML's parser gives `<body>`.
+fn sectionHeading(ast: *const AST, id: Node.Id) ?Node.Kind.Heading {
+    const first = ast.nodes[id].first_child orelse return null;
+    return switch (ast.nodes[first].kind) {
+        .heading => |h| h,
+        else => null,
     };
 }
 
@@ -839,6 +857,23 @@ pub fn attrsFidelity(target: Target, kind: Node.Kind) AttrsFidelity {
         .html => htmlAttrsFidelity(kind),
         .asciidoc => asciidocAttrsFidelity(kind),
     };
+}
+
+/// `attrsFidelity` for one NODE whose own fidelity is `node`: the kind's
+/// row, worsened by what only the node can say, then capped by `under`. The
+/// attribute counterpart of `nodeFidelity`, and like it, a refinement only
+/// ever makes the answer worse.
+///
+/// Djot writes a section's attributes as the line above its heading, so a
+/// section with no heading has nowhere to put them and they are never
+/// written — `dropped`, where a section with one keeps them all.
+pub fn nodeAttrsFidelity(target: Target, ast: *const AST, id: Node.Id, node: Fidelity) AttrsFidelity {
+    const kind = ast.nodes[id].kind;
+    const table: AttrsFidelity = switch (kind) {
+        .section => if (target == .djot and sectionHeading(ast, id) == null) .all(.dropped) else attrsFidelity(target, kind),
+        else => attrsFidelity(target, kind),
+    };
+    return table.under(node);
 }
 
 /// Djot can spell an attribute block on any block or inline, and its
@@ -1402,6 +1437,15 @@ const probes = [_]Probe{
             return blockDoc(b, .section, &.{ h, p });
         }
     }.f },
+    // What HTML's parser makes of `<body>` or `<section>`: a section whose
+    // first child is not a heading, so there is nothing for a lightweight
+    // format to hang the section — or its attribute line — on.
+    .{ .label = "section(headless)", .want = .{ .tag = .section }, .kind = .section, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            const p = try b.addContainer(.para, &.{try str(b, "x")});
+            return blockDoc(b, .section, &.{p});
+        }
+    }.f },
     .{ .label = "block_quote", .want = .{ .tag = .block_quote }, .kind = .block_quote, .build = struct {
         fn f(b: *AST.Builder) anyerror!Node.Id {
             const p = try b.addContainer(.para, &.{try str(b, "x")});
@@ -1732,7 +1776,7 @@ fn expectAttrsMeasured(allocator: Allocator, label: []const u8, ast: *const AST,
                 break;
             }
         }
-        const table = attrsFidelity(target, kind).under(node);
+        const table = nodeAttrsFidelity(target, ast, probedNode(ast, kind).?, node);
         for (attr_probe_keys) |kv| {
             const claimed = table.forKey(kv.key);
             const observed = observedAttrFidelity(&back.ast, found, src, kv);
@@ -1902,6 +1946,39 @@ test "a degraded node's attributes are reported beside it, at the same path" {
             try testing.expectEqualStrings(key, got.attrs[0]);
         }
     }
+}
+
+test "a section with no heading is reported where it does not come back, with its attributes" {
+    // HTML's parser makes a section of `<section>` whatever it holds. Djot and
+    // AsciiDoc spell a section only as a heading and what follows, so this one
+    // is written as its paragraph alone — and djot writes a section's
+    // attribute line above its heading, so there is nowhere for `lang`.
+    const Html = @import("languages/html/html.zig");
+    var doc = try Html.parse(testing.allocator, "<section lang=\"x\"><p>t</p></section>");
+    defer doc.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    for ([_]Target{ .djot, .asciidoc }) |t| {
+        const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, t);
+        try testing.expectEqual(@as(usize, 2), w.len);
+        try testing.expectEqual(Warning.Subject.node, w[0].subject);
+        try testing.expectEqual(Fidelity.degraded, w[0].fidelity);
+        try testing.expectEqual(Warning.Subject.attrs, w[1].subject);
+        try testing.expectEqual(Fidelity.dropped, w[1].fidelity);
+        try testing.expectEqualStrings("section", w[1].kind);
+
+        // And the warning is true: nothing of the section reaches the output.
+        const src = try format.targetEntryFor(t).serializeFromAst.?(testing.allocator, &doc.ast);
+        defer testing.allocator.free(src);
+        try testing.expectEqualStrings("t\n", src);
+    }
+
+    // With a heading it is a section again, and djot keeps its attributes.
+    var titled = try Html.parse(testing.allocator, "<section id=\"s\"><h2>T</h2><p>t</p></section>");
+    defer titled.deinit();
+    try testing.expectEqual(@as(usize, 0), (try analyze(arena.allocator(), &titled.ast, titled.ast.root, .djot)).len);
+    // HTML writes the element back whatever it holds.
+    try testing.expectEqual(@as(usize, 0), (try analyze(arena.allocator(), &doc.ast, doc.ast.root, .html)).len);
 }
 
 test "a degraded node's attributes are never reported as faithful" {
