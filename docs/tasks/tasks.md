@@ -19,6 +19,7 @@ contents:
 - '[A degraded node''s attributes are reported on neither axis](/docs/tasks/a-degraded-nodes-attributes-are-reported-on-neither-axis.md)'
 - '[insert_literal does not escape a dollar under the math extension](/docs/tasks/insert-literal-does-not-escape-a-dollar-under-the-math-extension.md)'
 - '[`move_block` — a block moves between containers and the destination''s prefixes are twig''s to spell](/docs/tasks/move-block-as-an-offset-addressed-gesture.md)'
+- '[`move_block` reads three boundaries as places the block already is, or as inside a container it is not](/docs/tasks/move-block-boundary-gaps.md)'
 ---
 
 # Tasks
