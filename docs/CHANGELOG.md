@@ -90,6 +90,20 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.9.0
+
+### Added
+
+- **editor** — move a block to a boundary, spelling the destination's prefixes ([`40f3115`](https://github.com/diaryx-org/twig/commit/40f31156e5ee8612b89118c5d7216586660eabf8))
+
+### Behavioural changes
+
+- An AsciiDoc `block_quote` written with `> ` now records
+  a marker span covering its first line's `> `, so
+  `twig_document_marker_span` reports a span there where it reported
+  `not_found`. The `____` form is unchanged.
+
+
 ## 3.8.1
 
 ### Added
