@@ -1077,6 +1077,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_WRAP_RANGE_ATTRS = 28,
     TWIG_GESTURE_JOIN_BLOCKS = 29,
     TWIG_GESTURE_SET_NODE_ATTRS = 30,
+    TWIG_GESTURE_MOVE_BLOCK = 31,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -2053,6 +2054,58 @@ TwigStatus twig_editor_split_block(
 TwigStatus twig_editor_join_blocks(
     TwigEditor *editor,
     size_t offset,
+    TwigChange *out_change
+);
+
+// Move the block at `from` to the boundary `to` names, spelling the line
+// prefixes of the container it lands in — a drag-and-drop, or Alt+Up/Down, in
+// a host that has a caret and no tree. twig_editor_move_before/_after move a
+// node's BYTES and say so: a quote's `> ` does not travel, a list item's
+// continuation indent is not written. This is the gesture for a drop that
+// crosses either: a paragraph dragged out of a quote arrives without its `> `,
+// one dragged under a list item's text arrives behind the item's indent, and
+// the blank lines a person would have typed are written and removed.
+//
+// `from` names the deepest block owning the line it is on — the paragraph or
+// heading twig_editor_set_block acts on, or the code block, table or rule where
+// there is no text block — widened to the LIST ITEM when it is the item's first
+// block: a bullet's text is the bullet, and dragging it takes the item and
+// everything under it. A block later in an item's tail moves alone.
+//
+// `to` is a position BETWEEN blocks: at or before a block's first content byte
+// (the block lands before it), at or after its last (after it), on a blank
+// line, or the source's length (the document's end). The block takes the
+// prefixes of the container that boundary is inside — the innermost one, so
+// `to` at the start of a quote's first paragraph is inside the quote. Two
+// adjustments where a list item is involved, because a list holds items and
+// nothing else: a boundary before an item's first block is before the ITEM, at
+// the list's level, while a boundary after an item's last block is inside the
+// item — which is how a block reaches an item's tail (`to` at the end of the
+// item's text); and a moved item is always a sibling — dropped inside another
+// item it lands after it, and elsewhere it stays a bullet (a one-item list
+// between two paragraphs, a quoted bullet in a quote). Within one container the
+// result is what twig_editor_move_before writes. An ordered list is not
+// renumbered; twig_editor_renumber_ordered_lists is the call for that.
+//
+// One splice, so one undo step and one TwigChange. The block's lines go with
+// the separator lines that kept them apart from their old neighbours, and a
+// quote or list they were the only content of goes too; at the destination
+// they are blank-separated from what they land beside (`>` inside a quote),
+// except between items of a tight list. A delimited container (a `<div>`, a
+// djot `:::` fence) that is emptied stands, since it may carry attributes.
+//
+// TWIG_STATUS_NOT_FOUND when `from` is on a blank line. TWIG_STATUS_NOT_EDITABLE
+// when `to` is interior to a block — inside a fence, a table, a paragraph's
+// second line — or when the block shares a line with something else (an HTML
+// <p> written beside another). TWIG_STATUS_INVALID_ARGUMENT when `to` is inside
+// the block being moved or at the boundary it already sits on, which would
+// move nothing, and when either offset is past the source.
+// TWIG_STATUS_UNSUPPORTED_FORMAT where the format has no blocks a caret could
+// name (XML). Ask twig_format_supports with TWIG_GESTURE_MOVE_BLOCK.
+TwigStatus twig_editor_move_block(
+    TwigEditor *editor,
+    size_t from,
+    size_t to,
     TwigChange *out_change
 );
 

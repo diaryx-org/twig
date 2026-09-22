@@ -302,11 +302,30 @@ pub fn continuationPrefix(
     out: *std.ArrayList(u8),
 ) Allocator.Error!usize {
     if (doc.ast.nodes.len == 0) return 0;
+    var chain: std.ArrayList(AST.Node.Id) = .empty;
+    defer chain.deinit(allocator);
+    try caretChain(allocator, doc, offset, &chain);
+    return continuationPrefixAlong(allocator, doc, chain.items, out);
+}
+
+/// `continuationPrefix` over an explicit ancestor chain rather than the
+/// caret's — what a gesture that already holds the containers a line will
+/// sit in asks, and how it leaves one out: `Editor.moveBlock` hands the
+/// chain down to the container a block LANDS in, which is not where any
+/// caret is, and drops a list item from it where the format attaches a block
+/// to an item by a line of its own rather than by indentation. Each node of
+/// `chain` contributes exactly what it would on the caret's chain, and a node
+/// that is not on it contributes nothing.
+pub fn continuationPrefixAlong(
+    allocator: Allocator,
+    doc: *const Document,
+    chain: []const AST.Node.Id,
+    out: *std.ArrayList(u8),
+) Allocator.Error!usize {
     const src = doc.source;
     var col: usize = 0;
-    var cur = doc.ast.root;
 
-    while (true) {
+    for (chain) |cur| {
         if (isMarkerPrefixed(doc.ast.nodes[cur].kind)) {
             if (doc.markerSpan(cur)) |m| {
                 const start_col = columnOf(src, m.start);
@@ -325,7 +344,6 @@ pub fn continuationPrefix(
                 }
             }
         }
-        cur = caretChildContaining(doc, cur, offset) orelse break;
     }
     return col;
 }

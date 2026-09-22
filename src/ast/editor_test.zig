@@ -3699,6 +3699,271 @@ test "join_blocks: one splice, so one undo" {
     try fx.expectSource("above\n\nbelow\n");
 }
 
+// ── move block ───────────────────────────────────────────────────────────────
+// The offset-addressed move. Every case asserts the EXACT BYTES, because what
+// this gesture exists for is the markup a byte move gets wrong — a `> ` that
+// has to be dropped or written, a list item's continuation indent, the blank
+// line that keeps a block apart from its new neighbour — and the four moves
+// the harness makes over every authorable format are not repeated here.
+
+test "move_block: a block leaves a quote and its prefixes stay behind" {
+    // The paragraph, its `> `, and the `>` blank line that separated it all
+    // go; what lands at the end is the paragraph alone, blank-separated.
+    var fx = try Fixture.init("> a\n>\n> y\n\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.moveBlock(8, 13);
+    try fx.expectSource("> a\n\nb\n\ny\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .block_quote));
+
+    // A quote whose only paragraph leaves goes with it, however deep — the
+    // inner quote here has no lines of its own once `a` is out of it.
+    var sole = try Fixture.init("> > a\n>\n> b\n\nc\n", .markdown);
+    defer sole.deinit();
+    try sole.ed.moveBlock(4, 13);
+    try sole.expectSource("> b\n\na\n\nc\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&sole, .block_quote));
+
+    // A lazy continuation line carried no prefix and sheds none; the block
+    // still comes out whole.
+    var lazy = try Fixture.init("> a\nb\n\nc\n", .markdown);
+    defer lazy.deinit();
+    try lazy.ed.moveBlock(2, 9);
+    try lazy.expectSource("c\n\na\nb\n");
+}
+
+test "move_block: a block entering a quote takes its prefix on every line" {
+    // A fenced code block with a blank line inside: the blank is `>` and
+    // every other line `> `, which is the spelling `toggleBlockContainer`
+    // writes for the same block.
+    var fx = try Fixture.init("```\nx\n\ny\n```\n\n> q\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.moveBlock(4, 17);
+    try fx.expectSource("> q\n>\n> ```\n> x\n>\n> y\n> ```\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .code_block));
+
+    // `to` at the start of the quote's first paragraph is INSIDE the quote —
+    // the innermost container holding the boundary — so the heading is quoted
+    // and keeps its own marker behind the quote's.
+    var head = try Fixture.init("# T\n\n> q\n", .markdown);
+    defer head.deinit();
+    try head.ed.moveBlock(2, 7);
+    try head.expectSource("> # T\n>\n> q\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&head, .heading));
+}
+
+test "move_block: a list item's first block is the item, and an item is always a sibling" {
+    // Dragging a bullet's text drags the bullet, children and all; between
+    // two items of a tight list no blank is written.
+    var reorder = try Fixture.init("- a\n  - b\n- c\n", .markdown);
+    defer reorder.deinit();
+    try reorder.ed.moveBlock(12, 0);
+    try reorder.expectSource("- c\n- a\n  - b\n");
+
+    // A nested item dropped at a sibling's boundary joins that list at that
+    // level: its own indent went with the parent's prefix.
+    var up = try Fixture.init("- a\n  - b\n\nc\n", .markdown);
+    defer up.deinit();
+    try up.ed.moveBlock(8, 0);
+    try up.expectSource("- b\n- a\n\nc\n");
+
+    // Out of its list altogether it is a one-item list, blank-separated —
+    // and into a quote it is a quoted bullet.
+    var out = try Fixture.init("- a\n  - b\n\nc\n", .markdown);
+    defer out.deinit();
+    try out.ed.moveBlock(8, 12);
+    try out.expectSource("- a\n\nc\n\n- b\n");
+    var quoted = try Fixture.init("- [ ] a\n\n> q\n", .markdown);
+    defer quoted.deinit();
+    try quoted.ed.moveBlock(6, 12);
+    try quoted.expectSource("> q\n>\n> - [ ] a\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&quoted, .task_list_item));
+
+    // A loose list's items stay blank-separated where a tight list's did not.
+    var loose = try Fixture.init("- b\n- c\n\n- d\n", .markdown);
+    defer loose.deinit();
+    try loose.ed.moveBlock(10, 0);
+    try loose.expectSource("- d\n\n- b\n- c\n");
+}
+
+test "move_block: a block beside an item's text is beside the item; after it, in its tail" {
+    // Before an item's first block is before the ITEM, at the list's level:
+    // between two items that splits the list, which is what the bytes say
+    // and what a person who typed a paragraph there would get.
+    var split = try Fixture.init("- x\n- z\n\ny\n", .markdown);
+    defer split.deinit();
+    try split.ed.moveBlock(9, 4);
+    try split.expectSource("- x\n\ny\n\n- z\n");
+    try testing.expectEqual(@as(usize, 2), countKind(&split, .bullet_list));
+
+    // After the item's text is the item's tail: the continuation indent and
+    // the blank line that makes it a second block of the item.
+    var tail = try Fixture.init("- x\n- z\n\ny\n", .markdown);
+    defer tail.deinit();
+    try tail.ed.moveBlock(9, 3);
+    try tail.expectSource("- x\n\n  y\n- z\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&tail, .bullet_list));
+
+    // Nested: the indent composes, a quote's prefix inside it composes too.
+    var nested = try Fixture.init("- a\n  - b\n\nc\n", .markdown);
+    defer nested.deinit();
+    try nested.ed.moveBlock(12, 9);
+    try nested.expectSource("- a\n  - b\n\n    c\n");
+    var in_quote = try Fixture.init("- x\n\n  > q\n\nc\n", .markdown);
+    defer in_quote.deinit();
+    try in_quote.ed.moveBlock(12, 9);
+    try in_quote.expectSource("- x\n\n  > c\n  >\n  > q\n");
+
+    // A table is a block like any other, and goes in whole.
+    var table = try Fixture.init("- x\n\n| a |\n|---|\n| b |\n", .markdown);
+    defer table.deinit();
+    try table.ed.moveBlock(6, 3);
+    try table.expectSource("- x\n\n  | a |\n  |---|\n  | b |\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&table, .table));
+
+    // Before the first item of a list is before the list — where the block
+    // already is, here, which is a move of nothing.
+    var already = try Fixture.init("a\n\n- b\n", .markdown);
+    defer already.deinit();
+    try testing.expectError(error.InvalidArgument, already.ed.moveBlock(0, 5));
+}
+
+test "move_block: within one container it is what moveNode writes" {
+    // Same lines, same order, same separators — the prefix path is a no-op
+    // at the top level, and the byte move is the whole answer.
+    var gesture = try Fixture.init("a\n\nb\n\nc\n", .markdown);
+    defer gesture.deinit();
+    try gesture.ed.moveBlock(6, 3);
+    var node = try Fixture.init("a\n\nb\n\nc\n", .markdown);
+    defer node.deinit();
+    try node.ed.splicer.moveNodeById(node.find(.{ .tag = .para }).? + 4, node.find(.{ .tag = .para }).?, .after);
+    try gesture.expectSource(node.ed.sourceBytes());
+    try gesture.expectSource("a\n\nc\n\nb\n");
+
+    // To the document's end, and to its start.
+    var end = try Fixture.init("a\n\nb\n\nc\n", .markdown);
+    defer end.deinit();
+    try end.ed.moveBlock(0, 8);
+    try end.expectSource("b\n\nc\n\na\n");
+    var start = try Fixture.init("a\n\nb\n\nc\n", .markdown);
+    defer start.deinit();
+    try start.ed.moveBlock(6, 0);
+    try start.expectSource("c\n\na\n\nb\n");
+
+    // A document with no final line end does not gain one for a block
+    // landing at its end, nor for one leaving it.
+    var bare = try Fixture.init("a\n\nb", .markdown);
+    defer bare.deinit();
+    try bare.ed.moveBlock(0, 4);
+    try bare.expectSource("b\n\na");
+    try bare.ed.moveBlock(3, 0);
+    try bare.expectSource("a\n\nb");
+}
+
+test "move_block: the boundary is between blocks, or the move is refused" {
+    var fx = try Fixture.init("a\n\nbb cc\n\n```\ncode\n```\n", .markdown);
+    defer fx.deinit();
+    // Inside a paragraph's text, inside a fence's body.
+    try testing.expectError(error.NotEditable, fx.ed.moveBlock(0, 5));
+    try testing.expectError(error.NotEditable, fx.ed.moveBlock(0, 16));
+    // Inside the block being moved, and at the boundary it already sits on —
+    // before the next block, after the previous one, on the blank line.
+    try testing.expectError(error.InvalidArgument, fx.ed.moveBlock(3, 4));
+    try testing.expectError(error.InvalidArgument, fx.ed.moveBlock(3, 10));
+    try testing.expectError(error.InvalidArgument, fx.ed.moveBlock(3, 1));
+    try testing.expectError(error.InvalidArgument, fx.ed.moveBlock(3, 2));
+    // Nothing on a blank line to move; nothing past the source.
+    try testing.expectError(error.NoBlock, fx.ed.moveBlock(2, 0));
+    try testing.expectError(error.InvalidRange, fx.ed.moveBlock(0, 99));
+    try testing.expectError(error.InvalidRange, fx.ed.moveBlock(99, 0));
+    try fx.expectSource("a\n\nbb cc\n\n```\ncode\n```\n");
+
+    // A block that shares a line with another is not a run of lines.
+    var shared = try Fixture.init("<p>a</p><p>b</p>\n<p>c</p>\n", .html);
+    defer shared.deinit();
+    try testing.expectError(error.NotEditable, shared.ed.moveBlock(12, 26));
+    // A parse-only format has no blocks a caret could name.
+    var xml = try Fixture.init("<r><a/><b/></r>", .xml);
+    defer xml.deinit();
+    try testing.expectError(error.UnsupportedFormat, xml.ed.moveBlock(3, 11));
+}
+
+test "move_block: a delimited container takes a block by its lines, and stands when emptied" {
+    // A djot fence and an HTML blockquote have lines of their own; a block
+    // landing inside gets no prefix and a blank line only where the format
+    // has one, and a block leaving does not take the container with it — it
+    // may carry attributes the move has no business dropping.
+    var dj = try Fixture.init("::: note\nx\n:::\n\nb\n", .djot);
+    defer dj.deinit();
+    try dj.ed.moveBlock(16, 10);
+    try dj.expectSource("::: note\nx\n\nb\n:::\n");
+    try dj.ed.moveBlock(9, 18);
+    try dj.expectSource("::: note\nb\n:::\n\nx\n");
+
+    var html = try Fixture.init("<blockquote>\n<p>a</p>\n</blockquote>\n<p>c</p>\n", .html);
+    defer html.deinit();
+    try html.ed.moveBlock(40, 20);
+    try html.expectSource("<blockquote>\n<p>a</p>\n<p>c</p>\n</blockquote>\n");
+    try html.ed.moveBlock(17, 45);
+    try html.expectSource("<blockquote>\n<p>c</p>\n</blockquote>\n<p>a</p>\n");
+}
+
+test "move_block: an HTML item carries its list's tags, and a tight item's text gains its <p>" {
+    // The `<ul>`/`</ul>` are the item's spelling: an only item moved out of
+    // its list takes them along rather than leaving an empty pair behind and
+    // arriving as a bare `<li>`.
+    var only = try Fixture.init("<ul>\n<li>\n<p>x</p>\n</li>\n</ul>\n<p>y</p>\n", .html);
+    defer only.deinit();
+    try only.ed.moveBlock(15, 39);
+    try only.expectSource("<p>y</p>\n<ul>\n<li>\n<p>x</p>\n</li>\n</ul>\n");
+
+    // A tight `<li>` holds its text without a `<p>`; a block joining it makes
+    // the item loose, which HTML spells by wrapping the text.
+    var tight = try Fixture.init("<ul>\n<li>\nx\n</li>\n<li>\nz\n</li>\n</ul>\n<p>y</p>\n", .html);
+    defer tight.deinit();
+    try tight.ed.moveBlock(40, 11);
+    try tight.expectSource("<ul>\n<li>\n<p>x</p>\n<p>y</p>\n</li>\n<li>\nz\n</li>\n</ul>\n");
+    try testing.expectEqual(@as(usize, 2), countKind(&tight, .list_item));
+
+    // `<li>x</li>` on one line has no line after its text inside the item.
+    var one_line = try Fixture.init("<ul>\n<li>x</li>\n</ul>\n<p>y</p>\n", .html);
+    defer one_line.deinit();
+    try testing.expectError(error.NotEditable, one_line.ed.moveBlock(26, 10));
+}
+
+test "move_block: AsciiDoc attaches a block to an item by its `+` line" {
+    // In an item's tail the block sits at column zero under a `+`, not
+    // behind an indent — an indented line after a blank is a literal
+    // paragraph there. The `+` is a separator line, so it travels with the
+    // block and is written between it and an already-attached one.
+    var fx = try Fixture.init("* x\n\ny\n", .asciidoc);
+    defer fx.deinit();
+    try fx.ed.moveBlock(5, 3);
+    try fx.expectSource("* x\n+\ny\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&fx, .list_item));
+    try fx.ed.moveBlock(6, 8);
+    try fx.expectSource("* x\n\ny\n");
+
+    var two = try Fixture.init("* x\n+\ny\n\nc\n", .asciidoc);
+    defer two.deinit();
+    try two.ed.moveBlock(10, 6);
+    try two.expectSource("* x\n+\nc\n+\ny\n");
+
+    // Its `> ` quote is a prefix container like Markdown's.
+    var quote = try Fixture.init("> a\n\nc\n", .asciidoc);
+    defer quote.deinit();
+    try quote.ed.moveBlock(5, 2);
+    try quote.expectSource("> c\n>\n> a\n");
+}
+
+test "move_block: one splice, so one undo" {
+    var fx = try Fixture.init("> a\n>\n> y\n\nb\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.moveBlock(8, 13);
+    try fx.expectSource("> a\n\nb\n\ny\n");
+    _ = try fx.ed.splicer.undo();
+    try fx.expectSource("> a\n>\n> y\n\nb\n");
+}
+
 // ── code blocks ──────────────────────────────────────────────────────────────
 
 /// The info string the parser reads back off the edited source — the only thing
@@ -4144,6 +4409,7 @@ const all_gestures = blk: {
         .set_block_attrs,
         .wrap_range_attrs,
         .set_node_attrs,
+        .move_block,
     };
 };
 
@@ -4197,6 +4463,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .set_block_attrs => ed.setBlockAttrs(0, &.{.{ .key = "class", .value = "c" }}),
         .wrap_range_attrs => ed.wrapRangeAttrs(whole, &.{.{ .key = "class", .value = "c" }}),
         .set_node_attrs => ed.setNodeAttrs(0, &.{.{ .key = "class", .value = "c" }}),
+        .move_block => ed.moveBlock(0, ed.sourceBytes().len),
     };
 }
 

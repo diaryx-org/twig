@@ -106,6 +106,11 @@ pub const table: syntax.Syntax = .{
     .block_separator = "\n",
     // And a bare line end continues one, as everywhere.
     .line_join = "\n",
+    // The one spelling the per-line-prefix model above cannot carry: a block
+    // in a list item's tail is attached by a `+` line, not by indentation,
+    // because an indented line after a blank is a literal paragraph here.
+    // `Editor.moveBlock` writes it where Markdown writes the item's indent.
+    .list_attach = "+",
     // Body-text literals: the span delimiters, `+` (a passthrough), `{`
     // (an attribute reference), `[` (an attribute list or anchor), `<` (a
     // cross reference or autolink), `&` (a character reference) and the

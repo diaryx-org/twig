@@ -1776,6 +1776,10 @@ const Parser = struct {
         const start = meta_start orelse self.lines[lo].start;
         const end_offset = self.lines[end - 1].end;
         self.b.setSpan(id, Span.init(start, end_offset));
+        // The first line's `> ` is the quote's marker, as Markdown records
+        // it: what tells a line-prefix walk this container is spelled on
+        // its lines rather than by `____` around them.
+        self.b.setMarkerSpan(id, Span.init(self.lines[lo].start, offsets.items[0]));
         return .{ .id = id, .next = end, .start_offset = start, .end_offset = end_offset };
     }
 

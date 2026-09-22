@@ -413,6 +413,165 @@ fn expectFragmentReparses(
     return error.FragmentDidNotReparse;
 }
 
+/// Where `Editor.moveBlock` puts the block in a `MoveCase`, named by the
+/// text of the block it lands beside so the offset can be found in any
+/// format's spelling of the same tree.
+const MoveTo = union(enum) { after: []const u8, before: []const u8, doc_end };
+
+/// One move over a tree every authorable format can spell: the document as
+/// built, the block to move (by its text), where it goes, and the document
+/// that should result. Both trees are printed through the format's own
+/// serializer, so "what a person would have typed" is the format's canonical
+/// form and no case carries a per-format string.
+const MoveCase = struct {
+    name: []const u8,
+    start: *const fn (*AST.Builder) Allocator.Error!AST.Node.Id,
+    expected: *const fn (*AST.Builder) Allocator.Error!AST.Node.Id,
+    block: []const u8,
+    to: MoveTo,
+};
+
+const Allocator = std.mem.Allocator;
+
+fn paraOf(b: *AST.Builder, text: []const u8) Allocator.Error!AST.Node.Id {
+    return b.addContainer(.para, &.{try b.addLeaf(.{ .str = text })});
+}
+
+fn itemOf(b: *AST.Builder, blocks: []const AST.Node.Id) Allocator.Error!AST.Node.Id {
+    return b.addContainer(.list_item, blocks);
+}
+
+fn listOf(b: *AST.Builder, tight: bool, items: []const AST.Node.Id) Allocator.Error!AST.Node.Id {
+    return b.addContainer(.{ .bullet_list = .{ .tight = tight } }, items);
+}
+
+const move_cases = [_]MoveCase{
+    .{
+        .name = "out of a quote, to the top level",
+        .start = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{ try paraOf(b, "a"), try paraOf(b, "y") });
+                return b.addContainer(.doc, &.{ quote, try paraOf(b, "b") });
+            }
+        }.f,
+        .expected = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{try paraOf(b, "a")});
+                return b.addContainer(.doc, &.{ quote, try paraOf(b, "b"), try paraOf(b, "y") });
+            }
+        }.f,
+        .block = "y",
+        .to = .doc_end,
+    },
+    .{
+        .name = "into a quote",
+        .start = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{try paraOf(b, "a")});
+                return b.addContainer(.doc, &.{ quote, try paraOf(b, "y") });
+            }
+        }.f,
+        .expected = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const quote = try b.addContainer(.block_quote, &.{ try paraOf(b, "a"), try paraOf(b, "y") });
+                return b.addContainer(.doc, &.{quote});
+            }
+        }.f,
+        .block = "y",
+        .to = .{ .after = "a" },
+    },
+    .{
+        .name = "into a list item's tail",
+        .start = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const l = try listOf(b, true, &.{try itemOf(b, &.{try paraOf(b, "x")})});
+                return b.addContainer(.doc, &.{ l, try paraOf(b, "y") });
+            }
+        }.f,
+        .expected = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                const l = try listOf(b, false, &.{try itemOf(b, &.{ try paraOf(b, "x"), try paraOf(b, "y") })});
+                return b.addContainer(.doc, &.{l});
+            }
+        }.f,
+        .block = "y",
+        .to = .{ .after = "x" },
+    },
+    .{
+        .name = "between two top-level paragraphs",
+        .start = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                return b.addContainer(.doc, &.{ try paraOf(b, "a"), try paraOf(b, "b"), try paraOf(b, "y") });
+            }
+        }.f,
+        .expected = struct {
+            fn f(b: *AST.Builder) Allocator.Error!AST.Node.Id {
+                return b.addContainer(.doc, &.{ try paraOf(b, "a"), try paraOf(b, "y"), try paraOf(b, "b") });
+            }
+        }.f,
+        .block = "y",
+        .to = .{ .before = "b" },
+    },
+};
+
+/// `build` printed as `entry`'s own syntax — the canonical spelling of a
+/// tree, which is what a move must leave behind.
+fn printTree(entry: format.Entry, build: *const fn (*AST.Builder) Allocator.Error!AST.Node.Id) ![]u8 {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const root = try build(&b);
+    const view = b.view(root);
+    const print = format.targetEntryFor(format.targetFor(entry.id)).serializeFromAst orelse return error.NoSerializer;
+    return print(testing.allocator, &view);
+}
+
+/// The span of the `str` reading `text` in `doc` — where a block's text is,
+/// whatever the format put around it.
+fn textSpan(doc: *const Document, text: []const u8) !Span {
+    for (doc.ast.nodes, 0..) |n, i| {
+        switch (n.kind) {
+            .str => |t| if (std.mem.eql(u8, t, text)) return doc.span(@intCast(i)),
+            else => {},
+        }
+    }
+    return error.TextNotFound;
+}
+
+/// What `Editor.moveBlock` assumes of every authorable format: over each of
+/// `move_cases`, the start tree printed as the format's own syntax, the block
+/// moved by offset, comes out as the format's own print of the expected tree
+/// — byte for byte, which is both "what a person would have typed" and, by
+/// the canonical round trip `expectSample` checks, "reparses to the expected
+/// tree".
+fn expectMoveBlock(entry: format.Entry) !void {
+    const config: format.ParseConfig = .{};
+    for (&move_cases) |*c| {
+        errdefer std.debug.print("\n{s}: move_block {s}\n", .{ @tagName(entry.id), c.name });
+        const start = try printTree(entry, c.start);
+        defer testing.allocator.free(start);
+        const expected = try printTree(entry, c.expected);
+        defer testing.allocator.free(expected);
+        var editor = try Editor.init(testing.allocator, start, &config, entry.parseToAst, entry.syntax);
+        defer editor.deinit();
+        const from = (try textSpan(&editor.splicer.doc, c.block)).start;
+        const to: usize = switch (c.to) {
+            .after => |t| (try textSpan(&editor.splicer.doc, t)).end,
+            .before => |t| (try textSpan(&editor.splicer.doc, t)).start,
+            .doc_end => start.len,
+        };
+        errdefer std.debug.print("--- start ---\n{s}\n--- from {d} to {d} ---\n", .{ start, from, to });
+        try editor.moveBlock(from, to);
+        try testing.expectEqualStrings(expected, editor.sourceBytes());
+    }
+}
+
+test "harness: every authorable format moves a block across its containers" {
+    for (format.registry) |entry| {
+        if (!entry.syntax.authorable()) continue;
+        try expectMoveBlock(entry);
+    }
+}
+
 test "harness: every declared renderer keeps the engine's promise" {
     for (format.registry) |entry| {
         errdefer std.debug.print("\n{s}: renderer contract\n", .{@tagName(entry.id)});

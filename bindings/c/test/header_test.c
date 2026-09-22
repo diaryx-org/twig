@@ -52,6 +52,7 @@ PIN(TWIG_GESTURE_INSERT_LINE_BREAK == 14);
 // caller that cached it then must still find it there.
 PIN(TWIG_GESTURE_SPLIT_BLOCK == 15);
 PIN(TWIG_GESTURE_JOIN_BLOCKS == 29);
+PIN(TWIG_GESTURE_MOVE_BLOCK == 31);
 PIN(TWIG_GESTURE_TABLE_MOVE_COLUMN == 23);
 PIN(TWIG_ALIGN_NONE == -1);
 PIN(TWIG_ALIGN_DEFAULT == 0);
@@ -467,6 +468,20 @@ static void test_new_block_gestures_link_and_edit(void) {
     CHECK(twig_editor_join_blocks(joiner, 2, NULL) == TWIG_STATUS_NOT_FOUND);
     twig_editor_destroy(joiner);
 
+    // A move across a quote's edge: the paragraph arrives without its `> `,
+    // and the `>` line that separated it goes with it.
+    static const char quoted[] = "> a\n>\n> y\n\nb\n";
+    TwigEditor *mover = NULL;
+    CHECK(twig_editor_create((const uint8_t *)quoted, sizeof(quoted) - 1,
+                             TWIG_FORMAT_MARKDOWN, &mover) == TWIG_STATUS_OK);
+    if (mover == NULL) return;
+    CHECK(twig_editor_move_block(mover, 8, 13, &change) == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(mover, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 10 && memcmp(out, "> a\n\nb\n\ny\n", 10) == 0);
+    // Where it already is moves nothing, and says so.
+    CHECK(twig_editor_move_block(mover, 8, 7, NULL) == TWIG_STATUS_INVALID_ARGUMENT);
+    twig_editor_destroy(mover);
+
     // has_language == 0 leaves the fence bare; a set language tags it. Both
     // write valid source, so only the bytes tell them apart.
     static const char para[] = "x\n";
@@ -723,6 +738,15 @@ static void test_format_capability_matches_the_gestures(void) {
                                &supported) == TWIG_STATUS_OK);
     CHECK(supported == 1);
     CHECK(twig_format_supports(TWIG_FORMAT_XML, TWIG_GESTURE_JOIN_BLOCKS, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 0);
+    // The block move is answered for every format with blocks a caret can
+    // name — HTML included, whose blocks are lines like any other's — and not
+    // for XML.
+    CHECK(twig_format_supports(TWIG_FORMAT_HTML, TWIG_GESTURE_MOVE_BLOCK, 0,
+                               &supported) == TWIG_STATUS_OK);
+    CHECK(supported == 1);
+    CHECK(twig_format_supports(TWIG_FORMAT_XML, TWIG_GESTURE_MOVE_BLOCK, 0,
                                &supported) == TWIG_STATUS_OK);
     CHECK(supported == 0);
     CHECK(twig_format_supports(TWIG_FORMAT_HTML,

@@ -768,6 +768,13 @@ unsafe extern "C" {
         offset: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+
+    pub fn twig_editor_move_block(
+        editor: *mut TwigEditor,
+        from: usize,
+        to: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
     // `language` is OPTIONAL, carried as this ABI's (ptr, len, has_*) triple:
     // has_language == 0 leaves the fence bare, and "absent" is a different
     // request from "present but empty".
