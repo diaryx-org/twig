@@ -3,7 +3,7 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-15
-updated: 2026-09-21
+updated: 2026-09-22
 part_of: '[Twig](/README.md)'
 contents:
 - '[References and footnotes become `Document` columns, so `ParsedDoc` can stop being a union](/docs/tasks/side-tables-as-document-columns.md)'
@@ -20,6 +20,7 @@ contents:
 - '[insert_literal does not escape a dollar under the math extension](/docs/tasks/insert-literal-does-not-escape-a-dollar-under-the-math-extension.md)'
 - '[`move_block` — a block moves between containers and the destination''s prefixes are twig''s to spell](/docs/tasks/move-block-as-an-offset-addressed-gesture.md)'
 - '[`move_block` reads three boundaries as places the block already is, or as inside a container it is not](/docs/tasks/move-block-boundary-gaps.md)'
+- '[A section with no heading is reported as faithful where it does not come back](/docs/tasks/a-heading-less-section-is-reported-as-faithful.md)'
 ---
 
 # Tasks
