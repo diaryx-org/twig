@@ -90,6 +90,52 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.9.2
+
+### Fixed
+
+- **diagnostics** — a degraded node's attributes are reported, and a link's href is not ([`e0a0f84`](https://github.com/diaryx-org/twig/commit/e0a0f8415514daff9b35e82f63dd43ab4cd4aee7))
+- **markdown** — a literal typed under the math extension escapes its dollars ([`c5511cf`](https://github.com/diaryx-org/twig/commit/c5511cf8e55c1d4f77586ff701b0fee40e0ec5fb))
+- **diagnostics** — a section with no heading is degraded in djot and AsciiDoc ([`8509db3`](https://github.com/diaryx-org/twig/commit/8509db3feaa8fba0e76a30e226b3384704d5ffb8))
+- **editor** — delete_smart takes an indented element's whole line ([`b06cdca`](https://github.com/diaryx-org/twig/commit/b06cdcae072cf1bbbdf7e956c184ad63ad4005e8))
+
+### Behavioural changes
+
+- `diagnostics` reports an attribute-axis warning
+(`AttrsDegraded`/`AttrsDropped`) beside a `Degraded` warning at the same
+path when the degraded node's attributes are lost too — the Word-paste
+fragment `<html xmlns:o…><body lang…><p class…>` yields five warnings
+against Markdown, not three. A `Dropped` node still yields one.
+
+- attribute warnings for some kinds change fidelity or
+appear where they did not: HTML task lists, definition lists and line
+blocks; Markdown containers; AsciiDoc inline containers and insert/delete
+marks; HTML curly quotes, symbols, substitution and footnote references.
+
+- an HTML-parsed link, image or `<ol start>` no longer
+has `href`, `src`/`alt` or `start` in its attributes, and no longer
+reports them as `AttrsDropped`/`AttrsDegraded`; converting `<ol start="3">`
+to Markdown writes `3. x` with no `<div start="3">` around it, and `<ol
+start="1">` to HTML writes `<ol>`.
+
+- on a Markdown editor created with the `math` extension,
+`insert_literal` writes every `$` as `\$`, and `insert_link` with an empty
+selection writes a `$` in the destination-as-text as `\$`. A document parsed
+without the extension is unchanged.
+
+- converting an HTML document to djot or AsciiDoc reports
+`Degraded` for each `<html>`, `<body>`, `<main>` or `<section>` that does
+not open with a heading, and `AttrsDropped` beside it when that element
+carries attributes. Djot reported nothing for these before; AsciiDoc
+reported only the attributes.
+
+- `delete_smart` on a node alone on an indented line —
+  an XML element in a pretty-printed document, an indented block in a
+  lightweight format — now removes the whole line, indentation and
+  newline included. `"<r>\n  <a/>\n  <b/>\n</r>"` deleting `<a/>` gave
+  `"<r>\n  \n  <b/>\n</r>"` and now gives `"<r>\n  <b/>\n</r>"`.
+
+
 ## 3.9.1
 
 ### Fixed
