@@ -373,9 +373,9 @@ pub const Renderer = struct {
             // An `extra` value takes precedence: `class` was merged above, and
             // any other key an `extra` already emitted (e.g. `href`/`src`/
             // `start` synthesized from a semantic field) must not be repeated —
-            // duplicate attribute keys are malformed HTML. Parser-produced
-            // nodes preserve the original attribute alongside the field, so
-            // this dedup is what keeps the two from both reaching the output.
+            // duplicate attribute keys are malformed HTML. The HTML parser
+            // keeps no such copy, but a tree from elsewhere — the builder, an
+            // editor gesture, another format's `{href=…}` — may carry one.
             if (hasKey(extra, kv.key)) continue;
             if (kv.value) |value| {
                 try self.writer.print(" {s}=\"", .{kv.key});

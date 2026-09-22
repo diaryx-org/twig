@@ -79,9 +79,12 @@
 //! `{#id .cls}` used to be lost with no warning. `attrsFidelity` is the second
 //! measured table — per target, per kind, per KEY CLASS — and `analyze`
 //! reports a second `Warning`, `subject == .attrs`, naming the keys, for a
-//! node that survives while its attributes do not. Only asked of a node the
-//! kind table calls faithful: a node that degrades or drops takes its
-//! attributes with it and is reported once, at the node.
+//! node whose attributes do not survive. The two axes are independent: a node
+//! that degrades can still have its attributes written — Markdown writes a
+//! `<div …>` for a section it cannot spell — and a consumer asking what the
+//! output will contain needs both answers, at the same path, told apart by
+//! `subject`. Only a DROPPED node is reported once, at the node: nothing of it
+//! is written, its attributes included.
 //!
 //! fig's `Warning.cause` (`format_limitation` vs `explicit_option`) is also
 //! absent, because twig has no serializer option that drops anything — every
@@ -133,8 +136,9 @@ pub const Warning = struct {
     /// Sentinel-terminated, so the C ABI can hand it out as a `const char *`
     /// without copying.
     kind: [:0]const u8,
-    /// What is lost: the node itself, or — the node surviving — only some of
-    /// its attributes. See `attrsFidelity`.
+    /// What is lost: the node itself, or some of its attributes. A node that
+    /// degrades is reported on both, at the same path; one that drops, on the
+    /// node alone. See `attrsFidelity`.
     subject: Subject = .node,
     /// For `subject == .attrs`: the keys that do not survive, in the node's own
     /// order. Arena-owned by `analyze`. Empty for a `.node` warning.
@@ -214,9 +218,8 @@ const Collector = struct {
                 .path = path,
                 .kind = kind.kindName(),
             });
-        } else {
-            try self.noteAttrs(id, path);
         }
+        if (f != .dropped) try self.noteAttrs(id, path, f);
         var it = self.ast.children(id);
         var i: usize = 0;
         while (it.next()) |child| : (i += 1) {
@@ -224,15 +227,15 @@ const Collector = struct {
         }
     }
 
-    /// The attribute half of `walk`, for a node the kind table keeps: one
-    /// warning naming every key `attrsFidelity` says is lost, at the worse of
-    /// the two answers when they differ. Nothing for a node with no attributes,
+    /// The attribute half of `walk`, for a node that is not dropped (`node`
+    /// is its fidelity): one warning naming every key `attrsFidelity` says is
+    /// lost, at the worse of the two answers when they differ. Nothing for a node with no attributes,
     /// and nothing when every key survives.
-    fn noteAttrs(self: *Collector, id: Node.Id, path: []const u8) AnalyzeError!void {
+    fn noteAttrs(self: *Collector, id: Node.Id, path: []const u8, node: Fidelity) AnalyzeError!void {
         const attrs = self.ast.attrsOf(id);
         if (attrs.isEmpty()) return;
         const kind = self.ast.nodes[id].kind;
-        const table = attrsFidelity(self.target, kind);
+        const table = attrsFidelity(self.target, kind).under(node);
         var lost: std.ArrayList([]const u8) = .empty;
         var f: Fidelity = .faithful;
         for (attrs.entries) |kv| {
@@ -780,11 +783,16 @@ fn htmlFidelity(kind: Node.Kind) Fidelity {
 // in a position of its own (Markdown's `[label]: dest "title"`). The probe's two
 // "other" keys, `data-k` and `title`, are there to catch a fifth.
 //
-// Only asked of a node the KIND table calls faithful. A node that degrades or
-// drops takes its attributes with it and is reported once, at the node — so
-// each per-target function below answers for the kinds that survive there, and
-// answers `.dropped` for the rest, where the answer is never consulted. The
-// switches are exhaustive anyway, for the reason the kind table's are.
+// Asked of every node the target does not drop, and measured the same way:
+// the probe skips only a dropped node. A node that DEGRADES is not read back
+// as itself, so no key can come back as its attribute — `AttrsFidelity.under`
+// caps `faithful` at `degraded` for it, which is what lets one row answer for
+// a kind that survives in one instance and not in another (a djot container
+// with a name and one without). So each per-target function answers, for a
+// kind the target keeps, where each key goes; for a kind it degrades, whether
+// each key is written at all; and `.dropped` for a kind it drops, where the
+// answer is never consulted. The switches are exhaustive, for the reason the
+// kind table's are.
 
 /// One target's answer about one kind's attributes, per key class.
 pub const AttrsFidelity = struct {
@@ -796,6 +804,20 @@ pub const AttrsFidelity = struct {
 
     pub fn all(f: Fidelity) AttrsFidelity {
         return .{ .id = f, .class = f, .other = f };
+    }
+
+    /// The answer for a node whose own fidelity is `node`. A node that
+    /// degrades is not read back as itself, so no key can be read back as
+    /// its: `faithful` becomes `degraded`, and a key never written stays
+    /// `dropped`. A dropped node is never asked.
+    pub fn under(self: AttrsFidelity, node: Fidelity) AttrsFidelity {
+        if (node == .faithful) return self;
+        return .{
+            .id = worst(self.id, node),
+            .class = worst(self.class, node),
+            .other = worst(self.other, node),
+            .title = if (self.title) |t| worst(t, node) else null,
+        };
     }
 
     pub fn forKey(self: AttrsFidelity, key: []const u8) Fidelity {
@@ -930,10 +952,13 @@ fn markdownAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         .link,
         .image,
         .inline_mark,
-        .container,
         .markup_leaf,
         .processing_instruction,
         => .all(.dropped),
+        // Written, and never on a node that comes back as itself: a named
+        // block container goes out as a `:::name{…}` directive and an inline
+        // one as a `<span …>`, and Markdown reads neither back as a container.
+        .container => .all(.degraded),
     };
 }
 
@@ -956,10 +981,26 @@ fn htmlAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         .caption,
         .link,
         .image,
-        .inline_mark,
         .container,
-        .text_leaf,
         => .all(.faithful),
+        // Curly quotes are written as the characters themselves, with no
+        // element to carry anything.
+        .inline_mark => |m| switch (m) {
+            .double_quoted, .single_quoted => .all(.dropped),
+            .emph, .strong, .mark, .insert, .delete, .superscript, .subscript => .all(.faithful),
+        },
+        // A leaf HTML has an element for keeps its attributes on it — but a
+        // footnote reference's element is the `<a id="fnref1">` the note links
+        // back to, so its own id is overwritten; and a symbol and a
+        // substitution are written as the source's bare text.
+        .text_leaf => |l| switch (l.kind) {
+            .verbatim, .inline_math, .display_math, .url, .email, .citation_reference => .all(.faithful),
+            .footnote_reference => .{ .id = .dropped, .class = .faithful, .other = .faithful },
+            .symb, .substitution_reference => .all(.dropped),
+        },
+        // Written on the `<ul>`, `<dl>` or `<div>` HTML renders them as, which
+        // its parser reads back as a plain list or a plain container.
+        .task_list, .definition_list, .line_block => .all(.degraded),
         // Rendered as a bare `<br>`, whatever it carries.
         .hard_break => .all(.dropped),
         // No element of their own: plain text, a comment, a doctype, a
@@ -967,9 +1008,6 @@ fn htmlAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         .doc,
         .raw_block,
         .metadata,
-        .task_list,
-        .definition_list,
-        .line_block,
         .task_list_item,
         .definition_list_item,
         .term,
@@ -1006,8 +1044,14 @@ fn asciidocAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         .task_list,
         .definition_list,
         .line_block,
-        .container,
         => .all(.faithful),
+        // A block container's attribute line is read back in full. An inline
+        // one is written as a `[#id.name.role]##…##` span, whose prefix has
+        // no slot for any other key, and which is read back as a mark.
+        .container => |c| if (c.form == .inline_text)
+            .{ .id = .degraded, .class = .degraded, .other = .dropped }
+        else
+            .all(.faithful),
         // The same line and the same `.Title` line — which the parser reads
         // back as the table's CAPTION, the one block whose title is a child
         // and not an attribute.
@@ -1025,8 +1069,7 @@ fn asciidocAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         // as text), so there the id and role are written and lost.
         .inline_mark => |m| switch (m) {
             .emph, .strong, .superscript, .subscript => .{ .id = .faithful, .class = .faithful, .other = .dropped },
-            .mark, .double_quoted, .single_quoted => .{ .id = .degraded, .class = .degraded, .other = .dropped },
-            .insert, .delete => .all(.dropped),
+            .mark, .double_quoted, .single_quoted, .insert, .delete => .{ .id = .degraded, .class = .degraded, .other = .dropped },
         },
         .text_leaf => |l| switch (l.kind) {
             .verbatim => .{ .id = .faithful, .class = .faithful, .other = .dropped },
@@ -1675,7 +1718,8 @@ fn observedAttrFidelity(back: *const AST, node: ?Node.Id, src: []const u8, kv: A
 /// says.
 fn expectAttrsMeasured(allocator: Allocator, label: []const u8, ast: *const AST, kind: Node.Kind, want: AST.KindRef, stale: *bool) !void {
     for (round_trippable) |target| {
-        if (nodeFidelity(target, ast, probedNode(ast, kind).?) != .faithful) continue;
+        const node = nodeFidelity(target, ast, probedNode(ast, kind).?);
+        if (node == .dropped) continue;
         const src = try format.targetEntryFor(target).serializeFromAst.?(allocator, ast);
         defer allocator.free(src);
         const cfg = format.ParseConfig{};
@@ -1688,7 +1732,7 @@ fn expectAttrsMeasured(allocator: Allocator, label: []const u8, ast: *const AST,
                 break;
             }
         }
-        const table = attrsFidelity(target, kind);
+        const table = attrsFidelity(target, kind).under(node);
         for (attr_probe_keys) |kv| {
             const claimed = table.forKey(kv.key);
             const observed = observedAttrFidelity(&back.ast, found, src, kv);
@@ -1828,17 +1872,99 @@ test "a key the target keeps is not named beside one it loses" {
     try testing.expectEqualStrings("data-k", w[0].attrs[0]);
 }
 
-test "a lossy node's attributes are reported once, with the node" {
-    // A named container is degraded in djot (its name becomes a class); its
-    // attributes go with it and are not reported a second time.
+test "a degraded node's attributes are reported beside it, at the same path" {
+    // A Word paste: HTML models `<html>` and `<body>` as sections, which
+    // Markdown degrades — and writes each one's attributes on a `<div>` of
+    // its own. Three `<div>`s in the output, so three attribute warnings,
+    // told apart from the two node warnings at the same paths by `subject`.
+    const Html = @import("languages/html/html.zig");
+    var doc = try Html.parse(testing.allocator, "<html xmlns:o=\"urn:x\"><body lang=\"EN-US\"><p class=\"MsoNormal\">Word text</p></body></html>");
+    defer doc.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, .markdown);
+    const Want = struct { path: []const u8, kind: []const u8, subject: Warning.Subject, key: ?[]const u8 };
+    const want = [_]Want{
+        .{ .path = "0", .kind = "section", .subject = .node, .key = null },
+        .{ .path = "0", .kind = "section", .subject = .attrs, .key = "xmlns:o" },
+        .{ .path = "0/0", .kind = "section", .subject = .node, .key = null },
+        .{ .path = "0/0", .kind = "section", .subject = .attrs, .key = "lang" },
+        .{ .path = "0/0/0", .kind = "para", .subject = .attrs, .key = "class" },
+    };
+    try testing.expectEqual(want.len, w.len);
+    for (want, w) |x, got| {
+        try testing.expectEqualStrings(x.path, got.path);
+        try testing.expectEqualStrings(x.kind, got.kind);
+        try testing.expectEqual(x.subject, got.subject);
+        try testing.expectEqual(Fidelity.degraded, got.fidelity);
+        if (x.key) |key| {
+            try testing.expectEqual(@as(usize, 1), got.attrs.len);
+            try testing.expectEqualStrings(key, got.attrs[0]);
+        }
+    }
+}
+
+test "a degraded node's attributes are never reported as faithful" {
+    // djot keeps an anonymous div's attributes, and writes a named one's on
+    // the same `{…}` — but a named div comes back anonymous, carrying its
+    // name as a class, so its attributes do not come back on it either.
     const Html = @import("languages/html/html.zig");
     var doc = try Html.parse(testing.allocator, "<video controls src=\"a.mp4\"></video>");
     defer doc.deinit();
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, .djot);
-    try testing.expect(w.len >= 1);
-    for (w) |warning| try testing.expectEqual(Warning.Subject.node, warning.subject);
+    try testing.expectEqual(@as(usize, 2), w.len);
+    try testing.expectEqual(Warning.Subject.node, w[0].subject);
+    try testing.expectEqual(Warning.Subject.attrs, w[1].subject);
+    try testing.expectEqual(Fidelity.degraded, w[1].fidelity);
+    try testing.expectEqualStrings(w[0].path, w[1].path);
+}
+
+test "a dropped node's attributes are not reported a second time" {
+    // Nothing of a dropped node is written, its attributes included, so the
+    // node warning is the whole answer.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const def = try b.addContainer(.{ .substitution = .{ .label = "RST" } }, &.{try b.addLeaf(.{ .str = "body" })});
+    try b.setAttrs(def, .{ .entries = &attr_probe_keys });
+    const root = try b.addContainer(.doc, &.{def});
+    var ast = try b.finish(root);
+    defer ast.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const w = try analyze(arena.allocator(), &ast, ast.root, .djot);
+    try testing.expectEqual(@as(usize, 1), w.len);
+    try testing.expectEqual(Fidelity.dropped, w[0].fidelity);
+    try testing.expectEqual(Warning.Subject.node, w[0].subject);
+}
+
+test "an HTML link, image or numbered list reports nothing its model already spells" {
+    // `href`, `src`, `alt` and `start` are the node's destination, alt text
+    // and first number, and every target writes them as such.
+    const Html = @import("languages/html/html.zig");
+    const inputs = [_][]const u8{
+        "<p>a <a href=\"https://x.dev\">l</a></p>",
+        "<p><img src=\"u\" alt=\"p\"></p>",
+        "<ol start=\"3\"><li>x</li></ol>",
+    };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    for (inputs) |in| {
+        var doc = try Html.parse(testing.allocator, in);
+        defer doc.deinit();
+        for (round_trippable) |t| {
+            const w = try analyze(arena.allocator(), &doc.ast, doc.ast.root, t);
+            try testing.expectEqual(@as(usize, 0), w.len);
+        }
+    }
+    // And the numbered list is written as its number alone, with no `<div>`
+    // spelling the same fact a second time.
+    var ol = try Html.parse(testing.allocator, inputs[2]);
+    defer ol.deinit();
+    const md = try format.targetEntryFor(.markdown).serializeFromAst.?(testing.allocator, &ol.ast);
+    defer testing.allocator.free(md);
+    try testing.expectEqualStrings("3. x\n", md);
 }
 
 test "a degraded attribute renders as written-but-unread" {

@@ -1346,7 +1346,8 @@ impl Document {
     }
 
     /// What converting this document to `target` would silently **lose**: one
-    /// [`Warning`] per lossy node, in document order. An empty vec means the
+    /// [`Warning`] per lossy node — two at one path for a node whose
+    /// attributes are lost as well as its kind — in document order. An empty vec means the
     /// conversion is lossless.
     ///
     /// Twig's serializers degrade or drop a node whenever the target has no
@@ -3529,14 +3530,19 @@ pub enum Fidelity {
     Degraded,
     /// Nothing is emitted at all: the node and its subtree leave no trace.
     Dropped,
-    /// The node survives; some of its **attributes** are written where the
-    /// target's parser does not read them back as that node's — djot spells
-    /// a heading's on its text, AsciiDoc moves a section title's onto the
-    /// section. Which keys is not carried across the C boundary: the node at
+    /// Some of the node's **attributes** are written where the target's
+    /// parser does not read them back as that node's — djot spells a
+    /// heading's on its text, AsciiDoc moves a section title's onto the
+    /// section. Independent of the node's own answer: a node that degrades
+    /// and still has its attributes written — Markdown's `<div lang=…>` for
+    /// a section it cannot spell — is reported twice at the same path,
+    /// [`Degraded`](Fidelity::Degraded) and then this. Which keys is not carried across the C boundary: the node at
     /// [`Warning::path`] has them, and a consumer that wants the list reads
     /// them from the tree.
     AttrsDegraded,
-    /// The node survives; some of its attributes are not written at all.
+    /// Some of the node's attributes are not written at all. Never reported
+    /// beside [`Dropped`](Fidelity::Dropped): nothing of a dropped node is
+    /// written, so that one variant is the whole answer.
     AttrsDropped,
 }
 
@@ -4525,6 +4531,45 @@ mod tests {
         // HTML and AsciiDoc keep a paragraph's class: nothing to report.
         assert_eq!(doc.diagnostics(Target::Html).expect("html"), Vec::new());
         assert_eq!(doc.diagnostics(Target::Asciidoc).expect("asciidoc"), Vec::new());
+    }
+
+    #[test]
+    fn diagnostics_report_a_degraded_nodes_attributes_beside_it() {
+        // A Word paste: `<html>` and `<body>` are sections, which Markdown
+        // degrades and still writes a `<div>` for each one's attributes.
+        // Three `<div>`s, three attribute warnings — two of them at a path
+        // that also carries the node's own.
+        let mut doc = Document::parse_str(
+            r#"<html xmlns:o="urn:x"><body lang="EN-US"><p class="MsoNormal">Word text</p></body></html>"#,
+            Format::Html,
+        )
+        .expect("parse html");
+        let w = |fidelity, path: &str, kind| Warning {
+            fidelity,
+            path: path.to_string(),
+            kind,
+        };
+        assert_eq!(
+            doc.diagnostics(Target::Markdown).expect("markdown diagnostics"),
+            vec![
+                w(Fidelity::Degraded, "0", Kind::Section),
+                w(Fidelity::AttrsDegraded, "0", Kind::Section),
+                w(Fidelity::Degraded, "0/0", Kind::Section),
+                w(Fidelity::AttrsDegraded, "0/0", Kind::Section),
+                w(Fidelity::AttrsDegraded, "0/0/0", Kind::Para),
+            ]
+        );
+    }
+
+    #[test]
+    fn diagnostics_say_nothing_of_what_a_link_or_image_already_spells() {
+        // `href`, `src` and `alt` are the node's destination and alt text,
+        // which Markdown writes in full.
+        for html in [r#"<p>a <a href="https://x.dev">l</a></p>"#, r#"<p><img src="u" alt="p"></p>"#] {
+            let mut doc = Document::parse_str(html, Format::Html).expect("parse html");
+            assert_eq!(doc.diagnostics(Target::Markdown).expect("markdown"), Vec::new());
+            assert_eq!(doc.diagnostics(Target::Djot).expect("djot"), Vec::new());
+        }
     }
 
     #[test]

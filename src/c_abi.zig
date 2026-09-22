@@ -300,15 +300,20 @@ pub const TWIG_FIDELITY_FAITHFUL: c_int = 0;
 pub const TWIG_FIDELITY_DEGRADED: c_int = 1;
 /// Nothing is emitted at all: the node and its subtree leave no trace.
 pub const TWIG_FIDELITY_DROPPED: c_int = 2;
-/// The node survives; some of its ATTRIBUTES are written where the target's
-/// parser does not read them back as that node's (djot spells a heading's on
-/// its text; AsciiDoc moves a section title's onto the section). Which keys
+/// Some of the node's ATTRIBUTES are written where the target's parser does
+/// not read them back as that node's (djot spells a heading's on its text;
+/// AsciiDoc moves a section title's onto the section). Independent of the
+/// node's own answer: a node that degrades and still has its attributes
+/// written — Markdown's `<div lang=…>` for a section it cannot spell — is
+/// reported twice at the same `path`, `DEGRADED` and then this. Which keys
 /// is not carried on the wire — the node at `path` has them, and
 /// `twig.diagnostics.attrsFidelity` says per key — so a consumer that wants
 /// the list asks the tree. A code rather than a field, because the
 /// `TwigWarning` layout is frozen (see the header's ABI contract).
 pub const TWIG_FIDELITY_ATTRS_DEGRADED: c_int = 3;
-/// The node survives; some of its attributes are not written at all.
+/// Some of the node's attributes are not written at all. Never reported
+/// beside `DROPPED`: nothing of a dropped node is written, so that one code
+/// is the whole answer.
 pub const TWIG_FIDELITY_ATTRS_DROPPED: c_int = 4;
 
 /// `TwigFlatNode.container_origin`: nothing recorded an origin for this node.
@@ -868,7 +873,8 @@ pub export fn twig_document_query(
 }
 
 /// What converting `doc` to `format` would silently LOSE: one `TwigWarning` per
-/// lossy node, in document order, borrowed until the next
+/// lossy node — two at one path for a node whose attributes are lost as well
+/// as its kind — in document order, borrowed until the next
 /// `twig_document_diagnostics` call on this document or its destruction.
 ///
 /// This is the read-only pass behind twig's own claim that a conversion is

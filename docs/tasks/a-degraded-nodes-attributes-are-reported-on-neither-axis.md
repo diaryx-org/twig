@@ -3,12 +3,40 @@ title: A degraded node's attributes are reported on neither axis
 description: '`analyze` reports a node on the node axis or the attribute axis, never both, so a `Section` that Markdown writes as a literal `<div class="MsoNormal">` raises `Degraded` and no `Attrs*` warning — the markup a consumer is gating against is the one thing the diagnostics do not name.'
 author: adammharris
 created: 2026-09-18
-updated: 2026-09-18
-status: open
+updated: 2026-09-22
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # A degraded node's attributes are reported on neither axis
+
+## Resolution
+
+Done on 2026-09-22, in the commit `fix(diagnostics): a degraded node's attributes are reported, and a link's href is not`,
+on the preferred decision: `walk` asks the attribute axis of every node that
+is not dropped, so the Word fragment below yields its five warnings. A
+dropped node is reported once, at the node — nothing of it is written — and
+a test pins that.
+
+Asking the table about degraded nodes meant measuring it there. The probe
+now round-trips every node it does not drop, and found two things the old
+rule had hidden:
+
+- **A degraded node's attributes cannot be faithful.** The node is not read
+  back as itself, so no key comes back as its. `AttrsFidelity.under` caps
+  `faithful` at `degraded` for such a node, which is also what lets one row
+  answer for a djot container with a name (degraded) and one without.
+- **The rows for degraded kinds were never measured.** HTML writes a task
+  list's, a definition list's and a line block's attributes on the element
+  it renders (`degraded`, not `dropped`); Markdown writes a container's on a
+  directive or a `<span>`; AsciiDoc writes an id and role on an inline
+  container and on `insert`/`delete`; HTML writes nothing for curly quotes,
+  a symbol or a substitution reference, and overwrites a footnote
+  reference's id. Each row now says what the probe observes.
+
+The C ABI and the Rust binding carry the extra warnings
+unchanged — each warning is its own `TwigWarning` with its own code — and
+their docs no longer say an `ATTRS_*` code means the node survived.
 
 `Collector.walk` in `diagnostics.zig` is an `if`/`else`: a node whose
 `nodeFidelity` is lossy gets a node-axis warning, and `noteAttrs` is reached
