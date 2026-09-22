@@ -4,11 +4,28 @@ description: "`move_before`/`move_after` move bytes, so a paragraph dragged into
 author: adammharris
 created: 2026-09-21
 updated: 2026-09-21
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # `move_block` — a block moves between containers and the destination's prefixes are twig's to spell
+
+## Resolution
+
+Done on 2026-09-21, in the commit `add(editor): move a block to a boundary,
+spelling the destination's prefixes`. `Editor.moveBlock(from, to)`, gesture
+code 31 on the C ABI as `twig_editor_move_block`, `Editor::move_block` in
+the Rust crate; `Syntax.list_attach` for AsciiDoc's `+`, and its `> ` quote
+now records a marker span like Markdown's. The harness moves a paragraph out
+of a quote, into a quote, into a list item's tail and between two
+paragraphs over every authorable format, each against the format's own
+print of the expected tree. Two things the argument below did not settle:
+a moved list item is always a sibling (nesting stays
+`toggle_block_container`'s), and a delimited container emptied by a move
+stands, since it may carry attributes — where a `>` quote or a list whose
+only content leaves goes with it. leaf's half is
+[leaf/docs/tasks/move-a-block.md](https://github.com/diaryx-org/leaf/blob/main/docs/tasks/move-a-block.md),
+and reaches it once this is released and the pin moves.
 
 **Where.** The gesture family beside `set_block`, `toggle_block_container`,
 `split_block` and `join_blocks`: offset-addressed, one `Change`, one undo

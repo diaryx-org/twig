@@ -149,6 +149,11 @@ pub const Editor = struct {
         /// for one, so it would come back as text), or a value carrying a
         /// line end or a double quote. See `checkAttr`.
         InvalidAttribute,
+        /// A destination that names the block being moved: `moveBlock`'s `to`
+        /// inside the block, or at the boundary the block already sits on —
+        /// a move that would change nothing, refused rather than reported as
+        /// a change with no bytes in it.
+        InvalidArgument,
         /// The `Syntax` table has no spelling for this gesture in this format.
         UnsupportedFormat,
         /// No block covers the offset/range this gesture needs one for.
@@ -282,6 +287,7 @@ pub const Editor = struct {
         set_block_attrs,
         wrap_range_attrs,
         set_node_attrs,
+        move_block,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -387,6 +393,15 @@ pub const Editor = struct {
             // (`attrs_writer.writeHtmlAttrs`) into a span the parser recorded,
             // so no renderer is consulted and none has to be present.
             .set_node_attrs => syntax.node_attrs != null,
+            // A block moves as its LINES, re-prefixed for the container it
+            // lands in, and every prefix is read off the document — so what
+            // the table has to say is only how two blocks are kept apart: a
+            // blank line where `block_separator` states one, or nothing
+            // where a block is a delimited fragment of its own (HTML's tag
+            // pairs, which `renderBlock` is the sign of). A parse-only table
+            // has neither, which is what makes XML unsupported: it has no
+            // blocks for a caret to name.
+            .move_block => syntax.block_separator != null or syntax.renderBlock != null,
         };
     }
 
@@ -2390,6 +2405,298 @@ pub const Editor = struct {
         return self.commitSplice(a_content.end, r_end, out.items);
     }
 
+    // ── Moving a block ───────────────────────────────────────────────────────
+
+    /// Move the block at `from` to the boundary `to` names, spelling the line
+    /// prefixes of the container it lands in — a drag-and-drop, or Alt+↑/↓,
+    /// in a host that has a caret and no tree.
+    ///
+    /// The splicer's `moveNode` reorders two nodes by their bytes, and says so:
+    /// a quote's `> ` does not travel, a list item's continuation indent is
+    /// not written. That is right for an XML element and wrong for every drop
+    /// that restructures prose — a paragraph dragged out of a quote keeps its
+    /// `> ` and is still a quote, one dragged under a list item's text lands
+    /// at column zero and ends the list. Which prefix a line needs where is
+    /// the per-format knowledge `toggleBlockContainer` and
+    /// `locate.continuationPrefix` already hold, and this is the gesture that
+    /// applies it to a move.
+    ///
+    /// ── The block ──────────────────────────────────────────────────────────
+    /// `from` names the deepest block owning the line it is on — the
+    /// `para`/`heading` `setBlock` acts on, or the code block, table or rule
+    /// where there is no text block — widened to the LIST ITEM when it is the
+    /// item's first block: a bullet's text is the bullet, and dragging it
+    /// takes the item and everything under it. A block later in an item's tail
+    /// moves alone. `error.NoBlock` on a blank line.
+    ///
+    /// ── The boundary ───────────────────────────────────────────────────────
+    /// `to` is a position BETWEEN blocks: at or before a block's first content
+    /// byte (before it), at or after its last (after it), on a blank line, or
+    /// at the document's end. The block lands there and takes the prefixes of
+    /// the container that boundary is inside — the innermost one, so `to` at
+    /// the start of a quote's first paragraph is inside the quote, and a block
+    /// moved there is quoted. `error.NotEditable` for a `to` interior to a
+    /// block — inside a fence, a table, a paragraph's second line — as
+    /// `setBlock` answers for a blank line there; `error.InvalidArgument` for
+    /// a `to` inside the block being moved, or at the boundary it already sits
+    /// on, which would move nothing.
+    ///
+    /// Two adjustments where a list item is involved, both because a list holds
+    /// items and nothing else:
+    ///
+    ///   * A boundary BEFORE an item's first block is before the ITEM, at the
+    ///     list's level — a block dropped above a bullet's text is above the
+    ///     bullet, not the bullet's new text. A boundary after an item's last
+    ///     block is inside the item, which is how a block reaches an item's
+    ///     tail (`to` at the end of the item's text).
+    ///   * A moved ITEM is always a sibling: dropped anywhere inside another
+    ///     item it lands after that item (before it, for the boundary above),
+    ///     and it stays a bullet wherever else it lands — a one-item list
+    ///     between two paragraphs, a quoted bullet in a quote. Nesting one
+    ///     under another is `toggleBlockContainer`'s to spell.
+    ///
+    /// ── What is written ────────────────────────────────────────────────────
+    /// One splice covering the block's old lines and the boundary. The block's
+    /// lines are taken whole — stripped of every prefix its old containers put
+    /// on them (the ancestors' markers on its first line, their continuation
+    /// width on the rest, read off the marker spans the way
+    /// `locate.continuationPrefix` reads them) and written behind the
+    /// destination chain's own. The separator lines that kept it apart from
+    /// its old neighbours go with it, so no doubled blank line is left where
+    /// it was, and a quote or list it was the only content of goes too rather
+    /// than standing empty. At the destination it is blank-separated from
+    /// whatever it lands beside (`block_separator` after the container's
+    /// blank-line prefix, so `>` inside a quote), except between items of a
+    /// tight list — where a blank would loosen the list — and in a format that
+    /// separates blocks by nothing (HTML). A format that attaches a block to
+    /// an item by a line of its own (`Syntax.list_attach`, AsciiDoc's `+`)
+    /// gets that line in place of the blank, and the block at column zero.
+    ///
+    /// Within one container the result is what `Splicer.moveNode` writes:
+    /// the same lines, in the new order, with the same separators.
+    ///
+    /// `error.NotEditable` also when the block shares a line with something
+    /// else — an HTML `<p>` written beside another on one line — since what
+    /// moves is lines. `error.InvalidRange` past the source.
+    pub fn moveBlock(self: *Editor, from: usize, to: usize) Error!void {
+        if (!supports(self.syntax, .move_block)) return error.UnsupportedFormat;
+        const src = self.sourceBytes();
+        if (from > src.len or to > src.len) return error.InvalidRange;
+        const doc = &self.splicer.doc;
+        const allocator = self.splicer.allocator;
+
+        const unit = movableUnit(doc, from) orelse return error.NoBlock;
+        var unit_chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer unit_chain.deinit(allocator);
+        if (!try nodePath(allocator, doc, unit, &unit_chain)) return error.NoBlock;
+        const ancestors = unit_chain.items[0 .. unit_chain.items.len - 1];
+        const lines = try unitLines(doc, unit, ancestors);
+        if (to >= lines.start and to < lines.end) return error.InvalidArgument;
+
+        const unit_is_item = isListItem(doc.ast.nodes[unit].kind);
+        const dest = try resolveBoundary(allocator, self.syntax, doc, to, unit_is_item);
+        if (dest.prev == unit or dest.next == unit) return error.InvalidArgument;
+
+        const removal = removalLines(self.syntax, doc, unit_chain.items, lines);
+        if (dest.pos > removal.start and dest.pos < removal.end) return error.InvalidArgument;
+
+        // The prefix every moved line takes: the destination chain's, minus a
+        // list item where the format attaches by a line rather than an indent.
+        var dest_chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer dest_chain.deinit(allocator);
+        if (!try nodePath(allocator, doc, dest.container, &dest_chain)) return error.NotEditable;
+        var dest_walk: std.ArrayList(AST.Node.Id) = .empty;
+        defer dest_walk.deinit(allocator);
+        try prefixChain(allocator, self.syntax, doc, dest_chain.items, &dest_walk);
+        var prefix: std.ArrayList(u8) = .empty;
+        defer prefix.deinit(allocator);
+        _ = try locate.continuationPrefixAlong(allocator, doc, dest_walk.items, &prefix);
+        const blank_prefix = std.mem.trimEnd(u8, prefix.items, " \t");
+
+        // The line that keeps the block apart from a neighbour in its new
+        // container, or nothing where the format has no such line.
+        var sep: std.ArrayList(u8) = .empty;
+        defer sep.deinit(allocator);
+        const separates = self.syntax.block_separator != null and
+            !(unit_is_item and isTightList(doc.ast.nodes[dest.container].kind));
+        if (separates) {
+            try sep.appendSlice(allocator, blank_prefix);
+            if (self.syntax.list_attach) |attach| {
+                if (isListItem(doc.ast.nodes[dest.container].kind)) try sep.appendSlice(allocator, attach);
+            }
+            try sep.appendSlice(allocator, self.syntax.block_separator.?);
+        }
+
+        // The prefix the block's OLD containers put on its lines, to strip.
+        var old_walk: std.ArrayList(AST.Node.Id) = .empty;
+        defer old_walk.deinit(allocator);
+        try prefixChain(allocator, self.syntax, doc, ancestors, &old_walk);
+        var old_prefix: std.ArrayList(u8) = .empty;
+        defer old_prefix.deinit(allocator);
+        const old_cols = try locate.continuationPrefixAlong(allocator, doc, old_walk.items, &old_prefix);
+        const own_start = if (doc.markerSpan(unit)) |m| m.start else blockContent(doc, unit).start;
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        // A tight item's bare text takes a paragraph around it where a block
+        // joins it in a format whose paragraphs are delimited: `<li>x</li>`
+        // gaining a `<p>` under it is `<li><p>x</p><p>y</p></li>`, which is
+        // what its list being loose means there, and what the parser reads
+        // as a paragraph without its tags is exactly a paragraph whose span
+        // is its content. A format that separates blocks by a line has
+        // nothing to wrap — Markdown's `- x` is a tight item's spelling and a
+        // loose one's alike.
+        var rewrap: ?Span = null;
+        var rewrapped: Writer.Allocating = .init(allocator);
+        defer rewrapped.deinit();
+        if (self.syntax.block_separator == null and isListItem(doc.ast.nodes[dest.container].kind)) {
+            if (dest.prev) |p| if (isBareParagraph(doc, p)) {
+                rewrap = try self.rewrapBlock(p, &rewrapped.writer);
+            };
+        }
+
+        // Three edits, at most, applied in source order over the one region
+        // they span: the removal, the rewrap, and the insertion at `pos`. The
+        // kept bytes between them are copied through, so the whole move is
+        // one splice — one reparse, one undo step.
+        var edits: [3]MoveEdit = undefined;
+        var n: usize = 0;
+        edits[n] = .{ .span = removal, .kind = .removal };
+        n += 1;
+        if (rewrap) |r| {
+            edits[n] = .{ .span = r, .kind = .rewrap };
+            n += 1;
+        }
+        edits[n] = .{ .span = Span.init(dest.pos, dest.pos), .kind = .insert };
+        n += 1;
+        std.mem.sort(MoveEdit, edits[0..n], {}, MoveEdit.before);
+        const region_start = edits[0].span.start;
+        const region_end = edits[n - 1].span.end;
+
+        var scratch: std.ArrayList(u8) = .empty;
+        defer scratch.deinit(allocator);
+        var cur = region_start;
+        for (edits[0..n], 0..) |e, i| {
+            if (e.span.start < cur) return error.NotEditable;
+            try out.appendSlice(allocator, src[cur..e.span.start]);
+            cur = e.span.end;
+            switch (e.kind) {
+                .removal => {},
+                .rewrap => try out.appendSlice(allocator, std.mem.trimEnd(u8, rewrapped.written(), "\r\n")),
+                .insert => {
+                    // What precedes the insertion once the edits before it
+                    // are applied, and what follows it: the two lines the
+                    // separators are decided against.
+                    const before = try lastLineOf(allocator, src[0..region_start], out.items, &scratch);
+                    if (!before.terminated) try out.append(allocator, '\n');
+                    if (separates and dest.prev != null and !before.empty and !isSeparatorLine(self.syntax, before.body)) {
+                        try out.appendSlice(allocator, sep.items);
+                    }
+                    try self.appendMovedLines(&out, lines, ancestors, unit_is_item, dest.container, old_cols, own_start, prefix.items, blank_prefix);
+                    const rest_to = if (i + 1 < n) edits[i + 1].span.start else src.len;
+                    const rest_from = if (i + 1 < n) edits[i + 1].span.end else src.len;
+                    const after = firstLineOf(src[e.span.end..rest_to], src[rest_from..]);
+                    if (separates and dest.next != null and after.len != 0 and !isSeparatorLine(self.syntax, after)) {
+                        try out.appendSlice(allocator, sep.items);
+                    }
+                },
+            }
+        }
+        try out.appendSlice(allocator, src[cur..region_end]);
+
+        // A document that did not end in a line end does not gain one for a
+        // block landing at its end.
+        if (region_end == src.len and src.len > 0 and src[src.len - 1] != '\n' and
+            out.items.len > 0 and out.items[out.items.len - 1] == '\n') out.items.len -= 1;
+
+        return self.commitSplice(region_start, region_end, out.items);
+    }
+
+    /// One of `moveBlock`'s edits, in source order.
+    const MoveEdit = struct {
+        span: Span,
+        kind: enum { removal, rewrap, insert },
+
+        /// Source order; an insertion at the start of a removal goes first,
+        /// since it lands where the removed lines began.
+        fn before(_: void, a: MoveEdit, b: MoveEdit) bool {
+            if (a.span.start != b.span.start) return a.span.start < b.span.start;
+            return a.span.end < b.span.end;
+        }
+    };
+
+    /// The block's lines, each behind the destination prefix, appended to
+    /// `out`. An item landing outside a list brings its list's own opening
+    /// and closing lines with it — the bytes a list has apart from its items,
+    /// which is `<ul>`/`</ul>` in HTML and nothing in a format whose list is
+    /// spelled by its items' markers.
+    fn appendMovedLines(
+        self: *Editor,
+        out: *std.ArrayList(u8),
+        lines: Span,
+        ancestors: []const AST.Node.Id,
+        unit_is_item: bool,
+        container: AST.Node.Id,
+        old_cols: usize,
+        own_start: usize,
+        prefix: []const u8,
+        blank_prefix: []const u8,
+    ) Allocator.Error!void {
+        const allocator = self.splicer.allocator;
+        const doc = &self.splicer.doc;
+        const src = doc.source;
+        var wrap: ListWrap = .{};
+        if (unit_is_item and !isList(doc.ast.nodes[container].kind)) {
+            wrap = listWrap(doc, ancestors[ancestors.len - 1], lines);
+        }
+        var first = true;
+        for ([_]Span{ wrap.open, lines, wrap.close }) |part| {
+            var at = part.start;
+            while (at < part.end) {
+                const le = locate.lineEndAt(src, at);
+                const body = locate.lineBody(src[at..le]);
+                var strip = stripColumns(body, old_cols);
+                if (first) {
+                    // Its first line also sheds the markers its ancestors open
+                    // there, which may reach past their continuation width —
+                    // an outer item's `- ` ahead of the inner item being moved.
+                    for (ancestors) |a| {
+                        if (doc.markerSpan(a)) |m| {
+                            if (m.start >= at and m.start < le and m.end - at > strip) strip = m.end - at;
+                        }
+                    }
+                    if (own_start > at and own_start - at < strip) strip = own_start - at;
+                }
+                const rest = body[strip..];
+                if (locate.isBlankLine(rest)) {
+                    try out.appendSlice(allocator, blank_prefix);
+                } else {
+                    try out.appendSlice(allocator, prefix);
+                    try out.appendSlice(allocator, rest);
+                }
+                try out.append(allocator, '\n');
+                first = false;
+                at = le;
+            }
+        }
+    }
+
+    /// Print `block` through the format's renderer into `w`, returning the
+    /// span the print replaces. `error.UnsupportedFormat` with no renderer,
+    /// which `supports` rules out for the one format this is reached in.
+    fn rewrapBlock(self: *Editor, block: AST.Node.Id, w: *Writer) Error!Span {
+        const render = self.syntax.renderBlock orelse return error.UnsupportedFormat;
+        const doc = &self.splicer.doc;
+        const allocator = self.splicer.allocator;
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        const root = try b.graftSubtree(&doc.ast, block);
+        const view = b.view(root);
+        try renderNode(allocator, render, &view, root, w);
+        return doc.span(block);
+    }
+
     // ── Code blocks ──────────────────────────────────────────────────────────
 
     /// Toggle a fenced code block over the blocks `[start, end)` covers: fence
@@ -4299,6 +4606,482 @@ fn insideListItem(doc: *const Document, chain: []const AST.Node.Id) bool {
         }
     }
     return false;
+}
+
+// ── Move internals ─────────────────────────────────────────────────────────
+
+/// Where `Editor.moveBlock` puts a block: the container whose prefixes it
+/// takes, the blocks it lands between (either may be absent), and the line
+/// start — or the source's end — its lines are written at.
+const Dest = struct {
+    container: AST.Node.Id,
+    prev: ?AST.Node.Id,
+    next: ?AST.Node.Id,
+    pos: usize,
+};
+
+/// A node `moveBlock` descends INTO looking for the block at an offset,
+/// rather than stopping at: the line-owning containers, and a list, whose
+/// items own lines even though the list itself is not on `isBlockParent`'s
+/// list.
+fn descendsInto(kind: AST.Node.Kind) bool {
+    return locate.isBlockParent(kind) or switch (kind) {
+        .bullet_list, .ordered_list, .task_list => true,
+        else => false,
+    };
+}
+
+fn isListItem(kind: AST.Node.Kind) bool {
+    return switch (kind) {
+        .list_item, .task_list_item => true,
+        else => false,
+    };
+}
+
+fn isList(kind: AST.Node.Kind) bool {
+    return switch (kind) {
+        .bullet_list, .ordered_list, .task_list => true,
+        else => false,
+    };
+}
+
+/// The lines a list has apart from its items, as whole lines: what opens it
+/// before its first item's line and closes it after its last item's, each
+/// empty where the list is spelled by its items' markers alone.
+const ListWrap = struct { open: Span = Span.init(0, 0), close: Span = Span.init(0, 0) };
+
+fn listWrap(doc: *const Document, list: AST.Node.Id, item_lines: Span) ListWrap {
+    if (!isList(doc.ast.nodes[list].kind)) return .{};
+    const src = doc.source;
+    const sp = doc.span(list);
+    if (sp.end <= sp.start) return .{};
+    const first = doc.ast.nodes[list].first_child orelse return .{};
+    var last = first;
+    while (doc.ast.nodes[last].next_sibling) |n| last = n;
+    const lo = locate.lineStartAt(src, sp.start);
+    const hi = locate.lineEndAt(src, sp.end - 1);
+    const first_line = locate.lineStartAt(src, doc.span(first).start);
+    const last_sp = doc.span(last);
+    const last_line = if (last_sp.end > last_sp.start) locate.lineEndAt(src, last_sp.end - 1) else item_lines.end;
+    return .{
+        .open = Span.init(lo, @max(lo, @min(first_line, item_lines.start))),
+        .close = Span.init(@min(hi, @max(last_line, item_lines.end)), hi),
+    };
+}
+
+/// A paragraph the parser read without any markup around it — its span is
+/// its content — which is how a tight HTML `<li>x</li>` holds its text.
+fn isBareParagraph(doc: *const Document, id: AST.Node.Id) bool {
+    if (doc.ast.nodes[id].kind != .para) return false;
+    const content = doc.contentSpan(id) orelse return false;
+    const sp = doc.span(id);
+    return content.start == sp.start and content.end == sp.end;
+}
+
+fn isTightList(kind: AST.Node.Kind) bool {
+    return switch (kind) {
+        .bullet_list => |l| l.tight,
+        .ordered_list => |l| l.tight,
+        .task_list => |l| l.tight,
+        else => false,
+    };
+}
+
+/// An inline node — what a list item holds DIRECTLY in a format that gives
+/// its text no paragraph (AsciiDoc, a tight HTML `<li>`), and so what the
+/// descent may land on under an item. Its text stands for the item's first
+/// block.
+fn isInlineKind(kind: AST.Node.Kind) bool {
+    return switch (kind) {
+        .str,
+        .soft_break,
+        .hard_break,
+        .non_breaking_space,
+        .text_leaf,
+        .raw_inline,
+        .smart_punctuation,
+        .link,
+        .image,
+        .inline_mark,
+        .substitution,
+        .reference,
+        => true,
+        .container => |c| c.form == .inline_text,
+        else => false,
+    };
+}
+
+/// The block `moveBlock` moves for a caret at `offset`: the deepest block
+/// owning the caret's line, widened to its list item when it is the item's
+/// first block (or the item's own text). `null` on a blank line.
+fn movableUnit(doc: *const Document, offset: usize) ?AST.Node.Id {
+    if (doc.ast.nodes.len == 0) return null;
+    var cur = doc.ast.root;
+    while (true) {
+        const child = locate.caretChildContaining(doc, cur, offset) orelse {
+            // Inside an item's own marker: the item.
+            if (isListItem(doc.ast.nodes[cur].kind)) {
+                if (doc.markerSpan(cur)) |m| if (offset < m.end) return cur;
+            }
+            return null;
+        };
+        const kind = doc.ast.nodes[child].kind;
+        if (descendsInto(kind)) {
+            cur = child;
+            continue;
+        }
+        if (isListItem(doc.ast.nodes[cur].kind)) {
+            if (isInlineKind(kind) or doc.ast.nodes[cur].first_child == child) return cur;
+        } else if (isInlineKind(kind)) return null;
+        return child;
+    }
+}
+
+/// The whole lines `unit` owns, trailing separator lines trimmed —
+/// `error.NotEditable` when it shares its first or last line with something
+/// that is not a container prefix, since lines are what move.
+fn unitLines(doc: *const Document, unit: AST.Node.Id, ancestors: []const AST.Node.Id) Editor.Error!Span {
+    const src = doc.source;
+    const sp = doc.span(unit);
+    if (sp.end <= sp.start) return error.NotEditable;
+    const start = locate.lineStartAt(src, sp.start);
+    var end = locate.lineEndAt(src, sp.end - 1);
+    while (end > start) {
+        const ls = locate.lineStartAt(src, end - 1);
+        if (ls <= start) break;
+        if (!isSeparatorRun(locate.lineBody(src[ls..end]))) break;
+        end = ls;
+    }
+    if (!lineHeadIsPrefix(doc, ancestors, start, sp.start)) return error.NotEditable;
+    if (sp.end < end and !locate.isBlankLine(locate.lineBody(src[sp.end..end]))) return error.NotEditable;
+    return Span.init(start, end);
+}
+
+/// Whether the bytes `[line_start, at)` are all container prefix: blanks,
+/// quote markers, or inside a marker one of `chain`'s nodes opens there.
+fn lineHeadIsPrefix(doc: *const Document, chain: []const AST.Node.Id, line_start: usize, at: usize) bool {
+    var i = line_start;
+    scan: while (i < at) : (i += 1) {
+        switch (doc.source[i]) {
+            ' ', '\t', '>' => continue :scan,
+            else => {},
+        }
+        for (chain) |id| {
+            if (doc.markerSpan(id)) |m| {
+                if (i >= m.start and i < m.end) continue :scan;
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+/// Resolve `to` to the boundary `moveBlock` lands on — see its doc comment
+/// for the rules, and `Dest` for the answer.
+fn resolveBoundary(
+    allocator: Allocator,
+    syntax: *const Syntax,
+    doc: *const Document,
+    to: usize,
+    unit_is_item: bool,
+) Editor.Error!Dest {
+    const src = doc.source;
+    var chain: std.ArrayList(AST.Node.Id) = .empty;
+    defer chain.deinit(allocator);
+    try chain.append(allocator, doc.ast.root);
+    var anchor: ?AST.Node.Id = null;
+    while (locate.caretChildContaining(doc, chain.items[chain.items.len - 1], to)) |child| {
+        if (!descendsInto(doc.ast.nodes[child].kind)) {
+            anchor = child;
+            break;
+        }
+        try chain.append(allocator, child);
+    }
+    var container = chain.items[chain.items.len - 1];
+    var prev: ?AST.Node.Id = null;
+    var next: ?AST.Node.Id = null;
+    const Side = enum { before, after, gap };
+    var side: Side = .gap;
+
+    if (anchor) |a| {
+        // A block holding opaque text — a fence, a raw block — is interior
+        // from its first byte to its last: the end of its body's last line
+        // is inside the fence, not after the block.
+        const content = if (doc.ast.nodes[a].kind.contentModel() == .text) blk: {
+            const sp = doc.span(a);
+            var end = sp.end;
+            if (end > sp.start and src[end - 1] == '\n') end -= 1;
+            break :blk Span.init(sp.start, end);
+        } else blockContent(doc, a);
+        if (to <= content.start) {
+            side = .before;
+        } else if (to >= content.end) {
+            side = .after;
+        } else return error.NotEditable;
+        const inline_anchor = isInlineKind(doc.ast.nodes[a].kind);
+        if (side == .before) {
+            // Between two inlines of an item's text is inside that text.
+            if (inline_anchor and doc.ast.nodes[container].first_child != a) return error.NotEditable;
+            prev = prevSibling(doc, container, a);
+            next = a;
+        } else {
+            var n = doc.ast.nodes[a].next_sibling;
+            if (inline_anchor) {
+                if (n != null and isInlineKind(doc.ast.nodes[n.?].kind)) return error.NotEditable;
+                n = null;
+                var it = doc.children(container);
+                var seen = false;
+                while (it.next()) |c| {
+                    if (seen and !isInlineKind(doc.ast.nodes[c.id].kind)) {
+                        n = c.id;
+                        break;
+                    }
+                    if (c.id == a) seen = true;
+                }
+            }
+            prev = a;
+            next = n;
+        }
+    } else {
+        var it = doc.children(container);
+        while (it.next()) |c| {
+            const sp = doc.span(c.id);
+            if (sp.start < to) {
+                prev = c.id;
+            } else if (next == null) next = c.id;
+        }
+    }
+
+    // Inside a list item: a boundary before its first block is before the
+    // item, and a moved item is a sibling wherever it is dropped.
+    if (isListItem(doc.ast.nodes[container].kind) and chain.items.len >= 2) {
+        const item = container;
+        const at_head = prev == null or (next != null and next.? == doc.ast.nodes[item].first_child);
+        if (at_head or unit_is_item) {
+            _ = chain.pop();
+            container = chain.items[chain.items.len - 1];
+            if (at_head) {
+                side = .before;
+                prev = prevSibling(doc, container, item);
+                next = item;
+            } else {
+                side = .after;
+                prev = item;
+                next = doc.ast.nodes[item].next_sibling;
+            }
+        }
+    }
+
+    // At a list's edge, a block that is not an item is beside the LIST: the
+    // list contributes no prefix, so the boundary is the same place, but its
+    // neighbours are the list's own, which is what tells a block already
+    // there from one that moves.
+    if (!unit_is_item and isList(doc.ast.nodes[container].kind) and chain.items.len >= 2) {
+        const list = container;
+        if (next != null and next.? == doc.ast.nodes[list].first_child) {
+            _ = chain.pop();
+            container = chain.items[chain.items.len - 1];
+            side = .before;
+            prev = prevSibling(doc, container, list);
+            next = list;
+        } else if (next == null) {
+            _ = chain.pop();
+            container = chain.items[chain.items.len - 1];
+            side = .after;
+            prev = list;
+            next = doc.ast.nodes[list].next_sibling;
+        }
+    }
+
+    const pos = switch (side) {
+        .before => blk: {
+            const sp = doc.span(next.?);
+            const ls = locate.lineStartAt(src, sp.start);
+            if (!lineHeadIsPrefix(doc, chain.items, ls, sp.start)) return error.NotEditable;
+            break :blk ls;
+        },
+        .after => blk: {
+            const sp = doc.span(prev.?);
+            if (sp.end <= sp.start) return error.NotEditable;
+            const le = locate.lineEndAt(src, sp.end - 1);
+            if (sp.end < le and !locate.isBlankLine(locate.lineBody(src[sp.end..le]))) return error.NotEditable;
+            break :blk le;
+        },
+        .gap => blk: {
+            const ls = locate.lineStartAt(src, to);
+            if (!isSeparatorLine(syntax, locate.lineBody(src[ls..locate.lineEndAt(src, to)]))) return error.NotEditable;
+            break :blk ls;
+        },
+    };
+    return .{ .container = container, .prev = prev, .next = next, .pos = pos };
+}
+
+fn prevSibling(doc: *const Document, parent: AST.Node.Id, id: AST.Node.Id) ?AST.Node.Id {
+    var prev: ?AST.Node.Id = null;
+    var it = doc.children(parent);
+    while (it.next()) |c| {
+        if (c.id == id) return prev;
+        prev = c.id;
+    }
+    return null;
+}
+
+/// The lines `moveBlock` removes: the block's own, plus the separator lines
+/// that kept it apart from its neighbours inside its parent — the ones after
+/// it, or when nothing but separators follows it there, those before it too,
+/// so that no doubled blank is left and a container's trailing `>` line does
+/// not outlive its last block. The parent is climbed first through every
+/// prefix-spelled container the block is the only content of (a quote whose
+/// one paragraph leaves, a list whose one item does), since such a container
+/// has no lines of its own and is gone once its content is.
+fn removalLines(syntax: *const Syntax, doc: *const Document, chain: []const AST.Node.Id, lines: Span) Span {
+    const src = doc.source;
+    var r: usize = chain.len - 1;
+    while (r > 0) {
+        const parent = chain[r - 1];
+        if (parent == doc.ast.root or !spelledByPrefix(doc, parent)) break;
+        if (doc.ast.nodes[parent].first_child != chain[r] or doc.ast.nodes[chain[r]].next_sibling != null) break;
+        r -= 1;
+    }
+    // The climbed container's own lines, where it has any beyond the
+    // block's (a delimited list's `<ul>`/`</ul>`).
+    var lo = lines.start;
+    var hi = lines.end;
+    if (r < chain.len - 1) {
+        const rsp = doc.span(chain[r]);
+        if (rsp.end > rsp.start) {
+            lo = @min(lo, locate.lineStartAt(src, rsp.start));
+            hi = @max(hi, locate.lineEndAt(src, rsp.end - 1));
+        }
+    }
+    const parent = chain[r - 1];
+    var parent_start: usize = 0;
+    var parent_end: usize = src.len;
+    if (parent != doc.ast.root) {
+        // Its interior, where the parent records one: a delimited
+        // container's closing line is the parent's own, not something that
+        // follows the block inside it.
+        const psp = doc.contentSpan(parent) orelse doc.span(parent);
+        if (psp.end > psp.start) {
+            parent_start = locate.lineStartAt(src, psp.start);
+            parent_end = @max(locate.lineEndAt(src, psp.end - 1), hi);
+        }
+    }
+    var after = hi;
+    while (after < parent_end) {
+        const le = locate.lineEndAt(src, after);
+        if (!isSeparatorLine(syntax, locate.lineBody(src[after..le]))) break;
+        after = le;
+    }
+    var before = lo;
+    if (after >= parent_end) {
+        while (before > parent_start) {
+            const ls = locate.lineStartAt(src, before - 1);
+            if (ls < parent_start) break;
+            if (!isSeparatorLine(syntax, locate.lineBody(src[ls..before]))) break;
+            before = ls;
+        }
+    }
+    return Span.init(before, after);
+}
+
+/// Whether `parent` goes when its only child does: a container spelled by
+/// prefixes on the child's lines and nothing else (a `>` quote, a
+/// marker-prefixed item), or a list, whose lines are its items' spelling.
+/// A delimited container (`____`, `:::`, `<blockquote>`) has lines of its
+/// own and stands when emptied — it may carry attributes a move must not
+/// drop.
+fn spelledByPrefix(doc: *const Document, parent: AST.Node.Id) bool {
+    return switch (doc.ast.nodes[parent].kind) {
+        // A list is its items' spelling either way: a marker-spelled one has
+        // no lines of its own, and a delimited one (`<ul>`) travels with its
+        // only item — see `listWrap`.
+        .bullet_list, .ordered_list, .task_list => true,
+        .block_quote, .list_item, .task_list_item => doc.markerSpan(parent) != null,
+        .section => true,
+        else => false,
+    };
+}
+
+/// `chain` as the prefix walk should see it, appended to `out`: whole, or
+/// without its list items where the format attaches a block to an item by a
+/// line of its own rather than by the item's indent (`Syntax.list_attach`).
+fn prefixChain(
+    allocator: Allocator,
+    syntax: *const Syntax,
+    doc: *const Document,
+    chain: []const AST.Node.Id,
+    out: *std.ArrayList(AST.Node.Id),
+) Allocator.Error!void {
+    for (chain) |id| {
+        if (syntax.list_attach != null and isListItem(doc.ast.nodes[id].kind)) continue;
+        try out.append(allocator, id);
+    }
+}
+
+/// `isSeparatorRun` for a whole line, plus the format's attach line where it
+/// has one: AsciiDoc's `+` separates an item's text from an attached block
+/// the way a blank line separates two paragraphs, and travels the same way.
+fn isSeparatorLine(syntax: *const Syntax, body: []const u8) bool {
+    if (isSeparatorRun(body)) return true;
+    const attach = syntax.list_attach orelse return false;
+    return std.mem.eql(u8, std.mem.trim(u8, body, " \t\r"), attach);
+}
+
+/// How many bytes of `body` are prefix inside the first `cols` columns:
+/// blanks and quote markers, a tab advancing to its stop. Stops at the first
+/// byte that is neither, so a lazy continuation line sheds nothing.
+fn stripColumns(body: []const u8, cols: usize) usize {
+    var i: usize = 0;
+    var col: usize = 0;
+    while (i < body.len and col < cols) : (i += 1) {
+        switch (body[i]) {
+            ' ', '>' => col += 1,
+            '\t' => col += 4 - col % 4,
+            else => break,
+        }
+    }
+    return i;
+}
+
+/// The line that ends the text `a ++ b`: its body (with a line end taken
+/// off), whether that line end was there, and whether the text was empty.
+/// `scratch` holds the body where it straddles the two slices.
+const LastLine = struct { body: []const u8, terminated: bool, empty: bool };
+
+fn lastLineOf(allocator: Allocator, a: []const u8, b: []const u8, scratch: *std.ArrayList(u8)) Allocator.Error!LastLine {
+    if (a.len == 0 and b.len == 0) return .{ .body = "", .terminated = true, .empty = true };
+    var text_a = a;
+    var text_b = b;
+    var terminated = false;
+    if (text_b.len > 0) {
+        if (text_b[text_b.len - 1] == '\n') {
+            terminated = true;
+            text_b = text_b[0 .. text_b.len - 1];
+        }
+    } else if (text_a[text_a.len - 1] == '\n') {
+        terminated = true;
+        text_a = text_a[0 .. text_a.len - 1];
+    }
+    if (std.mem.lastIndexOfScalar(u8, text_b, '\n')) |nl| {
+        return .{ .body = std.mem.trimEnd(u8, text_b[nl + 1 ..], "\r"), .terminated = terminated, .empty = false };
+    }
+    const a_tail = if (std.mem.lastIndexOfScalar(u8, text_a, '\n')) |nl| text_a[nl + 1 ..] else text_a;
+    if (text_b.len == 0) return .{ .body = std.mem.trimEnd(u8, a_tail, "\r"), .terminated = terminated, .empty = false };
+    scratch.clearRetainingCapacity();
+    try scratch.appendSlice(allocator, a_tail);
+    try scratch.appendSlice(allocator, text_b);
+    return .{ .body = std.mem.trimEnd(u8, scratch.items, "\r"), .terminated = terminated, .empty = false };
+}
+
+/// The first line of the text `a ++ b`, without its line end — a whole
+/// slice of one or the other, since the separator decision only needs to
+/// know whether it is content, and a line that starts content in `a` and
+/// runs into `b` is content already.
+fn firstLineOf(a: []const u8, b: []const u8) []const u8 {
+    const text = if (a.len > 0) a else b;
+    const line = text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
+    return std.mem.trimEnd(u8, line, "\r");
 }
 
 // ── Code-fence internals ───────────────────────────────────────────────────

@@ -1732,6 +1732,7 @@ fn statusOfEditorError(err: twig.Editor.Error) TwigStatus {
         error.InvalidShape,
         error.InvalidName,
         error.InvalidAttribute,
+        error.InvalidArgument,
         => .invalid_argument,
         error.UnsupportedFormat => .unsupported_format,
         error.NoBlock => .not_found,
@@ -2958,6 +2959,7 @@ const TwigGesture = enum(c_int) {
     wrap_range_attrs = 28,
     join_blocks = 29,
     set_node_attrs = 30,
+    move_block = 31,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -2994,6 +2996,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         28 => .wrap_range_attrs,
         29 => .join_blocks,
         30 => .set_node_attrs,
+        31 => .move_block,
         else => null,
     };
 }
@@ -3559,6 +3562,34 @@ pub export fn twig_editor_join_blocks(
     const handle = asEditor(raw);
 
     handle.editor.joinBlocks(offset) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+// ── Moving a block ─────────────────────────────────────────────────────────────
+// The engine is `twig.Editor.moveBlock`: the block's lines, stripped of the
+// prefixes its old containers put on them and written behind the prefixes of
+// the container it lands in, with the separator lines a person would have
+// typed — in one splice. `twig_editor_move_before`/`_after` move a node's
+// bytes and say so; this is the gesture for a drop that crosses a `> ` or a
+// list item's indent.
+
+/// Move the block at `from` to the boundary `to` names. See `twig.h` for the
+/// semantics and `twig.Editor.moveBlock` for the implementation — which block
+/// `from` names (an item's first block is the item), how `to` resolves (before
+/// or after a block, a blank line, the document's end; before an item's first
+/// block is before the item), and what is written.
+pub export fn twig_editor_move_block(
+    ed: ?*TwigEditor,
+    from: usize,
+    to: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+
+    handle.editor.moveBlock(from, to) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;
@@ -5798,6 +5829,59 @@ test "twig_editor_join_blocks: the wire reaches the gesture, and the format gate
     var xml = try EditorFixture.init("<r>ab</r>");
     defer xml.deinit();
     try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_join_blocks(xml.ed, 4, null));
+}
+
+test "twig_editor_move_block: the wire reaches the gesture, and each refusal is its own status" {
+    // The drop that made this a gesture: out of a quote, where a byte move
+    // would have carried the `> `.
+    var md = try EditorFixture.initFmt("> a\n>\n> y\n\nb\n", .markdown);
+    defer md.deinit();
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_move_block(md.ed, 8, 13, &change));
+    try md.expectSource("> a\n\nb\n\ny\n");
+    // One splice, from the separator line that went with the block.
+    try std.testing.expectEqual(@as(usize, 4), change.old.start);
+
+    // Into a list item's tail, in the format that spells that by a line of
+    // its own.
+    var adoc = try EditorFixture.initFmt("* x\n\ny\n", .asciidoc);
+    defer adoc.deinit();
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_move_block(adoc.ed, 5, 3, null));
+    try adoc.expectSource("* x\n+\ny\n");
+
+    // The refusals reach the wire as themselves: a `to` inside a fence, a
+    // `to` inside the block itself, a blank `from`, an offset past the source.
+    var refuse = try EditorFixture.initFmt("a\n\n```\nx\n```\n", .markdown);
+    defer refuse.deinit();
+    try std.testing.expectEqual(TwigStatus.not_editable, twig_editor_move_block(refuse.ed, 0, 8, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_move_block(refuse.ed, 0, 1, null));
+    try std.testing.expectEqual(TwigStatus.not_found, twig_editor_move_block(refuse.ed, 2, 0, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_move_block(refuse.ed, 0, 99, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_move_block(null, 0, 0, null));
+    try refuse.expectSource("a\n\n```\nx\n```\n");
+
+    var xml = try EditorFixture.init("<r><a/><b/></r>");
+    defer xml.deinit();
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_move_block(xml.ed, 3, 11, null));
+
+    // Code 31 decodes to `.move_block`, and answers what the gesture answers
+    // on a live editor of every format.
+    var supported: c_int = -1;
+    for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm, .svg }) |fmt| {
+        const code = @intFromEnum(fmt);
+        const src: []const u8 = if (fmt == .xml or fmt == .svg) "<r>ab</r>" else "ab\n";
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
+            code,
+            @intFromEnum(TwigGesture.move_block),
+            0,
+            &supported,
+        ));
+        var ed: ?*TwigEditor = null;
+        try std.testing.expectEqual(TwigStatus.ok, twig_editor_create(src.ptr, src.len, code, &ed));
+        defer twig_editor_destroy(ed);
+        const got = twig_editor_move_block(ed, 0, src.len, null);
+        try std.testing.expectEqual(supported == 1, got != .unsupported_format);
+    }
 }
 
 test "twig_format_supports: the join's wire code answers for the join, not the split" {

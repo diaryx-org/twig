@@ -545,6 +545,20 @@ pub const Syntax = struct {
     /// DOCUMENT, never re-spelled from this table.
     line_join: ?[]const u8 = null,
 
+    /// The line that ATTACHES a block to a list item's tail where the item's
+    /// continuation indent does not — AsciiDoc's `+`, written on a line of
+    /// its own between the item's text and the block that follows it.
+    ///
+    /// `null` = a block is inside an item by standing behind the item's
+    /// continuation indent after a blank line, which is Markdown's and djot's
+    /// rule and needs nothing from this table: `Editor.moveBlock` reads the
+    /// indent off the item's marker. AsciiDoc is the one format where that
+    /// spelling means something else — an indented line after a blank is a
+    /// LITERAL paragraph — so a block landing in an item's tail there is
+    /// written at column zero under a `+` line, and a block leaving one takes
+    /// that line with it. The value is the line's text without its line end.
+    list_attach: ?[]const u8 = null,
+
     /// The bytes a link's TEXT position must have backslash-escaped for the text
     /// to reparse as the literal string handed in. Each one either opens a
     /// construct that swallows the text — `*`/`_`/`` ` ``/`~`/`^` emphasis-ish

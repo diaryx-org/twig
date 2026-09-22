@@ -840,6 +840,10 @@ pub enum Gesture {
     /// why [`Format::is_authorable`] stays `false` for XML while this answers
     /// `true`.
     SetNodeAttrs,
+    /// Move a block to a boundary, re-spelling the line prefixes of the
+    /// container it lands in — [`Editor::move_block`]. Supported wherever a
+    /// caret can name a block: every prose format, HTML included; not XML.
+    MoveBlock,
 }
 
 impl Gesture {
@@ -880,6 +884,7 @@ impl Gesture {
             Gesture::WrapRangeAttrs => (28, 0),
             Gesture::JoinBlocks => (29, 0),
             Gesture::SetNodeAttrs => (30, 0),
+            Gesture::MoveBlock => (31, 0),
         }
     }
 }
@@ -2855,6 +2860,61 @@ impl Editor {
     /// [`Format::supports`] with [`Gesture::JoinBlocks`].
     pub fn join_blocks(&mut self, offset: usize) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe { ffi::twig_editor_join_blocks(ed, offset, out) })
+    }
+
+    /// Move the block at `from` to the boundary `to` names, spelling the line
+    /// prefixes of the container it lands in — a drag-and-drop, or Alt+↑/↓,
+    /// in a host that has a caret and no tree.
+    ///
+    /// [`Editor::move_before`] and [`Editor::move_after`] move a node's
+    /// **bytes** and say so: a quote's `> ` does not travel, a list item's
+    /// continuation indent is not written. This is the gesture for a drop
+    /// that crosses either — a paragraph dragged out of a quote arrives
+    /// without its `> `, one dragged under a list item's text arrives behind
+    /// the item's indent, and the blank lines a person would have typed are
+    /// written and removed. Within one container the result is what
+    /// `move_before` writes.
+    ///
+    /// * `from` names the deepest block owning the line it is on — the
+    ///   paragraph or heading [`Editor::set_block`] acts on, or the code
+    ///   block, table or rule where there is no text block — **widened to
+    ///   the list item** when it is the item's first block: a bullet's text
+    ///   is the bullet, and dragging it takes the item and everything under
+    ///   it. A block later in an item's tail moves alone.
+    /// * `to` is a position **between** blocks: at or before a block's first
+    ///   content byte (the block lands before it), at or after its last
+    ///   (after it), on a blank line, or the source's length (the document's
+    ///   end). The block takes the prefixes of the container that boundary
+    ///   is inside — the innermost one, so `to` at the start of a quote's
+    ///   first paragraph is inside the quote. Two adjustments where a list
+    ///   item is involved, because a list holds items and nothing else: a
+    ///   boundary before an item's first block is before the **item**, at
+    ///   the list's level, while one after an item's last block is inside
+    ///   the item — how a block reaches an item's tail (`to` at the end of
+    ///   the item's text); and a moved item is always a sibling — dropped
+    ///   inside another item it lands after it, and elsewhere it stays a
+    ///   bullet (a one-item list between two paragraphs, a quoted bullet in
+    ///   a quote). An ordered list is not renumbered;
+    ///   [`Editor::renumber_ordered_lists`] is the call for that.
+    /// * One splice, so one undo step and one [`Change`]. The block's lines
+    ///   go with the separator lines that kept them apart from their old
+    ///   neighbours, and a quote or list they were the only content of goes
+    ///   too; at the destination they are blank-separated from what they
+    ///   land beside (`>` inside a quote), except between items of a tight
+    ///   list. A delimited container (a `<div>`, a djot `:::` fence) that is
+    ///   emptied stands, since it may carry attributes.
+    ///
+    /// [`Error::NotFound`] when `from` is on a blank line.
+    /// [`Error::NotEditable`] when `to` is interior to a block — inside a
+    /// fence, a table, a paragraph's second line — or when the block shares
+    /// a line with something else (an HTML `<p>` written beside another).
+    /// [`Error::InvalidArgument`] when `to` is inside the block being moved
+    /// or at the boundary it already sits on, which would move nothing, and
+    /// when either offset is past the source. [`Error::UnsupportedFormat`]
+    /// where the format has no blocks a caret could name (XML); ask
+    /// [`Format::supports`] with [`Gesture::MoveBlock`].
+    pub fn move_block(&mut self, from: usize, to: usize) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_move_block(ed, from, to, out) })
     }
 
     /// Toggle a fenced code block over the blocks `[start, end)` covers: fence
@@ -5842,6 +5902,40 @@ mod tests {
     }
 
     #[test]
+    fn editor_move_block_spells_the_destination_prefixes() {
+        // Out of a quote: the `> ` and the `>` separator line go with the
+        // block, and it arrives blank-separated at the top level.
+        let mut out = Editor::new_str("> a\n>\n> y\n\nb\n", Format::Markdown).expect("editor");
+        let change = out.move_block(8, 13).expect("move");
+        assert_eq!(out.source_str().unwrap(), "> a\n\nb\n\ny\n");
+        assert_eq!(change.old.start, 4);
+
+        // Into a list item's tail: the continuation indent and the blank line
+        // that makes it a second block of the item.
+        let mut tail = Editor::new_str("- x\n\ny\n", Format::Markdown).expect("editor");
+        tail.move_block(5, 3).expect("move");
+        assert_eq!(tail.source_str().unwrap(), "- x\n\n  y\n");
+        let nodes = tail.nodes().expect("nodes");
+        assert_eq!(nodes.iter().filter(|n| n.kind == Kind::ListItem).count(), 1);
+
+        // A bullet's text is the bullet: the item moves whole, and between
+        // two items of a tight list no blank is written.
+        let mut items = Editor::new_str("- a\n  - b\n- c\n", Format::Markdown).expect("editor");
+        items.move_block(12, 0).expect("move");
+        assert_eq!(items.source_str().unwrap(), "- c\n- a\n  - b\n");
+
+        // Where it already is moves nothing; inside a fence is no boundary.
+        let mut same = Editor::new_str("a\n\n```\nx\n```\n", Format::Markdown).expect("editor");
+        assert_eq!(same.move_block(0, 1), Err(Error::InvalidArgument));
+        assert_eq!(same.move_block(0, 8), Err(Error::NotEditable));
+        assert_eq!(same.move_block(2, 0), Err(Error::NotFound));
+
+        // XML has no blocks a caret could name.
+        let mut xml = Editor::new_str("<r><a/><b/></r>", Format::Xml).expect("editor");
+        assert_eq!(xml.move_block(3, 11), Err(Error::UnsupportedFormat));
+    }
+
+    #[test]
     fn editor_join_blocks_is_spelled_in_html_where_the_split_is_not() {
         // The pair that motivates the separate gate. A blank line between two
         // `<p>`s is not what separates them, so the split refuses; a newline
@@ -6706,6 +6800,7 @@ mod tests {
             Gesture::WrapRangeAttrs,
             Gesture::JoinBlocks,
             Gesture::SetNodeAttrs,
+            Gesture::MoveBlock,
         ]);
         all
     }
@@ -6720,7 +6815,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=30).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=31).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -6738,7 +6833,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                31,
+                32,
                 0,
                 &mut supported,
             )
@@ -6773,6 +6868,8 @@ mod tests {
         // of its own: HTML cannot be split at a blank line and *can* be joined
         // at a newline inside its `<p>`.
         assert!(Format::Html.supports(Gesture::JoinBlocks));
+        // And the block move, whose lines HTML has like any other format.
+        assert!(Format::Html.supports(Gesture::MoveBlock));
         assert!(!Format::Html.supports(Gesture::RenumberOrderedLists));
         assert!(Format::Markdown.supports(Gesture::TableInsertRow));
         assert!(Format::Djot.supports(Gesture::SplitBlock));
