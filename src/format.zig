@@ -64,6 +64,7 @@ const Asciidoc = @import("languages/asciidoc/asciidoc.zig");
 const Splicer = @import("ast/splicer.zig").Splicer;
 const syntax_mod = @import("syntax.zig");
 const Syntax = syntax_mod.Syntax;
+const runtime = @import("runtime.zig");
 
 /// Markdown's spelling tables — plural, because Markdown's authorable subset
 /// depends on its parse config. See `Entry.syntaxFor`.
@@ -81,7 +82,12 @@ const asciidoc_serializer = Asciidoc.serializer;
 ///
 /// This is the INPUT axis only. What Twig can write is `Target` — see the
 /// two-axes note at the top of this file.
-pub const Format = enum {
+///
+/// NON-EXHAUSTIVE: a value from `runtime.base` up names a language registered
+/// at runtime (`runtime.zig`), and is the same number as its C wire code. A
+/// switch over a `Format` says what it does for one in its `_` arm, and a
+/// name is `name()`, never `@tagName`, which has no answer for such a value.
+pub const Format = enum(u16) {
     djot,
     markdown,
     xml,
@@ -105,6 +111,16 @@ pub const Format = enum {
     /// consumer's business (a canvas editor reading the elements it draws),
     /// and the row exists so that consumer has a format to name.
     svg,
+    _,
+
+    /// The name `-i` takes and a diagnostic prints: the tag of a compiled
+    /// row, the registered name of a runtime one.
+    pub fn name(self: Format) []const u8 {
+        return switch (self) {
+            _ => runtime.nameOf(@intFromEnum(self)),
+            inline else => |f| @tagName(f),
+        };
+    }
 };
 
 /// Every format Twig can WRITE — what `-o`/`--output` names beyond its three
@@ -123,12 +139,24 @@ pub const Format = enum {
 /// with `reads_back_as = null` and no `Format` variant, no `registry` row, and
 /// no `Syntax` — none of which it could honestly fill in. That is the whole
 /// reason this enum exists apart from `Format`.
-pub const Target = enum {
+///
+/// Non-exhaustive for the reason `Format` is: a registered language that
+/// prints is a target too, under the same value.
+pub const Target = enum(u16) {
     djot,
     markdown,
     xml,
     html,
     asciidoc,
+    _,
+
+    /// See `Format.name`.
+    pub fn name(self: Target) []const u8 {
+        return switch (self) {
+            _ => runtime.nameOf(@intFromEnum(self)),
+            inline else => |t| @tagName(t),
+        };
+    }
 
     /// The `Format` whose parser reads this target's own output back, or `null`
     /// for an export-only target. `null` is what makes a round-trip
@@ -153,6 +181,8 @@ pub fn targetFor(fmt: Format) Target {
     return switch (fmt) {
         .commonmark, .gfm => .markdown,
         .svg => .xml,
+        // A registered language writes as itself, under the same value.
+        _ => @enumFromInt(@intFromEnum(fmt)),
         inline else => |f| @field(Target, @tagName(f)),
     };
 }
@@ -669,7 +699,9 @@ pub fn entryFor(fmt: Format) *const Entry {
     for (&registry) |*e| {
         if (e.id == fmt) return e;
     }
-    unreachable;
+    // A runtime value reaches here only once registered: every way into one
+    // — a name, an extension, a C wire code — asks the registry first.
+    return runtime.entryFor(fmt).?;
 }
 
 /// Look up `t`'s write-half entry. Every `Target` variant has exactly one
@@ -679,7 +711,7 @@ pub fn targetEntryFor(t: Target) *const TargetEntry {
     for (&targets) |*e| {
         if (e.id == t) return e;
     }
-    unreachable;
+    return runtime.targetEntryFor(t).?;
 }
 
 /// `fmt`'s surface spelling — `Syntax.none` for a parse-only language, never
@@ -768,7 +800,7 @@ pub fn parseFormatName(name: []const u8) ?Format {
             if (std.mem.eql(u8, alias, name)) return e.id;
         }
     }
-    return null;
+    return runtime.byName(name);
 }
 
 /// Map an output name to a `Target`: the enum's own tag names first, then every
@@ -794,7 +826,9 @@ pub fn detectFromExtension(file_path: []const u8) ?Format {
             if (std.ascii.eqlIgnoreCase(known, ext)) return e.id;
         }
     }
-    return null;
+    // A registered language cannot claim a compiled row's extension, so the
+    // order here decides nothing; it is only which list is shorter.
+    return runtime.byExtension(ext);
 }
 
 test "every Format has exactly one registry entry" {

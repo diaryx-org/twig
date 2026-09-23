@@ -108,6 +108,10 @@ pub const Format = format.Format;
 /// `Format`. See `format.zig`'s two-axes note.
 pub const Target = format.Target;
 
+/// Languages registered at runtime — the in-process carrier of
+/// `docs/proposals/runtime-languages.md`. See `runtime.zig`.
+pub const runtime = @import("runtime.zig");
+
 /// Hit-testing: byte offset -> node (`deepestContaining`, `ancestorChain`), plus
 /// the line scanning the block gestures are built on. The addressing scheme a
 /// caret speaks. See `ast/locate.zig`.
@@ -166,6 +170,7 @@ test {
     _ = Filter;
     _ = ast_json;
     _ = ast_table;
+    _ = runtime;
     _ = @import("ast/compact.zig");
     _ = @import("ast/containment_test.zig");
     _ = Rst;

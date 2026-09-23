@@ -24,6 +24,9 @@ pub enum Error {
     /// a raw-text `<script>` HTML data island without an injection risk; the
     /// HTML printer refused (render/serialize-to-HTML).
     UnsafeMetadata,
+    /// A language was refused at registration; [`crate::RegisterError`]
+    /// carries why.
+    InvalidLanguage,
     Internal,
 }
 
@@ -40,6 +43,7 @@ impl Error {
             ffi::TwigStatus::NOT_EDITABLE => Err(Self::NotEditable),
             ffi::TwigStatus::EDIT_CONFLICT => Err(Self::EditConflict),
             ffi::TwigStatus::UNSAFE_METADATA => Err(Self::UnsafeMetadata),
+            ffi::TwigStatus::INVALID_LANGUAGE => Err(Self::InvalidLanguage),
             _ => Err(Self::Internal),
         }
     }
@@ -59,6 +63,7 @@ impl fmt::Display for Error {
             Error::UnsafeMetadata => {
                 f.write_str("metadata contains </script; unsafe to embed in HTML")
             }
+            Error::InvalidLanguage => f.write_str("language refused at registration"),
             Error::Internal => f.write_str("internal error"),
         }
     }
