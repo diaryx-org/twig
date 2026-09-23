@@ -9,6 +9,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("../../ast/ast.zig");
 const Document = @import("../../document.zig");
+const compact = @import("../../ast/compact.zig");
 const Node = AST.Node;
 const Span = @import("../../span.zig");
 
@@ -41,7 +42,11 @@ pub const Parser = struct {
         defer self.allocator.free(children);
         const doc = try self.builder.addContainer(.doc, self.dropFormattingWhitespace(children));
         self.builder.setSpan(doc, Span.init(0, self.source.len));
-        return self.builder.finishDocument(self.source, doc);
+        // What `dropFormattingWhitespace`, `flattenRowGroups` and the
+        // `<code>` absorption leave unreferenced is collected here, and the
+        // arena renumbered into pre-order with the root first — the order
+        // `AST.eql` and the node table take as given.
+        return compact.run(self.allocator, try self.builder.finishDocument(self.source, doc));
     }
 
     fn isSpace(c: u8) bool {

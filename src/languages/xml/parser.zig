@@ -24,6 +24,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const AST = @import("../../ast/ast.zig");
 const Document = @import("../../document.zig");
+const compact = @import("../../ast/compact.zig");
 const Node = AST.Node;
 const Span = @import("../../span.zig");
 
@@ -76,7 +77,11 @@ pub const Parser = struct {
     /// a `doc` node.
     pub fn parse(self: *Parser) ParseError!Document {
         const doc_id = try self.parseDocument();
-        return self.builder.finishDocument(self.source, doc_id);
+        // The builder mints a parent after its children, so the root comes
+        // last; compaction renumbers into pre-order, which is the arena
+        // order `AST.eql` and the node table both take as given. Nothing is
+        // abandoned here, so it drops nothing.
+        return compact.run(self.allocator, try self.builder.finishDocument(self.source, doc_id));
     }
 
     // ── diagnostics ──────────────────────────────────────────────────────

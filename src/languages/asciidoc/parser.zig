@@ -92,13 +92,36 @@ const Node = AST.Node;
 const Builder = AST.Builder;
 const Span = @import("../../span.zig");
 const Document = @import("../../document.zig");
+const compact = @import("../../ast/compact.zig");
 const entities = @import("../markdown/entities.zig");
 
 pub fn parse(allocator: Allocator, source: []const u8) Allocator.Error!Document {
     var p = try Parser.init(allocator, source);
     defer p.deinit();
     const root = try p.parseDocument();
-    return p.b.finishDocument(source, root);
+    return finish(allocator, &p.b, source, root);
+}
+
+/// Freeze the build into a `Document` the way every parse ends: the detached
+/// footnote definitions indexed by label, then the arena compacted.
+///
+/// Bottom-up construction leaves the root last, and compaction renumbers into
+/// pre-order — the arena order `AST.eql` and the node table take as given. It
+/// keeps what the root reaches and what `labels` holds, so the definitions go
+/// into `labels.footnotes` first: a definition is attached to nothing, and
+/// without its label entry compaction would sweep it. The first definition of
+/// a label wins, as it does in djot and Markdown.
+fn finish(allocator: Allocator, b: *Builder, source: []const u8, root: Node.Id) Allocator.Error!Document {
+    var doc = try b.finishDocument(source, root);
+    errdefer doc.deinit();
+    for (doc.ast.nodes) |n| switch (n.kind) {
+        .footnote => |f| {
+            const slot = try doc.labels.footnotes.getOrPut(allocator, f.label);
+            if (!slot.found_existing) slot.value_ptr.* = n.id;
+        },
+        else => {},
+    };
+    return compact.run(allocator, doc);
 }
 
 /// The TCK's `inline`-level entry point: `source` (a single line, e.g.
@@ -115,7 +138,7 @@ pub fn parseInlineList(allocator: Allocator, source: []const u8) Allocator.Error
     const ids = try parseInlines(.{ .b = &b, .footnotes = &footnotes }, text, 0);
     defer allocator.free(ids);
     const root = try b.addContainer(.doc, ids);
-    return b.finishDocument(source, root);
+    return finish(allocator, &b, source, root);
 }
 
 // ── shared source scanners (used by asg.zig too) ─────────────────────────────
