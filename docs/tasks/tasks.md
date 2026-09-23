@@ -3,9 +3,10 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-15
-updated: 2026-09-22
+updated: 2026-09-23
 part_of: '[Twig](/README.md)'
 contents:
+- '[A gesture over an AsciiDoc paragraph admonition takes its label into the new block](/docs/tasks/asciidoc-admonition-label-gestures.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 

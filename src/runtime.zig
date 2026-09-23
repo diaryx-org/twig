@@ -480,8 +480,9 @@ fn ownAll(gpa: Allocator, items: []const []const u8) Allocator.Error![]const []c
 
 /// The engine contract — `contract.all`, the checks every compiled format's
 /// harness runs: every sample parses to a table core accepts, and a language
-/// that prints reparses each print to an equal tree. The renderer, claim and
-/// move checks apply to a row that authors, which a runtime one does not yet.
+/// that prints reparses each print to an equal tree. The renderer, claim,
+/// move and gesture checks apply to a row that authors, which a runtime one
+/// does not yet.
 fn checkContract(gpa: Allocator, slot: *const Slot, diag: *Writer) RegisterError!void {
     var report: contract.Report = .{};
     contract.all(gpa, &slot.entry, &report) catch |err| switch (err) {

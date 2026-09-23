@@ -48,6 +48,47 @@ test "harness: every format declares samples and satisfies the engine contract" 
     }
 }
 
+/// Broken promises the gesture check knows of, each with the task that owns
+/// it. A finding here is tolerated; one that stops being found fails the test,
+/// so the list only shrinks.
+const known_findings = [_]struct { header: []const u8, task: []const u8 }{
+    .{ .header = "asciidoc: toggle_block_container over sample 0: the paragraph \"An admonition.\" is gone", .task = "docs/tasks/asciidoc-admonition-label-gestures.md" },
+    .{ .header = "asciidoc: toggle_code_block over sample 0: no zig code block holding the paragraph came back", .task = "docs/tasks/asciidoc-admonition-label-gestures.md" },
+};
+
+test "harness: every gesture, everywhere, over every authorable format" {
+    var log: std.ArrayList(u8) = .empty;
+    defer log.deinit(std.testing.allocator);
+    for (&format.registry) |*entry| {
+        var report: contract.Report = .{ .log = &log };
+        contract.gestures(std.testing.allocator, entry, &report) catch |err| switch (err) {
+            error.ContractBroken => {},
+            else => return err,
+        };
+    }
+    var seen = [_]bool{false} ** known_findings.len;
+    var unknown: usize = 0;
+    var messages = std.mem.splitScalar(u8, log.items, 0);
+    next: while (messages.next()) |m| {
+        if (m.len == 0) continue;
+        for (known_findings, 0..) |k, i| {
+            if (std.mem.startsWith(u8, m, k.header)) {
+                seen[i] = true;
+                continue :next;
+            }
+        }
+        unknown += 1;
+        std.debug.print("\n{s}\n", .{m});
+    }
+    for (known_findings, seen) |k, s| {
+        if (!s) {
+            std.debug.print("\nno longer found — remove it, and close {s}:\n{s}\n", .{ k.task, k.header });
+            unknown += 1;
+        }
+    }
+    if (unknown != 0) return error.ContractBroken;
+}
+
 test "harness: a broken promise is reported, not asserted" {
     // A row whose samples are fine but whose renderer lies: djot's own row
     // with a `renderBlock` that prints nothing. The contract names the check
