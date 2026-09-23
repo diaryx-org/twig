@@ -3,7 +3,7 @@ title: "Proposal: runtime languages"
 status: accepted
 author: adammharris
 created: 2026-09-19
-updated: 2026-09-19
+updated: 2026-09-23
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
@@ -21,6 +21,36 @@ reserved range of format codes — landed beside this document, in
 `add(c-abi): reserve the runtime format range`. The build is sequenced at
 the end, and closes
 [the task that asked for this decision](/docs/tasks/closed/runtime-languages.md).
+
+**2026-09-23: the author tier waits on groundwork, and the groundwork is
+done.** Steps 2–4 shipped the read and write tiers and refuse `author` by
+name, because nothing yet made a `Syntax` twig had never seen safe to edit
+with: every compiled table's safety came from debug asserts, from being Zig
+rather than data, from test-only checks, and from bugs found by hand. Five
+pieces of groundwork replace those, and each is in:
+
+1. `Syntax.validate` names the rule a table breaks
+   (`add(syntax): Syntax.validate names the rule…`); compiled tables are
+   checked at comptime.
+2. `Syntax` crosses as JSON, every compiled table round-tripping, with
+   `twig lang syntax <format>` as the oracle
+   (`add(syntax): Syntax as JSON…`).
+3. The harness is `contract.zig`, checks that report, run by the harness and
+   at registration (`add(contract): the engine contract as a library…`).
+4. `contract.gestures` runs every supported gesture everywhere it applies
+   and holds each to a clean refusal or the promised shape with nothing else
+   changed (`add(contract): every gesture, everywhere…`). It found four bugs
+   in the compiled formats, fixed in `fix(markdown)` and `fix(editor)` beside
+   it, and one filed as
+   [a task](/docs/tasks/asciidoc-admonition-label-gestures.md).
+5. The line model is written down in `syntax.zig`'s module doc, and
+   `validate` enforces the parts that are facts about a table's bytes.
+
+What is left for the author tier is the carrier's half: a `syntax` in the
+description decoded and bound, the renderers as a `render` op on the wire
+and slots in `TwigLanguageVTable`, and the refusal lifted — registration
+already runs `contract.all`, which applies the gesture check to any row that
+authors.
 
 "Runtime" throughout means *resolved when the program runs*, as opposed to a
 format compiled into `src/languages/`. It names no engine.
