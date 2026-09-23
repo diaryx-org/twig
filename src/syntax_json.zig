@@ -420,24 +420,7 @@ test "syntax json: every compiled table is its own encoding" {
     }
     // Every table Markdown is authored by, not only the registry's default:
     // the palette, the directives and the math alphabet live only in these.
-    for ([_]bool{ false, true }) |st| {
-        for ([_][2]bool{ .{ false, false }, .{ true, false }, .{ true, true } }) |h| {
-            for ([_]bool{ false, true }) |d| {
-                for ([_]bool{ false, true }) |e| {
-                    for ([_]bool{ false, true }) |m| {
-                        try expectIdentity(markdown_syntax.forOptions(.{
-                            .strikethrough = st,
-                            .highlight = h[0],
-                            .highlight_colors = h[1],
-                            .directives = d,
-                            .html_elements = e,
-                            .math = m,
-                        }));
-                    }
-                }
-            }
-        }
-    }
+    for (markdown_syntax.every) |*t| try expectIdentity(t);
 }
 
 test "syntax json: the empty object is the table that spells nothing" {

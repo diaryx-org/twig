@@ -227,8 +227,14 @@ const Key = struct {
     directives: bool,
     html_elements: bool,
     math: bool,
+    /// The three block extensions a gesture mints — a pipe table, a task
+    /// box, a footnote pair — each read back only under its own flag, which
+    /// strict CommonMark turns off and GFM turns off for footnotes.
+    tables: bool = true,
+    task_lists: bool = true,
+    footnotes: bool = true,
 
-    const count = 2 * 3 * 2 * 2 * 2;
+    const count = 2 * 3 * 2 * 2 * 2 * 2 * 2 * 2;
 
     fn index(k: Key) usize {
         var i: usize = @intFromBool(k.strikethrough);
@@ -236,11 +242,20 @@ const Key = struct {
         i = i * 2 + @intFromBool(k.directives);
         i = i * 2 + @intFromBool(k.html_elements);
         i = i * 2 + @intFromBool(k.math);
+        i = i * 2 + @intFromBool(k.tables);
+        i = i * 2 + @intFromBool(k.task_lists);
+        i = i * 2 + @intFromBool(k.footnotes);
         return i;
     }
 
     fn fromIndex(i: usize) Key {
         var rest = i;
+        const footnotes = rest % 2 == 1;
+        rest /= 2;
+        const task_lists = rest % 2 == 1;
+        rest /= 2;
+        const pipe_tables = rest % 2 == 1;
+        rest /= 2;
         const math = rest % 2 == 1;
         rest /= 2;
         const html_elements = rest % 2 == 1;
@@ -249,7 +264,16 @@ const Key = struct {
         rest /= 2;
         const highlights: Highlights = @enumFromInt(rest % 3);
         rest /= 3;
-        return .{ .strikethrough = rest == 1, .highlights = highlights, .directives = directives, .html_elements = html_elements, .math = math };
+        return .{
+            .strikethrough = rest == 1,
+            .highlights = highlights,
+            .directives = directives,
+            .html_elements = html_elements,
+            .math = math,
+            .tables = pipe_tables,
+            .task_lists = task_lists,
+            .footnotes = footnotes,
+        };
     }
 
     fn of(opts: Options) Key {
@@ -268,6 +292,9 @@ const Key = struct {
             .directives = opts.directives,
             .html_elements = opts.html_elements,
             .math = opts.math,
+            .tables = opts.tables,
+            .task_lists = opts.task_lists,
+            .footnotes = opts.footnotes,
         };
     }
 };
@@ -295,6 +322,13 @@ fn derive(comptime k: Key) syntax.Syntax {
     // `wrapped` shape — rather than on the block.
     t.block_attrs = if (k.html_elements) .wrapped else null;
     t.inline_attrs = k.html_elements;
+    // A pipe table, a task box and a footnote each read back only under
+    // their own flag; without it the gesture would write a paragraph of
+    // pipes, a literal `[ ]`, or a `[^label]` that is text. The serializer
+    // reads the default table and still spells all three on conversion.
+    if (!k.tables) t.table_spelling = null;
+    if (!k.task_lists) t.task_marker = null;
+    if (!k.footnotes) t.footnote = null;
     // `$…$` is inline math and `$$…$$` display math only under `math`, so
     // only there is `$` a byte a literal has to escape — in body text and in
     // link text alike. Without the flag a bare `$` is text and stays bare.
@@ -334,6 +368,9 @@ const tables: [Key.count]syntax.Syntax = blk: {
 /// authorable here; strict CommonMark is `forOptions(.commonmark)`, and is not
 /// this.
 pub const table: *const syntax.Syntax = forOptions(.{});
+
+/// Every table in the set, for a check that has to hold each of them.
+pub const every: []const syntax.Syntax = &tables;
 
 /// The table an editor over a document parsed with `opts` should consult.
 pub fn forOptions(opts: Options) *const syntax.Syntax {
@@ -377,7 +414,7 @@ test "markdown SPELLS every mark and AUTHORS the ones its parse config reads bac
 test "every derived table differs from base in the authorable flags and nothing else" {
     // The claim that makes deriving safe: `derive` touches only the gated
     // fields, so a future edit to it cannot quietly change an escape alphabet
-    // or a marker in one table out of forty-eight. The one alphabet that
+    // or a marker in one table out of hundreds. The one alphabet that
     // moves, moves by exactly `$`, and only under `math`.
     for (&tables) |*t| {
         {
@@ -450,10 +487,17 @@ test "forOptions: each flag moves exactly its own mark" {
     // CommonMark has no `~~`, so a toggle there would write literal tildes.
     const strict = forOptions(Options.commonmark);
     try std.testing.expect(!strict.inline_delims.get(.delete).?.authorable);
-    try std.testing.expectEqual(strict, forOptions(.{ .strikethrough = false }));
+    try std.testing.expect(!forOptions(.{ .strikethrough = false }).inline_delims.get(.delete).?.authorable);
+    // Nor a pipe table, a task box or a footnote, each of which strict
+    // CommonMark reads as text.
+    try std.testing.expect(strict.table_spelling == null and strict.task_marker == null and strict.footnote == null);
 
-    // GFM: strikethrough on, no highlight — the same answer as the defaults.
-    try std.testing.expectEqual(table, forOptions(Options.gfm));
+    // GFM: strikethrough, tables and task lists on, footnotes off — the
+    // defaults' answer less the footnote.
+    const gfm = forOptions(Options.gfm);
+    try std.testing.expect(gfm.footnote == null);
+    try std.testing.expect(gfm.table_spelling != null and gfm.task_marker != null);
+    try std.testing.expect(gfm.inline_delims.get(.delete).?.authorable);
 
     // Highlights, with and without colours, and both with strikethrough still
     // answering for itself.
@@ -489,7 +533,8 @@ test "forOptions: each flag moves exactly its own mark" {
     try std.testing.expect(!dir.inline_delims.get(.mark).?.authorable);
     // A flag that keys no table still changes nothing about which one is
     // returned — the point of the set being small.
-    try std.testing.expectEqual(table, forOptions(.{ .footnotes = false }));
+    try std.testing.expectEqual(table, forOptions(.{ .definition_lists = false }));
+    try std.testing.expect(forOptions(.{ .footnotes = false }).footnote == null);
 
     // Math is the fifth, and it moves only the escape alphabets: `$` opens
     // a formula with the flag on and is text without it.
@@ -514,28 +559,24 @@ test "forOptions: each flag moves exactly its own mark" {
     const both = forOptions(.{ .html_elements = true, .directives = true });
     try std.testing.expect(both.names_leaf_containers and both.inline_attrs);
 
-    // Forty-eight configurations, forty-eight distinct tables — the set has
-    // no duplicate a caller could reach two ways.
+    // Every configuration a distinct table — the set has no duplicate a
+    // caller could reach two ways. Each key is reached from the options it
+    // stands for.
     var all: [Key.count]*const syntax.Syntax = undefined;
-    var n: usize = 0;
-    for ([_]bool{ false, true }) |st| {
-        for ([_][2]bool{ .{ false, false }, .{ true, false }, .{ true, true } }) |h| {
-            for ([_]bool{ false, true }) |d| {
-                for ([_]bool{ false, true }) |e| {
-                    for ([_]bool{ false, true }) |m| {
-                        all[n] = forOptions(.{
-                            .strikethrough = st,
-                            .highlight = h[0],
-                            .highlight_colors = h[1],
-                            .directives = d,
-                            .html_elements = e,
-                            .math = m,
-                        });
-                        n += 1;
-                    }
-                }
-            }
-        }
+    for (0..Key.count) |i| {
+        const k = Key.fromIndex(i);
+        all[i] = forOptions(.{
+            .strikethrough = k.strikethrough,
+            .highlight = k.highlights != .none,
+            .highlight_colors = k.highlights == .colors,
+            .directives = k.directives,
+            .html_elements = k.html_elements,
+            .math = k.math,
+            .tables = k.tables,
+            .task_lists = k.task_lists,
+            .footnotes = k.footnotes,
+        });
+        try std.testing.expectEqual(@as(*const syntax.Syntax, &tables[i]), all[i]);
     }
     for (all, 0..) |a, i| {
         for (all[i + 1 ..]) |b| try std.testing.expect(a != b);
