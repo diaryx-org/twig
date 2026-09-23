@@ -61,6 +61,8 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\      Convert a document. `-o` selects the output; default is `html`.
         \\        html       render to HTML (default)
         \\        ast        dump the shared AST as pretty-printed JSON
+        \\        table      dump the node table: flat pre-order rows, the
+        \\                   encoding a language outside twig parses into
         \\        canonical  round-trip serialize back to the source format
         \\                   (only formats with a serializer support this)
         \\      --warn reports to stderr what the conversion will silently
@@ -99,6 +101,10 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\          --drop 'directive[name=vis]' --keep 'directive[class~=public]' --unwrap
         \\      Writes back in place; pass --dry-run to print the result instead.
         \\
+        \\  lang table [-i <format>] <file|->
+        \\      Print the node table a parse of <file> produces -- what a
+        \\      language outside twig writes for the same document.
+        \\
         \\  help              show this message
         \\  version           show the version
         \\
@@ -106,7 +112,7 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\  -i, --input <format>   override input-format detection
         \\                         (djot/dj, markdown/md, commonmark, gfm, xml, svg,
         \\                         html/htm, asciidoc/adoc)
-        \\  -o, --output <format>  select convert's output (html, ast, canonical)
+        \\  -o, --output <format>  select convert's output (html, ast, table, canonical)
         \\  --dry-run              (edit) print the result instead of writing it
         \\
         \\markdown extension flags (convert/query/edit; ignored for other inputs):
@@ -135,6 +141,12 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
     try w.flush();
 }
 
+pub fn runLang(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, opts: args_mod.LangOptions) ActionError!void {
+    switch (opts) {
+        .table => |convert| try runConvert(allocator, io, stdout, stderr, convert),
+    }
+}
+
 pub fn runIdentify(stdout: *Writer, opts: args_mod.IdentifyOptions) !void {
     try stdout.print("{s}\n", .{@tagName(opts.input)});
     try stdout.flush();
@@ -149,6 +161,10 @@ pub fn runIdentify(stdout: *Writer, opts: args_mod.IdentifyOptions) !void {
 ///                    adapters.
 ///   - `.ast`       — `ast_json.encode`, a stable pretty-printed JSON dump
 ///                    of the shared `AST`.
+///   - `.table`     — `twig.ast_table.encode`, the same document as flat
+///                    pre-order rows: the encoding a runtime language
+///                    writes, printed for a compiled one so there is an
+///                    oracle to hold it to.
 ///   - `.canonical` — by default, the INPUT format's own round-trip
 ///                    serializer (`format.FormatEntry.serializeCanonical`);
 ///                    when `opts.output_target` names a different target
@@ -187,7 +203,7 @@ fn warnAboutLoss(
     stderr: *Writer,
 ) ActionError!void {
     const target: format.Target = switch (output) {
-        .ast => return,
+        .ast, .table => return,
         .html => .html,
         .canonical => output_target orelse format.targetFor(input),
     };
@@ -252,6 +268,14 @@ fn convertSource(
             break :blk ast_json.encode(&d, stdout);
         } catch |err| {
             stderr.print("error: failed to write the AST dump for '{s}': {t}\n", .{ display_name, err }) catch {};
+            stderr.flush() catch {};
+            return error.ActionFailed;
+        },
+        .table => blk: {
+            const d = doc.document();
+            break :blk twig.ast_table.encode(allocator, &d, stdout, .{});
+        } catch |err| {
+            stderr.print("error: failed to write the node table for '{s}': {t}\n", .{ display_name, err }) catch {};
             stderr.flush() catch {};
             return error.ActionFailed;
         },
@@ -621,12 +645,13 @@ test "runVersion prints a 'twig <version>'-shaped line" {
 }
 
 test "runHelp mentions every command and both format flags" {
-    var buf: [4096]u8 = undefined;
+    var buf: [8192]u8 = undefined;
     var w: Writer = .fixed(&buf);
     try runHelp(&w, "twig");
     const out = w.buffered();
     try testing.expect(std.mem.indexOf(u8, out, "convert") != null);
     try testing.expect(std.mem.indexOf(u8, out, "identify") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "lang table") != null);
     try testing.expect(std.mem.indexOf(u8, out, "-i") != null);
     try testing.expect(std.mem.indexOf(u8, out, "-o") != null);
 }
@@ -667,6 +692,22 @@ test "convertSource: html output for djot goes through Djot.html.render (footnot
     // dispatches djot through `renderHtmlDjot`, not `renderHtmlGeneric`.
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "doc-endnotes") != null);
     try testing.expect(std.mem.indexOf(u8, out.buffered(), "id=\"fn1\"") != null);
+}
+
+test "convertSource: table output reads back as the parse it printed" {
+    var out_buf: [4096]u8 = undefined;
+    var err_buf: [256]u8 = undefined;
+    var out: Writer = .fixed(&out_buf);
+    var err: Writer = .fixed(&err_buf);
+
+    const src = "hi[^1]\n\n[^1]: a note\n";
+    try convertSource(testing.allocator, src, "-", .djot, .{}, .table, null, false, &out, &err);
+    var doc = try twig.ast_table.decode(testing.allocator, src, out.buffered(), null);
+    defer doc.deinit();
+    var parsed = try twig.Djot.parse(testing.allocator, src);
+    defer parsed.deinit();
+    try testing.expect(parsed.ast.eql(doc.ast));
+    try testing.expect(doc.labels.footnote("1") != null);
 }
 
 test "convertSource: ast output is JSON starting with a doc-kind object" {

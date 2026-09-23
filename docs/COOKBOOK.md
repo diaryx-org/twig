@@ -56,6 +56,7 @@ twig query doc.md 'link[dest^="http"]'    # every external link
 twig query doc.md 'code[lang=zig]'        # every zig code block
 twig query doc.md image                   # every image
 twig convert -o ast doc.md                # dump the whole tree as JSON
+twig lang table doc.md                    # the same, as one pre-order row per node
 ```
 
 Output is one `[index.path]  kind  "preview"` line per match:

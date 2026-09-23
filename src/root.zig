@@ -141,6 +141,10 @@ pub const Filter = @import("ast/filter.zig");
 /// comment.
 pub const ast_json = @import("ast/json.zig");
 
+/// The node table: a `Document` as flat pre-order rows, the encoding a
+/// language outside this library parses into. See `ast/table.zig`.
+pub const ast_table = @import("ast/table.zig");
+
 test {
     _ = @import("languages/harness.zig");
     _ = AST;
@@ -161,6 +165,7 @@ test {
     _ = Select;
     _ = Filter;
     _ = ast_json;
+    _ = ast_table;
     _ = @import("ast/compact.zig");
     _ = @import("ast/containment_test.zig");
     _ = Rst;

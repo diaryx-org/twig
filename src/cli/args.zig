@@ -21,7 +21,7 @@ const format = @import("format.zig");
 const InputFormat = format.InputFormat;
 const OutputMode = format.OutputMode;
 
-pub const Action = enum { help, version, convert, identify, edit, query, filter };
+pub const Action = enum { help, version, convert, identify, edit, query, filter, lang };
 
 /// One-line usage synopsis for each command, matching the per-command
 /// synopsis lines in `actions.zig`'s `runHelp`. When a command's arguments
@@ -36,6 +36,7 @@ pub fn commandUsage(action: Action) []const u8 {
         .query => "query [-i <format>] <file> <selector>",
         .edit => "edit [-i <format>] <file|-> <operation>",
         .filter => "filter [-i <format>] <file|-> --drop <sel> [--keep <sel>] [--unwrap]",
+        .lang => "lang table [-i <format>] <file|->",
         .help, .version => "<command> [options] <file>",
     };
 }
@@ -128,6 +129,16 @@ pub const FilterOptions = struct {
     parse_config: format.ParseConfig = .{},
 };
 
+/// `twig lang <subcommand>`: the questions asked about a LANGUAGE rather than
+/// about a document in it.
+pub const LangOptions = union(enum) {
+    /// `lang table <file>`: the node table a parse of `file` produces — what
+    /// a language outside twig must write for the same document. The same
+    /// bytes as `convert -o table`, under the command a language author
+    /// reaches for.
+    table: ConvertOptions,
+};
+
 pub const CliActionOptions = union(Action) {
     help: void,
     version: void,
@@ -136,6 +147,7 @@ pub const CliActionOptions = union(Action) {
     edit: EditOptions,
     query: QueryOptions,
     filter: FilterOptions,
+    lang: LangOptions,
 };
 
 pub const CliConfig = struct {
@@ -170,6 +182,8 @@ pub const ArgError = error{
     /// `filter` was given a file but no `--drop` selector, or a `--drop`/
     /// `--keep` flag was missing its selector value.
     MissingFilterSelector,
+    /// `lang` was given no subcommand, or one it does not have.
+    UnknownLangCommand,
 } || format.ResolveInputFormatError;
 
 /// A `[:0]const u8`-argv-slice-backed iterator satisfying the `.next()`
@@ -295,6 +309,9 @@ pub fn parseConfig(args: anytype, stderr: *Writer) ArgError!CliConfig {
     if (std.mem.eql(u8, action_str, "filter")) {
         return parseFilter(args, stderr, config.binary_name);
     }
+    if (std.mem.eql(u8, action_str, "lang")) {
+        return parseLang(args, stderr, config.binary_name);
+    }
 
     // Unrecognized verb: fall back to help, same as no args / an explicit
     // `twig help` (mirrors fig's `parseConfig` falling back rather than
@@ -349,6 +366,19 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
         .binary_name = binary_name,
         .options = .{ .convert = .{ .file = path, .input = resolved, .output = output, .output_target = output_target, .parse_config = parse_config, .warn = warn } },
     };
+}
+
+fn parseLang(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!CliConfig {
+    const sub = args.next() orelse return argFail(stderr, binary_name, .lang, "lang: missing subcommand", ArgError.UnknownLangCommand);
+    if (std.mem.eql(u8, sub, "table")) {
+        var parsed = try parseConvert(args, stderr, binary_name);
+        if (parsed.options.convert.output != .html or parsed.options.convert.output_target != null)
+            return argFail(stderr, binary_name, .lang, "lang table: prints the table; -o does not apply", ArgError.TooManyPositionals);
+        parsed.options.convert.output = .table;
+        return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .{ .table = parsed.options.convert } } };
+    }
+    try stderr.print("error: lang: unknown subcommand '{s}'\n", .{sub});
+    return argFail(stderr, binary_name, .lang, "lang: the subcommand is table", ArgError.UnknownLangCommand);
 }
 
 fn parseIdentify(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!CliConfig {
@@ -625,6 +655,24 @@ test "parseConfig: convert -i/-o override inference, in either flag order" {
     const c2 = try parseConfig(&a2, &w2);
     try testing.expectEqual(InputFormat.xml, c2.options.convert.input);
     try testing.expectEqual(OutputMode.canonical, c2.options.convert.output);
+}
+
+test "parseConfig: lang table is convert -o table" {
+    var buf: [512]u8 = undefined;
+    var w = scratchWriter(&buf);
+    var a = TestArgs{ .items = &.{ "twig", "lang", "table", "--gfm", "doc.md" } };
+    const c = try parseConfig(&a, &w);
+    try testing.expectEqual(Action.lang, c.action);
+    try testing.expectEqual(OutputMode.table, c.options.lang.table.output);
+    try testing.expectEqual(InputFormat.gfm, c.options.lang.table.input);
+
+    var w2 = scratchWriter(&buf);
+    var a2 = TestArgs{ .items = &.{ "twig", "convert", "-o", "table", "doc.dj" } };
+    try testing.expectEqual(OutputMode.table, (try parseConfig(&a2, &w2)).options.convert.output);
+
+    var w3 = scratchWriter(&buf);
+    var a3 = TestArgs{ .items = &.{ "twig", "lang", "tables", "doc.dj" } };
+    try testing.expectError(error.UnknownLangCommand, parseConfig(&a3, &w3));
 }
 
 test "parseConfig: a failed parse writes a command-scoped message and that command's usage, not the whole manual" {

@@ -428,6 +428,11 @@ base, which is why the range is reserved in a minor and the ABI stays at 6.
    column checks; `node_spelling` and `attrs_spans` as columns; `-o table`
    and `twig lang table` printing it for a compiled format. The compiled
    formats cross the contract here, before any runtime one exists.
+   Done, in `add(table): the node table, with every compiled format
+   crossing it`: `ast/table.zig`'s `encode` and `decode`, the column rules
+   as `checkColumns` shared with the harness, and the identity over every
+   sample and every fidelity probe. It found that XML, HTML and AsciiDoc
+   never compacted their arenas, which `fix(parse)` before it corrected.
 3. **The in-process carrier.** `TwigLanguageVTable`, `twig_language_register`,
    `twig_format_by_name`, the `Runtime` registry entry and `.runtime` in
    `Format`, the checked lookup at every entry point, and load running the

@@ -114,7 +114,11 @@ fn writeNode(w: *Stringify, doc: *const Document, id: Node.Id) Writer.Error!void
 /// exhaustively over `AST.Node.Kind` (see `ast.zig`'s doc comment for the
 /// full vocabulary) so adding a new `Kind` variant fails this file's build
 /// until it's given a field mapping here.
-fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
+///
+/// Public because it is also the payload half of the node table
+/// (`ast/table.zig`), whose rows carry exactly these fields; `readKind` below
+/// is the same switch read the other way, so a new kind fails both.
+pub fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
     switch (kind) {
         // Payload-free kinds: nothing beyond kind/span/attrs/children.
         .doc,
@@ -288,6 +292,149 @@ fn writeKindPayload(w: *Stringify, kind: Node.Kind) Writer.Error!void {
         },
     }
 }
+
+/// Why `readKind` refused an object: which field, and what was wrong with it.
+/// A decoder over input it did not write — a runtime language's table — has
+/// to name the field, because the author has nothing else to go on.
+pub const ReadError = error{InvalidPayload};
+
+pub const FieldProblem = struct {
+    field: []const u8 = "",
+    what: []const u8 = "",
+};
+
+/// The kind `ref` names, with its payload read from `obj` — the inverse of
+/// `writeKindPayload`, switching over the same arms. Strings in the result
+/// BORROW from `obj`; `AST.Builder.addNode` copies them.
+///
+/// A field whose Zig type has a default (`Cell.colspan`, `Line.indent`) or is
+/// optional may be absent; every other field is required. An enum payload is
+/// read by its tag name, which is what `writeKindPayload` writes.
+pub fn readKind(ref: AST.KindRef, obj: std.json.ObjectMap, problem: *FieldProblem) ReadError!Node.Kind {
+    const r: Reader = .{ .obj = obj, .problem = problem };
+    return switch (ref) {
+        .mark => |m| .{ .inline_mark = m },
+        .text_leaf => |k| .{ .text_leaf = .{ .kind = k, .text = try r.str("text") } },
+        .markup_leaf => |k| .{ .markup_leaf = .{ .kind = k, .text = try r.str("text") } },
+        .container_named => r.fail("kind", "not a published kind name"),
+        .tag => |tag| switch (tag) {
+            .inline_mark, .text_leaf, .markup_leaf => r.fail("kind", "a family is not a published kind name"),
+            .doc => .doc,
+            .para => .para,
+            .thematic_break => .thematic_break,
+            .section => .section,
+            .block_quote => .block_quote,
+            .definition_list => .definition_list,
+            .line_block => .line_block,
+            .table => .table,
+            .list_item => .list_item,
+            .definition_list_item => .definition_list_item,
+            .term => .term,
+            .definition => .definition,
+            .column => .column,
+            .caption => .caption,
+            .soft_break => .soft_break,
+            .hard_break => .hard_break,
+            .non_breaking_space => .non_breaking_space,
+            .heading => .{ .heading = .{ .level = try r.int("level") } },
+            .code_block => .{ .code_block = .{ .lang = try r.optStr("lang"), .text = try r.str("text") } },
+            .raw_block => .{ .raw_block = .{ .format = try r.str("format"), .text = try r.str("text") } },
+            .metadata => .{ .metadata = .{ .lang = try r.str("lang"), .text = try r.str("text") } },
+            .bullet_list => .{ .bullet_list = .{ .tight = try r.boolean("tight") } },
+            .ordered_list => .{ .ordered_list = .{
+                .numbering = try r.enumeration(AST.ListNumbering, "numbering"),
+                .tight = try r.boolean("tight"),
+                .start = try r.optInt("start"),
+            } },
+            .task_list => .{ .task_list = .{ .tight = try r.boolean("tight") } },
+            .task_list_item => .{ .task_list_item = .{ .checked = try r.boolean("checked") } },
+            .line => .{ .line = .{ .indent = try r.optInt("indent") orelse 0 } },
+            .row => .{ .row = .{ .head = try r.boolean("head") } },
+            .cell => .{ .cell = .{
+                .head = try r.boolean("head"),
+                .alignment = try r.enumeration(AST.Alignment, "alignment"),
+                .colspan = try r.optInt("colspan") orelse 1,
+                .rowspan = try r.optInt("rowspan") orelse 1,
+            } },
+            .footnote => .{ .footnote = .{ .label = try r.str("label") } },
+            .citation => .{ .citation = .{ .label = try r.str("label") } },
+            .substitution => .{ .substitution = .{ .label = try r.str("label") } },
+            .reference => .{ .reference = .{ .label = try r.str("label"), .destination = try r.str("destination") } },
+            .str => .{ .str = try r.str("text") },
+            .raw_inline => .{ .raw_inline = .{ .format = try r.str("format"), .text = try r.str("text") } },
+            // `text` is written beside it for readers, and derived; the kind is
+            // the fact.
+            .smart_punctuation => .{ .smart_punctuation = try r.enumeration(AST.SmartPunctuationKind, "punctuation_kind") },
+            .link => .{ .link = .{ .destination = try r.optStr("destination"), .reference = try r.optStr("reference") } },
+            .image => .{ .image = .{ .destination = try r.optStr("destination"), .reference = try r.optStr("reference") } },
+            .container => .{ .container = .{
+                .name = try r.str("name"),
+                .form = try r.optEnumeration(AST.Form, "form"),
+                .argument = try r.optStr("argument"),
+                .text = try r.optStr("text"),
+            } },
+            .processing_instruction => .{ .processing_instruction = .{ .target = try r.str("target"), .data = try r.str("data") } },
+        },
+    };
+}
+
+/// Typed field reads over one JSON object, each naming its field on failure.
+const Reader = struct {
+    obj: std.json.ObjectMap,
+    problem: *FieldProblem,
+
+    fn fail(self: Reader, field: []const u8, what: []const u8) ReadError {
+        self.problem.* = .{ .field = field, .what = what };
+        return error.InvalidPayload;
+    }
+
+    /// The value at `field`, with an explicit JSON `null` read as absent.
+    fn get(self: Reader, field: []const u8) ?std.json.Value {
+        const v = self.obj.get(field) orelse return null;
+        return if (v == .null) null else v;
+    }
+
+    fn str(self: Reader, field: []const u8) ReadError![]const u8 {
+        return try self.optStr(field) orelse self.fail(field, "required string is missing");
+    }
+
+    fn optStr(self: Reader, field: []const u8) ReadError!?[]const u8 {
+        const v = self.get(field) orelse return null;
+        return switch (v) {
+            .string => |s| s,
+            else => self.fail(field, "expected a string"),
+        };
+    }
+
+    fn int(self: Reader, field: []const u8) ReadError!u32 {
+        return try self.optInt(field) orelse self.fail(field, "required integer is missing");
+    }
+
+    fn optInt(self: Reader, field: []const u8) ReadError!?u32 {
+        const v = self.get(field) orelse return null;
+        return switch (v) {
+            .integer => |i| std.math.cast(u32, i) orelse self.fail(field, "integer out of range"),
+            else => self.fail(field, "expected an integer"),
+        };
+    }
+
+    fn boolean(self: Reader, field: []const u8) ReadError!bool {
+        const v = self.get(field) orelse return self.fail(field, "required boolean is missing");
+        return switch (v) {
+            .bool => |b| b,
+            else => self.fail(field, "expected a boolean"),
+        };
+    }
+
+    fn enumeration(self: Reader, comptime E: type, field: []const u8) ReadError!E {
+        return try self.optEnumeration(E, field) orelse self.fail(field, "required name is missing");
+    }
+
+    fn optEnumeration(self: Reader, comptime E: type, field: []const u8) ReadError!?E {
+        const name = try self.optStr(field) orelse return null;
+        return std.meta.stringToEnum(E, name) orelse self.fail(field, "not one of the names this field takes");
+    }
+};
 
 const testing = std.testing;
 
