@@ -1042,7 +1042,10 @@ test "a ParsedDoc renders with the dialect it was parsed under" {
     try std.testing.expectEqual(Format.markdown, d.format);
 }
 
-test "every syntax table in the registry is coherent" {
+// Every compiled table is checked where the build can refuse it: a literal
+// that breaks one of `Syntax.validate`'s rules fails to compile, naming it.
+comptime {
+    @setEvalBranchQuota(200_000);
     for (&registry) |*e| e.syntax.assertCoherent();
 }
 

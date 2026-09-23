@@ -50,6 +50,37 @@
 //! same small family, for the same reason, once its last per-format hooks
 //! turned out to be the spellings that were not a table.)
 //!
+//! ── The line model ─────────────────────────────────────────────────────────
+//! Every gesture that touches block structure assumes one shape of source,
+//! and a format authored through this table has to have it. It was implicit
+//! while every table was compiled beside the parser it described; a runtime
+//! language's author gets it written down:
+//!
+//!   * Source is a sequence of LINES ended by `\n`. A `\r` before one is kept
+//!     and ignored, never written.
+//!   * A block begins at a line start. A marker (`heading_marker`, a
+//!     container's `marker`, a task box, a footnote definition) is written at
+//!     the start of the block's first line, after the enclosing containers'
+//!     prefixes.
+//!   * A container is a PREFIX on every line it covers: `marker` on a block's
+//!     first line, `cont` on its continuation lines, `blank` on an empty line
+//!     inside it. Nesting concatenates prefixes, outermost first, so a
+//!     container never has to know what it is inside of.
+//!   * Two blocks are kept apart by `block_separator` written after the
+//!     prefix, and one block continues onto its next line by `line_join` —
+//!     each ends in its only line end. A thematic break, a fence and a table
+//!     row are each one whole line.
+//!   * Everything written inside a line — delimiters, markers, boxes, a
+//!     table's skeleton, an in-cell break — holds no line end.
+//!
+//! A format whose blocks are delimited fragments rather than lines (HTML's
+//! element pairs) states none of the line spellings and reaches the same
+//! gestures through `renderBlock`, which prints whole fragments. What it
+//! cannot do is state a line spelling it does not mean. `Syntax.validate`
+//! holds a table to the rules above that are facts about its bytes, and
+//! `languages/harness.zig` holds it to the ones that are facts about its
+//! parser.
+//!
 //! `Syntax` names no format and imports no language module; `format.zig`'s
 //! registry is what binds a `Format` to its `Syntax`, and `ast/editor.zig`
 //! takes a `*const Syntax` without ever learning which format it came from.
@@ -812,32 +843,60 @@ pub const Syntax = struct {
         return if (d.authorable) d else null;
     }
 
-    /// A `Syntax` literal is hand-maintained, so the invariants between its
-    /// fields are checked once at startup rather than trusted at every call
-    /// site — the same trust boundary `format.zig`'s registry relies on.
-    pub fn assertCoherent(self: *const Syntax) void {
+    /// Whether the invariants between this table's fields hold — the rules
+    /// every gesture in `ast/editor.zig` takes on trust, stated once. On the
+    /// first that fails, `why` (when given) says which rule and which field,
+    /// and the answer is `error.Incoherent`.
+    ///
+    /// A compiled table is checked at comptime (`comptimeCheck`), so a literal
+    /// that breaks a rule fails its build; a table read from a runtime
+    /// language's description is checked here at registration, so it is
+    /// refused with the rule's name rather than trusted into an assert. The
+    /// rules are the same list either way — that is the point of there being
+    /// one function.
+    ///
+    /// Two families. The implications between fields are the older half:
+    /// what one gesture writes, another field has to be able to finish. The
+    /// well-formedness rules are the line model (see the module doc) stated
+    /// as data: a spelling the editor writes inside one line never holds a
+    /// line end, and the two that write line ends are nothing else.
+    pub fn validate(self: *const Syntax, why: ?*Incoherence) error{Incoherent}!void {
+        const fail = struct {
+            fn f(w: ?*Incoherence, rule: Rule, field: []const u8) error{Incoherent} {
+                if (w) |p| p.* = .{ .rule = rule, .field = field };
+                return error.Incoherent;
+            }
+        }.f;
+
+        // ── Implications ───────────────────────────────────────────────────
+
         // Text and destination escaping are two halves of spelling ONE link.
         // A format with one but not the other would build `[text](` and then
         // have nothing to say about what follows.
-        std.debug.assert((self.link_text_escapes == null) == (self.link_dest_escapes == null));
+        if ((self.link_text_escapes == null) != (self.link_dest_escapes == null))
+            return fail(why, .link_halves, "link_text_escapes");
         // The body-text and line-start alphabets are two halves of spelling ONE
         // literal run: a format that could escape mid-line specials but not
         // block markers (or vice versa) would let `insertLiteral` mint the other.
-        std.debug.assert((self.text_escapes == null) == (self.block_start_escapes == null));
+        if ((self.text_escapes == null) != (self.block_start_escapes == null))
+            return fail(why, .literal_halves, "text_escapes");
         // An alphabet is read by exactly one renderer, and that renderer reads
         // nothing else: a table that stated an alphabet and pointed `renderText`
         // elsewhere would carry a spelling nothing consults, and one that named
         // the alphabet renderer without an alphabet would fail on first use
         // rather than here.
-        std.debug.assert((self.text_escapes != null) == (self.renderText == &renderTextByAlphabet));
+        if ((self.text_escapes != null) != (self.renderText == &renderTextByAlphabet))
+            return fail(why, .alphabet_renderer, "renderText");
         // A checkbox is written after a bullet marker, so the two spellings are
         // one construct: `- ` + `[ ] `. A format with a checkbox and no bullet
         // list would have nowhere to put it.
         if (self.task_marker) |tm| {
-            std.debug.assert(self.container_spelling.get(.bullet_list) != null);
+            if (self.container_spelling.get(.bullet_list) == null)
+                return fail(why, .task_needs_bullet, "task_marker");
             // Ticking a box overwrites it in place, so the two spellings must
             // be the same width or the item's text would shift.
-            std.debug.assert(tm.checked.len == tm.unchecked.len);
+            if (tm.checked.len != tm.unchecked.len)
+                return fail(why, .task_widths, "task_marker.checked");
         }
         // A colour prefix is written INSIDE a mark, so a format that spells one
         // must spell the mark itself — and must be able to author it, since a
@@ -847,22 +906,23 @@ pub const Syntax = struct {
         // `highlight` makes the mark authorable, `highlight_colors` adds the
         // palette on top.)
         if (self.mark_colors) |mc| {
-            std.debug.assert(mc.attr_key.len > 0);
-            std.debug.assert(mc.colors.len > 0);
-            std.debug.assert(mc.space.len > 0);
+            if (mc.attr_key.len == 0) return fail(why, .colors_spelling, "mark_colors.attr_key");
+            if (mc.colors.len == 0) return fail(why, .colors_spelling, "mark_colors.colors");
+            if (mc.space.len == 0) return fail(why, .colors_spelling, "mark_colors.space");
             const d = self.inline_delims.get(.mark);
-            std.debug.assert(d != null and d.?.authorable);
+            if (d == null or !d.?.authorable) return fail(why, .colors_need_mark, "mark_colors");
             for (mc.colors, 0..) |c, i| {
-                std.debug.assert(c.name.len > 0);
-                std.debug.assert(c.prefix.len > 0);
+                if (c.name.len == 0 or c.prefix.len == 0)
+                    return fail(why, .colors_spelling, "mark_colors.colors");
                 // A prefix that began with the space would make the written
                 // form and the tight form indistinguishable on the way back in.
-                std.debug.assert(!std.mem.startsWith(u8, c.prefix, mc.space));
+                if (std.mem.startsWith(u8, c.prefix, mc.space))
+                    return fail(why, .colors_spelling, "mark_colors.colors");
                 // Two colours spelled or named the same way would make
                 // `prefixAt`/`prefixFor` depend on table order.
                 for (mc.colors[i + 1 ..]) |o| {
-                    std.debug.assert(!std.mem.eql(u8, c.prefix, o.prefix));
-                    std.debug.assert(!std.mem.eql(u8, c.name, o.name));
+                    if (std.mem.eql(u8, c.prefix, o.prefix) or std.mem.eql(u8, c.name, o.name))
+                        return fail(why, .colors_duplicate, "mark_colors.colors");
                 }
             }
         }
@@ -871,9 +931,10 @@ pub const Syntax = struct {
         // redundant (one authors a pair, the other prints a leaf), so the
         // duplicate is pinned rather than removed.
         if (self.footnote) |fs| {
-            const d = self.text_leaf_delims.get(.footnote_reference).?;
-            std.debug.assert(std.mem.eql(u8, d.open, fs.ref_open));
-            std.debug.assert(std.mem.eql(u8, d.close, fs.ref_close));
+            const d = self.text_leaf_delims.get(.footnote_reference) orelse
+                return fail(why, .footnote_halves, "text_leaf_delims.footnote_reference");
+            if (!std.mem.eql(u8, d.open, fs.ref_open) or !std.mem.eql(u8, d.close, fs.ref_close))
+                return fail(why, .footnote_halves, "footnote.ref_open");
         }
         // A table is re-spelled cell by cell between bars, so anything holding a
         // BAR outside a cell's content mints a column no row asked for — and the
@@ -881,13 +942,13 @@ pub const Syntax = struct {
         // An empty delimiter cell is the same failure from the other side: a
         // delimiter row of bare bars isn't one, so the header would be lost.
         if (self.table_spelling) |ts| {
-            std.debug.assert(ts.bar.len > 0);
-            std.debug.assert(std.mem.indexOf(u8, ts.pad, ts.bar) == null);
-            std.debug.assert(std.mem.indexOf(u8, ts.delim_pad, ts.bar) == null);
+            if (ts.bar.len == 0) return fail(why, .table_bar, "table_spelling.bar");
+            if (std.mem.indexOf(u8, ts.pad, ts.bar) != null) return fail(why, .table_bar, "table_spelling.pad");
+            if (std.mem.indexOf(u8, ts.delim_pad, ts.bar) != null) return fail(why, .table_bar, "table_spelling.delim_pad");
             for (std.enums.values(AST.Alignment)) |a| {
                 const cell = ts.delim.get(a);
-                std.debug.assert(cell.len > 0);
-                std.debug.assert(std.mem.indexOf(u8, cell, ts.bar) == null);
+                if (cell.len == 0 or std.mem.indexOf(u8, cell, ts.bar) != null)
+                    return fail(why, .table_bar, "table_spelling.delim");
             }
         }
         // `splitBlock` divides a block at the caret and gives BOTH halves the
@@ -899,8 +960,8 @@ pub const Syntax = struct {
         // query exists to prevent, so it is pinned here rather than caveated
         // there.
         if (self.block_separator != null) {
-            std.debug.assert(self.heading_marker != null);
-            std.debug.assert(self.code_fence != null);
+            if (self.heading_marker == null) return fail(why, .split_needs_markers, "heading_marker");
+            if (self.code_fence == null) return fail(why, .split_needs_markers, "code_fence");
             // And it can continue one onto its next line. A block separator IS
             // a line join and one line end more — the blank line between two
             // blocks is the terminator of the first plus an empty line — so a
@@ -910,17 +971,189 @@ pub const Syntax = struct {
             // offer a caret editor an Enter with no Backspace. The implication
             // is one-way: HTML joins where it cannot split, which is the whole
             // reason `line_join` is a second field.
-            std.debug.assert(self.line_join != null);
+            if (self.line_join == null) return fail(why, .split_needs_join, "line_join");
         }
         // A named leaf container has exactly one way to reach the source — the
         // fragment renderer — so a table claiming the reparse without carrying
-        // the printer states a promise nothing could keep.
-        if (self.names_leaf_containers) std.debug.assert(self.renderBlock != null);
-        // The two attribute claims rest on the same renderer.
-        if (self.block_attrs != null) std.debug.assert(self.renderBlock != null);
-        if (self.inline_attrs) std.debug.assert(self.renderBlock != null);
+        // the printer states a promise nothing could keep. The two attribute
+        // claims rest on the same renderer.
+        if (self.renderBlock == null) {
+            if (self.names_leaf_containers) return fail(why, .claim_needs_renderer, "names_leaf_containers");
+            if (self.block_attrs != null) return fail(why, .claim_needs_renderer, "block_attrs");
+            if (self.inline_attrs) return fail(why, .claim_needs_renderer, "inline_attrs");
+        }
+
+        // ── Well-formedness: the line model ─────────────────────────────────
+
+        // A delimiter pair is written around a run inside one line, and an
+        // empty one would wrap nothing the reparse could find.
+        for (std.enums.values(AST.InlineMark)) |m| {
+            const d = self.inline_delims.get(m) orelse continue;
+            if (!inLine(d.open, false) or !inLine(d.close, false)) return fail(why, .inline_spelling, "inline_delims");
+        }
+        for (std.enums.values(AST.TextLeafKind)) |k| {
+            const d = self.text_leaf_delims.get(k) orelse continue;
+            if (!inLine(d.open, false) or !inLine(d.close, false)) return fail(why, .inline_spelling, "text_leaf_delims");
+        }
+        // A container is a prefix on every line it covers. Only a numbered
+        // list may leave its marker empty, since that one is built per item.
+        for (std.enums.values(ContainerKind)) |k| {
+            const c = self.container_spelling.get(k) orelse continue;
+            if (!inLine(c.marker, c.numbered) or !inLine(c.cont, true) or !inLine(c.blank, true))
+                return fail(why, .line_spelling, "container_spelling");
+        }
+        if (self.heading_marker) |h| {
+            if (!visible(h)) return fail(why, .line_spelling, "heading_marker");
+        }
+        if (self.thematic_break) |t| {
+            if (!inLine(t, false)) return fail(why, .line_spelling, "thematic_break");
+        }
+        if (self.code_fence) |f| {
+            if (!visible(f.char) or f.min == 0) return fail(why, .line_spelling, "code_fence");
+        }
+        if (self.task_marker) |tm| {
+            if (!inLine(tm.unchecked, false) or !inLine(tm.checked, false) or !inLine(tm.space, true))
+                return fail(why, .line_spelling, "task_marker");
+        }
+        if (self.footnote) |fs| {
+            if (!inLine(fs.def_suffix, true)) return fail(why, .line_spelling, "footnote.def_suffix");
+        }
+        if (self.table_spelling) |ts| {
+            // A pipe table's row is one line: nothing in its skeleton may end one.
+            if (!inLine(ts.bar, false) or !inLine(ts.pad, true) or !inLine(ts.delim_pad, true))
+                return fail(why, .line_spelling, "table_spelling");
+            for (std.enums.values(AST.Alignment)) |a| {
+                if (!inLine(ts.delim.get(a), false)) return fail(why, .line_spelling, "table_spelling.delim");
+            }
+        }
+        if (self.list_attach) |l| {
+            if (!inLine(l, false)) return fail(why, .line_spelling, "list_attach");
+        }
+        if (self.cell_line_break) |b| {
+            if (!inLine(b, false)) return fail(why, .line_spelling, "cell_line_break");
+        }
+        // The two spellings that write line ends write them at the END: what
+        // precedes the last is the container prefix the editor has already
+        // written, and nothing a format adds after it.
+        if (self.block_separator) |s| {
+            if (!endsLine(s)) return fail(why, .line_end_spelling, "block_separator");
+        }
+        if (self.line_join) |s| {
+            if (!endsLine(s)) return fail(why, .line_end_spelling, "line_join");
+        }
+        // An escape is a backslash before the byte, which reads back as that
+        // byte only where the byte is punctuation. And the two literal
+        // alphabets are disjoint: a byte escaped everywhere needs no
+        // line-start entry, and one in both is a table that forgot which.
+        if (self.text_escapes) |te| {
+            if (!punctuation(te)) return fail(why, .alphabet_byte, "text_escapes");
+            const bse = self.block_start_escapes.?;
+            if (!punctuation(bse)) return fail(why, .alphabet_byte, "block_start_escapes");
+            for (te) |c| {
+                if (std.mem.indexOfScalar(u8, bse, c) != null) return fail(why, .alphabets_overlap, "block_start_escapes");
+            }
+        }
+        if (self.link_text_escapes) |e| {
+            if (!punctuation(e)) return fail(why, .alphabet_byte, "link_text_escapes");
+        }
+        if (self.link_dest_escapes) |d| {
+            if (!punctuation(d.plain)) return fail(why, .alphabet_byte, "link_dest_escapes.plain");
+            if (d.angle) |a| {
+                if (!punctuation(a.escapes)) return fail(why, .alphabet_byte, "link_dest_escapes.angle");
+            }
+        }
+    }
+
+    /// `validate` for a table a build already trusts: a compiled row, checked
+    /// once where it is defined. Fails the BUILD with the rule's name when
+    /// run at comptime, and panics with it at runtime.
+    pub fn assertCoherent(self: *const Syntax) void {
+        var why: Incoherence = .{};
+        self.validate(&why) catch {
+            if (@inComptime()) @compileError("incoherent Syntax: " ++ why.field ++ ": " ++ why.rule.describe());
+            std.debug.panic("incoherent Syntax: {s}: {s}", .{ why.field, why.rule.describe() });
+        };
     }
 };
+
+/// Which of `Syntax.validate`'s rules a table broke, and where.
+pub const Incoherence = struct {
+    rule: Rule = .link_halves,
+    /// The field, as the description spells it (`task_marker.checked`).
+    field: []const u8 = "",
+};
+
+/// `Syntax.validate`'s rules, by name.
+pub const Rule = enum {
+    link_halves,
+    literal_halves,
+    alphabet_renderer,
+    task_needs_bullet,
+    task_widths,
+    colors_spelling,
+    colors_need_mark,
+    colors_duplicate,
+    footnote_halves,
+    table_bar,
+    split_needs_markers,
+    split_needs_join,
+    claim_needs_renderer,
+    inline_spelling,
+    line_spelling,
+    line_end_spelling,
+    alphabet_byte,
+    alphabets_overlap,
+
+    pub fn describe(rule: Rule) []const u8 {
+        return switch (rule) {
+            .link_halves => "a link's text and destination alphabets come together or not at all",
+            .literal_halves => "the body-text and line-start alphabets come together or not at all",
+            .alphabet_renderer => "a text alphabet is read by the alphabet renderer, and a format with none renders literals itself",
+            .task_needs_bullet => "a task checkbox rides on a bullet item, so a bullet list must be spelled",
+            .task_widths => "the checked and unchecked boxes must be the same width",
+            .colors_spelling => "a mark colour needs a key, a space, and colours each with a name and a prefix not starting with the space",
+            .colors_need_mark => "a mark colour is written inside a mark this table can author",
+            .colors_duplicate => "two mark colours share a name or a prefix",
+            .footnote_halves => "a footnote's reference is spelled as its text leaf is",
+            .table_bar => "a table's bar is non-empty and appears in no padding or delimiter cell, and no delimiter cell is empty",
+            .split_needs_markers => "a format that splits blocks spells a heading marker and a code fence",
+            .split_needs_join => "a format that splits blocks can join them",
+            .claim_needs_renderer => "a directive or attribute claim needs a block renderer to print through",
+            .inline_spelling => "an inline delimiter is non-empty and holds no line end",
+            .line_spelling => "a spelling written inside a line holds no line end, and a marker is not empty",
+            .line_end_spelling => "a block separator or line join ends in its only line end",
+            .alphabet_byte => "an escape alphabet holds only ASCII punctuation",
+            .alphabets_overlap => "a byte escaped everywhere is not also a line-start escape",
+        };
+    }
+};
+
+/// Whether `s` fits inside one line: no line end, and non-empty unless
+/// `may_be_empty`.
+fn inLine(s: []const u8, may_be_empty: bool) bool {
+    if (s.len == 0) return may_be_empty;
+    return std.mem.indexOfAny(u8, s, "\r\n") == null;
+}
+
+/// A marker byte a reparse can see: printable ASCII and not a space.
+fn visible(c: u8) bool {
+    return c > ' ' and c < 0x7f;
+}
+
+/// Ends in `\n`, with no line end before it.
+fn endsLine(s: []const u8) bool {
+    if (s.len == 0 or s[s.len - 1] != '\n') return false;
+    return std.mem.indexOfAny(u8, s[0 .. s.len - 1], "\r\n") == null;
+}
+
+/// Every byte is ASCII punctuation — what a backslash escape reads back as
+/// itself in every backslash format twig knows.
+fn punctuation(s: []const u8) bool {
+    for (s) |c| {
+        if (!visible(c) or std.ascii.isAlphanumeric(c)) return false;
+    }
+    return true;
+}
 
 /// How a node's own attributes are spelled — see `Syntax.node_attrs`. The
 /// run itself is `attrs_writer.writeHtmlAttrs`'s and is not a field here: a
@@ -957,4 +1190,32 @@ test "a parse-only format spells nothing" {
     try std.testing.expect(s.block_attrs == null);
     try std.testing.expect(!s.inline_attrs);
     s.assertCoherent();
+}
+
+test "validate names the rule a table breaks" {
+    var why: Incoherence = .{};
+    const half_link: Syntax = .{ .link_text_escapes = "[]" };
+    try std.testing.expectError(error.Incoherent, half_link.validate(&why));
+    try std.testing.expectEqual(Rule.link_halves, why.rule);
+
+    const split_alone: Syntax = .{ .block_separator = "\n", .line_join = "\n" };
+    try std.testing.expectError(error.Incoherent, split_alone.validate(&why));
+    try std.testing.expectEqual(Rule.split_needs_markers, why.rule);
+    try std.testing.expectEqualStrings("heading_marker", why.field);
+
+    const two_lines: Syntax = .{ .thematic_break = "-\n-" };
+    try std.testing.expectError(error.Incoherent, two_lines.validate(&why));
+    try std.testing.expectEqual(Rule.line_spelling, why.rule);
+
+    var marks: std.EnumArray(AST.InlineMark, ?Delims) = .initFill(null);
+    marks.set(.strong, .{ .open = "", .close = "*" });
+    const empty_open: Syntax = .{ .inline_delims = marks };
+    try std.testing.expectError(error.Incoherent, empty_open.validate(&why));
+    try std.testing.expectEqual(Rule.inline_spelling, why.rule);
+
+    const letter_escape: Syntax = .{ .text_escapes = "a", .block_start_escapes = "#", .renderText = &renderTextByAlphabet };
+    try std.testing.expectError(error.Incoherent, letter_escape.validate(&why));
+    try std.testing.expectEqual(Rule.alphabet_byte, why.rule);
+
+    try none.validate(&why);
 }
