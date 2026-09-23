@@ -262,11 +262,11 @@ fn runScan(sc: *Scanner, text: []const u8) Allocator.Error![]Node.Id {
                 }
             },
             '<' => {
-                // Under `html_elements` a `<span …>` with its `</span>` in
-                // this run is a container over the content between — checked
-                // first, since a paired span is what a `<` most often opens
+                // Under `html_elements` a `<span …>` or `<u>` with its closer
+                // in this run is a node over the content between — checked
+                // first, since a paired tag is what a `<` most often opens
                 // in a document written by twig's own Markdown serializer.
-                const paired: ?usize = if (sc.options.html_elements) try tryPairedSpan(sc, text, i) else null;
+                const paired: ?usize = if (sc.options.html_elements) try tryPairedTag(sc, text, i) else null;
                 if (paired) |end| {
                     i = end;
                 } else if (scanAutolinkUri(text, i)) |end| {
@@ -1734,44 +1734,68 @@ fn buildTextDirective(sc: *Scanner, d: TextDirective) Allocator.Error!Node.Id {
     return id;
 }
 
-// ── Phase 3: paired <span> (`self.options.html_elements`) ──────────────
+// ── Phase 3: paired <span> and <u> (`self.options.html_elements`) ──────
 
-/// `tag` is a whole `<…>` or `</…>` as the scanners delimit it: whether its
-/// name is `span`, case-insensitively.
-fn isSpanTag(tag: []const u8, closing: bool) bool {
-    const start: usize = if (closing) 2 else 1;
-    if (tag.len < start + 4) return false;
-    if (!std.ascii.eqlIgnoreCase(tag[start .. start + 4], "span")) return false;
-    const after = tag[start + 4];
-    return after == ' ' or after == '\t' or after == '\n' or after == '/' or after == '>';
-}
+/// The inline tags that PAIR under `html_elements`: a `<span>` becomes a
+/// `container`, a `<u>` an `insert` mark. Both are the spellings twig's own
+/// Markdown serializer writes — an attributed run and an `insert` — so these
+/// are what have to read back.
+const PairedTag = enum {
+    span,
+    u,
 
-/// `text[at] == '<'`, under `html_elements`: a `<span …>` whose `</span>` lies
-/// in this run is a `container` named `span` over the inline content between,
-/// carrying the tag's attributes — the one inline tag that pairs, as `<div>`
-/// is the one block tag (see `block.zig`'s `tryDivFence`), and the spelling
-/// twig's own Markdown serializer writes for an attributed run. The content
-/// is scanned by a nested scanner the way a text directive's label is, so a
-/// mark cannot straddle the span's edge. Returns the offset just past the
-/// closer, or `null` to leave the tag to the raw path: no closer in the run,
-/// a self-closing tag, or nesting past `max_directive_nesting`.
-fn tryPairedSpan(sc: *Scanner, text: []const u8, at: usize) Allocator.Error!?usize {
+    /// `tag` is a whole `<…>` or `</…>` as the scanners delimit it: whether
+    /// its name is this one's, case-insensitively.
+    fn names(self: PairedTag, tag: []const u8, closing: bool) bool {
+        const name = @tagName(self);
+        const start: usize = if (closing) 2 else 1;
+        if (tag.len < start + name.len + 1) return false;
+        if (!std.ascii.eqlIgnoreCase(tag[start .. start + name.len], name)) return false;
+        const after = tag[start + name.len];
+        return after == ' ' or after == '\t' or after == '\n' or after == '/' or after == '>';
+    }
+
+    /// Which paired tag `tag` opens, if any. A `<u>` pairs only BARE: an
+    /// `insert` has no attributes Markdown can spell, so `<u class=x>` would
+    /// come back as `<u>` and is left raw rather than silently narrowed.
+    fn opening(tag: []const u8) ?PairedTag {
+        if (tag[tag.len - 2] == '/') return null;
+        if (PairedTag.span.names(tag, false)) return .span;
+        if (PairedTag.u.names(tag, false)) {
+            const rest = std.mem.trim(u8, tag[2 .. tag.len - 1], " \t\n");
+            return if (rest.len == 0) .u else null;
+        }
+        return null;
+    }
+};
+
+/// `text[at] == '<'`, under `html_elements`: a `<span …>` or a bare `<u>`
+/// whose closer lies in this run. A span is a `container` named `span` over
+/// the inline content between, carrying the tag's attributes — the one inline
+/// tag that pairs as a container, as `<div>` is the one block tag (see
+/// `block.zig`'s `tryDivFence`), and the spelling twig's own Markdown
+/// serializer writes for an attributed run. A `<u>` is an `insert` mark, the
+/// spelling the serializer writes for one. The content is scanned by a nested
+/// scanner the way a text directive's label is, so a mark cannot straddle the
+/// tag's edge. Returns the offset just past the closer, or `null` to leave the
+/// tag to the raw path: no closer in the run, a self-closing tag, a `<u>` with
+/// attributes, or nesting past `max_directive_nesting`.
+fn tryPairedTag(sc: *Scanner, text: []const u8, at: usize) Allocator.Error!?usize {
     if (sc.directive_depth >= max_directive_nesting) return null;
     const open_end = scanHtmlOpenTag(text, at) orelse return null;
-    if (!isSpanTag(text[at..open_end], false)) return null;
-    if (text[open_end - 2] == '/') return null;
+    const which = PairedTag.opening(text[at..open_end]) orelse return null;
 
-    // The matching closer, counting nested spans.
+    // The matching closer, counting nested tags of the same name.
     var depth: usize = 0;
     var i = open_end;
     var close_start: ?usize = null;
     while (i < text.len) : (i += 1) {
         if (text[i] != '<') continue;
         if (scanHtmlOpenTag(text, i)) |e| {
-            if (isSpanTag(text[i..e], false) and text[e - 2] != '/') depth += 1;
+            if (which.names(text[i..e], false) and text[e - 2] != '/') depth += 1;
             i = e - 1;
         } else if (scanHtmlCloseTag(text, i)) |e| {
-            if (isSpanTag(text[i..e], true)) {
+            if (which.names(text[i..e], true)) {
                 if (depth == 0) {
                     close_start = i;
                     break;
@@ -1799,20 +1823,27 @@ fn tryPairedSpan(sc: *Scanner, text: []const u8, at: usize) Allocator.Error!?usi
     const children = try runScan(&nested, text[open_end..cs]);
     defer if (children.len > 0) b.allocator.free(children);
 
-    const id = try b.addContainer(.{ .container = .{ .form = .inline_text, .name = "span" } }, children);
-    b.setSpelling(id, .{ .container_origin = .element });
-    // The tag's attributes, read by the HTML parser as `promoteInlineHtml`
-    // reads a self-contained tag's: the opener alone parses to one `span`
-    // carrying them, and `setAttrs` copies every key and value.
-    var tag_ast = try html_lang.parse(b.allocator, text[at..open_end]);
-    defer tag_ast.deinit();
-    var it = tag_ast.children(tag_ast.ast.root);
-    while (it.next()) |child| {
-        if (child.kind != .container) continue;
-        const attrs = tag_ast.ast.attrsOf(child.id);
-        if (!attrs.isEmpty()) try b.setAttrs(id, attrs);
-        break;
-    }
+    const id = switch (which) {
+        .u => try b.addContainer(.{ .inline_mark = .insert }, children),
+        .span => span: {
+            const cid = try b.addContainer(.{ .container = .{ .form = .inline_text, .name = "span" } }, children);
+            b.setSpelling(cid, .{ .container_origin = .element });
+            // The tag's attributes, read by the HTML parser as
+            // `promoteInlineHtml` reads a self-contained tag's: the opener
+            // alone parses to one `span` carrying them, and `setAttrs` copies
+            // every key and value.
+            var tag_ast = try html_lang.parse(b.allocator, text[at..open_end]);
+            defer tag_ast.deinit();
+            var it = tag_ast.children(tag_ast.ast.root);
+            while (it.next()) |child| {
+                if (child.kind != .container) continue;
+                const attrs = tag_ast.ast.attrsOf(child.id);
+                if (!attrs.isEmpty()) try b.setAttrs(cid, attrs);
+                break;
+            }
+            break :span cid;
+        },
+    };
     sc.setSpanIfMapped(id, at, close_end);
     sc.setContentSpanIfMapped(id, open_end, cs);
     _ = try sc.appendItem(id);
@@ -2821,6 +2852,37 @@ test "html_elements: a <span> with no closer in the run, a self-closing one, and
     defer bold.deinit();
     try testing.expect(firstOfTag(&bold, .container) == null);
     try testing.expect(firstOfTag(&bold, .raw_inline) != null);
+}
+
+test "html_elements: a paired <u> is an insert mark over the Markdown between" {
+    const src = "a <U>big *text*</u> b";
+    var doc = try parseAndFinishMappedDoc(src, html_on);
+    defer doc.deinit();
+    const lead = doc.ast.nodes[doc.ast.root].first_child.?;
+    const ins = doc.ast.nodes[lead].next_sibling.?;
+    try testing.expect(doc.ast.nodes[ins].kind.inline_mark == .insert);
+    try testing.expectEqualStrings("<U>big *text*</u>", Span.of(u8, doc.span(ins), src));
+    try testing.expectEqualStrings("big *text*", Span.of(u8, doc.contentSpan(ins).?, src));
+    const first = doc.ast.nodes[ins].first_child.?;
+    try testing.expectEqualStrings("big ", doc.ast.nodes[first].kind.str);
+    const em = doc.ast.nodes[first].next_sibling.?;
+    try testing.expect(doc.ast.nodes[em].kind.inline_mark == .emph);
+    for (doc.ast.nodes) |n| try testing.expect(n.kind != .raw_inline);
+}
+
+test "html_elements: a <u> with attributes, unclosed, or self-closing stays raw" {
+    for ([_][]const u8{ "a <u class=\"x\">hi</u> b", "a <u>hi b", "a <u/> b", "a <ul>hi</ul> b" }) |src| {
+        var ast = try parseAndFinishWithOptions(src, html_on);
+        defer ast.deinit();
+        for (ast.nodes) |n| try testing.expect(n.kind != .inline_mark);
+        try testing.expect(firstOfTag(&ast, .raw_inline) != null);
+    }
+}
+
+test "html_elements OFF: a paired <u> is two raw inlines" {
+    var ast = try parseAndFinish("a <u>hi</u> b");
+    defer ast.deinit();
+    try testing.expect(firstOfTag(&ast, .inline_mark) == null);
 }
 
 test "span: a paired <span> and its children address the true source bytes" {

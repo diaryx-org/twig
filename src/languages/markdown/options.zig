@@ -65,13 +65,15 @@ highlight_colors: bool = false,
 /// that doesn't map 1:1 (container-nested HTML, CRLF, expanded tabs) falls
 /// back to the opaque `raw_block`/`raw_inline` it would have produced anyway.
 ///
-/// Two tags PAIR as well as promote: a bare `<div …>` line and the bare
+/// Three tags PAIR as well as promote: a bare `<div …>` line and the bare
 /// `</div>` line after it become one container over the blocks between
-/// (`block.zig`'s `tryDivFence`), and a `<span …>` with its `</span>` in the
-/// same inline run one container over the content between (`inline.zig`'s
-/// `tryPairedSpan`). Those are the spellings twig's own Markdown serializer
-/// writes for a block's and a run's attributes, and this flag is what reads
-/// them back — which is why `Editor.setBlockAttrs` and `wrapRangeAttrs` are
+/// (`block.zig`'s `tryDivFence`), a `<span …>` with its `</span>` in the
+/// same inline run one container over the content between, and a bare `<u>`
+/// with its `</u>` an `insert` mark — underline — over it (both in
+/// `inline.zig`'s `tryPairedTag`). Those are the spellings twig's own
+/// Markdown serializer writes for a block's and a run's attributes and for an
+/// `insert`, and this flag is what reads them back — which is why
+/// `Editor.setBlockAttrs`, `wrapRangeAttrs` and `toggleInline(.insert)` are
 /// gated on it (see `syntax.zig`'s `forOptions`).
 html_elements: bool = false,
 

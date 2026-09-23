@@ -44,10 +44,9 @@ fn spellsAutolink(angled: []const u8) bool {
 const base: syntax.Syntax = .{
     // Only `strong`/`emph` are unconditionally AUTHORABLE. The rest carry the
     // spelling the serializer uses when converting a djot document down to
-    // Markdown — `{+insert+}` and friends are extension syntax nothing here
-    // parses back, so writing them is acceptable (better than dropping the
-    // node) while an editor gesture minting them is not. See
-    // `Delims.authorable`.
+    // Markdown — `^sup^` and friends are extension syntax nothing here parses
+    // back, so writing them is acceptable (better than dropping the node)
+    // while an editor gesture minting them is not. See `Delims.authorable`.
     .inline_delims = .init(.{
         .strong = .{ .open = "**", .close = "**" },
         .emph = .{ .open = "*", .close = "*" },
@@ -58,7 +57,10 @@ const base: syntax.Syntax = .{
         .mark = .{ .open = "==", .close = "==", .authorable = false },
         .superscript = .{ .open = "^", .close = "^", .authorable = false },
         .subscript = .{ .open = "~", .close = "~", .authorable = false },
-        .insert = .{ .open = "{+", .close = "+}", .authorable = false },
+        // Underline, as raw HTML: it renders as one under any options, and
+        // `ParseOptions.html_elements` pairs it back into an `insert`, so
+        // `derive` makes it authorable exactly there.
+        .insert = .{ .open = "<u>", .close = "</u>", .authorable = false },
         .delete = .{ .open = "~~", .close = "~~", .authorable = false },
         .double_quoted = .{ .open = "\"", .close = "\"", .authorable = false },
         .single_quoted = .{ .open = "'", .close = "'", .authorable = false },
@@ -212,8 +214,9 @@ const Highlights = enum(u2) { none, marks, colors };
 /// The flags that move an ANSWER, as one key — the address of a table in
 /// the set. Small on purpose: a flag that adds nodes no gesture authors is not
 /// here. `directives` is a key because `Editor.insertDirective` authors one,
-/// and `html_elements` because `setBlockAttrs` and `wrapRangeAttrs` mint a
-/// `<div>` and a `<span>` only that flag reads back. `math` authors nothing,
+/// and `html_elements` because `setBlockAttrs`, `wrapRangeAttrs` and
+/// `toggleInline(.insert)` mint a `<div>`, a `<span>` and a `<u>` only that
+/// flag reads back. `math` authors nothing,
 /// but it makes `$` a byte that opens markup, so it moves the escape
 /// alphabets — a literal typed under it must not mint a formula. At four
 /// flags the nested arrays this used to be gave way to an index; the fifth
@@ -275,6 +278,7 @@ fn derive(comptime k: Key) syntax.Syntax {
     var t = base;
     setAuthorable(&t, .delete, k.strikethrough);
     setAuthorable(&t, .mark, k.highlights != .none);
+    setAuthorable(&t, .insert, k.html_elements);
     if (k.highlights == .colors) {
         t.mark_colors = .{ .attr_key = highlight.attr_key, .colors = &color_spellings };
     }
@@ -379,13 +383,14 @@ test "every derived table differs from base in the authorable flags and nothing 
                 const d = t.inline_delims.get(m).?;
                 try std.testing.expectEqualStrings(b.open, d.open);
                 try std.testing.expectEqualStrings(b.close, d.close);
-                // Only these two move; the rest keep `base`'s answer.
-                if (m != .mark and m != .delete) {
+                // Only these three move; the rest keep `base`'s answer.
+                if (m != .mark and m != .delete and m != .insert) {
                     try std.testing.expectEqual(b.authorable, d.authorable);
                 }
             }
             try std.testing.expectEqual(base.heading_marker, t.heading_marker);
             const k = Key.fromIndex(t - &tables[0]);
+            try std.testing.expectEqual(k.html_elements, t.inline_delims.get(.insert).?.authorable);
             const text_escapes = if (k.math) base.text_escapes.? ++ "$" else base.text_escapes.?;
             const link_text_escapes = if (k.math) base.link_text_escapes.? ++ "$" else base.link_text_escapes.?;
             try std.testing.expectEqualStrings(text_escapes, t.text_escapes.?);

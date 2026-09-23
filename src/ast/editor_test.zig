@@ -300,6 +300,22 @@ test "toggleInline: a kind the format can't spell is refused, not mis-spelled" {
     try md.expectSource("a word b\n");
 }
 
+test "toggleInline: underline is <u> in Markdown, authorable only under html_elements" {
+    // Only `html_elements` pairs `<u>…</u>` back into an `insert`; without it
+    // the tags reparse as two raw inlines, so the gesture is refused.
+    var plain = try Fixture.init("a word b\n", .markdown);
+    defer plain.deinit();
+    try testing.expectError(error.UnsupportedFormat, plain.ed.toggleInline(Span.init(2, 6), .insert));
+    try plain.expectSource("a word b\n");
+
+    var fx = try Fixture.initWith("a word b\n", .markdown, &html_elements_cfg);
+    defer fx.deinit();
+    try fx.ed.toggleInline(Span.init(2, 6), .insert);
+    try fx.expectSource("a <u>word</u> b\n");
+    try fx.ed.toggleInline(Span.init(5, 9), .insert);
+    try fx.expectSource("a word b\n");
+}
+
 test "toggleInline: a parse-only format spells no inline mark at all" {
     var fx = try Fixture.init("<r>ab</r>", .xml);
     defer fx.deinit();
