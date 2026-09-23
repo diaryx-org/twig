@@ -39,9 +39,12 @@ pub const table: syntax.Syntax = .{
     .text_leaf_delims = .init(.{
         .verbatim = .{ .open = "`", .close = "`" },
         // `$`code`` — the dollar sits OUTSIDE the verbatim run that carries the
-        // formula, so the opener is two bytes and the closer one.
-        .inline_math = .{ .open = "$`", .close = "`", .authorable = false },
-        .display_math = .{ .open = "$$`", .close = "`", .authorable = false },
+        // formula, so the opener is two bytes and the closer one. Both are
+        // djot proper, read back under any document; a gesture prints them
+        // through the serializer rather than from this pair, since the run
+        // widens around a backtick in the formula as a code span's does.
+        .inline_math = .{ .open = "$`", .close = "`" },
+        .display_math = .{ .open = "$$`", .close = "`" },
         .symb = .{ .open = ":", .close = ":", .authorable = false },
         .url = .{ .open = "<", .close = ">", .authorable = false },
         .email = .{ .open = "<", .close = ">", .authorable = false },

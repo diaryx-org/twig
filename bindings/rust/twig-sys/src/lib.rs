@@ -909,6 +909,20 @@ unsafe extern "C" {
         label_len: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_insert_inline_math(
+        editor: *mut TwigEditor,
+        offset: usize,
+        formula: *const u8,
+        formula_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
+    pub fn twig_editor_insert_display_math(
+        editor: *mut TwigEditor,
+        offset: usize,
+        formula: *const u8,
+        formula_len: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
 
     pub fn twig_builder_create(out_builder: *mut *mut TwigBuilder) -> TwigStatus;
     pub fn twig_builder_destroy(builder: *mut TwigBuilder);

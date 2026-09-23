@@ -976,11 +976,17 @@ pub const Syntax = struct {
         // A named leaf container has exactly one way to reach the source — the
         // fragment renderer — so a table claiming the reparse without carrying
         // the printer states a promise nothing could keep. The two attribute
-        // claims rest on the same renderer.
+        // claims rest on the same renderer, and so does an authorable formula:
+        // `Editor.insertInlineMath` prints the leaf through it, because a fixed
+        // `Delims` pair cannot say how djot's fence widens around a backtick.
         if (self.renderBlock == null) {
             if (self.names_leaf_containers) return fail(why, .claim_needs_renderer, "names_leaf_containers");
             if (self.block_attrs != null) return fail(why, .claim_needs_renderer, "block_attrs");
             if (self.inline_attrs) return fail(why, .claim_needs_renderer, "inline_attrs");
+            inline for (.{ .inline_math, .display_math }) |k| {
+                if (self.authorableDelimsFor(.{ .text_leaf = k }) != null)
+                    return fail(why, .claim_needs_renderer, "text_leaf_delims." ++ @tagName(k));
+            }
         }
 
         // ── Well-formedness: the line model ─────────────────────────────────
@@ -1118,7 +1124,7 @@ pub const Rule = enum {
             .table_bar => "a table's bar is non-empty and appears in no padding or delimiter cell, and no delimiter cell is empty",
             .split_needs_markers => "a format that splits blocks spells a heading marker and a code fence",
             .split_needs_join => "a format that splits blocks can join them",
-            .claim_needs_renderer => "a directive or attribute claim needs a block renderer to print through",
+            .claim_needs_renderer => "a directive, attribute or formula claim needs a block renderer to print through",
             .inline_spelling => "an inline delimiter is non-empty and holds no line end",
             .line_spelling => "a spelling written inside a line holds no line end, and a marker is not empty",
             .line_end_spelling => "a block separator or line join ends in its only line end",

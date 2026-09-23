@@ -1211,6 +1211,7 @@ fn gesturesOver(gpa: Allocator, entry: *const format.Entry, source: []const u8, 
         if (Editor.supports(table, .insert_link)) try t.keep(probeLink(&t, w));
         if (Editor.supports(table, .insert_image)) try t.keep(probeImage(&t, w));
         if (Editor.supports(table, .insert_footnote)) try t.keep(probeFootnote(&t, w));
+        if (Editor.supports(table, .insert_inline_math)) try t.keep(probeInlineMath(&t, w));
         if (Editor.supports(table, .insert_literal)) try t.keep(probeLiteral(&t, w));
         if (Editor.supports(table, .split_block) and w.end - w.start >= 2) try t.keep(probeSplit(&t, w));
         if (Editor.supports(table, .wrap_range_attrs)) try t.keep(probeWrapAttrs(&t, w));
@@ -1248,6 +1249,7 @@ fn gesturesOver(gpa: Allocator, entry: *const format.Entry, source: []const u8, 
         if (Editor.supports(table, .join_blocks) and b.span.start > 0) try t.keep(probeJoin(&t, b));
         if (Editor.supports(table, .insert_table)) try t.keep(probeInsertTable(&t, b));
         if (Editor.supports(table, .insert_directive)) try t.keep(probeDirective(&t, b));
+        if (Editor.supports(table, .insert_display_math)) try t.keep(probeDisplayMath(&t, b));
         if (Editor.supports(table, .set_block_attrs)) try t.keep(probeBlockAttrs(&t, b));
         if (Editor.supports(table, .move_block)) try t.keep(probeMove(&t, b));
     }
@@ -1327,6 +1329,37 @@ fn probeFootnote(t: *Trial, w: Span) Error!void {
         else => {},
     };
     return t.broken(&e, "insert_footnote", "no definition labelled n1 came back", .{});
+}
+
+/// The formula both math probes write: an operator and a backslash, so a
+/// table that escaped the body, or cut it at a byte it treats as markup, is
+/// caught by the text not coming back.
+const probe_formula = "\\alpha+1";
+
+fn probeInlineMath(t: *Trial, w: Span) Error!void {
+    var e = try t.open();
+    defer e.deinit();
+    e.insertInlineMath(w.end, probe_formula) catch |err| return t.refused(&e, "insert_inline_math", err);
+    try t.succeeded(&e, "insert_inline_math");
+    if (!holdsFormula(e.astView(), .inline_math))
+        return t.broken(&e, "insert_inline_math", "no inline formula holding {s} came back", .{probe_formula});
+}
+
+fn probeDisplayMath(t: *Trial, b: BlockSite) Error!void {
+    var e = try t.open();
+    defer e.deinit();
+    e.insertDisplayMath(b.caret, probe_formula) catch |err| return t.refused(&e, "insert_display_math", err);
+    try t.succeeded(&e, "insert_display_math");
+    if (!holdsFormula(e.astView(), .display_math))
+        return t.broken(&e, "insert_display_math", "no display formula holding {s} came back", .{probe_formula});
+}
+
+fn holdsFormula(ast: *const AST, kind: AST.TextLeafKind) bool {
+    for (ast.nodes) |n| switch (n.kind) {
+        .text_leaf => |l| if (l.kind == kind and std.mem.eql(u8, l.text, probe_formula)) return true,
+        else => {},
+    };
+    return false;
 }
 
 fn probeLiteral(t: *Trial, w: Span) Error!void {

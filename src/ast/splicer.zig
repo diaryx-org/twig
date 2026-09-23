@@ -200,6 +200,22 @@ pub const Splicer = struct {
     /// reparse, and swap in the result. On reparse failure nothing changes and
     /// the parser's error is returned. A zero-width `span` is an insertion.
     pub fn replaceAtSpan(self: *Splicer, span: Span, replacement: []const u8) !void {
+        return self.replaceAtSpanChecked(span, replacement, null);
+    }
+
+    /// A caller's test of the reparse: whether the edited document is the one
+    /// it meant to write. `ctx` is handed back unread.
+    pub const Check = struct {
+        ctx: *const anyopaque,
+        accept: *const fn (ctx: *const anyopaque, doc: *const Document) bool,
+    };
+
+    /// `replaceAtSpan`, committed only if `check` accepts the reparse —
+    /// `error.Rejected` otherwise, with nothing changed, exactly as a reparse
+    /// failure leaves it. For a gesture whose bytes can PARSE and still not
+    /// mean what it wrote: a formula spliced into a code span is code, and
+    /// the document around it parses as well as it did before.
+    pub fn replaceAtSpanChecked(self: *Splicer, span: Span, replacement: []const u8, check: ?Check) !void {
         std.debug.assert(span.start <= span.end);
         std.debug.assert(span.end <= self.source.items.len);
         const s = self.source.items;
@@ -217,10 +233,17 @@ pub const Splicer = struct {
         new_src.appendSliceAssumeCapacity(replacement);
         new_src.appendSliceAssumeCapacity(s[span.end..]);
 
-        const new_doc = self.parse_fn(self.parse_ctx, self.allocator, new_src.items) catch |err| {
+        var new_doc = self.parse_fn(self.parse_ctx, self.allocator, new_src.items) catch |err| {
             new_src.deinit(self.allocator);
             return err;
         };
+        if (check) |c| {
+            if (!c.accept(c.ctx, &new_doc)) {
+                new_doc.deinit();
+                new_src.deinit(self.allocator);
+                return error.Rejected;
+            }
+        }
 
         // Commit: the reparse succeeded, so retire the old state. The pre-edit
         // source goes onto the undo history (not freed), and any redo is dropped

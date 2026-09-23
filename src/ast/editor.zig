@@ -149,6 +149,12 @@ pub const Editor = struct {
         /// for one, so it would come back as text), or a value carrying a
         /// line end or a double quote. See `checkAttr`.
         InvalidAttribute,
+        /// A formula this format cannot hold: printed on its own, the math
+        /// the gesture asked for does not come back holding exactly these
+        /// bytes. Markdown's `$` refuses an empty formula, one opening or
+        /// closing on a space, and one holding a `$`; djot's run takes almost
+        /// anything. See `insertInlineMath`.
+        InvalidFormula,
         /// A destination that names the block being moved: `moveBlock`'s `to`
         /// inside the block, or at the boundary the block already sits on —
         /// a move that would change nothing, refused rather than reported as
@@ -215,8 +221,16 @@ pub const Editor = struct {
 
     /// Splice rebuilt source in over `[start, end)`. Every gesture ends here.
     fn commitSplice(self: *Editor, start: usize, end: usize, text: []const u8) Error!void {
-        self.splicer.replaceAtSpan(Span.init(start, end), text) catch |err| switch (err) {
+        return self.commitSpliceChecked(start, end, text, null);
+    }
+
+    /// `commitSplice`, kept only if `check` accepts the reparse. A rejected
+    /// reparse is `error.NotEditable`: the bytes parsed, and meant something
+    /// other than what the gesture wrote, at this place in this document.
+    fn commitSpliceChecked(self: *Editor, start: usize, end: usize, text: []const u8, check: ?Splicer.Check) Error!void {
+        self.splicer.replaceAtSpanChecked(Span.init(start, end), text, check) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
+            error.Rejected => return error.NotEditable,
             // Anything else is the parser rejecting the edited document; the
             // splicer has already rolled it back.
             else => return error.EditConflict,
@@ -288,6 +302,8 @@ pub const Editor = struct {
         wrap_range_attrs,
         set_node_attrs,
         move_block,
+        insert_inline_math,
+        insert_display_math,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -402,6 +418,11 @@ pub const Editor = struct {
             // has neither, which is what makes XML unsupported: it has no
             // blocks for a caret to name.
             .move_block => syntax.block_separator != null or syntax.renderBlock != null,
+            // Both halves, as the gesture checks them: a formula the parser
+            // reads back, and the renderer that prints it. `assertCoherent`
+            // pins the second onto the first, as for the directive.
+            .insert_inline_math => syntax.authorableDelimsFor(.{ .text_leaf = .inline_math }) != null and syntax.renderBlock != null,
+            .insert_display_math => syntax.authorableDelimsFor(.{ .text_leaf = .display_math }) != null and syntax.renderBlock != null,
         };
     }
 
@@ -1570,9 +1591,19 @@ pub const Editor = struct {
 
     /// Write `body` — one or more `\n`-terminated lines — as a block of its
     /// own after the block `offset` sits in: the shared placement behind
-    /// `insertThematicBreak`, `insertTable` and `insertDirective`, whose doc
-    /// comments own the reasoning for each decision made here.
+    /// `insertThematicBreak`, `insertTable`, `insertDirective` and
+    /// `insertDisplayMath`, whose doc comments own the reasoning for each
+    /// decision made here.
     fn insertBlockAfter(self: *Editor, offset: usize, body: []const u8) Error!void {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.splicer.allocator);
+        const pos = try self.blockAfter(offset, body, &out);
+        return self.commitSplice(pos, pos, out.items);
+    }
+
+    /// `insertBlockAfter`'s bytes without the splice: fills `out` with what
+    /// goes in and answers where it goes.
+    fn blockAfter(self: *Editor, offset: usize, body: []const u8, out: *std.ArrayList(u8)) Error!usize {
         const src = self.sourceBytes();
         const allocator = self.splicer.allocator;
 
@@ -1592,9 +1623,6 @@ pub const Editor = struct {
         // A quote's blank line carries its marker but not the space after it —
         // the same rule `ContainerSpelling.blank` states for the toggle.
         const blank = std.mem.trimEnd(u8, prefix, " ");
-
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(allocator);
 
         if (pos > 0) {
             // An unterminated last line is ended first, or the "blank" written
@@ -1622,8 +1650,7 @@ pub const Editor = struct {
             try out.appendSlice(allocator, blank);
             try out.append(allocator, '\n');
         }
-
-        return self.commitSplice(pos, pos, out.items);
+        return pos;
     }
 
     // ── Block attributes ───────────────────────────────────────────────────
@@ -3548,6 +3575,173 @@ pub const Editor = struct {
 
         return self.commitSplice(offset, src.len, out.items);
     }
+
+    // ── Math ─────────────────────────────────────────────────────────────────
+
+    /// Insert `formula` at `offset` as an INLINE formula — Markdown's `$x$`,
+    /// djot's `` $`x` ``, AsciiDoc's `stem:[x]` — a math leaf whose text is
+    /// `formula` byte for byte.
+    ///
+    /// Decisions:
+    ///   * The formula is the HOST's notation (TeX, usually), and twig reads
+    ///     none of it. It goes between the format's delimiters with nothing
+    ///     escaped, because a math body is read literally: `\$` inside `$…$`
+    ///     is two bytes of TeX, not an escaped dollar, and `insertLiteral`'s
+    ///     alphabets would write backslashes into the formula.
+    ///   * The bytes are the SERIALIZER's, printed through `Syntax.renderBlock`
+    ///     from a leaf built with `AST.Builder`, as `insertDirective` prints its
+    ///     container. `text_leaf_delims` is the gate and not the spelling: a
+    ///     fixed `Delims` pair cannot say how djot's run widens around a
+    ///     backtick in the formula, and the serializer already does.
+    ///   * A formula the format cannot hold is REFUSED rather than written.
+    ///     Markdown's `$` will not open onto a space or close after one, has
+    ///     no spelling for an empty formula, and ends at the first `$`
+    ///     inside; djot's run holds nearly anything. Rather than restate each
+    ///     parser's rule here, the print is parsed ON ITS OWN and must come
+    ///     back holding this kind of formula with exactly these bytes —
+    ///     `error.InvalidFormula` when it does not.
+    ///   * And it must come back IN PLACE. The splice is kept only if the
+    ///     edited document holds the formula inside the inserted bytes, so a
+    ///     caret in a code span or a code block — where the bytes are code —
+    ///     or flush against a `$` that Markdown pairs differently is
+    ///     `error.NotEditable`, and nothing changes. This is the one check
+    ///     `insertLiteral` cannot make, because a literal has no node to look
+    ///     for.
+    ///
+    /// Gated on the format's inline-math delimiters being authorable and a
+    /// renderer to print through, which `assertCoherent` pins together.
+    /// Markdown authors one only under `ParseOptions.math`, so an editor over
+    /// a document parsed without it gets `error.UnsupportedFormat`, exactly
+    /// as `setMarkColor` does without `highlight_colors`. `error.InvalidRange`
+    /// for an `offset` past the source.
+    pub fn insertInlineMath(self: *Editor, offset: usize, formula: []const u8) Error!void {
+        try self.checkRange(offset, offset);
+        const render = try self.mathRenderer(.inline_math);
+        const allocator = self.splicer.allocator;
+
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        const bytes = try self.printFormula(render, .inline_math, formula, &out);
+        const want: FormulaCheck = .{
+            .kind = .inline_math,
+            .formula = formula,
+            .within = Span.init(offset, offset + bytes.len),
+        };
+        return self.commitSpliceChecked(offset, offset, bytes, want.check());
+    }
+
+    /// Insert `formula` as a DISPLAY formula — Markdown's `$$x$$`, djot's
+    /// `` $$`x` `` — in a paragraph of its own after the block `offset` sits
+    /// in.
+    ///
+    /// Everything `insertInlineMath` decides about the bytes holds here: the
+    /// serializer prints them, the formula is written unescaped, a formula the
+    /// format cannot hold is `error.InvalidFormula`, and one that does not come
+    /// back in place is `error.NotEditable`.
+    ///
+    /// What differs is the placement, which is `insertThematicBreak`'s,
+    /// decision for decision, through the `insertBlockAfter` it shares with the
+    /// table and the directive: after the caret's block rather than at the
+    /// caret, blank-separated on both sides, a quote's prefix on every line of
+    /// a formula that runs over several, and column zero after a list item.
+    /// Both formats parse display math as an inline node like any other, so
+    /// nothing in either would stop one landing mid-sentence — but a display
+    /// formula is set on a line of its own when rendered, and a paragraph
+    /// holding only the formula is what that looks like in the source.
+    ///
+    /// Gated like the inline form, on the display delimiters. AsciiDoc spells
+    /// display math with the same `stem:[…]` macro it uses inline and reads it
+    /// back as inline, so it authors the inline form and not this one.
+    pub fn insertDisplayMath(self: *Editor, offset: usize, formula: []const u8) Error!void {
+        try self.checkRange(offset, offset);
+        const render = try self.mathRenderer(.display_math);
+        const allocator = self.splicer.allocator;
+
+        var out: Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        const bytes = try self.printFormula(render, .display_math, formula, &out);
+
+        var block: std.ArrayList(u8) = .empty;
+        defer block.deinit(allocator);
+        const pos = try self.blockAfter(offset, bytes, &block);
+        const want: FormulaCheck = .{
+            .kind = .display_math,
+            .formula = formula,
+            .within = Span.init(pos, pos + block.items.len),
+        };
+        return self.commitSpliceChecked(pos, pos, block.items, want.check());
+    }
+
+    /// The renderer a formula of `kind` is printed through, or
+    /// `error.UnsupportedFormat` where the format does not author one.
+    fn mathRenderer(self: *const Editor, kind: AST.TextLeafKind) Error!RenderBlockFn {
+        if (self.syntax.authorableDelimsFor(.{ .text_leaf = kind }) == null) return error.UnsupportedFormat;
+        // `assertCoherent` pins a renderer wherever the claim above is made,
+        // so this is the compiler's `orelse` rather than a second gate.
+        return self.syntax.renderBlock orelse error.UnsupportedFormat;
+    }
+
+    /// Print `formula` as a math leaf of `kind`, alone in a paragraph, and
+    /// answer the leaf's bytes — `error.InvalidFormula` unless those bytes,
+    /// parsed on their own, come back as that formula.
+    fn printFormula(
+        self: *Editor,
+        render: RenderBlockFn,
+        kind: AST.TextLeafKind,
+        formula: []const u8,
+        out: *Writer.Allocating,
+    ) Error![]const u8 {
+        const allocator = self.splicer.allocator;
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        // A paragraph around the leaf, because a paragraph is what every
+        // renderer is written to print; the paragraph itself adds nothing but
+        // the line end trimmed below.
+        const leaf = try b.addLeaf(.{ .text_leaf = .{ .kind = kind, .text = formula } });
+        const root = try b.addContainer(.para, &.{leaf});
+        const view = b.view(root);
+        try renderNode(allocator, render, &view, root, &out.writer);
+        const bytes = std.mem.trimEnd(u8, out.written(), "\r\n");
+
+        var alone = self.splicer.parse_fn(self.splicer.parse_ctx, allocator, bytes) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidFormula,
+        };
+        defer alone.deinit();
+        const want: FormulaCheck = .{ .kind = kind, .formula = formula, .within = Span.init(0, bytes.len) };
+        if (!want.holds(&alone)) return error.InvalidFormula;
+        return bytes;
+    }
+
+    /// What a math gesture looks for in the reparse: a leaf of `kind` holding
+    /// exactly `formula`, lying within the bytes it wrote.
+    const FormulaCheck = struct {
+        kind: AST.TextLeafKind,
+        formula: []const u8,
+        within: Span,
+
+        fn holds(self: *const FormulaCheck, doc: *const Document) bool {
+            for (doc.ast.nodes, 0..) |n, i| {
+                const leaf = switch (n.kind) {
+                    .text_leaf => |l| l,
+                    else => continue,
+                };
+                if (leaf.kind != self.kind or !std.mem.eql(u8, leaf.text, self.formula)) continue;
+                const sp = doc.span(@intCast(i));
+                if (sp.start >= self.within.start and sp.end <= self.within.end) return true;
+            }
+            return false;
+        }
+
+        fn accept(ctx: *const anyopaque, doc: *const Document) bool {
+            const self: *const FormulaCheck = @ptrCast(@alignCast(ctx));
+            return self.holds(doc);
+        }
+
+        fn check(self: *const FormulaCheck) Splicer.Check {
+            return .{ .ctx = self, .accept = accept };
+        }
+    };
 
     // ── Literal text ─────────────────────────────────────────────────────────
 

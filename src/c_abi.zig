@@ -2017,6 +2017,7 @@ fn statusOfEditorError(err: twig.Editor.Error) TwigStatus {
         error.InvalidShape,
         error.InvalidName,
         error.InvalidAttribute,
+        error.InvalidFormula,
         error.InvalidArgument,
         => .invalid_argument,
         error.UnsupportedFormat => .unsupported_format,
@@ -3245,6 +3246,8 @@ const TwigGesture = enum(c_int) {
     join_blocks = 29,
     set_node_attrs = 30,
     move_block = 31,
+    insert_inline_math = 32,
+    insert_display_math = 33,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -3282,6 +3285,8 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         29 => .join_blocks,
         30 => .set_node_attrs,
         31 => .move_block,
+        32 => .insert_inline_math,
+        33 => .insert_display_math,
         else => null,
     };
 }
@@ -4027,6 +4032,49 @@ pub export fn twig_editor_insert_footnote(
     const label = sliceOf(label_ptr, label_len) orelse return .invalid_argument;
 
     handle.editor.insertFootnote(offset, label) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+// ── Math ─────────────────────────────────────────────────────────────────────
+// The engine is `twig.Editor.insertInlineMath` and `insertDisplayMath`: the
+// formula printed by the format's own serializer, written only if it comes back
+// as itself — alone, and then in place.
+
+/// Insert `formula` at `offset` as an inline formula. See `twig.h` for the
+/// semantics and `twig.Editor.insertInlineMath` for the implementation.
+pub export fn twig_editor_insert_inline_math(
+    ed: ?*TwigEditor,
+    offset: usize,
+    formula_ptr: ?[*]const u8,
+    formula_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const formula = sliceOf(formula_ptr, formula_len) orelse return .invalid_argument;
+
+    handle.editor.insertInlineMath(offset, formula) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Insert `formula` as a display formula, in a paragraph of its own after the
+/// block `offset` sits in. See `twig.h` and `twig.Editor.insertDisplayMath`.
+pub export fn twig_editor_insert_display_math(
+    ed: ?*TwigEditor,
+    offset: usize,
+    formula_ptr: ?[*]const u8,
+    formula_len: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    const formula = sliceOf(formula_ptr, formula_len) orelse return .invalid_argument;
+
+    handle.editor.insertDisplayMath(offset, formula) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;
@@ -6385,6 +6433,45 @@ test "twig_editor_move_block: the wire reaches the gesture, and each refusal is 
         const got = twig_editor_move_block(ed, 0, src.len, null);
         try std.testing.expectEqual(supported == 1, got != .unsupported_format);
     }
+}
+
+test "twig_editor_insert_*_math: the wire reaches the gestures, and the refusals keep their statuses" {
+    var md = try EditorFixture.initFlags("a  b\n", .markdown, TWIG_MD_MATH);
+    defer md.deinit();
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_insert_inline_math(md.ed, 2, "x^2", 3, &change));
+    try md.expectSource("a $x^2$ b\n");
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_insert_display_math(md.ed, 0, "y", 1, &change));
+    try md.expectSource("a $x^2$ b\n\n$$y$$\n");
+    // A formula the dollars cannot hold, and a NULL formula with a length.
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_insert_inline_math(md.ed, 0, " x", 2, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_insert_inline_math(md.ed, 0, null, 1, null));
+    try std.testing.expectEqual(TwigStatus.invalid_argument, twig_editor_insert_display_math(null, 0, "x", 1, null));
+    try md.expectSource("a $x^2$ b\n\n$$y$$\n");
+
+    // In a code span the bytes would be code.
+    var code = try EditorFixture.initFlags("`code`\n", .markdown, TWIG_MD_MATH);
+    defer code.deinit();
+    try std.testing.expectEqual(TwigStatus.not_editable, twig_editor_insert_inline_math(code.ed, 3, "x", 1, null));
+
+    // Without the flag Markdown reads `$x$` as text.
+    var plain = try EditorFixture.initFmt("a\n", .markdown);
+    defer plain.deinit();
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_insert_inline_math(plain.ed, 0, "x", 1, null));
+
+    // Codes 32 and 33 decode to the two gestures, and Markdown's answer is
+    // the parse config's.
+    var supported: c_int = -1;
+    inline for (.{ TwigGesture.insert_inline_math, TwigGesture.insert_display_math }) |g| {
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.markdown), @intFromEnum(g), 0, &supported));
+        try std.testing.expectEqual(@as(c_int, 0), supported);
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(@intFromEnum(TwigFormat.markdown), TWIG_MD_MATH, @intFromEnum(g), 0, &supported));
+        try std.testing.expectEqual(@as(c_int, 1), supported);
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.djot), @intFromEnum(g), 0, &supported));
+        try std.testing.expectEqual(@as(c_int, 1), supported);
+    }
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.asciidoc), @intFromEnum(TwigGesture.insert_display_math), 0, &supported));
+    try std.testing.expectEqual(@as(c_int, 0), supported);
 }
 
 test "twig_format_supports: the join's wire code answers for the join, not the split" {
