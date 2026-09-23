@@ -90,6 +90,64 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.10.0
+
+### Breaking
+
+- **runtime** — register a language at runtime, in Zig, C and Rust ([`4045233`](https://github.com/diaryx-org/twig/commit/40452338d89cbac9765392738c3ecd760f2c6597))
+
+### Added
+
+- **markdown** — read and write underline as `<u>`…</u> ([`dea5863`](https://github.com/diaryx-org/twig/commit/dea5863c535770498deb84729879afc25dc59562))
+- **table** — the node table, with every compiled format crossing it ([`10c336e`](https://github.com/diaryx-org/twig/commit/10c336e84ce48aaf072432253b9d94cd21c334bc))
+- **helper** — the helper wire, and the runners in the CLI and Rust ([`54ff34d`](https://github.com/diaryx-org/twig/commit/54ff34db2e77d3236944133ee3d8808dc723c340))
+- **syntax** — Syntax.validate names the rule a table breaks, and the line model is written down ([`020178e`](https://github.com/diaryx-org/twig/commit/020178e3f9ef7e193d7fbe12814a78eb70b413e2))
+- **syntax** — Syntax as JSON, with every compiled table crossing it, and twig lang syntax ([`9279d4a`](https://github.com/diaryx-org/twig/commit/9279d4a358ae2e7079f8e68f1931dd16a3bdcc41))
+- **contract** — the engine contract as a library that reports, run by the harness and at registration ([`26550c4`](https://github.com/diaryx-org/twig/commit/26550c425b07afef5cf89556e1a0b3cfa7c31b6f))
+- **contract** — every gesture, everywhere — the generative check an unseen Syntax is held to ([`f8bdc0a`](https://github.com/diaryx-org/twig/commit/f8bdc0a4b21e51596c7a6da55e6ca9883cf7fe62))
+
+### Fixed
+
+- **tasks** — open-tasks leaves out dropped tasks and the closed shelf ([`91d1a88`](https://github.com/diaryx-org/twig/commit/91d1a88496deff9c648d89e739e6102b3e3453a1))
+- **parse** — xml, html and asciidoc compact their arenas like djot and markdown ([`e96e25f`](https://github.com/diaryx-org/twig/commit/e96e25f8f0dfb86f72ac37161e75a1ce9630b008))
+- **markdown** — key the editing tables on tables, task_lists and footnotes ([`bfa6aa5`](https://github.com/diaryx-org/twig/commit/bfa6aa5fd8b01a4f13c95d01cc0368229de8d767))
+- **editor** — setBlock keeps the block's containers, and a join keeps a container it cannot take whole ([`0eefbba`](https://github.com/diaryx-org/twig/commit/0eefbba44897e7d19e6271b54ee9a65af105c36d))
+
+### Behavioural changes
+
+- serializing an `insert` mark to Markdown writes `<u>x</u>` where it wrote `{+x+}`; the old spelling read back as literal text, the new one renders as underline and pairs back into an `insert` under `html_elements`.
+
+- with `html_elements` on, Markdown `<u>x</u>` parses to an `insert` mark over `x` instead of two `raw_inline` nodes around it, and renders to HTML as `<ins>x</ins>`.
+
+- HTML `<u>` parses to an `insert` mark instead of a generic `element`, and so serializes back to HTML as `<ins>`.
+
+- `twig_format_supports` / `Syntax.inline_delims` report `insert` as authorable for Markdown parsed with `html_elements`.
+
+- node ids in a parsed XML, SVG, HTML or AsciiDoc document are in document order with the root at 0, where the root was the last id and children came before their parents; a caller that addressed nodes by id across a reparse was already wrong, and one that read `twig_document_nodes` in id order now reads them in document order.
+
+- an HTML document no longer carries unreferenced nodes in its arena, so `twig_document_nodes` and the node count report fewer nodes for documents with inter-element whitespace, `<thead>`/`<tbody>`, or `<code>` over text.
+
+- an AsciiDoc document's `labels.footnotes` maps each `footnote:` label to its definition, where it was empty.
+
+- a format code at or above `TWIG_FORMAT_RUNTIME_BASE` that a registration holds is accepted by every entry point that takes a format, where every such code was refused with `TWIG_STATUS_UNSUPPORTED_FORMAT`.
+
+- Rust `From<Format>`/`From<Target>` for `twig_sys::TwigFormat` panics on the new `Runtime` variant; `Format::code` is total.
+
+- with stderr redirected to a file, `twig`'s messages are appended where they were written from offset 0; output that other writers put on the same file is no longer overwritten.
+
+- `-i`, `-o`, and a file's extension that name nothing compiled in now consult the `languages` files and may start a helper process, where they failed with "unsupported format" at once; the supported-formats list also shows configured languages.
+
+- a runtime language refused at load for a sample now reports "`<name>`: sample N does not parse: …" (and "… prints to source that reparses to a different tree") where it reported "sample N: …"; the language's own reason still follows.
+
+- over the `commonmark` row, and any Markdown parse config with `tables`, `task_lists` or `footnotes` off, `Editor.supports` and `twig_format_supports` answer false for the table gestures, the task-box gestures and `insert_footnote` respectively, and the gestures return `UnsupportedFormat`; over `gfm`, `insert_footnote` is unsupported. They used to succeed and write text the parser did not read as a table, a box or a footnote.
+
+- `setBlock` over a Markdown paragraph or heading inside a block quote keeps the quote's `> `; it was deleted, and the block left the quote.
+
+- `joinBlocks` returns `NotEditable` where B would leave an HTML `<blockquote>`, `<ul>`/`<ol>` or `<li>` (or any container that closes with markup) that holds more after B; it used to succeed and leave unbalanced tags.
+
+- `joinBlocks` out of a prefix-spelled quote that continues after B now writes a blank line between the joined block and the rest of the quote, where the rest used to follow the joined text directly.
+
+
 ## 3.9.2
 
 ### Fixed
