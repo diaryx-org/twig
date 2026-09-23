@@ -705,12 +705,21 @@ pub const Editor = struct {
         const cs = self.splicer.doc.contentSpan(block) orelse return error.NotEditable;
         const content = src[cs.start..cs.end];
 
-        // Rewrite [block start, end-of-text): the leading marker region (a
-        // heading) or nothing (a paragraph), plus the text — but NOT any
+        // Rewrite [the block's own marker, end-of-text): the leading marker
+        // (a heading) or nothing (a paragraph), plus the text — but NOT any
         // trailing newline the block span includes (Djot blocks do), so we don't
         // fuse with the next block. Rebuilding from `content_span` also
         // collapses a setext heading's underline line away for free.
+        //
+        // Not from the block span's start: Markdown's span for a block in a
+        // quote begins at the `> ` its line carries, which is the quote's and
+        // not the block's to lose. The rewrite starts at the content, or at a
+        // marker in front of it on the same line.
         const block_span = self.splicer.doc.span(block);
+        var start = cs.start;
+        if (self.splicer.doc.markerSpan(block)) |m| {
+            if (m.end <= cs.start and m.start >= locate.lineStartAt(src, cs.start)) start = m.start;
+        }
         var end = block_span.end;
         if (end > block_span.start and src[end - 1] == '\n') end -= 1;
         if (end > block_span.start and src[end - 1] == '\r') end -= 1;
@@ -725,7 +734,7 @@ pub const Editor = struct {
         }
         @memcpy(buf[prefix_len..], content);
 
-        return self.commitSplice(block_span.start, end, buf);
+        return self.commitSplice(start, end, buf);
     }
 
     /// `setBlock` over a format with no leading marker but a fragment
@@ -2356,12 +2365,38 @@ pub const Editor = struct {
         // one whose span bounds the removal.
         var r_end = doc.span(b).end;
         for (b_chain.items[i .. b_chain.items.len - 1]) |id| {
-            if (std.meta.activeTag(doc.ast.nodes[id].kind) != .container) continue;
+            // Delimited by what it WRITES, not by its kind: HTML's
+            // `<blockquote>` and `<ul>`, and AsciiDoc's `____`, close with
+            // markup a quote or list spelled by line prefixes never has.
+            if (!writesClosers(doc, src, id)) continue;
             // Nothing may be left behind inside a container whose closers are
             // about to move up past it.
             if (lastLeafBlock(doc, id) != b) return error.NotEditable;
             r_end = doc.span(id).end;
             break;
+        }
+
+        // B leaving a PREFIX container that goes on after it leaves behind the
+        // container's blank line that separated B from what followed — `>`,
+        // still carrying the prefix. With B gone, that line separates A from
+        // the rest of the container, and A is outside it: kept as it was, it
+        // is no separator at all where A sits, and a format whose paragraphs
+        // run to a blank line (djot) reads the rest of the quote into A. It
+        // is taken with B and written back as a blank line at A's level.
+        var separate_rest = false;
+        if (b_top != b and r_end == doc.span(b).end) {
+            // `lineEndAt` answers one past the line's `\n`.
+            const line_start = if (r_end > 0 and src[r_end - 1] == '\n') r_end else locate.lineEndAt(src, r_end);
+            const line_end = locate.lineEndAt(src, line_start);
+            if (line_start < src.len and line_end < doc.span(b_top).end) {
+                const line = locate.lineBody(src[line_start..line_end]);
+                var k: usize = 0;
+                while (skipQuoteMarker(line, k)) |j| k = j;
+                if (k > 0 and std.mem.trim(u8, line[k..], " \t").len == 0) {
+                    r_end = line_end;
+                    separate_rest = true;
+                }
+            }
         }
 
         const a_content = blockContent(doc, a);
@@ -2401,6 +2436,14 @@ pub const Editor = struct {
         // the argument false and the panic real.
         if (r_end > a_content.end and src[r_end - 1] == '\n' and
             (out.items.len == 0 or out.items[out.items.len - 1] != '\n')) try out.append(allocator, '\n');
+        if (separate_rest) {
+            if (out.items.len == 0 or out.items[out.items.len - 1] != '\n') try out.append(allocator, '\n');
+            var prefix: std.ArrayList(u8) = .empty;
+            defer prefix.deinit(allocator);
+            _ = try locate.continuationPrefix(allocator, doc, a_content.start, &prefix);
+            try out.appendSlice(allocator, std.mem.trimEnd(u8, prefix.items, " "));
+            try out.append(allocator, '\n');
+        }
 
         return self.commitSplice(a_content.end, r_end, out.items);
     }
@@ -4625,6 +4668,22 @@ fn containerPrefix(src: []const u8, at: usize) []const u8 {
     var i: usize = 0;
     while (skipQuoteMarker(line, i)) |j| i = j;
     return line[0..i];
+}
+
+/// Whether container `id` ends in markup of its own — bytes after its last
+/// child that are not whitespace: `</blockquote>`, `:::`, `____`. A container
+/// spelled by line prefixes ends where its last child does.
+fn writesClosers(doc: *const Document, src: []const u8, id: AST.Node.Id) bool {
+    var last: ?AST.Node.Id = null;
+    var c = doc.ast.nodes[id].first_child;
+    while (c) |ch| : (c = doc.ast.nodes[ch].next_sibling) last = ch;
+    const end = doc.span(id).end;
+    const tail_start = if (last) |l| doc.span(l).end else doc.span(id).start;
+    if (tail_start >= end) return false;
+    for (src[tail_start..end]) |byte| {
+        if (!std.ascii.isWhitespace(byte)) return true;
+    }
+    return false;
 }
 
 /// Whether `chain` passes through a list item — the containers `containerPrefix`

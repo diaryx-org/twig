@@ -778,6 +778,26 @@ test "setBlock: paragraph to heading and back, both formats" {
     }
 }
 
+test "setBlock: a block keeps the quote it is in, and the attribute line above it" {
+    // Markdown's span for a paragraph in a quote begins at its `> `, which
+    // is the quote's, not the paragraph's to rewrite. Found by the gesture
+    // check (`contract.gestures`): the quote was lost on the way to a heading.
+    var md = try Fixture.init("> Quote\n", .markdown);
+    defer md.deinit();
+    try md.ed.setBlock(2, .heading, 2);
+    try md.expectSource("> ## Quote\n");
+    try md.ed.setBlock(5, .paragraph, 0);
+    try md.expectSource("> Quote\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&md, .block_quote));
+
+    // Nor anything else outside its own marker and text: a djot attribute
+    // line above the block stays where it is.
+    var dj = try Fixture.init("{.note}\nA paragraph.\n", .djot);
+    defer dj.deinit();
+    try dj.ed.setBlock(8, .heading, 2);
+    try dj.expectSource("{.note}\n## A paragraph.\n");
+}
+
 test "setBlock: a setext heading's underline collapses away" {
     // Rebuilding from `content_span` drops the `===` line for free.
     var fx = try Fixture.init("hello\n=====\n", .markdown);
@@ -3562,6 +3582,32 @@ test "join_blocks: a prefix container leaves what follows B where it is" {
     try fx.ed.joinBlocks(6);
     try fx.expectSource("- a\n  b\n- c\n");
     try testing.expectEqual(@as(usize, 2), countKind(&fx, .list_item));
+}
+
+test "join_blocks: a container closed by tags keeps B unless B is all that is in it" {
+    // HTML's `<blockquote>` and `<ul>` are spelled as tag pairs, not as a
+    // `container`, and a join that took B out of one with more after it
+    // deleted the opening tag and left the closer. Found by the gesture check.
+    var quote = try Fixture.init("<p>a</p>\n<blockquote>\n<p>b</p>\n<p>c</p>\n</blockquote>\n", .html);
+    defer quote.deinit();
+    try testing.expectError(error.NotEditable, quote.ed.joinBlocks(25));
+
+    var list = try Fixture.init("<p>a</p>\n<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n", .html);
+    defer list.deinit();
+    try testing.expectError(error.NotEditable, list.ed.joinBlocks(18));
+}
+
+test "join_blocks: the rest of a prefix container is kept apart from A by a blank line" {
+    // B leaves a quote that goes on after it. The quote's blank line that
+    // separated B from the rest separates A from it now, and A is outside
+    // the quote — so it is written at A's level, or djot's paragraph runs on
+    // into the quote's lines. Found by the gesture check.
+    var dj = try Fixture.init("alpha\n\n> quoted\n>\n> more\n", .djot);
+    defer dj.deinit();
+    try dj.ed.joinBlocks(9);
+    try dj.expectSource("alpha\nquoted\n\n> more\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .block_quote));
+    try testing.expectEqual(@as(usize, 2), countKind(&dj, .para));
 }
 
 test "join_blocks: HTML joins where it cannot split" {
