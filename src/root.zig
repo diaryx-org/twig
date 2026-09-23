@@ -97,6 +97,10 @@ pub const Syntax = @import("syntax.zig").Syntax;
 /// hands core. See `syntax_json.zig`.
 pub const syntax_json = @import("syntax_json.zig");
 
+/// The engine contract as checks that report: what the harness holds every
+/// compiled format to, and registration every runtime one. See `contract.zig`.
+pub const contract = @import("contract.zig");
+
 /// The format registry: one entry per language, bundling its parser, reparse
 /// adapter, HTML renderer, optional serializers, and optional `Syntax` behind a
 /// uniform shape. The single place a new language plugs in, and the single
@@ -179,6 +183,7 @@ test {
     _ = ast_json;
     _ = ast_table;
     _ = syntax_json;
+    _ = contract;
     _ = runtime;
     _ = wire;
     _ = @import("ast/compact.zig");

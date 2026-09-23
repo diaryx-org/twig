@@ -78,7 +78,7 @@
 //! gestures through `renderBlock`, which prints whole fragments. What it
 //! cannot do is state a line spelling it does not mean. `Syntax.validate`
 //! holds a table to the rules above that are facts about its bytes, and
-//! `languages/harness.zig` holds it to the ones that are facts about its
+//! `contract.zig` holds it to the ones that are facts about its
 //! parser.
 //!
 //! `Syntax` names no format and imports no language module; `format.zig`'s
@@ -685,7 +685,7 @@ pub const Syntax = struct {
     /// CONFIG, and Markdown's table set states it per option combination (see
     /// `markdown/syntax.zig`'s `forOptions`).
     ///
-    /// Measured rather than asserted: `languages/harness.zig` prints a named
+    /// Measured rather than asserted: `contract.zig` prints a named
     /// leaf fragment through every table that makes this claim and reparses
     /// the print. Implies `renderBlock != null` — there is no other way to
     /// print one — which `assertCoherent` pins.
@@ -699,7 +699,7 @@ pub const Syntax = struct {
     /// the attributes do not come back, so `Editor.setBlockAttrs` is
     /// `error.UnsupportedFormat`. The same rule as `names_leaf_containers`:
     /// a claim about a TABLE, moving with the parse config where the parser
-    /// does, measured by `languages/harness.zig` rather than asserted, and
+    /// does, measured by `contract.zig` rather than asserted, and
     /// implying `renderBlock != null`, which `assertCoherent` pins.
     block_attrs: ?BlockAttrs = null,
 
@@ -716,7 +716,7 @@ pub const Syntax = struct {
     /// one takes a node id and splices, because the caller that wants it
     /// holds a tree and not a caret — a canvas editor over an SVG names the
     /// shape it is dragging, and no byte position stands for it. Measured
-    /// by `languages/harness.zig` rather than asserted: an element of every
+    /// by `contract.zig` rather than asserted: an element of every
     /// sample, given `claim_attrs`, reparses carrying them, and given none
     /// reparses carrying none.
     node_attrs: ?NodeAttrs = null,
