@@ -315,7 +315,11 @@ fn setAuthorable(t: *syntax.Syntax, comptime m: AST.InlineMark, yes: bool) void 
 /// set is exactly this big.
 const tables: [Key.count]syntax.Syntax = blk: {
     var out: [Key.count]syntax.Syntax = undefined;
-    for (0..Key.count) |i| out[i] = derive(Key.fromIndex(i));
+    @setEvalBranchQuota(400_000);
+    for (0..Key.count) |i| {
+        out[i] = derive(Key.fromIndex(i));
+        out[i].assertCoherent();
+    }
     const frozen = out;
     break :blk frozen;
 };
