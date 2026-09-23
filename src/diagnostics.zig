@@ -518,8 +518,10 @@ fn markdownFidelity(kind: Node.Kind) Fidelity {
         .non_breaking_space => .degraded,
         // Only `strong`, `emph` and GFM's `delete` survive. The rest carry the
         // extension spellings `markdown/syntax.zig` records for exactly this
-        // conversion (`==mark==`, `^sup^`, `{+ins+}`), which CommonMark reads as
-        // literal text — better than dropping the node, but not the same node.
+        // conversion (`==mark==`, `^sup^`), which CommonMark reads as literal
+        // text — better than dropping the node, but not the same node. An
+        // `insert` is `<u>…</u>`, raw HTML that only `html_elements` pairs
+        // back into one, like the `<span>` a `container` becomes.
         // The two smart-quote containers are the case that proves `authorable`
         // is not this question: they are `authorable = false` in BOTH tables,
         // yet faithful in djot and degraded here.

@@ -1154,6 +1154,27 @@ test "highlight round-trips: ==text== parses to a mark and prints back as ==text
     try testing.expectEqualStrings("some ==lit== *and ==more==*\n", out);
 }
 
+test "underline round-trips under html_elements: <u>text</u> is an insert and prints back as <u>" {
+    const src = "some <u>lit</u> *and <u>more</u>*\n";
+    const out = try serializeWith(src, .{ .html_elements = true });
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(src, out);
+}
+
+test "an insert converted from elsewhere prints as <u>" {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const x = try b.addLeaf(.{ .str = "x" });
+    const ins = try b.addContainer(.{ .inline_mark = .insert }, &.{x});
+    const para = try b.addContainer(.para, &.{ins});
+    const root = try b.addContainer(.doc, &.{para});
+    var ast = try b.finish(root);
+    defer ast.deinit();
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("<u>x</u>\n", out);
+}
+
 test "highlight colors round-trip: the emoji and its spacing come back as written" {
     const colors_on: markdown.ParseOptions = .{ .highlight = true, .highlight_colors = true };
     const cases = [_][]const u8{
