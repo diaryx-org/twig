@@ -38,7 +38,7 @@ pub fn commandUsage(action: Action) []const u8 {
         .query => "query [-i <format>] <file> <selector>",
         .edit => "edit [-i <format>] <file|-> <operation>",
         .filter => "filter [-i <format>] <file|-> --drop <sel> [--keep <sel>] [--unwrap]",
-        .lang => "lang list | lang table [-i <format>] <file|-> | lang check <name> [--against <format>] [file...] | lang check [--against <format>] -- <command> [arg...]",
+        .lang => "lang list | lang table [-i <format>] <file|-> | lang syntax <format> | lang check <name> [--against <format>] [file...] | lang check [--against <format>] -- <command> [arg...]",
         .help, .version => "<command> [options] <file>",
     };
 }
@@ -139,6 +139,9 @@ pub const LangOptions = union(enum) {
     /// bytes as `convert -o table`, under the command a language author
     /// reaches for.
     table: ConvertOptions,
+    /// `lang syntax <format>`: a compiled format's `Syntax` as the JSON a
+    /// language that authors describes its own in.
+    syntax: twig.format.Format,
     /// `lang list`: every compiled format and every configured language.
     list,
     /// `lang check`: load a runtime language and, with `--against`, hold its
@@ -411,6 +414,17 @@ fn parseLang(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!C
         parsed.options.convert.output = .table;
         return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .{ .table = parsed.options.convert } } };
     }
+    if (std.mem.eql(u8, sub, "syntax")) {
+        const name = args.next() orelse return argFail(stderr, binary_name, .lang, "lang syntax: name a compiled format", ArgError.MissingFormatValue);
+        if (args.next() != null) return argFail(stderr, binary_name, .lang, "lang syntax: takes one format", ArgError.TooManyPositionals);
+        const f = twig.format.parseFormatName(name) orelse {
+            try stderr.print("error: lang syntax names a compiled format; '{s}' is not one\n", .{name});
+            try format.printSupportedInputFormats(stderr);
+            try stderr.flush();
+            return ArgError.UnsupportedFormat;
+        };
+        return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .{ .syntax = f } } };
+    }
     if (std.mem.eql(u8, sub, "list")) {
         if (args.next() != null) return argFail(stderr, binary_name, .lang, "lang list: takes no arguments", ArgError.TooManyPositionals);
         return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .list } };
@@ -455,7 +469,7 @@ fn parseLang(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!C
         return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .{ .check = c } } };
     }
     try stderr.print("error: lang: unknown subcommand '{s}'\n", .{sub});
-    return argFail(stderr, binary_name, .lang, "lang: the subcommands are list, table and check", ArgError.UnknownLangCommand);
+    return argFail(stderr, binary_name, .lang, "lang: the subcommands are list, table, syntax and check", ArgError.UnknownLangCommand);
 }
 
 /// `--lang <name>`: select a RUNTIME language by name — the spelling for a
@@ -806,6 +820,10 @@ test "parseConfig: lang table is convert -o table" {
     var w2 = scratchWriter(&buf);
     var a2 = TestArgs{ .items = &.{ "twig", "convert", "-o", "table", "doc.dj" } };
     try testing.expectEqual(OutputMode.table, (try parseConfig(&a2, &w2)).options.convert.output);
+
+    var w4 = scratchWriter(&buf);
+    var a4 = TestArgs{ .items = &.{ "twig", "lang", "syntax", "djot" } };
+    try testing.expectEqual(twig.format.Format.djot, (try parseConfig(&a4, &w4)).options.lang.syntax);
 
     var w3 = scratchWriter(&buf);
     var a3 = TestArgs{ .items = &.{ "twig", "lang", "tables", "doc.dj" } };

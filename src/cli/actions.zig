@@ -105,6 +105,9 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\  lang table [-i <format>] <file|->
         \\      Print the node table a parse of <file> produces -- what a
         \\      language outside twig writes for the same document.
+        \\  lang syntax <format>
+        \\      Print a compiled format's syntax table as JSON -- the spellings
+        \\      its editing gestures write.
         \\  lang list
         \\      List the compiled formats and the configured languages.
         \\  lang check <name> [--against <format>] [file...]
@@ -160,6 +163,11 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
 pub fn runLang(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, opts: args_mod.LangOptions) ActionError!void {
     switch (opts) {
         .table => |convert| try runConvert(allocator, io, stdout, stderr, convert),
+        .syntax => |f| {
+            twig.syntax_json.encode(stdout, twig.format.syntaxFor(f), .{}) catch return error.ActionFailed;
+            stdout.writeAll("\n") catch return error.ActionFailed;
+            stdout.flush() catch return error.ActionFailed;
+        },
         .list => {
             languages.list(stdout) catch return error.ActionFailed;
             stdout.flush() catch return error.ActionFailed;
