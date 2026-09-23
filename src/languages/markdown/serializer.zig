@@ -734,9 +734,13 @@ const Renderer = struct {
                     const m = leaf.text;
                     try self.writer.print("${s}$", .{m});
                 },
+                // Tight, as the formula came: the parser keeps every byte
+                // between the `$$` pairs, so a newline written inside them
+                // would join the formula and grow by two on each round
+                // trip — and, doubled, end the paragraph.
                 .display_math => {
                     const m = leaf.text;
-                    try self.writer.print("$$\n{s}\n$$", .{m});
+                    try self.writer.print("$${s}$$", .{m});
                 },
                 .url => {
                     const u = leaf.text;

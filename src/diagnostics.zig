@@ -460,13 +460,13 @@ fn djotFidelity(kind: Node.Kind) Fidelity {
         // so a container had survived. `KindRef.container_named` is what makes
         // the difference measurable.
         .container => |c| if (c.name.len == 0) .faithful else .degraded,
-        // Math is emitted as `$`…`` — a verbatim wearing a sigil — and djot's
-        // parser returns the verbatim without it. A citation reference follows
-        // its definition into the footnote registry; a substitution reference is
-        // written in its rST spelling and reads as plain text.
+        // Math is a verbatim wearing a sigil, `$`…`` and `$$`…``, and comes
+        // back as itself. A citation reference follows its definition into the
+        // footnote registry; a substitution reference is written in its rST
+        // spelling and reads as plain text.
         .text_leaf => |l| switch (l.kind) {
-            .inline_math, .display_math, .citation_reference, .substitution_reference => .degraded,
-            .symb, .verbatim, .url, .email, .footnote_reference => .faithful,
+            .citation_reference, .substitution_reference => .degraded,
+            .symb, .verbatim, .inline_math, .display_math, .url, .email, .footnote_reference => .faithful,
         },
         .doc,
         .para,

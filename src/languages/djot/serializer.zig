@@ -689,13 +689,17 @@ const Renderer = struct {
                     const v = leaf.text;
                     try self.writeTickFenced(v);
                 },
+                // A sigil on a verbatim — `$`x`` and `$$`x`` — whose fence
+                // widens with the formula exactly as a code span's does.
+                // Markdown's `$x$` is literal text to djot's parser, so the
+                // formula has to travel inside the ticks.
                 .inline_math => {
-                    const m = leaf.text;
-                    try self.writer.print("${s}$", .{m});
+                    try self.writer.writeByte('$');
+                    try self.writeTickFenced(leaf.text);
                 },
                 .display_math => {
-                    const m = leaf.text;
-                    try self.writer.print("$$\n{s}\n$$", .{m});
+                    try self.writer.writeAll("$$");
+                    try self.writeTickFenced(leaf.text);
                 },
                 .url => {
                     const u = leaf.text;
