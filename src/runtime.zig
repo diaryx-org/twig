@@ -27,9 +27,11 @@
 //! ── Load is the validation moment ──────────────────────────────────────────
 //! A compiled format has its test suite; a runtime one has what it declares,
 //! and `register` holds it to that before the row exists: the description is
-//! well-formed and claims no name or extension a row already has; every sample
-//! parses to a table `ast/table.zig` accepts; a language that prints reparses
-//! every sample's print to an equal tree; and the fidelity probe runs over it,
+//! well-formed and claims no name or extension a row already has; then
+//! `contract.all`, the checks the harness runs over every compiled row —
+//! every sample parses to a table `ast/table.zig` accepts, and a language that
+//! prints reparses every sample's print to an equal tree; and the fidelity
+//! probe runs over it,
 //! so `diagnostics` measures what a conversion into it loses rather than being
 //! told. After load, core still validates every table it receives — a parse
 //! that fails later is an error naming the language, never a crash.
@@ -51,6 +53,7 @@ const Format = format.Format;
 const Target = format.Target;
 const node_table = @import("ast/table.zig");
 const diagnostics = @import("diagnostics.zig");
+const contract = @import("contract.zig");
 const Html = @import("languages/html/html.zig");
 
 /// The first `Format`/`Target` value — and C wire code — a registration is
@@ -204,6 +207,9 @@ const Slot = struct {
 
 var slots: [capacity]Slot = undefined;
 var count = std.atomic.Value(u32).init(0);
+/// The value of the row `register` is filling, while its load check runs;
+/// zero otherwise.
+var loading = std.atomic.Value(u16).init(0);
 var lock: std.atomic.Mutex = .unlocked;
 
 /// The published slots.
@@ -242,7 +248,11 @@ pub fn targetEntryFor(t: Target) ?*const format.TargetEntry {
 /// The name a runtime `Format` or `Target` value was registered under, or
 /// `"unregistered"` for a value in the range no language holds.
 pub fn nameOf(value: u16) []const u8 {
-    return if (slotOf(value)) |s| s.description.name else "unregistered";
+    if (slotOf(value)) |s| return s.description.name;
+    // A row being loaded has its name before it is published, so the load
+    // check's messages can say whose samples they are about.
+    if (loading.load(.acquire) == value) return slots[value - base].description.name;
+    return "unregistered";
 }
 
 /// Every registered row, in registration order.
@@ -404,7 +414,9 @@ pub fn register(gpa: Allocator, language: Language, description: Description, di
 
     // The slot is filled and not yet published: the checks below call the
     // row's own functions, which read it, while no other reader can see it.
-    try checkSamples(gpa, &slots[i], diag);
+    loading.store(base + @as(u16, @intCast(i)), .release);
+    defer loading.store(0, .release);
+    try checkContract(gpa, &slots[i], diag);
     // A print that fails on a probe is measured as dropping it, not as a
     // reason to refuse the language: it declared the write tier, not the
     // whole vocabulary.
@@ -466,31 +478,16 @@ fn ownAll(gpa: Allocator, items: []const []const u8) Allocator.Error![]const []c
     return out;
 }
 
-/// Every sample parses to a table core accepts, and — for a language that
-/// prints — prints to source that reparses to the same tree.
-fn checkSamples(gpa: Allocator, slot: *const Slot, diag: *Writer) RegisterError!void {
-    const name = slot.description.name;
-    for (slot.description.samples, 0..) |sample, n| {
-        var doc = slot.parseDocument(gpa, sample) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return refuse(diag, "sample {d}: {s}", .{ n, lastFailure() }),
-        };
-        defer doc.deinit();
-        if (!slot.description.write) continue;
-        const text = try node_table.encodeAlloc(gpa, &doc, .{ .pretty = false, .positions = false });
-        defer gpa.free(text);
-        const printed = slot.printTable(gpa, text) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return refuse(diag, "sample {d}: {s}", .{ n, lastFailure() }),
-        };
-        defer gpa.free(printed);
-        var back = slot.parseDocument(gpa, printed) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return refuse(diag, "sample {d}, reparsing its print: {s}", .{ n, lastFailure() }),
-        };
-        defer back.deinit();
-        if (!doc.ast.eql(back.ast)) return refuse(diag, "{s}: sample {d} prints to source that reparses to a different tree", .{ name, n });
-    }
+/// The engine contract — `contract.all`, the checks every compiled format's
+/// harness runs: every sample parses to a table core accepts, and a language
+/// that prints reparses each print to an equal tree. The renderer, claim and
+/// move checks apply to a row that authors, which a runtime one does not yet.
+fn checkContract(gpa: Allocator, slot: *const Slot, diag: *Writer) RegisterError!void {
+    var report: contract.Report = .{};
+    contract.all(gpa, &slot.entry, &report) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ContractBroken => return refuse(diag, "{s}", .{report.message()}),
+    };
 }
 
 // ── tests ───────────────────────────────────────────────────────────────────
@@ -616,7 +613,7 @@ test "runtime: load refuses what the description or the samples get wrong" {
     try expectRefusal(.{ .name = "orgish", .extensions = &.{".org"}, .samples = &.{"x"} }, lang, "without its dot");
     try expectRefusal(.{ .name = "orgish", .samples = &.{} }, lang, "at least one sample");
     try expectRefusal(.{ .name = "orgish", .write = true, .samples = &.{"x"} }, lang, "needs a print");
-    try expectRefusal(.{ .name = "orgish", .samples = &.{ "x", "bad" } }, lang, "sample 1: orgish: parse failed: this language does not read \"bad\"");
+    try expectRefusal(.{ .name = "orgish", .samples = &.{ "x", "bad" } }, lang, "orgish: sample 1 does not parse: orgish: parse failed: this language does not read \"bad\"");
     try expectRefusal(.{ .name = "orgish", .samples = &.{"wide"} }, lang, "row 1: span: ends past the source");
     // Nothing above registered anything.
     try testing.expectEqual(@as(?Format, null), format.parseFormatName("orgish"));

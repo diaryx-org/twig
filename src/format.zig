@@ -440,8 +440,8 @@ pub const Entry = struct {
     /// default flavor until a caller says otherwise), and is listed under its
     /// language by `printSupportedInputFormats`.
     dialect_of: ?Format = null,
-    /// Small source documents checked by the shared language harness.
-    /// An empty declaration fails the harness; corpora belong to conformance tests.
+    /// Small source documents checked by the engine contract (`contract.zig`).
+    /// An empty declaration fails it; corpora belong to conformance tests.
     samples: []const []const u8 = &.{},
     /// Lowercase, dot-less extensions that infer this format (checked
     /// case-insensitively against a path's last `.`-separated segment).
