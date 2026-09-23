@@ -17,7 +17,9 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 
+const twig = @import("twig");
 const format = @import("format.zig");
+const languages = @import("languages.zig");
 const InputFormat = format.InputFormat;
 const OutputMode = format.OutputMode;
 
@@ -36,7 +38,7 @@ pub fn commandUsage(action: Action) []const u8 {
         .query => "query [-i <format>] <file> <selector>",
         .edit => "edit [-i <format>] <file|-> <operation>",
         .filter => "filter [-i <format>] <file|-> --drop <sel> [--keep <sel>] [--unwrap]",
-        .lang => "lang table [-i <format>] <file|->",
+        .lang => "lang list | lang table [-i <format>] <file|-> | lang check <name> [--against <format>] [file...] | lang check [--against <format>] -- <command> [arg...]",
         .help, .version => "<command> [options] <file>",
     };
 }
@@ -137,6 +139,34 @@ pub const LangOptions = union(enum) {
     /// bytes as `convert -o table`, under the command a language author
     /// reaches for.
     table: ConvertOptions,
+    /// `lang list`: every compiled format and every configured language.
+    list,
+    /// `lang check`: load a runtime language and, with `--against`, hold its
+    /// tables to a compiled format's.
+    check: CheckOptions,
+};
+
+/// Held in fixed arrays so argument parsing stays allocation-free; a check
+/// over more files than `max_files` is a corpus, and a shell loop's job.
+pub const CheckOptions = struct {
+    pub const max_files = 256;
+    pub const max_command = 32;
+
+    /// A configured language's name, or `null` when `command` is given.
+    name: ?[]const u8 = null,
+    command_buf: [max_command][]const u8 = undefined,
+    command_len: usize = 0,
+    against: ?InputFormat = null,
+    files_buf: [max_files][]const u8 = undefined,
+    files_len: usize = 0,
+
+    pub fn command(self: *const CheckOptions) []const []const u8 {
+        return self.command_buf[0..self.command_len];
+    }
+
+    pub fn files(self: *const CheckOptions) []const []const u8 {
+        return self.files_buf[0..self.files_len];
+    }
 };
 
 pub const CliActionOptions = union(Action) {
@@ -184,6 +214,8 @@ pub const ArgError = error{
     MissingFilterSelector,
     /// `lang` was given no subcommand, or one it does not have.
     UnknownLangCommand,
+    /// `lang check` was given no language, or more arguments than it holds.
+    BadLangCheck,
 } || format.ResolveInputFormatError;
 
 /// A `[:0]const u8`-argv-slice-backed iterator satisfying the `.next()`
@@ -331,6 +363,8 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
     while (args.next()) |arg| {
         if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
+        } else if (std.mem.eql(u8, arg, "--lang")) {
+            input_override = try langFlag(args, stderr, binary_name, .convert);
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .convert, "convert: -i/--input needs a format value", ArgError.MissingFormatValue);
             input_override = format.parseFormatName(name) orelse {
@@ -377,8 +411,70 @@ fn parseLang(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!C
         parsed.options.convert.output = .table;
         return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .{ .table = parsed.options.convert } } };
     }
+    if (std.mem.eql(u8, sub, "list")) {
+        if (args.next() != null) return argFail(stderr, binary_name, .lang, "lang list: takes no arguments", ArgError.TooManyPositionals);
+        return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .list } };
+    }
+    if (std.mem.eql(u8, sub, "check")) {
+        var c: CheckOptions = .{};
+        var in_command = false;
+        while (args.next()) |arg| {
+            if (in_command) {
+                if (c.command_len == CheckOptions.max_command) return argFail(stderr, binary_name, .lang, "lang check: the command has too many arguments", ArgError.BadLangCheck);
+                c.command_buf[c.command_len] = arg;
+                c.command_len += 1;
+            } else if (std.mem.eql(u8, arg, "--")) {
+                in_command = true;
+            } else if (std.mem.eql(u8, arg, "--against")) {
+                const name = args.next() orelse return argFail(stderr, binary_name, .lang, "lang check: --against needs a compiled format", ArgError.MissingFormatValue);
+                const f = twig.format.parseFormatName(name) orelse {
+                    try stderr.print("error: --against names a compiled format; '{s}' is not one\n", .{name});
+                    try format.printSupportedInputFormats(stderr);
+                    try stderr.flush();
+                    return ArgError.UnsupportedFormat;
+                };
+                c.against = f;
+            } else if (c.name == null and c.command_len == 0 and c.files_len == 0 and !std.mem.startsWith(u8, arg, "-")) {
+                c.name = arg;
+            } else {
+                if (c.files_len == CheckOptions.max_files) return argFail(stderr, binary_name, .lang, "lang check: too many files; loop over a corpus in the shell", ArgError.BadLangCheck);
+                c.files_buf[c.files_len] = arg;
+                c.files_len += 1;
+            }
+        }
+        if (in_command and c.command_len == 0) return argFail(stderr, binary_name, .lang, "lang check: -- is followed by the helper's command", ArgError.BadLangCheck);
+        if (in_command and c.name != null) {
+            // Written before `--`, the name was the first file.
+            if (c.files_len == CheckOptions.max_files) return argFail(stderr, binary_name, .lang, "lang check: too many files", ArgError.BadLangCheck);
+            std.mem.copyBackwards([]const u8, c.files_buf[1 .. c.files_len + 1], c.files_buf[0..c.files_len]);
+            c.files_buf[0] = c.name.?;
+            c.files_len += 1;
+            c.name = null;
+        }
+        if (c.name == null and c.command_len == 0) return argFail(stderr, binary_name, .lang, "lang check: name a configured language, or give a helper's command after --", ArgError.BadLangCheck);
+        return .{ .action = .lang, .binary_name = binary_name, .options = .{ .lang = .{ .check = c } } };
+    }
     try stderr.print("error: lang: unknown subcommand '{s}'\n", .{sub});
-    return argFail(stderr, binary_name, .lang, "lang: the subcommand is table", ArgError.UnknownLangCommand);
+    return argFail(stderr, binary_name, .lang, "lang: the subcommands are list, table and check", ArgError.UnknownLangCommand);
+}
+
+/// `--lang <name>`: select a RUNTIME language by name — the spelling for a
+/// file whose extension a compiled format owns, and a way to say plainly
+/// that a document is to be read by a helper. A compiled name is refused
+/// with a pointer to `-i`, which already takes it.
+fn langFlag(args: anytype, stderr: *Writer, binary_name: []const u8, action: Action) ArgError!InputFormat {
+    const name = args.next() orelse return argFail(stderr, binary_name, action, "--lang needs a language name", ArgError.MissingFormatValue);
+    if (twig.format.parseFormatName(name)) |f| {
+        if (twig.runtime.isRegistered(f)) return f;
+        try stderr.print("error: '{s}' is compiled in; --lang names a runtime language, and -i takes '{s}'\n", .{ name, name });
+        try stderr.flush();
+        return ArgError.UnsupportedFormat;
+    }
+    return languages.resolveName(name) orelse {
+        try stderr.print("error: no runtime language named '{s}' is configured (see `twig lang list`)\n", .{name});
+        try stderr.flush();
+        return ArgError.UnsupportedFormat;
+    };
 }
 
 fn parseIdentify(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!CliConfig {
@@ -386,7 +482,9 @@ fn parseIdentify(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErr
     var file: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
+        if (std.mem.eql(u8, arg, "--lang")) {
+            input_override = try langFlag(args, stderr, binary_name, .identify);
+        } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .identify, "identify: -i/--input needs a format value", ArgError.MissingFormatValue);
             input_override = format.parseFormatName(name) orelse {
                 try stderr.print("error: unsupported input format '{s}'\n", .{name});
@@ -420,6 +518,8 @@ fn parseQuery(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!
     while (args.next()) |arg| {
         if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
+        } else if (std.mem.eql(u8, arg, "--lang")) {
+            input_override = try langFlag(args, stderr, binary_name, .query);
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .query, "query: -i/--input needs a format value", ArgError.MissingFormatValue);
             input_override = format.parseFormatName(name) orelse {
@@ -460,6 +560,8 @@ fn parseFilter(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError
     while (args.next()) |arg| {
         if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
+        } else if (std.mem.eql(u8, arg, "--lang")) {
+            input_override = try langFlag(args, stderr, binary_name, .filter);
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .filter, "filter: -i/--input needs a format value", ArgError.MissingFormatValue);
             input_override = format.parseFormatName(name) orelse {
@@ -515,6 +617,8 @@ fn parseEdit(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!C
     while (args.next()) |arg| {
         if (applyExtFlag(arg, &input_override, &parse_config)) {
             // handled
+        } else if (std.mem.eql(u8, arg, "--lang")) {
+            input_override = try langFlag(args, stderr, binary_name, .edit);
         } else if (std.mem.eql(u8, arg, "--input") or std.mem.eql(u8, arg, "-i")) {
             const name = args.next() orelse return argFail(stderr, binary_name, .edit, "edit: -i/--input needs a format value", ArgError.MissingFormatValue);
             input_override = format.parseFormatName(name) orelse {
@@ -655,6 +759,39 @@ test "parseConfig: convert -i/-o override inference, in either flag order" {
     const c2 = try parseConfig(&a2, &w2);
     try testing.expectEqual(InputFormat.xml, c2.options.convert.input);
     try testing.expectEqual(OutputMode.canonical, c2.options.convert.output);
+}
+
+test "parseConfig: lang list and lang check" {
+    var buf: [512]u8 = undefined;
+    var w = scratchWriter(&buf);
+    var a = TestArgs{ .items = &.{ "twig", "lang", "list" } };
+    try testing.expect((try parseConfig(&a, &w)).options.lang == .list);
+
+    var w2 = scratchWriter(&buf);
+    var a2 = TestArgs{ .items = &.{ "twig", "lang", "check", "org", "--against", "djot", "a.org", "b.org" } };
+    const c2 = (try parseConfig(&a2, &w2)).options.lang.check;
+    try testing.expectEqualStrings("org", c2.name.?);
+    try testing.expectEqual(InputFormat.djot, c2.against.?);
+    try testing.expectEqual(@as(usize, 2), c2.files().len);
+
+    var w3 = scratchWriter(&buf);
+    var a3 = TestArgs{ .items = &.{ "twig", "lang", "check", "--against", "djot", "x.dj", "--", "twig-quickjs", "djot.mjs" } };
+    const c3 = (try parseConfig(&a3, &w3)).options.lang.check;
+    try testing.expect(c3.name == null);
+    try testing.expectEqualStrings("x.dj", c3.files()[0]);
+    try testing.expectEqualStrings("djot.mjs", c3.command()[1]);
+
+    var w4 = scratchWriter(&buf);
+    var a4 = TestArgs{ .items = &.{ "twig", "lang", "check" } };
+    try testing.expectError(error.BadLangCheck, parseConfig(&a4, &w4));
+}
+
+test "parseConfig: --lang refuses a compiled name, pointing at -i" {
+    var buf: [512]u8 = undefined;
+    var w = scratchWriter(&buf);
+    var a = TestArgs{ .items = &.{ "twig", "convert", "--lang", "markdown", "doc.md" } };
+    try testing.expectError(error.UnsupportedFormat, parseConfig(&a, &w));
+    try testing.expect(std.mem.indexOf(u8, w.buffered(), "-i takes 'markdown'") != null);
 }
 
 test "parseConfig: lang table is convert -o table" {

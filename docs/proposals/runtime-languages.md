@@ -453,6 +453,18 @@ base, which is why the range is reserved in a minor and the ABI stays at 6.
 4. **The helper runner.** The wire's codec in core over a `Transport`, the
    process runner beside the CLI and in the Rust crate, the discovery file,
    `--lang`, `twig lang list` and `twig lang check`.
+   Done, in `add(helper): the helper wire, and the runners in the CLI and
+   Rust`. Where it differs from the text above: the codec is exposed
+   through the C ABI too (`twig_language_register_transport`), so the Rust
+   runner moves lines and never parses JSON; the wire's field for the row
+   is `dialect`, as fig's is; `$TWIG_LANGUAGES` is searched first, as fig
+   searches `$FIG_LANGUAGES`, so a test can point at a file; `lang check`
+   takes a configured name or, after `--`, a helper's command, and
+   `--against` compares tables row for row as fig's does; `--lang` refuses
+   a compiled name, which `-i` already takes. The CLI never respawns a
+   helper, since an invocation that loses one has nothing left to do with
+   it; the Rust runner does, once per request. The answering end (`wire.handle`)
+   is in core, and a Rust `serve` over it is step 5's, with `twig-quickjs`.
 5. **`twig-quickjs`.** A new repository over the Rust crate and `rquickjs`:
    `twig-quickjs <module.mjs>` as the helper and `register_file` as the
    crate, with `twig`, `twig/grammar` and the wire served from the binary

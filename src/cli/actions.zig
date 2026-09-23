@@ -24,6 +24,7 @@ const build_options = @import("build_options");
 
 const format = @import("format.zig");
 const args_mod = @import("args.zig");
+const languages = @import("languages.zig");
 // The AST-JSON encoder lives in the library now (`twig.ast_json`) so the CLI
 // and the C ABI share one implementation; this alias keeps the call sites
 // below (`ast_json.encode`) unchanged.
@@ -104,6 +105,20 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\  lang table [-i <format>] <file|->
         \\      Print the node table a parse of <file> produces -- what a
         \\      language outside twig writes for the same document.
+        \\  lang list
+        \\      List the compiled formats and the configured languages.
+        \\  lang check <name> [--against <format>] [file...]
+        \\  lang check [--against <format>] [file...] -- <command> [arg...]
+        \\      Load a runtime language -- every sample parses, prints and
+        \\      reparses -- and, with --against, hold its node tables to a
+        \\      compiled format's over its samples and the files.
+        \\
+        \\runtime languages:
+        \\  A format twig does not compile in is a helper process a
+        \\  `languages` file names, one per line: name, extensions (a,b or
+        \\  -), command. Read from $TWIG_LANGUAGES, .twig/languages here
+        \\  and upward, then ~/.config/twig/languages. `-i <name>`, a file's
+        \\  extension, or `--lang <name>` reaches one.
         \\
         \\  help              show this message
         \\  version           show the version
@@ -113,6 +128,7 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\                         (djot/dj, markdown/md, commonmark, gfm, xml, svg,
         \\                         html/htm, asciidoc/adoc)
         \\  -o, --output <format>  select convert's output (html, ast, table, canonical)
+        \\  --lang <name>          read the input as a runtime language
         \\  --dry-run              (edit) print the result instead of writing it
         \\
         \\markdown extension flags (convert/query/edit; ignored for other inputs):
@@ -144,7 +160,23 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
 pub fn runLang(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, opts: args_mod.LangOptions) ActionError!void {
     switch (opts) {
         .table => |convert| try runConvert(allocator, io, stdout, stderr, convert),
+        .list => {
+            languages.list(stdout) catch return error.ActionFailed;
+            stdout.flush() catch return error.ActionFailed;
+        },
+        .check => |c| {
+            const result = languages.check(stdout, stderr, c.name, c.command(), c.against, c.files());
+            stdout.flush() catch {};
+            stderr.flush() catch {};
+            result catch return error.ActionFailed;
+        },
     }
+}
+
+/// Why a parse failed, for a message: a runtime language's own reason when
+/// it gave one, the error's name otherwise.
+fn parseFailure(input: format.InputFormat, err: anyerror) []const u8 {
+    return if (twig.runtime.isRegistered(input)) languages.failureOf(err) else @errorName(err);
 }
 
 pub fn runIdentify(stdout: *Writer, opts: args_mod.IdentifyOptions) !void {
@@ -249,7 +281,7 @@ fn convertSource(
     const entry = format.entryFor(input);
 
     var doc = entry.parse(&parse_config, allocator, source) catch |err| {
-        stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ display_name, input.name(), err }) catch {};
+        stderr.print("error: failed to parse '{s}' as {s}: {s}\n", .{ display_name, input.name(), parseFailure(input, err) }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
@@ -349,7 +381,7 @@ pub fn runQuery(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, 
     // `Document` — the per-format reparse adapter, which is `parse` minus the
     // `ParsedDoc` wrapper.
     var doc = format.entryFor(opts.input).parseToAst(&opts.parse_config, allocator, source) catch |err| {
-        stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ opts.file, opts.input.name(), err }) catch {};
+        stderr.print("error: failed to parse '{s}' as {s}: {s}\n", .{ opts.file, opts.input.name(), parseFailure(opts.input, err) }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
@@ -472,7 +504,7 @@ fn filterSource(allocator: Allocator, source: []const u8, opts: args_mod.FilterO
     // `&opts.parse_config` outlives `editor` (deinited before we return), so the
     // editor's borrowed parse context stays valid across every reparse.
     var editor = twig.Splicer.init(allocator, source, &opts.parse_config, entry.parseToAst) catch |err| {
-        stderr.print("error: failed to parse input as {s}: {t}\n", .{ opts.input.name(), err }) catch {};
+        stderr.print("error: failed to parse input as {s}: {s}\n", .{ opts.input.name(), parseFailure(opts.input, err) }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
@@ -515,7 +547,7 @@ fn applyEditByLocator(
     // deinited before this function returns — so the editor's borrowed parse
     // context stays valid across every reparse.
     var editor = twig.Splicer.init(allocator, source, &parse_config, entry.parseToAst) catch |err| {
-        stderr.print("error: failed to parse input as {s}: {t}\n", .{ input.name(), err }) catch {};
+        stderr.print("error: failed to parse input as {s}: {s}\n", .{ input.name(), parseFailure(input, err) }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };

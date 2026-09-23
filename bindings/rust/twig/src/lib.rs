@@ -1,4 +1,5 @@
 mod error;
+pub mod helper;
 mod language;
 
 // The raw FFI layer moved to the `twig-sys` crate. Alias it as `ffi` so every

@@ -164,6 +164,39 @@ done
 
 ---
 
+## 6. Formats twig does not compile in
+
+A format twig does not know is a **helper**: any executable that reads one
+JSON request per line on stdin and answers one per line on stdout. Name it in
+a `languages` file — `.twig/languages` here or in a parent directory, or
+`~/.config/twig/languages` — one per line: its name, its extensions (`a,b`,
+or `-` for none), and its command.
+
+```sh
+# .twig/languages
+org   org   ~/bin/org-helper
+```
+
+```sh
+twig convert notes.org                    # the extension reaches the helper
+twig convert -i org -o markdown notes.org # so does its name
+twig convert --lang org notes.txt         # --lang for any other file
+twig lang list                            # compiled formats and helpers
+twig lang check org notes.org             # load it: samples parse and print
+twig lang check djot2 --against djot a.dj # a twin, held to what it twins
+twig lang check -- ./my-helper --flag     # a helper not yet in the file
+```
+
+A helper answers three requests — `{"op":"describe"}`,
+`{"op":"parse","dialect":…,"input":…}` with a node table, and, if it writes,
+`{"op":"print","dialect":…,"table":{…}}` with the source — each with
+`{"ok":true,…}` or `{"ok":false,"message":…}`. `twig lang table <file>` prints
+the table a compiled format produces for a file, which is what a helper for
+the same syntax should produce too. A helper reads and writes; it does not
+get the editor's authoring gestures.
+
+---
+
 ## Notes
 
 - **`edit` takes exactly one node.** By design — an ambiguous selector errors

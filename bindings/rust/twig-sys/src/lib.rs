@@ -163,8 +163,32 @@ pub struct TwigLanguageVTable {
     pub free: Option<unsafe extern "C" fn(user_data: *mut std::ffi::c_void, ptr: *mut u8, len: usize)>,
 }
 
+/// Bumped only when a field of [`TwigTransport`] changes meaning.
+pub const TWIG_TRANSPORT_VERSION: u32 = 1;
+
+/// Mirrors `TwigTransport` in `twig.h`: one line of the helper wire traded
+/// for another. The library speaks the wire; the host moves the lines.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TwigTransport {
+    pub version: u32,
+    pub user_data: *mut std::ffi::c_void,
+    pub exchange: Option<
+        unsafe extern "C" fn(
+            user_data: *mut std::ffi::c_void,
+            request: *const u8,
+            request_len: usize,
+            out: *mut *mut u8,
+            out_len: *mut usize,
+        ) -> c_int,
+    >,
+    pub free: Option<unsafe extern "C" fn(user_data: *mut std::ffi::c_void, ptr: *mut u8, len: usize)>,
+}
+
 #[cfg(target_pointer_width = "64")]
 const _: () = {
+    assert!(std::mem::size_of::<TwigTransport>() == 32);
+    assert!(std::mem::offset_of!(TwigTransport, exchange) == 16);
     assert!(std::mem::size_of::<TwigLanguageVTable>() == 56);
     assert!(std::mem::offset_of!(TwigLanguageVTable, user_data) == 8);
     assert!(std::mem::offset_of!(TwigLanguageVTable, parse) == 32);
@@ -356,6 +380,12 @@ unsafe extern "C" {
     pub fn twig_abi_version() -> u32;
     pub fn twig_language_register(
         vtable: *const TwigLanguageVTable,
+        out_format: *mut c_int,
+        err_buf: *mut c_char,
+        err_cap: usize,
+    ) -> TwigStatus;
+    pub fn twig_language_register_transport(
+        transport: *const TwigTransport,
         out_format: *mut c_int,
         err_buf: *mut c_char,
         err_cap: usize,

@@ -15,6 +15,7 @@ const std = @import("std");
 const Writer = std.Io.Writer;
 
 const twig = @import("twig");
+const languages = @import("languages.zig");
 
 // ── re-exports from the shared registry ────────────────────────────────────
 
@@ -40,9 +41,38 @@ pub const entryFor = twig.format.entryFor;
 pub const targetEntryFor = twig.format.targetEntryFor;
 pub const targetFor = twig.format.targetFor;
 pub const writesOwnSyntax = twig.format.writesOwnSyntax;
-pub const parseFormatName = twig.format.parseFormatName;
-pub const parseTargetName = twig.format.parseTargetName;
-pub const detectFromExtension = twig.format.detectFromExtension;
+/// `twig.format.parseFormatName`, then the configured languages
+/// (`languages.zig`): a name nothing compiled answers to spawns the helper
+/// whose line gives it.
+pub fn parseFormatName(name: []const u8) ?InputFormat {
+    return twig.format.parseFormatName(name) orelse languages.resolveName(name);
+}
+
+/// `twig.format.parseTargetName`, then the configured languages.
+pub fn parseTargetName(name: []const u8) ?Target {
+    if (twig.format.parseTargetName(name)) |t| return t;
+    const f = languages.resolveName(name) orelse return null;
+    return targetFor(f);
+}
+
+/// `twig.format.detectFromExtension`, then the configured languages. A
+/// compiled format's extension always wins.
+pub fn detectFromExtension(file_path: []const u8) ?InputFormat {
+    if (twig.format.detectFromExtension(file_path)) |f| return f;
+    const dot = std.mem.lastIndexOfScalar(u8, file_path, '.') orelse return null;
+    const ext = file_path[dot + 1 ..];
+    if (ext.len == 0) return null;
+    return languages.resolveExtension(ext);
+}
+
+/// A configured language, listed without spawning it.
+fn printConfigured(w: *Writer) Writer.Error!void {
+    for (languages.configured()) |c| {
+        try w.print("  - {s} (configured", .{c.name});
+        for (c.extensions) |x| try w.print(" .{s}", .{x});
+        try w.writeAll(")\n");
+    }
+}
 
 // ── the CLI's own vocabulary ───────────────────────────────────────────────
 
@@ -96,6 +126,7 @@ pub fn printSupportedInputFormats(w: *Writer) Writer.Error!void {
         if (e.dialect_of) |lang| try w.print(" — a {s} dialect", .{lang.name()});
         try w.writeByte('\n');
     }
+    try printConfigured(w);
 }
 
 /// Write the `-o`/`--output` vocabulary to `w`: the three modes, then every
@@ -120,6 +151,7 @@ pub fn printSupportedOutputTargets(w: *Writer) Writer.Error!void {
         }
         try w.writeByte('\n');
     }
+    try printConfigured(w);
 }
 
 /// Errors `resolveInputFormat` can produce, beyond the write failures its own

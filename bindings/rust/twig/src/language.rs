@@ -162,7 +162,7 @@ pub fn register<L: Language>(language: L) -> Result<Format, RegisterError> {
     }
 }
 
-unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+pub(crate) unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
     if len == 0 || ptr.is_null() {
         &[]
     } else {
@@ -170,7 +170,7 @@ unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
     }
 }
 
-unsafe fn give(bytes: Vec<u8>, out: *mut *mut u8, out_len: *mut usize) {
+pub(crate) unsafe fn give(bytes: Vec<u8>, out: *mut *mut u8, out_len: *mut usize) {
     let boxed = bytes.into_boxed_slice();
     unsafe {
         *out_len = boxed.len();
@@ -232,7 +232,7 @@ unsafe extern "C" fn print_trampoline<L: Language>(
     unsafe { call(|| language.print(row, input), out, out_len) }
 }
 
-unsafe extern "C" fn free_trampoline(_: *mut c_void, ptr: *mut u8, len: usize) {
+pub(crate) unsafe extern "C" fn free_trampoline(_: *mut c_void, ptr: *mut u8, len: usize) {
     if !ptr.is_null() {
         drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
     }
