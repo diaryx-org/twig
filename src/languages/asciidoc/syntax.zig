@@ -78,7 +78,11 @@ pub const table: syntax.Syntax = .{
     }),
     .text_leaf_delims = .init(.{
         .verbatim = .{ .open = "``", .close = "``" },
-        .inline_math = .{ .open = "stem:[", .close = "]", .authorable = false },
+        // `stem:[…]` reads back as inline math under any document, so an
+        // inline formula is authorable. The display form is emit-only: the
+        // same macro is all AsciiDoc has for it, and it comes back INLINE,
+        // so a gesture asked for a display formula would mint the other kind.
+        .inline_math = .{ .open = "stem:[", .close = "]" },
         .display_math = .{ .open = "stem:[", .close = "]", .authorable = false },
         // No shortcodes; a bare URL or address needs no delimiters at all.
         .symb = null,
@@ -168,6 +172,8 @@ test "asciidoc spells every mark, and authors the five that reparse anywhere" {
         try std.testing.expectEqual(want, table.inline_delims.get(m).?.authorable);
     }
     try std.testing.expect(table.text_leaf_delims.get(.verbatim).?.authorable);
+    try std.testing.expect(table.text_leaf_delims.get(.inline_math).?.authorable);
+    try std.testing.expect(!table.text_leaf_delims.get(.display_math).?.authorable);
     table.assertCoherent();
     try std.testing.expect(table.authorable());
 }

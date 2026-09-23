@@ -67,6 +67,8 @@ const base: syntax.Syntax = .{
     }),
     .text_leaf_delims = .init(.{
         .verbatim = .{ .open = "`", .close = "`" },
+        // Read back only under `ParseOptions.math`, off by default, so
+        // `derive` sets both.
         .inline_math = .{ .open = "$", .close = "$", .authorable = false },
         .display_math = .{ .open = "$$", .close = "$$", .authorable = false },
         .symb = .{ .open = ":", .close = ":", .authorable = false },
@@ -216,9 +218,9 @@ const Highlights = enum(u2) { none, marks, colors };
 /// here. `directives` is a key because `Editor.insertDirective` authors one,
 /// and `html_elements` because `setBlockAttrs`, `wrapRangeAttrs` and
 /// `toggleInline(.insert)` mint a `<div>`, a `<span>` and a `<u>` only that
-/// flag reads back. `math` authors nothing,
-/// but it makes `$` a byte that opens markup, so it moves the escape
-/// alphabets — a literal typed under it must not mint a formula. At four
+/// flag reads back. `math` makes `$…$` and `$$…$$` formulas the insert-math
+/// gestures may mint, and makes `$` a byte that opens markup, so it moves the
+/// escape alphabets too — a literal typed under it must not mint a formula. At four
 /// flags the nested arrays this used to be gave way to an index; the fifth
 /// added a factor to it.
 const Key = struct {
@@ -330,8 +332,11 @@ fn derive(comptime k: Key) syntax.Syntax {
     if (!k.task_lists) t.task_marker = null;
     if (!k.footnotes) t.footnote = null;
     // `$…$` is inline math and `$$…$$` display math only under `math`, so
-    // only there is `$` a byte a literal has to escape — in body text and in
-    // link text alike. Without the flag a bare `$` is text and stays bare.
+    // only there may a gesture write one, and only there is `$` a byte a
+    // literal has to escape — in body text and in link text alike. Without
+    // the flag a bare `$` is text and stays bare.
+    setLeafAuthorable(&t, .inline_math, k.math);
+    setLeafAuthorable(&t, .display_math, k.math);
     if (k.math) {
         t.text_escapes = base.text_escapes.? ++ "$";
         t.link_text_escapes = base.link_text_escapes.? ++ "$";
@@ -343,6 +348,12 @@ fn setAuthorable(t: *syntax.Syntax, comptime m: AST.InlineMark, yes: bool) void 
     var d = t.inline_delims.get(m).?;
     d.authorable = yes;
     t.inline_delims.set(m, d);
+}
+
+fn setLeafAuthorable(t: *syntax.Syntax, comptime k: AST.TextLeafKind, yes: bool) void {
+    var d = t.text_leaf_delims.get(k).?;
+    d.authorable = yes;
+    t.text_leaf_delims.set(k, d);
 }
 
 /// Every table Markdown is authored by, one per `Key`. See `Key` for why the
@@ -435,6 +446,8 @@ test "every derived table differs from base in the authorable flags and nothing 
             const text_escapes = if (k.math) base.text_escapes.? ++ "$" else base.text_escapes.?;
             const link_text_escapes = if (k.math) base.link_text_escapes.? ++ "$" else base.link_text_escapes.?;
             try std.testing.expectEqualStrings(text_escapes, t.text_escapes.?);
+            try std.testing.expectEqual(k.math, t.text_leaf_delims.get(.inline_math).?.authorable);
+            try std.testing.expectEqual(k.math, t.text_leaf_delims.get(.display_math).?.authorable);
             try std.testing.expectEqualStrings(link_text_escapes, t.link_text_escapes.?);
             try std.testing.expectEqualStrings(base.block_start_escapes.?, t.block_start_escapes.?);
             try std.testing.expectEqualStrings(base.thematic_break.?, t.thematic_break.?);
@@ -455,6 +468,7 @@ test "every derived table differs from base in the authorable flags and nothing 
     try std.testing.expect(!base.names_leaf_containers);
     try std.testing.expect(base.block_attrs == null);
     try std.testing.expect(!base.inline_attrs);
+    try std.testing.expect(!base.text_leaf_delims.get(.inline_math).?.authorable);
 }
 
 test "the key is a bijection onto the set" {
@@ -536,10 +550,14 @@ test "forOptions: each flag moves exactly its own mark" {
     try std.testing.expectEqual(table, forOptions(.{ .definition_lists = false }));
     try std.testing.expect(forOptions(.{ .footnotes = false }).footnote == null);
 
-    // Math is the fifth, and it moves only the escape alphabets: `$` opens
-    // a formula with the flag on and is text without it.
+    // Math is the fifth: `$` opens a formula with the flag on and is text
+    // without it, so the flag moves the escape alphabets and makes both
+    // formulas authorable.
     const math = forOptions(.{ .math = true });
     try std.testing.expect(math != table);
+    try std.testing.expect(math.text_leaf_delims.get(.inline_math).?.authorable);
+    try std.testing.expect(math.text_leaf_delims.get(.display_math).?.authorable);
+    try std.testing.expect(!table.text_leaf_delims.get(.inline_math).?.authorable);
     try std.testing.expect(std.mem.indexOfScalar(u8, math.text_escapes.?, '$') != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, math.link_text_escapes.?, '$') != null);
     try std.testing.expect(std.mem.indexOfScalar(u8, table.text_escapes.?, '$') == null);

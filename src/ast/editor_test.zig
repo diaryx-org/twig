@@ -56,8 +56,8 @@ var directives_cfg: format.ParseConfig = .{ .markdown = .{ .directives = true } 
 /// `ParseOptions.html_elements`, so the two attribute gestures run against an
 /// editor whose reparse pairs the tags.
 var html_elements_cfg: format.ParseConfig = .{ .markdown = .{ .html_elements = true } };
-/// And the fifth, which authors nothing: under `ParseOptions.math` a `$`
-/// opens a formula, so a literal typed there has to escape one.
+/// And the fifth: under `ParseOptions.math` a `$` opens a formula, so the
+/// math gestures may write one and a literal typed there has to escape one.
 var math_cfg: format.ParseConfig = .{ .markdown = .{ .math = true } };
 
 const KindTag = std.meta.Tag(AST.Node.Kind);
@@ -4442,6 +4442,177 @@ test "insertFootnote: a parse-only format spells none" {
     }
 }
 
+// ── Math ────────────────────────────────────────────────────────────────────
+
+/// The formula of `kind` the reparse holds, or an error when there is none.
+fn expectFormula(fx: *Fixture, kind: AST.TextLeafKind, formula: []const u8) !void {
+    const id = fx.find(.{ .text_leaf = kind }) orelse return error.NoFormula;
+    try testing.expectEqualStrings(formula, fx.ed.astView().nodes[id].kind.text_leaf.text);
+}
+
+test "insertInlineMath: Markdown under math writes $…$ at the caret" {
+    var fx = try Fixture.initWith("a  b\n", .markdown, &math_cfg);
+    defer fx.deinit();
+    try fx.ed.insertInlineMath(2, "x^2");
+    try fx.expectSource("a $x^2$ b\n");
+    try expectFormula(&fx, .inline_math, "x^2");
+}
+
+test "insertInlineMath: the formula is written as it is, backslashes and all" {
+    // A math body is read literally, so `insertLiteral`'s escapes would be
+    // bytes of TeX: `\frac` must not become `\\frac`.
+    var fx = try Fixture.initWith("a  b\n", .markdown, &math_cfg);
+    defer fx.deinit();
+    try fx.ed.insertInlineMath(2, "\\frac{1}{2}");
+    try fx.expectSource("a $\\frac{1}{2}$ b\n");
+    try expectFormula(&fx, .inline_math, "\\frac{1}{2}");
+}
+
+test "insertInlineMath: djot's run widens around a backtick in the formula" {
+    var fx = try Fixture.init("a  b\n", .djot);
+    defer fx.deinit();
+    try fx.ed.insertInlineMath(2, "x^2");
+    try fx.expectSource("a $`x^2` b\n");
+    try expectFormula(&fx, .inline_math, "x^2");
+
+    var tick = try Fixture.init("a  b\n", .djot);
+    defer tick.deinit();
+    try tick.ed.insertInlineMath(2, "a`b");
+    try tick.expectSource("a $``a`b`` b\n");
+    try expectFormula(&tick, .inline_math, "a`b");
+}
+
+test "insertInlineMath: AsciiDoc writes the stem macro" {
+    var fx = try Fixture.init("a  b\n", .asciidoc);
+    defer fx.deinit();
+    try fx.ed.insertInlineMath(2, "x^2");
+    try fx.expectSource("a stem:[x^2] b\n");
+    try expectFormula(&fx, .inline_math, "x^2");
+}
+
+test "insertInlineMath: without the math extension Markdown refuses, and touches nothing" {
+    // `$x$` is four characters of text there, which is the gate's reason.
+    var fx = try Fixture.init("a\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.insertInlineMath(0, "x"));
+    try testing.expectError(error.UnsupportedFormat, fx.ed.insertDisplayMath(0, "x"));
+    try fx.expectSource("a\n");
+
+    var html = try Fixture.init("<p>a</p>", .html);
+    defer html.deinit();
+    try testing.expectError(error.UnsupportedFormat, html.ed.insertInlineMath(3, "x"));
+    try testing.expectError(error.UnsupportedFormat, html.ed.insertDisplayMath(3, "x"));
+}
+
+test "insertInlineMath: a formula Markdown's dollars cannot hold is refused, and touches nothing" {
+    var fx = try Fixture.initWith("a  b\n", .markdown, &math_cfg);
+    defer fx.deinit();
+    // No empty formula, no space against either dollar, no dollar inside, no
+    // line end: each prints bytes that come back as something else.
+    for ([_][]const u8{ "", " x", "x ", "a$b", "a\nb" }) |f| {
+        try testing.expectError(error.InvalidFormula, fx.ed.insertInlineMath(2, f));
+        try fx.expectSource("a  b\n");
+    }
+    // Djot's run holds the same formulas as themselves.
+    var dj = try Fixture.init("a  b\n", .djot);
+    defer dj.deinit();
+    try dj.ed.insertInlineMath(2, "a$b");
+    try expectFormula(&dj, .inline_math, "a$b");
+}
+
+test "insertInlineMath: in a code span the bytes are code, so it refuses and touches nothing" {
+    var fx = try Fixture.initWith("`code`\n", .markdown, &math_cfg);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.insertInlineMath(3, "x"));
+    try fx.expectSource("`code`\n");
+
+    var block = try Fixture.init("```\ncode\n```\n", .djot);
+    defer block.deinit();
+    try testing.expectError(error.NotEditable, block.ed.insertInlineMath(6, "x"));
+    try block.expectSource("```\ncode\n```\n");
+}
+
+test "insertInlineMath: flush against a dollar Markdown pairs differently, it refuses" {
+    // `$5` then the formula: the first `$` would open against the formula's
+    // own, which is not the formula the gesture wrote.
+    var fx = try Fixture.initWith("costs $5\n", .markdown, &math_cfg);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.insertInlineMath(8, "x"));
+    try fx.expectSource("costs $5\n");
+}
+
+test "insertInlineMath: it is one edit, so one undo takes it back" {
+    var fx = try Fixture.init("a  b\n", .djot);
+    defer fx.deinit();
+    try fx.ed.insertInlineMath(2, "x");
+    _ = try fx.ed.splicer.undo();
+    try fx.expectSource("a  b\n");
+}
+
+test "insertDisplayMath: a paragraph of its own after the caret's block" {
+    var md = try Fixture.initWith("a\n\nb\n", .markdown, &math_cfg);
+    defer md.deinit();
+    try md.ed.insertDisplayMath(0, "x^2");
+    try md.expectSource("a\n\n$$x^2$$\n\nb\n");
+    try expectFormula(&md, .display_math, "x^2");
+
+    var dj = try Fixture.init("a\n", .djot);
+    defer dj.deinit();
+    try dj.ed.insertDisplayMath(0, "x^2");
+    try dj.expectSource("a\n\n$$`x^2`\n");
+    try expectFormula(&dj, .display_math, "x^2");
+}
+
+test "insertDisplayMath: inside a quote every line of the formula carries the marker" {
+    var fx = try Fixture.initWith("> a\n", .markdown, &math_cfg);
+    defer fx.deinit();
+    try fx.ed.insertDisplayMath(2, "a \\\\\nb");
+    try fx.expectSource("> a\n>\n> $$a \\\\\n> b$$\n");
+    try expectFormula(&fx, .display_math, "a \\\\\nb");
+    // One quote, holding both paragraphs: the formula did not end it.
+    const quote = fx.find(.{ .tag = .block_quote }) orelse return error.NoQuote;
+    const q = fx.ed.splicer.doc.span(quote);
+    try testing.expectEqual(@as(usize, 0), q.start);
+    try testing.expect(q.end >= fx.ed.sourceBytes().len - 1);
+}
+
+test "insertDisplayMath: an empty document is a legitimate place for one" {
+    var fx = try Fixture.initWith("", .markdown, &math_cfg);
+    defer fx.deinit();
+    try fx.ed.insertDisplayMath(0, "x");
+    try fx.expectSource("$$x$$\n");
+    try expectFormula(&fx, .display_math, "x");
+}
+
+test "insertDisplayMath: AsciiDoc reads its one spelling back inline, so it authors only that" {
+    var fx = try Fixture.init("a\n", .asciidoc);
+    defer fx.deinit();
+    try testing.expectError(error.UnsupportedFormat, fx.ed.insertDisplayMath(0, "x"));
+    try fx.expectSource("a\n");
+    try testing.expect(Editor.supports(format.syntaxFor(.asciidoc), .insert_inline_math));
+    try testing.expect(!Editor.supports(format.syntaxFor(.asciidoc), .insert_display_math));
+}
+
+test "insertDisplayMath: a formula Markdown cannot hold is refused, and touches nothing" {
+    var fx = try Fixture.initWith("a\n", .markdown, &math_cfg);
+    defer fx.deinit();
+    // A blank line ends the paragraph the formula sits in.
+    for ([_][]const u8{ "", "a\n\nb", "a$$b" }) |f| {
+        try testing.expectError(error.InvalidFormula, fx.ed.insertDisplayMath(0, f));
+        try fx.expectSource("a\n");
+    }
+}
+
+test "math gestures: supports follows Markdown's math flag" {
+    const md = format.syntaxFor(.markdown);
+    try testing.expect(!Editor.supports(md, .insert_inline_math));
+    try testing.expect(!Editor.supports(md, .insert_display_math));
+    const with = format.syntaxForConfig(.markdown, &math_cfg);
+    try testing.expect(Editor.supports(with, .insert_inline_math));
+    try testing.expect(Editor.supports(with, .insert_display_math));
+    try testing.expect(Editor.supports(format.syntaxFor(.djot), .insert_display_math));
+}
+
 // ── Capability ──────────────────────────────────────────────────────────────
 // `Editor.supports` reports, without a document, whether a gesture will refuse
 // on FORMAT. It is a second reading of the same `Syntax` fields the gestures
@@ -4502,6 +4673,8 @@ const all_gestures = blk: {
         .wrap_range_attrs,
         .set_node_attrs,
         .move_block,
+        .insert_inline_math,
+        .insert_display_math,
     };
 };
 
@@ -4556,6 +4729,8 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .wrap_range_attrs => ed.wrapRangeAttrs(whole, &.{.{ .key = "class", .value = "c" }}),
         .set_node_attrs => ed.setNodeAttrs(0, &.{.{ .key = "class", .value = "c" }}),
         .move_block => ed.moveBlock(0, ed.sourceBytes().len),
+        .insert_inline_math => ed.insertInlineMath(0, "x"),
+        .insert_display_math => ed.insertDisplayMath(0, "x"),
     };
 }
 

@@ -944,6 +944,16 @@ pub enum Gesture {
     /// container it lands in — [`Editor::move_block`]. Supported wherever a
     /// caret can name a block: every prose format, HTML included; not XML.
     MoveBlock,
+    /// Insert an inline formula at the caret — [`Editor::insert_inline_math`].
+    /// Djot and AsciiDoc; Markdown only under [`MarkdownExtensions::math`], so
+    /// ask [`Format::supports_with`] rather than [`Format::supports`], which
+    /// answers `false` for Markdown.
+    InsertInlineMath,
+    /// Insert a display formula after the caret's block —
+    /// [`Editor::insert_display_math`]. Djot, and Markdown under
+    /// [`MarkdownExtensions::math`]; not AsciiDoc, whose one math spelling
+    /// reads back inline.
+    InsertDisplayMath,
 }
 
 impl Gesture {
@@ -985,6 +995,8 @@ impl Gesture {
             Gesture::JoinBlocks => (29, 0),
             Gesture::SetNodeAttrs => (30, 0),
             Gesture::MoveBlock => (31, 0),
+            Gesture::InsertInlineMath => (32, 0),
+            Gesture::InsertDisplayMath => (33, 0),
         }
     }
 }
@@ -3154,6 +3166,42 @@ impl Editor {
     pub fn insert_footnote(&mut self, offset: usize, label: &str) -> Result<Change, Error> {
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_insert_footnote(ed, offset, label.as_ptr(), label.len(), out)
+        })
+    }
+
+    /// Insert `formula` at `offset` as an inline formula — Markdown's `$x$`,
+    /// djot's `` $`x` ``, AsciiDoc's `stem:[x]` — a math node whose text is
+    /// the formula byte for byte.
+    ///
+    /// Twig reads none of the formula: it is written unescaped, because a math
+    /// body is read literally, and the bytes around it are the format
+    /// serializer's, so djot's run widens around a backtick in the formula.
+    ///
+    /// A formula the format cannot hold is refused rather than written:
+    /// Markdown's `$` will not open onto a space or close after one, has no
+    /// spelling for an empty formula, and ends at the first `$` inside — each
+    /// [`Error::InvalidArgument`]. The edit is then kept only if the document
+    /// holds the formula where it was written; in a code span or a code block
+    /// the bytes would be code, which is [`Error::NotEditable`], with nothing
+    /// changed. [`Error::UnsupportedFormat`] where the format authors no
+    /// formula — HTML, XML, and Markdown without [`MarkdownExtensions::math`].
+    pub fn insert_inline_math(&mut self, offset: usize, formula: &str) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_insert_inline_math(ed, offset, formula.as_ptr(), formula.len(), out)
+        })
+    }
+
+    /// Insert `formula` as a display formula — Markdown's `$$x$$`, djot's
+    /// `` $$`x` `` — in a paragraph of its own after the block `offset` sits
+    /// in, placed as [`Editor::insert_thematic_break`] places a rule:
+    /// blank-separated on both sides, inside the caret block's quote.
+    ///
+    /// Everything else is [`Editor::insert_inline_math`]'s, errors included.
+    /// AsciiDoc reads its one math spelling back inline, so it is
+    /// [`Error::UnsupportedFormat`] here.
+    pub fn insert_display_math(&mut self, offset: usize, formula: &str) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe {
+            ffi::twig_editor_insert_display_math(ed, offset, formula.as_ptr(), formula.len(), out)
         })
     }
 
@@ -6705,6 +6753,36 @@ mod tests {
     }
 
     #[test]
+    fn editor_insert_math_writes_a_formula_the_reparse_reads_back() {
+        let exts = MarkdownExtensions {
+            math: true,
+            ..Default::default()
+        };
+        let mut md = Editor::new_ext(b"a  b\n", Format::Markdown, exts).expect("editor");
+        md.insert_inline_math(2, "x^2").expect("inline");
+        assert_eq!(md.source_str().unwrap(), "a $x^2$ b\n");
+        md.insert_display_math(0, "\\frac{1}{2}").expect("display");
+        assert_eq!(md.source_str().unwrap(), "a $x^2$ b\n\n$$\\frac{1}{2}$$\n");
+
+        let mut dj = Editor::new_str("a  b\n", Format::Djot).expect("editor");
+        dj.insert_inline_math(2, "a`b").expect("inline");
+        assert_eq!(dj.source_str().unwrap(), "a $``a`b`` b\n");
+
+        // Refusals leave the source as it was.
+        assert_eq!(md.insert_inline_math(0, " x"), Err(Error::InvalidArgument));
+        let mut code = Editor::new_ext(b"`code`\n", Format::Markdown, exts).expect("editor");
+        assert_eq!(code.insert_inline_math(3, "x"), Err(Error::NotEditable));
+        assert_eq!(code.source_str().unwrap(), "`code`\n");
+
+        let mut plain = Editor::new_str("a\n", Format::Markdown).expect("editor");
+        assert_eq!(plain.insert_inline_math(0, "x"), Err(Error::UnsupportedFormat));
+        assert!(!Format::Markdown.supports(Gesture::InsertInlineMath));
+        assert!(Format::Markdown.supports_with(exts, Gesture::InsertDisplayMath));
+        assert!(Format::Asciidoc.supports(Gesture::InsertInlineMath));
+        assert!(!Format::Asciidoc.supports(Gesture::InsertDisplayMath));
+    }
+
+    #[test]
     fn editor_insert_directive_needs_the_extension_it_will_be_read_back_with() {
         // Without the flag `::page-break` is a paragraph of colons, so the
         // gesture refuses rather than minting bytes one press cannot undo.
@@ -6970,6 +7048,8 @@ mod tests {
             Gesture::JoinBlocks,
             Gesture::SetNodeAttrs,
             Gesture::MoveBlock,
+            Gesture::InsertInlineMath,
+            Gesture::InsertDisplayMath,
         ]);
         all
     }
@@ -6984,7 +7064,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=31).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=33).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -7002,7 +7082,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                32,
+                34,
                 0,
                 &mut supported,
             )

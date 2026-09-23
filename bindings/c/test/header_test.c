@@ -54,6 +54,8 @@ PIN(TWIG_GESTURE_INSERT_LINE_BREAK == 14);
 PIN(TWIG_GESTURE_SPLIT_BLOCK == 15);
 PIN(TWIG_GESTURE_JOIN_BLOCKS == 29);
 PIN(TWIG_GESTURE_MOVE_BLOCK == 31);
+PIN(TWIG_GESTURE_INSERT_INLINE_MATH == 32);
+PIN(TWIG_GESTURE_INSERT_DISPLAY_MATH == 33);
 PIN(TWIG_GESTURE_TABLE_MOVE_COLUMN == 23);
 PIN(TWIG_ALIGN_NONE == -1);
 PIN(TWIG_ALIGN_DEFAULT == 0);
@@ -315,6 +317,23 @@ static void test_new_block_gestures_link_and_edit(void) {
           == TWIG_STATUS_UNSUPPORTED_FORMAT);
 
     twig_editor_destroy(editor);
+
+    // Math, under the flag that makes `$` open a formula.
+    static const char math_src[] = "a  b\n";
+    TwigEditor *math = NULL;
+    CHECK(twig_editor_create_ext((const uint8_t *)math_src, sizeof(math_src) - 1,
+                                 TWIG_FORMAT_MARKDOWN, TWIG_MD_MATH,
+                                 &math) == TWIG_STATUS_OK);
+    if (math == NULL) return;
+    CHECK(twig_editor_insert_inline_math(math, 2, (const uint8_t *)"x", 1, &change)
+          == TWIG_STATUS_OK);
+    CHECK(twig_editor_insert_display_math(math, 0, (const uint8_t *)"y", 1, &change)
+          == TWIG_STATUS_OK);
+    CHECK(twig_editor_source(math, &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len == 15 && memcmp(out, "a $x$ b\n\n$$y$$\n", 15) == 0);
+    CHECK(twig_editor_insert_inline_math(math, 0, (const uint8_t *)"x ", 2, NULL)
+          == TWIG_STATUS_INVALID_ARGUMENT);
+    twig_editor_destroy(math);
 
     // The same call with the flag on, and the optional halves both exercised:
     // a label, and one attribute in the array twig_builder_set_attrs takes.

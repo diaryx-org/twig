@@ -1092,6 +1092,8 @@ typedef enum TwigGesture {
     TWIG_GESTURE_JOIN_BLOCKS = 29,
     TWIG_GESTURE_SET_NODE_ATTRS = 30,
     TWIG_GESTURE_MOVE_BLOCK = 31,
+    TWIG_GESTURE_INSERT_INLINE_MATH = 32,
+    TWIG_GESTURE_INSERT_DISPLAY_MATH = 33,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -2274,6 +2276,52 @@ TwigStatus twig_editor_insert_footnote(
     size_t offset,
     const uint8_t *label,
     size_t label_len,
+    TwigChange *out_change
+);
+
+// ── Math ──────────────────────────────────────────────────────────────────────
+
+// Insert `formula` at `offset` as an INLINE formula — Markdown's `$x$`, djot's
+// `$`x``, AsciiDoc's `stem:[x]` — a math leaf whose text is the formula byte for
+// byte. Twig reads none of the formula: it is written unescaped, because a math
+// body is read literally, and the bytes around it are the format serializer's,
+// so djot's run widens around a backtick in the formula as a code span's does.
+//
+// A formula the format cannot hold is refused rather than written: the print is
+// parsed on its own and must come back as this formula, exactly. Markdown's `$`
+// will not open onto a space or close after one, has no spelling for an empty
+// formula, and ends at the first `$` inside. Then the edit is kept only if the
+// document holds the formula where it was written: in a code span or a code
+// block the bytes would be code, and that is TWIG_STATUS_NOT_EDITABLE with
+// nothing changed.
+//
+// TWIG_STATUS_INVALID_ARGUMENT for a formula the format cannot hold, an `offset`
+// past the source, or a NULL formula_ptr with a non-zero length.
+// TWIG_STATUS_UNSUPPORTED_FORMAT where the format authors no inline formula —
+// HTML and XML, and Markdown without TWIG_MD_MATH, where `$x$` is text. Ask
+// twig_format_supports_ext with TWIG_GESTURE_INSERT_INLINE_MATH and the flags
+// the editor was created with. Fills out_change on success if non-NULL.
+TwigStatus twig_editor_insert_inline_math(
+    TwigEditor *editor,
+    size_t offset,
+    const uint8_t *formula_ptr,
+    size_t formula_len,
+    TwigChange *out_change
+);
+
+// Insert `formula` as a DISPLAY formula — Markdown's `$$x$$`, djot's `$$`x`` —
+// in a paragraph of its own after the block `offset` sits in: placed exactly as
+// twig_editor_insert_thematic_break places a rule, blank-separated on both
+// sides, inside the caret block's quote, at column zero after a list item.
+// Everything else is twig_editor_insert_inline_math's, statuses included.
+// AsciiDoc spells display math with the inline macro and reads it back inline,
+// so it answers TWIG_STATUS_UNSUPPORTED_FORMAT here and authors only the inline
+// form. Ask twig_format_supports_ext with TWIG_GESTURE_INSERT_DISPLAY_MATH.
+TwigStatus twig_editor_insert_display_math(
+    TwigEditor *editor,
+    size_t offset,
+    const uint8_t *formula_ptr,
+    size_t formula_len,
     TwigChange *out_change
 );
 
