@@ -1343,7 +1343,7 @@ fn buildLineBlock(b: *AST.Builder) anyerror!Node.Id {
     return blockDoc(b, .line_block, &.{ l1, l2 });
 }
 
-const Probe = struct {
+pub const Probe = struct {
     label: []const u8,
     /// What the built document is being probed FOR, and the kind whose
     /// `fidelity` entry the round-trip must agree with.
@@ -1426,7 +1426,7 @@ test "the fidelity table matches what the serializers actually do" {
     }
 }
 
-const probes = [_]Probe{
+pub const probes = [_]Probe{
     .{ .label = "heading", .want = .{ .tag = .heading }, .kind = .{ .heading = .{ .level = 2 } }, .build = struct {
         fn f(b: *AST.Builder) anyerror!Node.Id {
             return blockDoc(b, .{ .heading = .{ .level = 2 } }, &.{try str(b, "x")});

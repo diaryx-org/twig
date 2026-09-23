@@ -47,9 +47,10 @@ pub const detectFromExtension = twig.format.detectFromExtension;
 // ── the CLI's own vocabulary ───────────────────────────────────────────────
 
 /// What `-o`/`--output` selects: not a source language like `InputFormat`, but
-/// one of the three ways `convert` can render a parsed document. `html` is the
-/// default; `ast` and `canonical` are documented on `actions.zig`'s `runConvert`.
-pub const OutputMode = enum { html, ast, canonical };
+/// one of the ways `convert` can render a parsed document. `html` is the
+/// default; `ast`, `table` and `canonical` are documented on `actions.zig`'s
+/// `runConvert`.
+pub const OutputMode = enum { html, ast, table, canonical };
 
 pub fn parseOutputMode(name: []const u8) ?OutputMode {
     return std.meta.stringToEnum(OutputMode, name);

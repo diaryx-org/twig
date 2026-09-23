@@ -66,6 +66,9 @@ pub fn main(init: std.process.Init) !void {
         .filter => cli_actions.runFilter(arena, io, stdout_writer, stderr_writer, config.options.filter) catch |err| switch (err) {
             error.ActionFailed => std.process.exit(1),
         },
+        .lang => cli_actions.runLang(arena, io, stdout_writer, stderr_writer, config.options.lang) catch |err| switch (err) {
+            error.ActionFailed => std.process.exit(1),
+        },
     }
 }
 

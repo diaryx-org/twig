@@ -872,6 +872,24 @@ pub const KindRef = union(enum) {
             .container_named => |n| kind == .container and std.mem.eql(u8, kind.container.name, n),
         };
     }
+
+    /// The inverse of `Kind.kindName`: the published name back to the kind it
+    /// names, or `null` for a name nothing publishes. Never answers with a
+    /// family tag (`inline_mark`, `text_leaf`, `markup_leaf`) — those are not
+    /// published names — nor with `container_named`, which is a match and not
+    /// a name. Distinct answers are guaranteed by the pairwise-distinct test
+    /// at the foot of this file, so the order of the lookups below is not a
+    /// precedence.
+    pub fn fromName(name: []const u8) ?KindRef {
+        if (std.meta.stringToEnum(InlineMark, name)) |m| return .{ .mark = m };
+        if (std.meta.stringToEnum(TextLeafKind, name)) |k| return .{ .text_leaf = k };
+        if (std.meta.stringToEnum(MarkupLeafKind, name)) |k| return .{ .markup_leaf = k };
+        const tag = std.meta.stringToEnum(std.meta.Tag(Node.Kind), name) orelse return null;
+        return switch (tag) {
+            .inline_mark, .text_leaf, .markup_leaf => null,
+            else => .{ .tag = tag },
+        };
+    }
 };
 
 /// A single attribute pair (`AttributeParser`'s `keyval`). A `null` value
@@ -1012,6 +1030,18 @@ test "published kind names are pairwise distinct" {
             }
         }
     }
+}
+
+test "KindRef.fromName inverts kindName over the whole published vocabulary" {
+    const testing = std.testing;
+    for (std.enums.values(std.meta.Tag(Node.Kind))) |tag| switch (tag) {
+        .inline_mark, .text_leaf, .markup_leaf => try testing.expectEqual(@as(?KindRef, null), KindRef.fromName(@tagName(tag))),
+        else => try testing.expectEqual(tag, KindRef.fromName(@tagName(tag)).?.tag),
+    };
+    for (std.enums.values(InlineMark)) |m| try testing.expectEqual(m, KindRef.fromName(@tagName(m)).?.mark);
+    for (std.enums.values(TextLeafKind)) |k| try testing.expectEqual(k, KindRef.fromName(@tagName(k)).?.text_leaf);
+    for (std.enums.values(MarkupLeafKind)) |k| try testing.expectEqual(k, KindRef.fromName(@tagName(k)).?.markup_leaf);
+    try testing.expectEqual(@as(?KindRef, null), KindRef.fromName("paragraph"));
 }
 
 // The corpus-wide version of this lives in `ast/containment_test.zig`; these
