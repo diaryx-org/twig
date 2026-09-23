@@ -112,6 +112,10 @@ pub const Target = format.Target;
 /// `docs/proposals/runtime-languages.md`. See `runtime.zig`.
 pub const runtime = @import("runtime.zig");
 
+/// The helper wire: a runtime language as newline-delimited JSON over a
+/// transport. See `wire.zig`.
+pub const wire = @import("wire.zig");
+
 /// Hit-testing: byte offset -> node (`deepestContaining`, `ancestorChain`), plus
 /// the line scanning the block gestures are built on. The addressing scheme a
 /// caret speaks. See `ast/locate.zig`.
@@ -171,6 +175,7 @@ test {
     _ = ast_json;
     _ = ast_table;
     _ = runtime;
+    _ = wire;
     _ = @import("ast/compact.zig");
     _ = @import("ast/containment_test.zig");
     _ = Rst;

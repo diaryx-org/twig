@@ -665,6 +665,98 @@ pub export fn twig_language_register(
     return .ok;
 }
 
+/// Bumped only when a field of `TwigTransport` changes meaning.
+pub const TWIG_TRANSPORT_VERSION: u32 = 1;
+
+/// A way of trading one line of the helper wire for another (`wire.zig`):
+/// `exchange` sends `request` — one JSON line, no newline — and hands out the
+/// response line through `out`/`out_len`, returning 0; non-zero is a transport
+/// that failed (a helper that exited), with an optional UTF-8 message handed
+/// out the same way. `free` releases what `exchange` hands out.
+pub const TwigTransport = extern struct {
+    version: u32,
+    user_data: ?*anyopaque,
+    exchange: ?*const fn (
+        user_data: ?*anyopaque,
+        request: [*]const u8,
+        request_len: usize,
+        out: *?[*]u8,
+        out_len: *usize,
+    ) callconv(.c) c_int,
+    free: ?*const fn (user_data: ?*anyopaque, ptr: ?[*]u8, len: usize) callconv(.c) void,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        std.debug.assert(@sizeOf(TwigTransport) == 32);
+        std.debug.assert(@offsetOf(TwigTransport, "exchange") == 16);
+    }
+}
+
+/// A registered transport: the host's table, and the core transport over it.
+const HostTransport = struct {
+    table: TwigTransport,
+    transport: twig.wire.Transport,
+
+    fn exchange(context: ?*anyopaque, allocator: Allocator, request: []const u8, diag: *std.Io.Writer) anyerror![]u8 {
+        const self: *HostTransport = @ptrCast(@alignCast(context.?));
+        var out: ?[*]u8 = null;
+        var len: usize = 0;
+        const rc = self.table.exchange.?(self.table.user_data, request.ptr, request.len, &out, &len);
+        defer if (out) |p| self.table.free.?(self.table.user_data, p, len);
+        const bytes: []const u8 = if (out) |p| p[0..len] else "";
+        if (rc != 0) {
+            diag.writeAll(if (bytes.len > 0) bytes else "the transport failed") catch {};
+            return error.TransportFailed;
+        }
+        return allocator.dupe(u8, bytes);
+    }
+};
+
+/// Register the language at the other end of a transport: ask it `describe`
+/// over the helper wire, then register what it describes, with every later
+/// parse and print a request over the same transport. The codec is the
+/// library's, so a host supplies only the line exchange — a child process's
+/// pipes, a socket. Otherwise as `twig_language_register`: the table is
+/// copied, `user_data` lives as long as the process, and a refusal is
+/// `TWIG_STATUS_INVALID_LANGUAGE` with its reason in `err_buf`.
+pub export fn twig_language_register_transport(
+    table_in: ?*const TwigTransport,
+    out_format: ?*c_int,
+    err_buf: ?[*]u8,
+    err_cap: usize,
+) TwigStatus {
+    const table = table_in orelse return .invalid_argument;
+    const out = out_format orelse return .invalid_argument;
+    writeMessage(err_buf, err_cap, "");
+    if (table.version != TWIG_TRANSPORT_VERSION) {
+        writeMessage(err_buf, err_cap, "the transport's version is not TWIG_TRANSPORT_VERSION");
+        return .invalid_language;
+    }
+    if (table.exchange == null or table.free == null) {
+        writeMessage(err_buf, err_cap, "the transport needs exchange and free");
+        return .invalid_language;
+    }
+    const allocator = activeAllocator();
+    const host = allocator.create(HostTransport) catch return .out_of_memory;
+    host.* = .{ .table = table.*, .transport = .{ .exchange = HostTransport.exchange } };
+    host.transport.context = host;
+    var diag: std.Io.Writer.Allocating = .init(allocator);
+    defer diag.deinit();
+    const fmt = twig.wire.register(allocator, &host.transport, &diag.writer) catch |err| {
+        allocator.destroy(host);
+        return switch (err) {
+            error.OutOfMemory => .out_of_memory,
+            error.InvalidLanguage, error.RegistryFull => blk: {
+                writeMessage(err_buf, err_cap, diag.written());
+                break :blk .invalid_language;
+            },
+        };
+    };
+    out.* = formatToInt(fmt);
+    return .ok;
+}
+
 /// The format code a name resolves to — a compiled format's name or alias
 /// (`"md"`, `"gfm"`), or a registered language's — the lookup `-i` does. For
 /// a caller that persisted a runtime language's NAME, which is what it should
@@ -4963,6 +5055,59 @@ test "twig_language_register: a host's table becomes a format every entry point 
     var bad: ?*TwigDocument = null;
     try std.testing.expectEqual(TwigStatus.parse_error, twig_parse("a\x00b", 3, code, &bad));
     try std.testing.expect(bad == null);
+}
+
+/// A host transport that answers in-process, through the wire's answering
+/// end, over the "lines" language renamed — a helper without a process.
+const LinesOverWire = struct {
+    fn parse(_: ?*anyopaque, allocator: Allocator, _: []const u8, source: []const u8, diag: *std.Io.Writer) twig.runtime.Error![]u8 {
+        const vt = LinesLanguage.table();
+        return callLanguage(&vt, vt.parse.?, allocator, "", source, diag);
+    }
+
+    fn print(_: ?*anyopaque, allocator: Allocator, _: []const u8, table: []const u8, diag: *std.Io.Writer) twig.runtime.Error![]u8 {
+        const vt = LinesLanguage.table();
+        return callLanguage(&vt, vt.print.?, allocator, "", table, diag);
+    }
+
+    fn exchange(_: ?*anyopaque, request: [*]const u8, request_len: usize, out: *?[*]u8, out_len: *usize) callconv(.c) c_int {
+        const response = twig.wire.handle(std.heap.c_allocator, .{ .parse = parse, .print = print }, .{
+            .name = "wired-lines",
+            .extensions = &.{"wlines"},
+            .write = true,
+            .samples = &.{"a\nb\n"},
+        }, request[0..request_len]) catch return 1;
+        out.* = response.ptr;
+        out_len.* = response.len;
+        return 0;
+    }
+};
+
+test "twig_language_register_transport: the library speaks the wire, the host moves the lines" {
+    const table: TwigTransport = .{
+        .version = TWIG_TRANSPORT_VERSION,
+        .user_data = null,
+        .exchange = LinesOverWire.exchange,
+        .free = LinesLanguage.free,
+    };
+    var code: c_int = 0;
+    var err: [256]u8 = undefined;
+    const status = twig_language_register_transport(&table, &code, &err, err.len);
+    if (status != .ok) std.debug.print("\nrefused: {s}\n", .{std.mem.sliceTo(&err, 0)});
+    try std.testing.expectEqual(TwigStatus.ok, status);
+
+    const source = "one\ntwo\n";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_parse(source.ptr, source.len, code, &doc));
+    defer twig_document_destroy(doc);
+    var out_ptr: ?[*]const u8 = null;
+    var out_len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, code, &out_ptr, &out_len));
+    try std.testing.expectEqualStrings(source, out_ptr.?[0..out_len]);
+
+    var bad = table;
+    bad.version = 7;
+    try std.testing.expectEqual(TwigStatus.invalid_language, twig_language_register_transport(&bad, &code, &err, err.len));
 }
 
 test "twig_language_register: a refusal says why and registers nothing" {

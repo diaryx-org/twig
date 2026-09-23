@@ -104,6 +104,12 @@ pub const Description = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refuse(diag, "the description is not a JSON document", .{}),
         };
+        return fromValue(arena, value, diag);
+    }
+
+    /// `parse` over an already-parsed value — the description as it sits in
+    /// a `describe` response on the helper wire. Strings borrow from `value`.
+    pub fn fromValue(arena: Allocator, value: std.json.Value, diag: *Writer) (error{InvalidLanguage} || Allocator.Error)!Description {
         const obj = switch (value) {
             .object => |o| o,
             else => return refuse(diag, "the description is a JSON object", .{}),

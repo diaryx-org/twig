@@ -2742,6 +2742,36 @@ TwigStatus twig_language_register(
     size_t err_cap
 );
 
+// Bumped only when a field of TwigTransport changes meaning.
+#define TWIG_TRANSPORT_VERSION 1u
+
+// A way of trading one line of the helper wire for another. The wire is
+// newline-delimited JSON — {"op":"describe"}, {"op":"parse","dialect":…,
+// "input":…}, {"op":"print","dialect":…,"table":{…}}, each answered by
+// {"ok":true,…} or {"ok":false,"message":…} — and the library speaks it; a
+// host supplies only the exchange. `exchange` sends `request` (one line, no
+// newline) and hands out the response line through `out`/`out_len`,
+// returning 0; non-zero is a transport that failed, with an optional message
+// handed out the same way. `free` releases what `exchange` hands out.
+typedef struct TwigTransport {
+    uint32_t version;  // TWIG_TRANSPORT_VERSION
+    void *user_data;
+    int (*exchange)(void *user_data, const uint8_t *request, size_t request_len,
+                    uint8_t **out, size_t *out_len);
+    void (*free)(void *user_data, uint8_t *ptr, size_t len);
+} TwigTransport;
+
+// Register the language at the other end of a transport — a helper process's
+// pipes, say: ask it `describe`, register what it describes, and send every
+// later parse and print over the same transport. Otherwise as
+// twig_language_register.
+TwigStatus twig_language_register_transport(
+    const TwigTransport *transport,
+    int *out_format,
+    char *err_buf,
+    size_t err_cap
+);
+
 // The code a format name resolves to: a compiled format's name or alias
 // ("md", "gfm"), or a registered language's name or alias.
 TwigStatus twig_format_by_name(const uint8_t *name, size_t name_len, int *out_format);

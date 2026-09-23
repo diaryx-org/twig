@@ -22,6 +22,7 @@ const Io = std.Io;
 const cli_args = @import("cli/args.zig");
 const cli_format = @import("cli/format.zig");
 const cli_actions = @import("cli/actions.zig");
+const cli_languages = @import("cli/languages.zig");
 
 pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
@@ -32,8 +33,15 @@ pub fn main(init: std.process.Init) !void {
     const stdout_writer = &stdout_file_writer.interface;
 
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_file_writer: Io.File.Writer = .init(.stderr(), io, &stderr_buffer);
+    // Streaming, not positional: a helper process inherits stderr and writes
+    // to it directly, and a positional writer redirected to a file would
+    // start again at offset 0 and write over it.
+    var stderr_file_writer: Io.File.Writer = .initStreaming(.stderr(), io, &stderr_buffer);
     const stderr_writer = &stderr_file_writer.interface;
+
+    // Before the arguments: a name or extension nothing compiled answers to
+    // is resolved by spawning the helper a `languages` file names.
+    cli_languages.init(io, arena, init.environ_map, stderr_writer);
 
     const argv = try init.minimal.args.toSlice(arena);
     var arg_iter = cli_args.ArgIterator{ .items = argv };
@@ -80,4 +88,5 @@ test {
     _ = cli_args;
     _ = cli_format;
     _ = cli_actions;
+    _ = cli_languages;
 }
