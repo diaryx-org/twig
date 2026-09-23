@@ -438,6 +438,18 @@ base, which is why the range is reserved in a minor and the ABI stays at 6.
    `Format`, the checked lookup at every entry point, and load running the
    harness and the fidelity probe. Additive; ABI stays 6. Then the Rust
    half: `trait Language`, `register`, `Format::Runtime`.
+   Done, in `add(runtime): register a language at runtime, in Zig, C and
+   Rust`, for the read and write tiers. Where it differs from the text
+   above: the author tier is refused by name (`caps.author`, `syntax`) until
+   the checks that make an unseen `Syntax` safe exist, and `dialects` with
+   it; `Format` and `Target` are non-exhaustive enums whose runtime value is
+   the wire code, rather than a `.runtime` member with an id beside it; the
+   C table carries the description as the same `describe` JSON the helper
+   wire will, not as fields; the registry holds 64 languages, one comptime
+   row of functions per slot; a print receives the table without positions
+   (`decodeBare`), rooted at any kind; and the fidelity probe measures
+   attributes as well as kinds, per key class, as the attribute probe does
+   for a compiled target.
 4. **The helper runner.** The wire's codec in core over a `Transport`, the
    process runner beside the CLI and in the Rust crate, the discovery file,
    `--lang`, `twig lang list` and `twig lang check`.

@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Deliberately not <assert.h>: this test runs under `-Doptimize=ReleaseFast`
@@ -60,12 +61,14 @@ PIN(TWIG_ALIGN_LEFT == 1);
 PIN(TWIG_ALIGN_RIGHT == 2);
 PIN(TWIG_ALIGN_CENTER == 3);
 PIN(TWIG_HEAD_NONE == -1);
-// The runtime range is reserved ahead of the entry points that will hand out
-// codes in it. Pin its floor, and that the last compiled-in code sits below
+// Pin the runtime range's floor, and that the last compiled-in code sits below
 // it: a consumer that cached "everything below the base is compiled in" must
 // keep finding that true.
 PIN(TWIG_FORMAT_RUNTIME_BASE == 4096);
-PIN(TWIG_FORMAT_GFM < TWIG_FORMAT_RUNTIME_BASE);
+PIN(TWIG_FORMAT_SVG < TWIG_FORMAT_RUNTIME_BASE);
+PIN(TWIG_STATUS_UNSAFE_METADATA == 9);
+PIN(TWIG_STATUS_INVALID_LANGUAGE == 10);
+PIN(TWIG_LANGUAGE_VTABLE_VERSION == 1u);
 
 // TwigAlignment is twig_builder_add_cell's parameter type, and TWIG_ALIGN_NONE
 // is deliberately not one of its enumerators ("not a cell" isn't an alignment
@@ -862,6 +865,76 @@ static void test_markdown_dialect_codes_match_runtime(void) {
     twig_document_destroy(doc);
 }
 
+// A read-only language in C: the whole input is one paragraph of one str.
+// The JSON is built by hand, so the input must hold nothing JSON escapes.
+static int whole_parse(void *user_data, const uint8_t *row, size_t row_len,
+                       const uint8_t *input, size_t input_len,
+                       uint8_t **out, size_t *out_len) {
+    (void)user_data;
+    (void)row;
+    (void)row_len;
+    char buf[512];
+    int n = snprintf(buf, sizeof buf,
+        "{\"nodes\":[{\"kind\":\"doc\",\"span\":[0,%zu]},"
+        "{\"kind\":\"para\",\"parent\":0,\"span\":[0,%zu]},"
+        "{\"kind\":\"str\",\"parent\":1,\"span\":[0,%zu],\"text\":\"%.*s\"}]}",
+        input_len, input_len, input_len, (int)input_len, (const char *)input);
+    if (n < 0 || (size_t)n >= sizeof buf) return 1;
+    *out = malloc((size_t)n);
+    if (*out == NULL) return 1;
+    memcpy(*out, buf, (size_t)n);
+    *out_len = (size_t)n;
+    return 0;
+}
+
+static void whole_free(void *user_data, uint8_t *ptr, size_t len) {
+    (void)user_data;
+    (void)len;
+    free(ptr);
+}
+
+static void test_a_language_registered_from_c(void) {
+    static const char description[] =
+        "{\"name\":\"whole\",\"extensions\":[\"whole\"],\"samples\":[\"hello\"]}";
+    TwigLanguageVTable vt = {
+        .version = TWIG_LANGUAGE_VTABLE_VERSION,
+        .user_data = NULL,
+        .description = (const uint8_t *)description,
+        .description_len = sizeof(description) - 1,
+        .parse = whole_parse,
+        .print = NULL,
+        .free = whole_free,
+    };
+    int code = 0;
+    char err[256];
+    CHECK(twig_language_register(&vt, &code, err, sizeof err) == TWIG_STATUS_OK);
+    CHECK(code >= TWIG_FORMAT_RUNTIME_BASE);
+
+    int by_name = 0;
+    CHECK(twig_format_by_name((const uint8_t *)"whole", 5, &by_name) == TWIG_STATUS_OK);
+    CHECK(by_name == code);
+    const uint8_t *name = NULL;
+    size_t name_len = 0;
+    CHECK(twig_format_name(code, &name, &name_len) == TWIG_STATUS_OK);
+    CHECK(name_len == 5 && memcmp(name, "whole", 5) == 0);
+
+    TwigDocument *doc = NULL;
+    CHECK(twig_parse((const uint8_t *)"hi there", 8, code, &doc) == TWIG_STATUS_OK);
+    const uint8_t *html = NULL;
+    size_t html_len = 0;
+    CHECK(twig_document_render_html(doc, &html, &html_len) == TWIG_STATUS_OK);
+    CHECK(html_len == 16 && memcmp(html, "<p>hi there</p>\n", 16) == 0);
+    // It reads and does not write.
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    CHECK(twig_document_serialize(doc, code, &out, &out_len) == TWIG_STATUS_UNSUPPORTED_FORMAT);
+    twig_document_destroy(doc);
+
+    // A second registration under the same name is refused, with a reason.
+    CHECK(twig_language_register(&vt, &code, err, sizeof err) == TWIG_STATUS_INVALID_LANGUAGE);
+    CHECK(strstr(err, "already a format's") != NULL);
+}
+
 int main(void) {
     test_abi_version_matches_header();
     test_markdown_dialect_codes_match_runtime();
@@ -874,6 +947,7 @@ int main(void) {
     test_editor_document_shares_the_read_surface();
     test_new_block_gestures_link_and_edit();
     test_format_capability_matches_the_gestures();
+    test_a_language_registered_from_c();
     if (failures != 0) {
         fprintf(stderr, "c header test: %d check(s) failed\n", failures);
         return 1;

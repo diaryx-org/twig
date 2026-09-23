@@ -89,11 +89,11 @@ pub fn parseOutputSelection(name: []const u8) ?OutputSelection {
 pub fn printSupportedInputFormats(w: *Writer) Writer.Error!void {
     try w.writeAll("supported input formats:\n");
     for (&registry) |*e| {
-        try w.print("  - {s}", .{@tagName(e.id)});
+        try w.print("  - {s}", .{e.id.name()});
         for (e.aliases) |alias| try w.print(" ({s})", .{alias});
         // A dialect is a row like any other, and the list says whose it is
         // rather than leaving `gfm` to look like a sixth language.
-        if (e.dialect_of) |lang| try w.print(" — a {s} dialect", .{@tagName(lang)});
+        if (e.dialect_of) |lang| try w.print(" — a {s} dialect", .{lang.name()});
         try w.writeByte('\n');
     }
 }
@@ -113,8 +113,8 @@ pub fn printSupportedOutputTargets(w: *Writer) Writer.Error!void {
     try w.writeAll("supported output values:\n");
     for (std.meta.fieldNames(OutputMode)) |mode| try w.print("  - {s}\n", .{mode});
     for (&targets) |*t| {
-        if (parseOutputMode(@tagName(t.id)) != null) continue;
-        try w.print("  - {s}", .{@tagName(t.id)});
+        if (parseOutputMode(t.id.name()) != null) continue;
+        try w.print("  - {s}", .{t.id.name()});
         if (t.reads_back_as) |f| {
             for (entryFor(f).aliases) |alias| try w.print(" ({s})", .{alias});
         }

@@ -99,6 +99,8 @@ const AST = @import("ast/ast.zig");
 const Node = AST.Node;
 const format = @import("format.zig");
 const Target = format.Target;
+const Document = @import("document.zig");
+const runtime = @import("runtime.zig");
 
 /// How much of a node survives a round-trip through a target format: serialize
 /// it, hand the result back to that format's own parser, and see what returns.
@@ -154,8 +156,8 @@ pub const Warning = struct {
         switch (self.subject) {
             .node => switch (self.fidelity) {
                 .faithful => unreachable, // never recorded
-                .degraded => try writer.print(" is not spelled by {s} and will reparse as something else", .{@tagName(target)}),
-                .dropped => try writer.print(" is dropped entirely ({s} cannot write it)", .{@tagName(target)}),
+                .degraded => try writer.print(" is not spelled by {s} and will reparse as something else", .{target.name()}),
+                .dropped => try writer.print(" is dropped entirely ({s} cannot write it)", .{target.name()}),
             },
             .attrs => {
                 try writer.writeAll(" carries attributes (");
@@ -165,8 +167,8 @@ pub const Warning = struct {
                 }
                 switch (self.fidelity) {
                     .faithful => unreachable, // never recorded
-                    .degraded => try writer.print(") that {s} writes where its parser does not read them back", .{@tagName(target)}),
-                    .dropped => try writer.print(") that {s} cannot write; they are dropped", .{@tagName(target)}),
+                    .degraded => try writer.print(") that {s} writes where its parser does not read them back", .{target.name()}),
+                    .dropped => try writer.print(") that {s} cannot write; they are dropped", .{target.name()}),
                 }
             },
         }
@@ -286,6 +288,8 @@ pub fn fidelity(target: Target, kind: Node.Kind) Fidelity {
         .markdown => markdownFidelity(kind),
         .html => htmlFidelity(kind),
         .asciidoc => asciidocFidelity(kind),
+        // A registered language: what the probe measured when it loaded.
+        _ => if (runtime.measured(target)) |m| m.forKind(kind) else .dropped,
     };
 }
 
@@ -307,6 +311,9 @@ pub fn fidelity(target: Target, kind: Node.Kind) Fidelity {
 /// Refinements only ever make the answer WORSE. A node cannot survive better
 /// than its kind can, so this can be read as: the table is the ceiling.
 pub fn nodeFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
+    // A registered language's refinements were measured, not written: the
+    // probe built each shape the ones below single out.
+    if (runtime.measured(target)) |m| return m.forNode(ast, id);
     const kind = ast.nodes[id].kind;
     const base = fidelity(target, kind);
     return switch (kind) {
@@ -345,6 +352,8 @@ fn sectionFidelity(target: Target, ast: *const AST, id: Node.Id) Fidelity {
     switch (target) {
         .djot, .asciidoc => {},
         .markdown, .html, .xml => return .faithful,
+        // `nodeFidelity` answers for a registered language before this.
+        _ => return .faithful,
     }
     const heading = sectionHeading(ast, id) orelse return .degraded;
     if (target == .asciidoc and heading.level == 1) return .degraded;
@@ -858,6 +867,7 @@ pub fn attrsFidelity(target: Target, kind: Node.Kind) AttrsFidelity {
         .markdown => markdownAttrsFidelity(kind),
         .html => htmlAttrsFidelity(kind),
         .asciidoc => asciidocAttrsFidelity(kind),
+        _ => if (runtime.measured(target)) |m| m.attrsForKind(kind) else .all(.dropped),
     };
 }
 
@@ -870,6 +880,7 @@ pub fn attrsFidelity(target: Target, kind: Node.Kind) AttrsFidelity {
 /// section with no heading has nowhere to put them and they are never
 /// written — `dropped`, where a section with one keeps them all.
 pub fn nodeAttrsFidelity(target: Target, ast: *const AST, id: Node.Id, node: Fidelity) AttrsFidelity {
+    if (runtime.measured(target)) |m| return m.attrsForNode(ast, id).under(node);
     const kind = ast.nodes[id].kind;
     const table: AttrsFidelity = switch (kind) {
         .section => if (target == .djot and sectionHeading(ast, id) == null) .all(.dropped) else attrsFidelity(target, kind),
@@ -1721,6 +1732,189 @@ test "every inline mark and text leaf is probed against the table" {
             }
         }
     }
+}
+
+// ── measured at load ───────────────────────────────────────────────────────
+//
+// A compiled target's tables above are declarations the probes keep honest. A
+// registered language has no declaration to keep honest, so the same probes
+// ARE its table: `measure` runs every one through the language when it loads,
+// and `Measured` answers `fidelity` and `attrsFidelity` from what came back.
+
+fn MarkProbe(comptime m: AST.InlineMark) Probe {
+    return .{ .label = @tagName(m), .want = .{ .mark = m }, .kind = .{ .inline_mark = m }, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            return inlineDoc(b, .{ .inline_mark = m }, &.{try str(b, "x")});
+        }
+    }.f };
+}
+
+fn LeafProbe(comptime k: AST.TextLeafKind, comptime text: []const u8) Probe {
+    return .{ .label = @tagName(k), .want = .{ .text_leaf = k }, .kind = .{ .text_leaf = .{ .kind = k, .text = text } }, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            return inlineDoc(b, .{ .text_leaf = .{ .kind = k, .text = text } }, &.{});
+        }
+    }.f };
+}
+
+const leaf_probe_text = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "symb", "name" },
+    .{ "verbatim", "c" },
+    .{ "inline_math", "a+b" },
+    .{ "display_math", "a+b" },
+    .{ "url", "https://e.com" },
+    .{ "email", "a@e.com" },
+    .{ "footnote_reference", "1" },
+    .{ "citation_reference", "CIT1" },
+    .{ "substitution_reference", "RST" },
+});
+
+/// Every shape the load-time measurement builds: a paragraph, the kind
+/// probes, and one probe per inline mark and per text leaf — the three sets
+/// the tests above walk separately, as one list.
+pub const measured_probes: []const Probe = blk: {
+    var out: []const Probe = &.{.{ .label = "para", .want = .{ .tag = .para }, .kind = .para, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            return blockDoc(b, .para, &.{try str(b, "x")});
+        }
+    }.f }};
+    out = out ++ &probes;
+    for (std.enums.values(AST.InlineMark)) |m| out = out ++ &[_]Probe{MarkProbe(m)};
+    for (std.enums.values(AST.TextLeafKind)) |k| out = out ++ &[_]Probe{LeafProbe(k, leaf_probe_text.get(@tagName(k)).?)};
+    break :blk out;
+};
+
+/// What a round-trip through one target keeps, per `measured_probes` entry.
+pub const Measured = struct {
+    node: [measured_probes.len]Fidelity,
+    attrs: [measured_probes.len]AttrsFidelity,
+
+    fn byLabel(label: []const u8) usize {
+        for (measured_probes, 0..) |p, i| if (std.mem.eql(u8, p.label, label)) return i;
+        unreachable;
+    }
+
+    /// The probe that answers for `kind`: the first whose target kind it is,
+    /// else the first of the same tag (a container of a name no probe used).
+    fn indexFor(kind: Node.Kind) ?usize {
+        for (measured_probes, 0..) |p, i| if (p.want.matches(kind)) return i;
+        for (measured_probes, 0..) |p, i| if (std.meta.activeTag(p.kind) == std.meta.activeTag(kind)) return i;
+        return null;
+    }
+
+    /// The probe that answers for one node — `indexFor`, except where the
+    /// probe list built a node's shape separately because a compiled target
+    /// answers it differently.
+    fn indexForNode(ast: *const AST, id: Node.Id) ?usize {
+        return switch (ast.nodes[id].kind) {
+            .section => byLabel(if (sectionHeading(ast, id) == null) "section(headless)" else "section"),
+            .table => blk: {
+                var rows = ast.tableRows(id);
+                const first = rows.next() orelse break :blk byLabel("table");
+                break :blk byLabel(if (first.head) "table" else "table(header-less)");
+            },
+            .container => |c| byLabel(if (c.name.len == 0 and c.form == .inline_text)
+                "container(anonymous)"
+            else if (c.form == .inline_text) "container(inline)" else "container(block)"),
+            else => |k| indexFor(k),
+        };
+    }
+
+    pub fn forKind(self: *const Measured, kind: Node.Kind) Fidelity {
+        return if (indexFor(kind)) |i| self.node[i] else .degraded;
+    }
+
+    pub fn forNode(self: *const Measured, ast: *const AST, id: Node.Id) Fidelity {
+        return if (indexForNode(ast, id)) |i| self.node[i] else .degraded;
+    }
+
+    pub fn attrsForKind(self: *const Measured, kind: Node.Kind) AttrsFidelity {
+        return if (indexFor(kind)) |i| self.attrs[i] else .all(.degraded);
+    }
+
+    pub fn attrsForNode(self: *const Measured, ast: *const AST, id: Node.Id) AttrsFidelity {
+        return if (indexForNode(ast, id)) |i| self.attrs[i] else .all(.degraded);
+    }
+};
+
+pub const SerializeFn = *const fn (Allocator, *const AST) anyerror![]u8;
+pub const ParseFn = *const fn (*const anyopaque, Allocator, []const u8) anyerror!Document;
+
+/// Run every `measured_probes` entry through a target — `serialize` writes
+/// it, `parse` reads it back — and record what survived. A node that comes
+/// back is `faithful`; one that does not is `degraded` when the output holds
+/// anything and `dropped` when it holds nothing. A print that fails on a
+/// probe drops it; a reparse that fails degrades it, since bytes were
+/// written. Attributes are measured as the attribute probe measures a
+/// compiled target, key by key.
+pub fn measure(allocator: Allocator, serialize: SerializeFn, parse: ParseFn) Allocator.Error!Measured {
+    var out: Measured = undefined;
+    for (measured_probes, 0..) |p, i| {
+        out.node[i] = try measureNode(allocator, p, serialize, parse);
+        out.attrs[i] = if (out.node[i] == .dropped) .all(.dropped) else try measureAttrs(allocator, p, serialize, parse);
+    }
+    return out;
+}
+
+fn buildProbe(allocator: Allocator, p: Probe, attrs: ?AST.Attrs) Allocator.Error!AST {
+    var b = AST.Builder.init(allocator);
+    defer b.deinit();
+    const root = p.build(&b) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => unreachable,
+    };
+    if (attrs) |a| try b.setAttrs(probedBuilderNode(&b, p.kind).?, a);
+    return b.finish(root);
+}
+
+fn measureNode(allocator: Allocator, p: Probe, serialize: SerializeFn, parse: ParseFn) Allocator.Error!Fidelity {
+    var ast = try buildProbe(allocator, p, null);
+    defer ast.deinit();
+    const src = serialize(allocator, &ast) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .dropped,
+    };
+    defer allocator.free(src);
+    const written: Fidelity = if (std.mem.trim(u8, src, " \t\r\n").len == 0) .dropped else .degraded;
+    const cfg = format.ParseConfig{};
+    var back = parse(&cfg, allocator, src) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return written,
+    };
+    defer back.deinit();
+    for (back.ast.nodes) |n| {
+        if (!p.want.matches(n.kind)) continue;
+        const check = p.intact orelse return .faithful;
+        return if (check(&back.ast)) .faithful else .degraded;
+    }
+    return written;
+}
+
+fn measureAttrs(allocator: Allocator, p: Probe, serialize: SerializeFn, parse: ParseFn) Allocator.Error!AttrsFidelity {
+    var ast = try buildProbe(allocator, p, .{ .entries = &attr_probe_keys });
+    defer ast.deinit();
+    const src = serialize(allocator, &ast) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .all(.dropped),
+    };
+    defer allocator.free(src);
+    const cfg = format.ParseConfig{};
+    var back = parse(&cfg, allocator, src) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .all(.degraded),
+    };
+    defer back.deinit();
+    var found: ?Node.Id = null;
+    for (back.ast.nodes, 0..) |n, i| {
+        if (p.want.matches(n.kind)) {
+            found = @intCast(i);
+            break;
+        }
+    }
+    var seen: [attr_probe_keys.len]Fidelity = undefined;
+    for (attr_probe_keys, &seen) |kv, *f| f.* = observedAttrFidelity(&back.ast, found, src, kv);
+    // In `attr_probe_keys` order: id, class, data-k (other), title.
+    return .{ .id = seen[0], .class = seen[1], .other = seen[2], .title = if (seen[3] != seen[2]) seen[3] else null };
 }
 
 // ── the attribute probe ────────────────────────────────────────────────────

@@ -74,6 +74,11 @@ pub const Options = struct {
     /// One row to a line, for a person reading a table as a table. Off, the
     /// whole table is one line — a wire message, where a newline ends it.
     pretty: bool = true,
+    /// Whether rows carry their spans. A table handed to a PRINT carries
+    /// none: there is no source to hold them against, and a tree that was
+    /// never parsed from this format has no honest ones. `decodeBare` reads
+    /// what this writes with `positions` off.
+    positions: bool = true,
 };
 
 // ── encode ──────────────────────────────────────────────────────────────────
@@ -94,7 +99,7 @@ pub fn encode(allocator: Allocator, doc: *const Document, writer: *Writer, optio
         if (i > 0) try writer.writeByte(',');
         try writer.writeAll(row_sep);
         var w: Stringify = .{ .writer = writer };
-        try writeRow(&w, doc, n, parents[i]);
+        try writeRow(&w, doc, n, parents[i], options.positions);
     }
     try writer.writeAll(if (options.pretty) "\n  ],\n  \"labels\": [" else "],\"labels\":[");
 
@@ -127,22 +132,73 @@ pub fn encodeAlloc(allocator: Allocator, doc: *const Document, options: Options)
     return out.toOwnedSlice();
 }
 
-fn writeRow(w: *Stringify, doc: *const Document, n: Node, parent: ?Node.Id) Writer.Error!void {
+/// The table of a bare `AST` — no positions, no recorded spelling, and the
+/// labels `Document.Labels.index` rebuilds, which is what every serializer
+/// handed a bare tree gets. `options.positions` is ignored.
+///
+/// A bare tree need not be a parse's arena: a builder mints a parent after
+/// its children, and may leave nodes it abandoned. So the rows are the tree
+/// renumbered into pre-order — the root's, then each detached definition's —
+/// and whatever neither reaches is left out, as compaction would leave it.
+pub fn encodeAstAlloc(allocator: Allocator, ast: *const AST, options: Options) Allocator.Error![]u8 {
+    var b = AST.Builder.init(allocator);
+    defer b.deinit();
+    const root = try b.graftSubtree(ast, ast.root);
+    const detached = try ast.definitionRoots(allocator);
+    defer allocator.free(detached);
+    for (detached) |id| switch (ast.nodes[id].kind) {
+        .reference, .footnote, .citation, .substitution => _ = try b.graftSubtree(ast, id),
+        else => {},
+    };
+    var tree = try b.finish(root);
+    defer tree.deinit();
+    var labels = try Document.Labels.index(allocator, &tree);
+    defer labels.deinit(allocator);
+    const doc: Document = .{ .source = "", .ast = tree, .node_spans = &.{}, .node_content_spans = &.{}, .labels = labels };
+    var o = options;
+    o.positions = false;
+    return encodeAlloc(allocator, &doc, o);
+}
+
+test "table: a bare tree in build order writes as pre-order rows" {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    _ = try b.addLeaf(.{ .str = "abandoned" });
+    const x = try b.addLeaf(.{ .str = "x" });
+    const para = try b.addContainer(.para, &.{x});
+    const def = try b.addLeaf(.{ .reference = .{ .label = "r", .destination = "/" } });
+    _ = def;
+    const root = try b.addContainer(.doc, &.{para});
+    var ast = try b.finish(root);
+    defer ast.deinit();
+    const text = try encodeAstAlloc(testing.allocator, &ast, .{ .pretty = false });
+    defer testing.allocator.free(text);
+    var doc = try decodeBare(testing.allocator, text, null);
+    defer doc.deinit();
+    try testing.expectEqual(@as(usize, 4), doc.ast.nodes.len);
+    try testing.expect(doc.ast.nodes[0].kind == .doc);
+    try testing.expectEqualStrings("x", doc.ast.nodes[2].kind.str);
+    try testing.expectEqual(@as(?Node.Id, 3), doc.labels.reference("r"));
+}
+
+fn writeRow(w: *Stringify, doc: *const Document, n: Node, parent: ?Node.Id, positions: bool) Writer.Error!void {
     const id = n.id;
     try w.beginObject();
     try w.objectField("kind");
     try w.write(n.kind.kindName());
     try w.objectField("parent");
     try w.write(parent);
-    try w.objectField("span");
-    try writeSpan(w, doc.span(id));
-    if (doc.contentSpan(id)) |s| {
-        try w.objectField("content_span");
-        try writeSpan(w, s);
-    }
-    if (doc.markerSpan(id)) |s| {
-        try w.objectField("marker_span");
-        try writeSpan(w, s);
+    if (positions) {
+        try w.objectField("span");
+        try writeSpan(w, doc.span(id));
+        if (doc.contentSpan(id)) |s| {
+            try w.objectField("content_span");
+            try writeSpan(w, s);
+        }
+        if (doc.markerSpan(id)) |s| {
+            try w.objectField("marker_span");
+            try writeSpan(w, s);
+        }
     }
     if (doc.spelling(id)) |sp| {
         try w.objectField("spelling");
@@ -169,10 +225,10 @@ fn writeRow(w: *Stringify, doc: *const Document, n: Node, parent: ?Node.Id) Writ
             try w.endObject();
         }
         try w.endArray();
-        if (doc.attrsSpan(id)) |s| {
+        if (positions) if (doc.attrsSpan(id)) |s| {
             try w.objectField("attrs_span");
             try writeSpan(w, s);
-        }
+        };
     }
     try w.endObject();
 }
@@ -214,11 +270,30 @@ pub fn decode(allocator: Allocator, source: []const u8, text: []const u8, proble
     return fromValue(allocator, source, parsed.value, p);
 }
 
+/// Read a table written without positions (`Options.positions` off) — what a
+/// print receives. The result is a `Document` over no source, every span
+/// empty; any position a row does carry is ignored. Its root may be any kind,
+/// since a print may be handed a fragment. Everything else is checked as
+/// `decode` checks it.
+pub fn decodeBare(allocator: Allocator, text: []const u8, problem: ?*Problem) Error!Document {
+    var scratch: Problem = .{};
+    const p = problem orelse &scratch;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, text, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return fail(p, null, "", "not a JSON document"),
+    };
+    defer parsed.deinit();
+    return read(allocator, "", parsed.value, p, false);
+}
+
 /// `decode` over an already-parsed JSON value — the table as it sits inside
 /// a wire message.
 pub fn fromValue(allocator: Allocator, source: []const u8, value: std.json.Value, problem: ?*Problem) Error!Document {
     var scratch: Problem = .{};
-    const p = problem orelse &scratch;
+    return read(allocator, source, value, problem orelse &scratch, true);
+}
+
+fn read(allocator: Allocator, source: []const u8, value: std.json.Value, p: *Problem, positions: bool) Error!Document {
     const top = switch (value) {
         .object => |o| o,
         else => return fail(p, null, "", "a table is an object with a \"nodes\" array"),
@@ -252,14 +327,16 @@ pub fn fromValue(allocator: Allocator, source: []const u8, value: std.json.Value
         const id = try b.addNode(kind);
 
         parents[i] = try optIndex(p, i, row, "parent", rows.len);
-        b.setSpan(id, try optSpan(p, i, row, "span") orelse return fail(p, i, "span", "missing"));
-        if (try optSpan(p, i, row, "content_span")) |s| b.setContentSpan(id, s);
-        if (try optSpan(p, i, row, "marker_span")) |s| b.setMarkerSpan(id, s);
+        if (positions) {
+            b.setSpan(id, try optSpan(p, i, row, "span") orelse return fail(p, i, "span", "missing"));
+            if (try optSpan(p, i, row, "content_span")) |s| b.setContentSpan(id, s);
+            if (try optSpan(p, i, row, "marker_span")) |s| b.setMarkerSpan(id, s);
+        }
         if (try readSpelling(p, i, row)) |sp| b.setSpelling(id, sp);
-        try readAttrs(allocator, p, i, row, &b, id);
+        try readAttrs(allocator, p, i, row, &b, id, positions);
     }
 
-    try checkOrder(p, &b, parents);
+    try checkOrder(p, &b, parents, positions);
 
     // Pass two: children, in row order. Pre-order makes row order document
     // order, so this is the order every sibling chain had when it was written.
@@ -339,7 +416,7 @@ fn readSpelling(p: *Problem, i: usize, row: std.json.ObjectMap) error{InvalidTab
     return fail(p, i, "spelling", "not a spelling");
 }
 
-fn readAttrs(allocator: Allocator, p: *Problem, i: usize, row: std.json.ObjectMap, b: *AST.Builder, id: Node.Id) Error!void {
+fn readAttrs(allocator: Allocator, p: *Problem, i: usize, row: std.json.ObjectMap, b: *AST.Builder, id: Node.Id, positions: bool) Error!void {
     const items = switch (row.get("attrs") orelse .null) {
         .null => &[_]std.json.Value{},
         .array => |a| a.items,
@@ -364,6 +441,7 @@ fn readAttrs(allocator: Allocator, p: *Problem, i: usize, row: std.json.ObjectMa
         e.* = .{ .key = key, .value = value };
     }
     try b.setAttrs(id, .{ .entries = entries });
+    if (!positions) return;
     if (try optSpan(p, i, row, "attrs_span")) |s| {
         if (items.len == 0) return fail(p, i, "attrs_span", "a node with no attrs has no attrs span");
         b.setAttrsSpan(id, s);
@@ -375,10 +453,14 @@ fn readAttrs(allocator: Allocator, p: *Problem, i: usize, row: std.json.ObjectMa
 /// starts a detached tree — a definition, the only kind the arena keeps
 /// outside the root's reach (see `ast/compact.zig`) — and every row after it
 /// belongs to it or to a later one, which is the order compaction writes.
-fn checkOrder(p: *Problem, b: *const AST.Builder, parents: []const ?Node.Id) error{ InvalidTable, OutOfMemory }!void {
+///
+/// A parse's root is a `doc`. A print's need not be: the tree it is handed may
+/// be a fragment — a heading a gesture built, a subtree of a builder — so a
+/// table without positions may be rooted at any kind.
+fn checkOrder(p: *Problem, b: *const AST.Builder, parents: []const ?Node.Id, parsed: bool) error{ InvalidTable, OutOfMemory }!void {
     const nodes = b.nodes.items;
     if (parents[0] != null) return fail(p, 0, "parent", "the first row is the root and has no parent");
-    if (nodes[0].kind != .doc) return fail(p, 0, "kind", "the root is a doc");
+    if (parsed and nodes[0].kind != .doc) return fail(p, 0, "kind", "the root of a parse is a doc");
     var path: std.ArrayList(Node.Id) = .empty;
     defer path.deinit(b.allocator);
     try path.append(b.allocator, 0);
@@ -520,6 +602,14 @@ pub fn expectIdentity(allocator: Allocator, doc: *const Document) !void {
     var reread = try decode(allocator, doc.source, pretty, null);
     defer reread.deinit();
     try testing.expect(doc.ast.eql(reread.ast));
+    // Without positions — what a print receives — the tree, the spelling
+    // and the labels still cross.
+    const bare = try encodeAlloc(allocator, doc, .{ .positions = false });
+    defer allocator.free(bare);
+    var tree = try decodeBare(allocator, bare, null);
+    defer tree.deinit();
+    try testing.expect(doc.ast.eql(tree.ast));
+    try testing.expect(doc.spellingEql(tree));
 }
 
 test "table: a built document crosses and comes back" {
@@ -556,7 +646,7 @@ test "table: every probe document crosses and comes back" {
     // The fidelity probe builds a document around every kind, which makes it
     // the exhaustive case for the payload switch in both directions.
     const diagnostics = @import("../diagnostics.zig");
-    for (diagnostics.probes) |probe| {
+    for (diagnostics.measured_probes) |probe| {
         var b = AST.Builder.init(testing.allocator);
         defer b.deinit();
         const root = try probe.build(&b);

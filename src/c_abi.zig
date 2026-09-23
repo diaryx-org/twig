@@ -29,6 +29,9 @@ pub const TwigStatus = enum(c_int) {
     /// element (an injection vector). The HTML printer refused. Render/
     /// serialize-to-HTML only.
     unsafe_metadata = 9,
+    /// `twig_language_register` refused the language: its description, a
+    /// sample, or the registry's capacity. The message says which.
+    invalid_language = 10,
     internal_error = 255,
 };
 
@@ -486,6 +489,7 @@ fn intToWire(format: c_int) ?TwigFormat {
 /// exhaustive switch is what forces whoever appends that code to say so rather
 /// than inherit an accidental yes.
 fn intToFormat(format: c_int) ?twig.Format {
+    if (format >= TWIG_FORMAT_RUNTIME_BASE) return twig.runtime.formatFromCode(format);
     const wire = intToWire(format) orelse return null;
     return switch (wire) {
         inline else => |k| @field(twig.Format, @tagName(k)),
@@ -501,6 +505,189 @@ fn intToFormat(format: c_int) ?twig.Format {
 fn intToTarget(format: c_int) ?twig.format.Target {
     const fmt = intToFormat(format) orelse return null;
     return twig.format.targetFor(fmt);
+}
+
+/// The wire code for a `twig.Format` — `intToFormat` read backward. A
+/// runtime value IS its code; a compiled one is the `TwigFormat` of its name.
+fn formatToInt(fmt: twig.Format) c_int {
+    return switch (fmt) {
+        _ => @intFromEnum(fmt),
+        inline else => |f| @intFromEnum(@field(TwigFormat, @tagName(f))),
+    };
+}
+
+// ── runtime languages ──────────────────────────────────────────────────────
+//
+// The C half of `runtime.zig`: a host's table of functions, registered as a
+// format. The table crosses as the node table's JSON (`ast/table.zig`); the
+// description as the `describe` document `runtime.Description.parse` reads.
+
+/// Bumped only when a field of `TwigLanguageVTable` changes meaning, the rule
+/// `TWIG_ABI_VERSION` follows.
+pub const TWIG_LANGUAGE_VTABLE_VERSION: u32 = 1;
+
+/// A language function: `input` in, an allocation of the host's out through
+/// `out`/`out_len`, `0` for success. On failure `out` may carry a UTF-8
+/// message instead. Whatever it hands out is released with `free`.
+pub const TwigLanguageFn = *const fn (
+    user_data: ?*anyopaque,
+    row: [*]const u8,
+    row_len: usize,
+    input: [*]const u8,
+    input_len: usize,
+    out: *?[*]u8,
+    out_len: *usize,
+) callconv(.c) c_int;
+
+pub const TwigLanguageVTable = extern struct {
+    /// `TWIG_LANGUAGE_VTABLE_VERSION`, first so that a later layout can be
+    /// told apart before any other field is read.
+    version: u32,
+    user_data: ?*anyopaque,
+    /// The `describe` document, JSON: name, extensions, aliases, caps,
+    /// samples. Read during registration; not kept.
+    description: ?[*]const u8,
+    description_len: usize,
+    /// Source to the node table of its parse.
+    parse: ?TwigLanguageFn,
+    /// A node table (without positions) to source; NULL for a language that
+    /// only reads, and required when `caps.write` is declared.
+    print: ?TwigLanguageFn,
+    /// Releases what `parse` and `print` hand out.
+    free: ?*const fn (user_data: ?*anyopaque, ptr: ?[*]u8, len: usize) callconv(.c) void,
+};
+
+// The same offsets `twig-sys` asserts for its mirror.
+comptime {
+    if (@sizeOf(usize) == 8) {
+        std.debug.assert(@sizeOf(TwigLanguageVTable) == 56);
+        std.debug.assert(@offsetOf(TwigLanguageVTable, "user_data") == 8);
+        std.debug.assert(@offsetOf(TwigLanguageVTable, "parse") == 32);
+        std.debug.assert(@offsetOf(TwigLanguageVTable, "free") == 48);
+    }
+}
+
+/// Call one of the table's functions and copy its answer into `allocator`,
+/// releasing the host's buffer either way.
+fn callLanguage(
+    vt: *const TwigLanguageVTable,
+    f: TwigLanguageFn,
+    allocator: Allocator,
+    row: []const u8,
+    input: []const u8,
+    diag: *std.Io.Writer,
+) twig.runtime.Error![]u8 {
+    var out: ?[*]u8 = null;
+    var len: usize = 0;
+    const rc = f(vt.user_data, row.ptr, row.len, input.ptr, input.len, &out, &len);
+    defer if (out) |p| vt.free.?(vt.user_data, p, len);
+    const bytes: []const u8 = if (out) |p| p[0..len] else "";
+    if (rc != 0) {
+        diag.writeAll(if (bytes.len > 0) bytes else "the host's function returned a failure") catch {};
+        return error.LanguageFailed;
+    }
+    return allocator.dupe(u8, bytes);
+}
+
+fn vtableParse(context: ?*anyopaque, allocator: Allocator, row: []const u8, source: []const u8, diag: *std.Io.Writer) twig.runtime.Error![]u8 {
+    const vt: *const TwigLanguageVTable = @ptrCast(@alignCast(context.?));
+    return callLanguage(vt, vt.parse.?, allocator, row, source, diag);
+}
+
+fn vtablePrint(context: ?*anyopaque, allocator: Allocator, row: []const u8, table: []const u8, diag: *std.Io.Writer) twig.runtime.Error![]u8 {
+    const vt: *const TwigLanguageVTable = @ptrCast(@alignCast(context.?));
+    return callLanguage(vt, vt.print.?, allocator, row, table, diag);
+}
+
+/// Copy `message` into a caller's buffer, NUL-terminated and truncated to fit.
+fn writeMessage(buf: ?[*]u8, cap: usize, message: []const u8) void {
+    const out = buf orelse return;
+    if (cap == 0) return;
+    const n = @min(message.len, cap - 1);
+    @memcpy(out[0..n], message[0..n]);
+    out[n] = 0;
+}
+
+/// Register a language, run the load check over it, and write the format code
+/// it answers to into `out_format` — `TWIG_FORMAT_RUNTIME_BASE` or above, for
+/// this process only. The table is copied; `user_data` must outlive the
+/// process, since there is no unregistration. On refusal nothing is
+/// registered, the status is `TWIG_STATUS_INVALID_LANGUAGE`, and `err_buf`
+/// (when given) holds why, NUL-terminated.
+pub export fn twig_language_register(
+    vt_in: ?*const TwigLanguageVTable,
+    out_format: ?*c_int,
+    err_buf: ?[*]u8,
+    err_cap: usize,
+) TwigStatus {
+    const vt = vt_in orelse return .invalid_argument;
+    const out = out_format orelse return .invalid_argument;
+    writeMessage(err_buf, err_cap, "");
+    if (vt.version != TWIG_LANGUAGE_VTABLE_VERSION) {
+        writeMessage(err_buf, err_cap, "the table's version is not TWIG_LANGUAGE_VTABLE_VERSION");
+        return .invalid_language;
+    }
+    if (vt.parse == null or vt.free == null) {
+        writeMessage(err_buf, err_cap, "the table needs parse and free");
+        return .invalid_language;
+    }
+    const text = sliceOf(vt.description, vt.description_len) orelse return .invalid_argument;
+
+    const allocator = activeAllocator();
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+    var diag: std.Io.Writer.Allocating = .init(arena.allocator());
+
+    const description = twig.runtime.Description.parse(arena.allocator(), text, &diag.writer) catch |err| switch (err) {
+        error.OutOfMemory => return .out_of_memory,
+        error.InvalidLanguage => {
+            writeMessage(err_buf, err_cap, diag.written());
+            return .invalid_language;
+        },
+    };
+    const kept = allocator.create(TwigLanguageVTable) catch return .out_of_memory;
+    kept.* = vt.*;
+    const fmt = twig.runtime.register(allocator, .{
+        .context = kept,
+        .parse = vtableParse,
+        .print = if (vt.print != null) vtablePrint else null,
+    }, description, &diag.writer) catch |err| {
+        allocator.destroy(kept);
+        return switch (err) {
+            error.OutOfMemory => .out_of_memory,
+            error.InvalidLanguage, error.RegistryFull => blk: {
+                writeMessage(err_buf, err_cap, diag.written());
+                break :blk .invalid_language;
+            },
+        };
+    };
+    out.* = formatToInt(fmt);
+    return .ok;
+}
+
+/// The format code a name resolves to — a compiled format's name or alias
+/// (`"md"`, `"gfm"`), or a registered language's — the lookup `-i` does. For
+/// a caller that persisted a runtime language's NAME, which is what it should
+/// persist: its code is assigned per process.
+pub export fn twig_format_by_name(name_ptr: ?[*]const u8, name_len: usize, out_format: ?*c_int) TwigStatus {
+    const name = sliceOf(name_ptr, name_len) orelse return .invalid_argument;
+    const out = out_format orelse return .invalid_argument;
+    const fmt = twig.format.parseFormatName(name) orelse return .unsupported_format;
+    out.* = formatToInt(fmt);
+    return .ok;
+}
+
+/// The name a format code answers to: a compiled format's own, or the name a
+/// runtime language registered under. The bytes are the library's, valid for
+/// the life of the process, and not NUL-terminated.
+pub export fn twig_format_name(format: c_int, out_ptr: ?*?[*]const u8, out_len: ?*usize) TwigStatus {
+    const ptr_out = out_ptr orelse return .invalid_argument;
+    const len_out = out_len orelse return .invalid_argument;
+    const fmt = intToFormat(format) orelse return .unsupported_format;
+    const name = fmt.name();
+    ptr_out.* = name.ptr;
+    len_out.* = name.len;
+    return .ok;
 }
 
 pub export fn twig_version() u32 {
@@ -4487,6 +4674,9 @@ fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: tw
         // self-closing signal (see `languages/xml/serializer.zig`).
         .xml => twig.Xml.serializeAlloc(allocator, doc),
         .asciidoc => twig.Asciidoc.serializer.serializeAstSpelledAlloc(allocator, ast, doc.node_spelling),
+        // A registered language prints through its row, which refuses when
+        // it declared no print.
+        _ => twig.format.serializeFromAstAlloc(allocator, ast, target),
     };
 }
 
@@ -4617,20 +4807,182 @@ pub export fn twig_builder_query(
     return .ok;
 }
 
-test "a code in the reserved runtime range is refused until registration exists" {
-    // The floor of the range is a code nothing compiled-in takes (the comptime
-    // block beside `TWIG_FORMAT_RUNTIME_BASE` holds that), and until
-    // `twig_language_register` hands codes out it is one more unknown code on
-    // both axes: refused, and no handle produced.
+test "a code in the runtime range no registration holds is refused" {
+    // The last code of the range: the registry holds fewer languages than
+    // that however many the tests in this binary register, so it is one more
+    // unknown code on both axes — refused, and no handle produced.
+    const code = TWIG_FORMAT_RUNTIME_BASE + twig.runtime.capacity - 1;
     const source = "# hi\n";
     var doc: ?*TwigDocument = null;
-    try std.testing.expectEqual(
-        TwigStatus.unsupported_format,
-        twig_parse(source.ptr, source.len, TWIG_FORMAT_RUNTIME_BASE, &doc),
-    );
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_parse(source.ptr, source.len, code, &doc));
     try std.testing.expect(doc == null);
-    try std.testing.expect(intToFormat(TWIG_FORMAT_RUNTIME_BASE) == null);
-    try std.testing.expect(intToTarget(TWIG_FORMAT_RUNTIME_BASE) == null);
+    try std.testing.expect(intToFormat(code) == null);
+    try std.testing.expect(intToTarget(code) == null);
+    var name: ?[*]const u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_name(code, &name, &len));
+}
+
+/// A host language written against the C table: "lines" — every line a
+/// paragraph of one `str`, printed back one per line. Small enough to read in
+/// a test, and exercises every field a host fills.
+const LinesLanguage = struct {
+    const description =
+        \\{"name":"lines","extensions":["lines"],"caps":{"read":true,"write":true},
+        \\ "samples":["one\ntwo\n","x\n"]}
+    ;
+
+    fn give(bytes: []const u8, out: *?[*]u8, out_len: *usize) void {
+        const buf = std.heap.c_allocator.dupe(u8, bytes) catch unreachable;
+        out.* = buf.ptr;
+        out_len.* = buf.len;
+    }
+
+    fn parse(_: ?*anyopaque, _: [*]const u8, _: usize, input: [*]const u8, input_len: usize, out: *?[*]u8, out_len: *usize) callconv(.c) c_int {
+        const src = input[0..input_len];
+        if (std.mem.indexOfScalar(u8, src, 0) != null) {
+            give("a NUL byte is not a line", out, out_len);
+            return 1;
+        }
+        var w: std.Io.Writer.Allocating = .init(std.heap.c_allocator);
+        defer w.deinit();
+        w.writer.print("{{\"nodes\":[{{\"kind\":\"doc\",\"span\":[0,{d}]}}", .{src.len}) catch unreachable;
+        var row: usize = 1;
+        var start: usize = 0;
+        while (start < src.len) {
+            const end = std.mem.indexOfScalarPos(u8, src, start, '\n') orelse src.len;
+            if (end > start) {
+                w.writer.print(",{{\"kind\":\"para\",\"parent\":0,\"span\":[{d},{d}]}}", .{ start, end }) catch unreachable;
+                w.writer.print(",{{\"kind\":\"str\",\"parent\":{d},\"span\":[{d},{d}],\"text\":", .{ row, start, end }) catch unreachable;
+                std.json.Stringify.value(src[start..end], .{}, &w.writer) catch unreachable;
+                w.writer.writeByte('}') catch unreachable;
+                row += 2;
+            }
+            start = end + 1;
+        }
+        w.writer.writeAll("]}") catch unreachable;
+        give(w.written(), out, out_len);
+        return 0;
+    }
+
+    fn print(_: ?*anyopaque, _: [*]const u8, _: usize, input: [*]const u8, input_len: usize, out: *?[*]u8, out_len: *usize) callconv(.c) c_int {
+        var doc = twig.ast_table.decodeBare(std.heap.c_allocator, input[0..input_len], null) catch return 1;
+        defer doc.deinit();
+        var w: std.Io.Writer.Allocating = .init(std.heap.c_allocator);
+        defer w.deinit();
+        for (doc.ast.nodes) |n| switch (n.kind) {
+            .str => |t| w.writer.print("{s}\n", .{t}) catch unreachable,
+            else => {},
+        };
+        give(w.written(), out, out_len);
+        return 0;
+    }
+
+    fn free(_: ?*anyopaque, ptr: ?[*]u8, len: usize) callconv(.c) void {
+        if (ptr) |p| std.heap.c_allocator.free(p[0..len]);
+    }
+
+    fn table() TwigLanguageVTable {
+        return .{
+            .version = TWIG_LANGUAGE_VTABLE_VERSION,
+            .user_data = null,
+            .description = description.ptr,
+            .description_len = description.len,
+            .parse = parse,
+            .print = print,
+            .free = free,
+        };
+    }
+};
+
+test "twig_language_register: a host's table becomes a format every entry point takes" {
+    const vt = LinesLanguage.table();
+    var code: c_int = 0;
+    var err: [256]u8 = undefined;
+    const status = twig_language_register(&vt, &code, &err, err.len);
+    if (status != .ok) std.debug.print("\nrefused: {s}\n", .{std.mem.sliceTo(&err, 0)});
+    try std.testing.expectEqual(TwigStatus.ok, status);
+    try std.testing.expect(code >= TWIG_FORMAT_RUNTIME_BASE);
+
+    var by_name: c_int = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_by_name("lines", 5, &by_name));
+    try std.testing.expectEqual(code, by_name);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_by_name("gfm", 3, &by_name));
+    try std.testing.expectEqual(@intFromEnum(TwigFormat.gfm), by_name);
+    var name: ?[*]const u8 = null;
+    var len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_name(code, &name, &len));
+    try std.testing.expectEqualStrings("lines", name.?[0..len]);
+
+    const source = "alpha\nbeta\n";
+    var doc: ?*TwigDocument = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_parse(source.ptr, source.len, code, &doc));
+    defer twig_document_destroy(doc);
+
+    var html_ptr: ?[*]const u8 = null;
+    var html_len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_render_html(doc, &html_ptr, &html_len));
+    try std.testing.expectEqualStrings("<p>alpha</p>\n<p>beta</p>\n", html_ptr.?[0..html_len]);
+
+    // Into Markdown, and from a Markdown parse into "lines".
+    var out_ptr: ?[*]const u8 = null;
+    var out_len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, @intFromEnum(TwigFormat.markdown), &out_ptr, &out_len));
+    try std.testing.expectEqualStrings("alpha\n\nbeta\n", out_ptr.?[0..out_len]);
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, code, &out_ptr, &out_len));
+    try std.testing.expectEqualStrings(source, out_ptr.?[0..out_len]);
+
+    // Nothing to author with, and the toolbar question says so.
+    var authorable: c_int = 1;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_is_authorable(code, &authorable));
+    try std.testing.expectEqual(@as(c_int, 0), authorable);
+
+    // Every other entry point that takes a format code takes this one.
+    var ed: ?*TwigEditor = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_create(source.ptr, source.len, code, &ed));
+    twig_editor_destroy(ed);
+    var warnings: ?[*]const TwigWarning = null;
+    var warnings_len: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_diagnostics(doc, code, &warnings, &warnings_len));
+    var supported: c_int = 1;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(code, @intFromEnum(TwigGesture.set_block), 0, &supported));
+    try std.testing.expectEqual(@as(c_int, 0), supported);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(code, 0, @intFromEnum(TwigGesture.set_block), 0, &supported));
+    var b: ?*TwigBuilder = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_create(&b));
+    defer twig_builder_destroy(b);
+    var heading: u32 = 0;
+    var text: u32 = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_heading(b, 2, &heading));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_text(b, @intFromEnum(TwigNodeKind.str), "T", 1, &text));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, heading, @ptrCast(&text), 1));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_serialize(b, heading, code, &out_ptr, &out_len));
+    try std.testing.expectEqualStrings("T\n", out_ptr.?[0..out_len]);
+
+    // A parse the host refuses is a parse error, not a crash.
+    var bad: ?*TwigDocument = null;
+    try std.testing.expectEqual(TwigStatus.parse_error, twig_parse("a\x00b", 3, code, &bad));
+    try std.testing.expect(bad == null);
+}
+
+test "twig_language_register: a refusal says why and registers nothing" {
+    var vt = LinesLanguage.table();
+    const taken =
+        \\{"name":"markdown","samples":["x"]}
+    ;
+    vt.description = taken.ptr;
+    vt.description_len = taken.len;
+    var code: c_int = 0;
+    var err: [256]u8 = undefined;
+    try std.testing.expectEqual(TwigStatus.invalid_language, twig_language_register(&vt, &code, &err, err.len));
+    try std.testing.expect(std.mem.indexOf(u8, std.mem.sliceTo(&err, 0), "already a format's") != null);
+
+    vt = LinesLanguage.table();
+    vt.version = 99;
+    try std.testing.expectEqual(TwigStatus.invalid_language, twig_language_register(&vt, &code, &err, err.len));
+    // A one-byte buffer still gets its terminator.
+    try std.testing.expectEqual(TwigStatus.invalid_language, twig_language_register(&vt, &code, &err, 1));
+    try std.testing.expectEqual(@as(u8, 0), err[0]);
 }
 
 test "twig_parse + twig_document_render_html renders markdown" {

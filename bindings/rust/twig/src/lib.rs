@@ -1,4 +1,5 @@
 mod error;
+mod language;
 
 // The raw FFI layer moved to the `twig-sys` crate. Alias it as `ffi` so every
 // `ffi::…` / `crate::ffi::…` reference in this crate keeps resolving unchanged,
@@ -12,6 +13,7 @@ use std::os::raw::{c_char, c_int};
 use std::ptr::NonNull;
 
 pub use error::Error;
+pub use language::{register, Description, Language, RegisterError};
 pub use ffi::TwigSpan as Span;
 
 /// Every format Twig can **parse** — the input axis, as opposed to [`Target`],
@@ -63,8 +65,29 @@ pub enum Format {
     /// format to name. It writes as [`Target::Xml`], and the one gesture it
     /// supports is [`Gesture::SetNodeAttrs`], as XML does.
     Svg,
+    /// A language registered at runtime with [`register`]: a format this
+    /// library did not compile in. It reads, may write, and does not author —
+    /// [`Format::supports`] is `false` for every gesture over it. Its id is
+    /// valid for this process only; persist [`Format::name`] and resolve it
+    /// again with [`Format::by_name`].
+    Runtime(RuntimeId),
 }
 
+/// A registered language's handle: its format code in this process, at or
+/// above `TWIG_FORMAT_RUNTIME_BASE`. Assigned in registration order and never
+/// stable across processes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct RuntimeId(c_int);
+
+impl RuntimeId {
+    /// The format code the C ABI knows this language by.
+    pub fn code(self) -> c_int {
+        self.0
+    }
+}
+
+/// Panics on [`Format::Runtime`], which no `TwigFormat` value can hold; use
+/// [`Format::code`], which answers for every format.
 impl From<Format> for ffi::TwigFormat {
     fn from(value: Format) -> Self {
         match value {
@@ -76,11 +99,63 @@ impl From<Format> for ffi::TwigFormat {
             Format::Commonmark => ffi::TwigFormat::Commonmark,
             Format::Gfm => ffi::TwigFormat::Gfm,
             Format::Svg => ffi::TwigFormat::Svg,
+            Format::Runtime(id) => panic!("format code {} is a runtime language's; use Format::code", id.0),
         }
     }
 }
 
 impl Format {
+    /// The C ABI's code for this format — a `TWIG_FORMAT_*` value, or a
+    /// registered language's runtime code.
+    pub fn code(self) -> c_int {
+        match self {
+            Format::Runtime(id) => id.0,
+            compiled => ffi::TwigFormat::from(compiled) as c_int,
+        }
+    }
+
+    /// The format a code names, if any: a compiled code, or a runtime code a
+    /// registration holds.
+    pub(crate) fn from_code(code: c_int) -> Option<Format> {
+        Some(match code {
+            1 => Format::Djot,
+            2 => Format::Markdown,
+            3 => Format::Xml,
+            4 => Format::Html,
+            5 => Format::Asciidoc,
+            6 => Format::Commonmark,
+            7 => Format::Gfm,
+            8 => Format::Svg,
+            c if c >= ffi::TWIG_FORMAT_RUNTIME_BASE => Format::Runtime(RuntimeId(c)),
+            _ => return None,
+        })
+    }
+
+    /// The format a name resolves to, the lookup `twig convert -i` does: a
+    /// compiled format's name or alias (`"md"`, `"gfm"`), or a registered
+    /// language's name or alias.
+    pub fn by_name(name: &str) -> Option<Format> {
+        let mut code: c_int = 0;
+        let status = unsafe { ffi::twig_format_by_name(name.as_ptr(), name.len(), &mut code) };
+        if status.0 != ffi::TwigStatus::OK {
+            return None;
+        }
+        Format::from_code(code)
+    }
+
+    /// The name this format answers to: `"markdown"`, `"gfm"`, or the name a
+    /// runtime language registered under.
+    pub fn name(self) -> &'static str {
+        let mut ptr: *const u8 = std::ptr::null();
+        let mut len = 0usize;
+        let status = unsafe { ffi::twig_format_name(self.code(), &mut ptr, &mut len) };
+        if status.0 != ffi::TwigStatus::OK || ptr.is_null() {
+            return "unregistered";
+        }
+        // The library's bytes, for the life of the process, and ASCII: a
+        // compiled name is a Zig tag and a runtime one a checked identifier.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len)) }
+    }
     /// The language this format is a dialect of, or `None` for a language
     /// itself: `Some(Format::Markdown)` for [`Format::Commonmark`] and
     /// [`Format::Gfm`], `Some(Format::Xml)` for [`Format::Svg`], `None` for
@@ -121,6 +196,9 @@ pub enum Target {
     /// `*strong*` where the boundaries allow and `**strong**` where they do
     /// not, `[source,lang]` listings, `|===` tables, `footnote:[]` macros.
     Asciidoc,
+    /// A registered language, as a place to write to. Serializing to one that
+    /// declared no print is [`Error::UnsupportedFormat`].
+    Runtime(RuntimeId),
 }
 
 impl Target {
@@ -137,6 +215,23 @@ impl Target {
             Target::Xml => Some(Format::Xml),
             Target::Html => Some(Format::Html),
             Target::Asciidoc => Some(Format::Asciidoc),
+            Target::Runtime(id) => Some(Format::Runtime(id)),
+        }
+    }
+
+    /// The C ABI's code for this target. See [`Format::code`].
+    pub fn code(self) -> c_int {
+        match self {
+            Target::Runtime(id) => id.0,
+            compiled => ffi::TwigFormat::from(compiled) as c_int,
+        }
+    }
+
+    /// The name this target answers to. See [`Format::name`].
+    pub fn name(self) -> &'static str {
+        match self.as_format() {
+            Some(f) => f.name(),
+            None => "unregistered",
         }
     }
 }
@@ -154,10 +249,13 @@ impl From<Format> for Target {
             Format::Xml | Format::Svg => Target::Xml,
             Format::Html => Target::Html,
             Format::Asciidoc => Target::Asciidoc,
+            // A registered language writes as itself, when it writes at all.
+            Format::Runtime(id) => Target::Runtime(id),
         }
     }
 }
 
+/// Panics on [`Target::Runtime`]; use [`Target::code`].
 impl From<Target> for ffi::TwigFormat {
     fn from(value: Target) -> Self {
         match value {
@@ -166,6 +264,7 @@ impl From<Target> for ffi::TwigFormat {
             Target::Xml => ffi::TwigFormat::Xml,
             Target::Html => ffi::TwigFormat::Html,
             Target::Asciidoc => ffi::TwigFormat::Asciidoc,
+            Target::Runtime(id) => panic!("format code {} is a runtime language's; use Target::code", id.0),
         }
     }
 }
@@ -918,7 +1017,7 @@ impl Format {
         let (g, k) = gesture.to_c();
         let mut supported: c_int = 0;
         let status = unsafe {
-            ffi::twig_format_supports(ffi::TwigFormat::from(self) as c_int, g, k, &mut supported)
+            ffi::twig_format_supports(self.code(), g, k, &mut supported)
         };
         debug_assert!(
             Error::from_status(status).is_ok(),
@@ -955,7 +1054,7 @@ impl Format {
         let mut supported: c_int = 0;
         let status = unsafe {
             ffi::twig_format_supports_ext(
-                ffi::TwigFormat::from(self) as c_int,
+                self.code(),
                 extensions.to_flags(),
                 g,
                 k,
@@ -981,7 +1080,7 @@ impl Format {
     pub fn is_authorable(self) -> bool {
         let mut authorable: c_int = 0;
         let status = unsafe {
-            ffi::twig_format_is_authorable(ffi::TwigFormat::from(self) as c_int, &mut authorable)
+            ffi::twig_format_is_authorable(self.code(), &mut authorable)
         };
         debug_assert!(Error::from_status(status).is_ok(), "unknown format code");
         authorable == 1
@@ -1052,12 +1151,12 @@ impl Document {
         extensions: MarkdownExtensions,
     ) -> Result<Self, Error> {
         let mut raw = std::ptr::null_mut();
-        let ffi_format: ffi::TwigFormat = format.into();
+        let ffi_format = format.code();
         let status = unsafe {
             ffi::twig_parse_ext(
                 input.as_ptr(),
                 input.len(),
-                ffi_format as i32,
+                ffi_format,
                 extensions.to_flags(),
                 &mut raw,
             )
@@ -1095,9 +1194,9 @@ impl Document {
     /// it cannot name an export-only target, and this one can.
     pub fn serialize_to(&mut self, target: Target) -> Result<Vec<u8>, Error> {
         let raw = self.raw.as_ptr();
-        let ffi_target: ffi::TwigFormat = target.into();
+        let ffi_target = target.code();
         collect_bytes(|ptr, len| unsafe {
-            ffi::twig_document_serialize(raw, ffi_target as i32, ptr, len)
+            ffi::twig_document_serialize(raw, ffi_target, ptr, len)
         })
     }
 
@@ -1367,7 +1466,7 @@ impl Document {
     /// not a per-node diagnosis.
     pub fn diagnostics(&mut self, target: Target) -> Result<Vec<Warning>, Error> {
         let raw = self.raw.as_ptr();
-        let code = ffi::TwigFormat::from(target) as c_int;
+        let code = target.code();
         let mut ptr: *const ffi::TwigWarning = std::ptr::null();
         let mut len = 0usize;
         let status = unsafe { ffi::twig_document_diagnostics(raw, code, &mut ptr, &mut len) };
@@ -1602,9 +1701,9 @@ impl Editor {
     /// default options.
     pub fn new(input: &[u8], format: Format) -> Result<Self, Error> {
         let mut raw = std::ptr::null_mut();
-        let ffi_format: ffi::TwigFormat = format.into();
+        let ffi_format = format.code();
         let status = unsafe {
-            ffi::twig_editor_create(input.as_ptr(), input.len(), ffi_format as i32, &mut raw)
+            ffi::twig_editor_create(input.as_ptr(), input.len(), ffi_format, &mut raw)
         };
         Error::from_status(status)?;
         let raw = NonNull::new(raw).ok_or(Error::Internal)?;
@@ -1634,12 +1733,12 @@ impl Editor {
         extensions: MarkdownExtensions,
     ) -> Result<Self, Error> {
         let mut raw = std::ptr::null_mut();
-        let ffi_format: ffi::TwigFormat = format.into();
+        let ffi_format = format.code();
         let status = unsafe {
             ffi::twig_editor_create_ext(
                 input.as_ptr(),
                 input.len(),
-                ffi_format as i32,
+                ffi_format,
                 extensions.to_flags(),
                 &mut raw,
             )
@@ -3946,9 +4045,9 @@ impl Builder {
     /// [`Document::serialize_to`] gives.
     pub fn serialize_to(&mut self, root: NodeId, target: Target) -> Result<Vec<u8>, Error> {
         let raw = self.raw.as_ptr();
-        let ffi_target: ffi::TwigFormat = target.into();
+        let ffi_target = target.code();
         collect_bytes(|ptr, len| unsafe {
-            ffi::twig_builder_serialize(raw, root.0, ffi_target as i32, ptr, len)
+            ffi::twig_builder_serialize(raw, root.0, ffi_target, ptr, len)
         })
     }
 

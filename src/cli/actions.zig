@@ -148,7 +148,7 @@ pub fn runLang(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, o
 }
 
 pub fn runIdentify(stdout: *Writer, opts: args_mod.IdentifyOptions) !void {
-    try stdout.print("{s}\n", .{@tagName(opts.input)});
+    try stdout.print("{s}\n", .{opts.input.name()});
     try stdout.flush();
 }
 
@@ -249,7 +249,7 @@ fn convertSource(
     const entry = format.entryFor(input);
 
     var doc = entry.parse(&parse_config, allocator, source) catch |err| {
-        stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ display_name, @tagName(input), err }) catch {};
+        stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ display_name, input.name(), err }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
@@ -295,7 +295,7 @@ fn convertSource(
                 const serializeFn = entry.serializeCanonical orelse {
                     stderr.print(
                         "error: canonical output is not supported for {s} yet: no serializer\n",
-                        .{@tagName(input)},
+                        .{input.name()},
                     ) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;
@@ -310,13 +310,13 @@ fn convertSource(
                 const serializeFn = target_entry.serializeFromAst orelse {
                     stderr.print(
                         "error: conversion to {s} is not supported yet: no serializer\n",
-                        .{@tagName(target)},
+                        .{target.name()},
                     ) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;
                 };
                 break :blk serializeFn(allocator, doc.ast()) catch |err| {
-                    stderr.print("error: failed to convert '{s}' from {s} to {s}: {t}\n", .{ display_name, @tagName(input), @tagName(target), err }) catch {};
+                    stderr.print("error: failed to convert '{s}' from {s} to {s}: {t}\n", .{ display_name, input.name(), target.name(), err }) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;
                 };
@@ -349,7 +349,7 @@ pub fn runQuery(allocator: Allocator, io: Io, stdout: *Writer, stderr: *Writer, 
     // `Document` — the per-format reparse adapter, which is `parse` minus the
     // `ParsedDoc` wrapper.
     var doc = format.entryFor(opts.input).parseToAst(&opts.parse_config, allocator, source) catch |err| {
-        stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ opts.file, @tagName(opts.input), err }) catch {};
+        stderr.print("error: failed to parse '{s}' as {s}: {t}\n", .{ opts.file, opts.input.name(), err }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
@@ -472,7 +472,7 @@ fn filterSource(allocator: Allocator, source: []const u8, opts: args_mod.FilterO
     // `&opts.parse_config` outlives `editor` (deinited before we return), so the
     // editor's borrowed parse context stays valid across every reparse.
     var editor = twig.Splicer.init(allocator, source, &opts.parse_config, entry.parseToAst) catch |err| {
-        stderr.print("error: failed to parse input as {s}: {t}\n", .{ @tagName(opts.input), err }) catch {};
+        stderr.print("error: failed to parse input as {s}: {t}\n", .{ opts.input.name(), err }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };
@@ -515,7 +515,7 @@ fn applyEditByLocator(
     // deinited before this function returns — so the editor's borrowed parse
     // context stays valid across every reparse.
     var editor = twig.Splicer.init(allocator, source, &parse_config, entry.parseToAst) catch |err| {
-        stderr.print("error: failed to parse input as {s}: {t}\n", .{ @tagName(input), err }) catch {};
+        stderr.print("error: failed to parse input as {s}: {t}\n", .{ input.name(), err }) catch {};
         stderr.flush() catch {};
         return error.ActionFailed;
     };

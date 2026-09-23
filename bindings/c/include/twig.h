@@ -96,14 +96,14 @@ extern "C" {
 #define TWIG_FORMAT_SVG 8
 
 // Codes at or above this value name a language REGISTERED AT RUNTIME rather
-// than compiled in (docs/proposals/runtime-languages.md). They are assigned
-// per process, in registration order, and are never pinned here: a caller that
-// persists a format persists its name. Every compiled-in TWIG_FORMAT_* code is
-// below it, and always will be — the append-only rule above appends beneath
-// this line. Reserved ahead of the registration entry points, which are a
-// later minor, so that no compiled code can ever be argued to collide with a
-// runtime one. Until those entry points exist, a code in this range is refused
-// with TWIG_STATUS_UNSUPPORTED_FORMAT like any other unknown code.
+// than compiled in (docs/proposals/runtime-languages.md) — handed out by
+// twig_language_register, below. They are assigned per process, in
+// registration order, and are never pinned here: a caller that persists a
+// format persists its name, and twig_format_by_name turns it back into a code.
+// Every compiled-in TWIG_FORMAT_* code is below it, and always will be — the
+// append-only rule above appends beneath this line. A code in the range that
+// no registration holds is refused with TWIG_STATUS_UNSUPPORTED_FORMAT like
+// any other unknown code.
 #define TWIG_FORMAT_RUNTIME_BASE 4096
 
 // Markdown extension flags for the `md_flags` bitmask of twig_parse_ext and
@@ -135,6 +135,13 @@ typedef enum TwigStatus {
     // Editor-only. The edit produced a document that no longer parses; it was
     // rolled back and nothing changed.
     TWIG_STATUS_EDIT_CONFLICT = 8,
+    // Render/serialize-to-HTML only. A metadata node's body contains
+    // `</script`, which a raw-text <script> data island cannot hold; the HTML
+    // printer refused rather than emit it.
+    TWIG_STATUS_UNSAFE_METADATA = 9,
+    // twig_language_register refused the language — its description, a
+    // sample, or the registry's capacity. The message says which.
+    TWIG_STATUS_INVALID_LANGUAGE = 10,
     TWIG_STATUS_INTERNAL_ERROR = 255,
 } TwigStatus;
 
@@ -2671,6 +2678,77 @@ TwigStatus twig_builder_query(
     const TwigQueryMatch **out_ptr,
     size_t *out_len
 );
+
+// ── Runtime languages ────────────────────────────────────────────────────────
+// A format twig did not compile in, carried by a table of the host's functions
+// (docs/proposals/runtime-languages.md). A language READS — its parse turns
+// source into the node table, the JSON `twig convert -o table` prints for a
+// compiled format — and may WRITE, its print turning a node table back into
+// source. It does not author: an editor opens over a runtime format with
+// every gesture unsupported, and twig_format_supports says so.
+//
+// Once registered, the code it is given works at every entry point that takes
+// a format: twig_parse, twig_document_render_html (the shared printer),
+// twig_document_serialize and twig_builder_serialize (when it prints), the
+// diagnostics (measured when it loaded), and the editor.
+
+// Bumped only when a field of TwigLanguageVTable changes meaning.
+#define TWIG_LANGUAGE_VTABLE_VERSION 1u
+
+// A language function: `input` in (source for parse, a node table without
+// positions for print), and on success an allocation of the host's out
+// through `out`/`out_len`, returning 0. On failure it returns non-zero and may
+// hand out a UTF-8 message the same way. `row` is the name the language
+// registered under. Whatever it hands out, twig releases with `free`.
+typedef int (*TwigLanguageFn)(
+    void *user_data,
+    const uint8_t *row,
+    size_t row_len,
+    const uint8_t *input,
+    size_t input_len,
+    uint8_t **out,
+    size_t *out_len
+);
+
+typedef struct TwigLanguageVTable {
+    // TWIG_LANGUAGE_VTABLE_VERSION, first so a later layout can be told apart.
+    uint32_t version;
+    void *user_data;
+    // The describe document, JSON — read during registration, not kept:
+    //   {"name": "org", "extensions": ["org"], "aliases": [],
+    //    "caps": {"read": true, "write": true}, "samples": ["* x\n"]}
+    // A name is a lowercase identifier no format already answers to; an
+    // extension is dot-less and no format's; at least one sample.
+    const uint8_t *description;
+    size_t description_len;
+    TwigLanguageFn parse;
+    // NULL for a language that only reads; required by caps.write.
+    TwigLanguageFn print;
+    void (*free)(void *user_data, uint8_t *ptr, size_t len);
+} TwigLanguageVTable;
+
+// Register a language and run the load check over it: every sample parses to
+// a table twig accepts, a language that prints reparses every sample's print
+// to the same tree, and the fidelity probe measures what a conversion into it
+// loses. On success *out_format is its code, TWIG_FORMAT_RUNTIME_BASE or above.
+// The table is copied; `user_data` must live as long as the process, since
+// there is no unregistration. On refusal nothing is registered, the status is
+// TWIG_STATUS_INVALID_LANGUAGE, and `err_buf` (when non-NULL) holds why,
+// NUL-terminated and truncated to `err_cap`.
+TwigStatus twig_language_register(
+    const TwigLanguageVTable *vtable,
+    int *out_format,
+    char *err_buf,
+    size_t err_cap
+);
+
+// The code a format name resolves to: a compiled format's name or alias
+// ("md", "gfm"), or a registered language's name or alias.
+TwigStatus twig_format_by_name(const uint8_t *name, size_t name_len, int *out_format);
+
+// The name a format code answers to. The bytes are the library's, valid for
+// the life of the process, and not NUL-terminated.
+TwigStatus twig_format_name(int format, const uint8_t **out_ptr, size_t *out_len);
 
 #ifdef __cplusplus
 }
