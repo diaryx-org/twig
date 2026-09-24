@@ -1435,20 +1435,17 @@ pub const Editor = struct {
     ///     the caret's ITEM, which SPLITS the list in two with the rule between.
     ///     That is a real document rather than a corrupted one (nothing is
     ///     swallowed and no item loses its marker), and it is the honest reading
-    ///     of a rule at column zero, so unlike `toggleCodeBlock` — where the same
-    ///     prefix gap would eat the item's marker — it is allowed rather than
-    ///     refused.
+    ///     of a rule at column zero, so it is allowed rather than refused.
     ///   * "The caret's block" is `locate.lineOwningBlock`, NOT
     ///     `locate.innermostBlock`. The latter only knows `para`/`heading`, so a
     ///     caret in a CODE BLOCK or a TABLE looked to it like no block at all,
     ///     and the fallback below put the rule at the caret's own line end —
     ///     inside the fence (where `---` is text, so the document gained no rule
     ///     and the code body was corrupted), or between a table's header and its
-    ///     delimiter row (which stops it being a table). Losing a node is the
-    ///     same failure `toggleCodeBlock` refuses a list for; here it needn't be
-    ///     refused, because the rule that governs every other case already says
-    ///     where it goes — AFTER the caret's block, the fence and the table
-    ///     included.
+    ///     delimiter row (which stops it being a table). Losing a node is a
+    ///     failure worth refusing over; here it needn't be refused, because the
+    ///     rule that governs every other case already says where it goes —
+    ///     AFTER the caret's block, the fence and the table included.
     ///
     /// `error.UnsupportedFormat` when the format has no thematic break. There is
     /// no `error.NoBlock`: an empty document is a legitimate place for a rule, and
@@ -2807,11 +2804,28 @@ pub const Editor = struct {
     ///
     /// Fencing is an INSERTION at the covered region's edges, not a rewrite of
     /// its lines: the body is source that already parsed where it sits, and its
-    /// enclosing container's prefix is already on every line, so leaving the
-    /// lines alone is what keeps a fence inside a quote working (`> a` becomes
+    /// enclosing container's prefix is already on its lines, so leaving them
+    /// alone is what keeps a fence inside a quote working (`> a` becomes
     /// `` > ``` ``/`> a`/`` > ``` ``). Only the two fence lines are minted, and
-    /// they carry the same quote prefix for the same reason
-    /// `insertThematicBreak` does.
+    /// they carry the containers' prefix so the block stays inside them.
+    ///
+    /// INSIDE A LIST ITEM that prefix is not on every line: an item holds its
+    /// content by INDENTATION to its content column, and its marker is on its
+    /// first line alone. So the first line's HEAD — every marker opening on it,
+    /// `- `, `1. `, `> - `, a task item's `- [ ] ` — moves onto the opening
+    /// fence, and the body's first line takes the continuation in its place:
+    /// `- a` becomes `` - ``` ``/`  a`/`` ``` `` two columns in. The fence sits
+    /// at the item's content column and the block stays the item's; a fence at
+    /// column zero would have swallowed the `- ` into the code body instead. A
+    /// task item's content column is its list marker's, not its box's — the box
+    /// stays on the fence line and the item stays a task. The one other line
+    /// rewritten is a LAZY one, a paragraph continuation that left its
+    /// containers' prefix off: a code body cannot, so it is given it.
+    ///
+    /// Where the format attaches a block to an item by a line of its own
+    /// (`Syntax.list_attach`, AsciiDoc's `+`), an attached block's lines are at
+    /// column zero and fence there. The item's own first line is its principal
+    /// text, where a fence is only more text, so that is `error.NotEditable`.
     ///
     /// The fence is measured, not fixed: it is one byte longer than the longest
     /// run of the fence character anywhere in the body, so fencing text that
@@ -2819,7 +2833,13 @@ pub const Editor = struct {
     /// the floor.
     ///
     /// Unfencing peels the opening line and — when it is one — the closing fence
-    /// line, leaving the interior verbatim. A Markdown INDENTED code block has no
+    /// line, leaving the interior verbatim but for its first line, which takes
+    /// the opening line's head back in place of its continuation: `- ```` over
+    /// `  a` is `- a` again. An item's first line is never left blank where
+    /// something follows (an item opening on a blank line holds nothing past
+    /// the next blank one): the body's leading blank lines are passed over,
+    /// and an empty body keeps the item, empty, with a block after it in the
+    /// item brought up under the marker. A Markdown INDENTED code block has no
     /// fences to peel, so it is dedented by up to four spaces a line instead;
     /// that is the same construct with a different spelling, and refusing it
     /// would make the toggle irreversible on a document that merely happens to
@@ -2831,16 +2851,6 @@ pub const Editor = struct {
     /// is gone. That is what unfencing MEANS, not a defect — but it is why this
     /// is a toggle over whole blocks rather than an "unwrap" that promises to
     /// give the same tree back.
-    ///
-    /// INSIDE A LIST ITEM this is `error.NotEditable`. A quote's prefix is on
-    /// every line already, but a list item's is not: its content is held by
-    /// INDENTATION whose width is the marker's, and only the item's first line
-    /// carries that marker. A fence written at column zero there swallows the
-    /// `- ` into the code body and the item stops being an item — the document
-    /// loses a node rather than gaining a code block. Refusing beats that, for
-    /// the same reason a selection running into the middle of a URL is refused
-    /// rather than spliced; fencing inside a list wants marker-width prefixing,
-    /// which is `toggleBlockContainer`'s machinery and not a one-line prefix's.
     ///
     /// TWO SPELLINGS, in `setBlock`'s order: the fence above where the format
     /// has one, and where it has none but carries a `renderBlock`, a
@@ -2860,20 +2870,19 @@ pub const Editor = struct {
         var chain: std.ArrayList(AST.Node.Id) = .empty;
         defer chain.deinit(allocator);
         try locate.ancestorChain(allocator, doc, span.start, &chain);
-        // Refused rather than mangled — see the doc comment. A fence written at
-        // the container prefix would sit at column zero inside a list item and
-        // swallow the item's own marker into the code body.
-        if (insideListItem(doc, chain.items)) return error.NotEditable;
 
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(allocator);
 
         if (locate.innermostOfKind(doc, chain.items, .code_block)) |cb| {
+            const at = std.mem.indexOfScalar(AST.Node.Id, chain.items, cb).?;
+            var frame = try CodeFrame.init(allocator, self.syntax, doc, chain.items[0..at]);
+            defer frame.deinit(allocator);
             const b = doc.span(cb);
             const region_start = locate.lineStartAt(src, b.start);
             const region_end = locate.lineEndAt(src, b.end -| 1);
-            try buildUnfence(allocator, src, region_start, region_end, fence, &out);
-            return self.commitSplice(region_start, region_end, out.items);
+            const end = try buildUnfence(allocator, doc, &frame, cb, region_start, region_end, fence, &out);
+            return self.commitSplice(region_start, end, out.items);
         }
 
         const blocks = coveredBlocks(allocator, doc, span.start, span.end) catch |err| switch (err) {
@@ -2884,17 +2893,49 @@ pub const Editor = struct {
 
         const region_start = locate.lineStartAt(src, doc.span(blocks.first).start);
         const region_end = locate.lineEndAt(src, doc.span(blocks.last).end -| 1);
-        const prefix = containerPrefix(src, doc.span(blocks.first).start);
+        const at = std.mem.indexOfScalar(AST.Node.Id, blocks.chain, blocks.first) orelse return error.NoBlock;
+        var frame = try CodeFrame.init(allocator, self.syntax, doc, blocks.chain[0..at]);
+        defer frame.deinit(allocator);
+        // An item's own first line, where the format attaches its blocks by a
+        // line rather than an indent: that line is the item's principal text,
+        // and a fence written after its marker is text too — refused rather
+        // than mangled. See the doc comment.
+        if (self.syntax.list_attach != null and frame.opensItem(doc, region_start)) return error.NotEditable;
         const width = fenceWidth(src[region_start..region_end], fence.char, fence.min);
 
-        try out.appendSlice(allocator, prefix);
+        // The opening fence takes the first line's head — the markers opening
+        // there, a list item's among them — and the body's first line takes
+        // the continuation in its place. Where nothing opens on it, the fence
+        // takes the continuation and the line is like any other.
+        const head = frame.headLen(doc, region_start);
+        if (head) |h| {
+            try out.appendSlice(allocator, src[region_start .. region_start + h]);
+        } else {
+            try out.appendSlice(allocator, frame.prefix.items);
+        }
         try out.appendNTimes(allocator, fence.char, width);
         if (lang) |l| try out.appendSlice(allocator, l);
         try out.append(allocator, '\n');
-        try out.appendSlice(allocator, src[region_start..region_end]);
+        var line_start = region_start;
+        while (line_start < region_end) {
+            const line_end = locate.lineEndAt(src, line_start);
+            const body = locate.lineBody(src[line_start..line_end]);
+            const ending = src[line_start + body.len .. line_end];
+            const st = frame.strip(body);
+            if (line_start == region_start and head != null) {
+                try frame.writeLine(allocator, &out, 0, body[head.?..], ending);
+            } else if (st.full) {
+                try out.appendSlice(allocator, src[line_start..line_end]);
+            } else {
+                // A lazy continuation line: a paragraph may leave its
+                // container's prefix off, a code body may not.
+                try frame.writeLine(allocator, &out, 0, body[st.len..], ending);
+            }
+            line_start = line_end;
+        }
         // An unterminated last line would otherwise fuse with the closing fence.
-        if (region_end > region_start and src[region_end - 1] != '\n') try out.append(allocator, '\n');
-        try out.appendSlice(allocator, prefix);
+        if (out.items[out.items.len - 1] != '\n') try out.append(allocator, '\n');
+        try out.appendSlice(allocator, frame.prefix.items);
         try out.appendNTimes(allocator, fence.char, width);
         try out.append(allocator, '\n');
 
@@ -2956,9 +2997,8 @@ pub const Editor = struct {
     /// the document is what it was. Prose carrying marks loses them on the way
     /// in, which is what a code block MEANS.
     ///
-    /// No list-item refusal: the fence path refuses inside an item because a
-    /// fence at column zero swallows the item's marker, and a wrapping pair
-    /// swallows nothing.
+    /// Nothing here is about a list item: a wrapping pair has no column to
+    /// keep, where a fence has its item's content column.
     fn toggleCodeBlockByRender(self: *Editor, span: Span, lang: ?[]const u8, render: RenderBlockFn) Error!void {
         if (lang) |l| try checkLanguageToken(l);
 
@@ -4852,10 +4892,10 @@ fn isNumberedMarker(marker: []const u8) bool {
 /// Quote markers only, because a quote's marker is on EVERY line it covers
 /// while a list item's is on its first line alone — a list item holds its
 /// content by indentation of the marker's width, which this cannot see from one
-/// line. The callers differ on what to do about that gap: `insertThematicBreak`
-/// accepts landing at column zero (it splits the list, corrupting nothing),
-/// while `toggleCodeBlock` refuses, because there the same gap would pull the
-/// item's marker into the code body.
+/// line. `insertThematicBreak` accepts landing at column zero (it splits the
+/// list, corrupting nothing); `toggleCodeBlock`, where the same gap would pull
+/// the item's marker into the code body, reads the item's column off the tree
+/// instead — see `CodeFrame`.
 fn containerPrefix(src: []const u8, at: usize) []const u8 {
     const line_start = locate.lineStartAt(src, at);
     const line = src[line_start..locate.lineEndAt(src, at)];
@@ -5465,32 +5505,206 @@ fn fenceAt(line: []const u8, char: u8, min: usize) ?struct { start: usize, width
     return if (i - start >= min) .{ .start = start, .width = i - start } else null;
 }
 
-/// The interior of the code block occupying `[region_start, region_end)`, with
-/// its framing removed — the body of `Editor.toggleCodeBlock`'s unfence half,
-/// where its reasoning lives.
+/// Where a code block's lines sit: the containers around it, as
+/// `Editor.toggleCodeBlock` strips them off a line it reads and writes them
+/// onto a line it mints.
+///
+/// A quote's marker is on every line it holds, but a list item's is on its
+/// first line alone — the rest are held by INDENTATION to the item's content
+/// column. So a line has two shapes here: the first line of a block that
+/// opens a container, whose HEAD is the markers opening on it (`- `, `> `,
+/// `> 1. `), and every other, which carries the continuation `prefix` (`  `,
+/// `> `, `>    `). Fencing moves the head onto the opening fence and gives the
+/// body's first line the continuation in its place; unfencing does the
+/// reverse.
+const CodeFrame = struct {
+    ancestors: []const AST.Node.Id,
+    /// What a line inside the containers opens with where nothing opens on
+    /// it: a quote's marker again, a list item's content column in spaces.
+    prefix: std.ArrayList(u8) = .empty,
+    /// `prefix`'s width in columns.
+    cols: usize = 0,
+
+    /// The frame of a block whose ancestors are `ancestors`, outermost first.
+    ///
+    /// This is `locate.continuationPrefixAlong` but for two things, both
+    /// because a code body is read to the column where a paragraph is read
+    /// loosely:
+    ///
+    ///   * A TASK item's content column is its list marker's, not its
+    ///     checkbox's: the box is the first paragraph's, and a fence written
+    ///     after it opens a block at the item's content column like any other.
+    ///     A body at the box's column would be indented past it — its closing
+    ///     fence four columns in, where it closes nothing.
+    ///   * A list item is left out where the format attaches a block to an
+    ///     item by a line of its own (`Syntax.list_attach`) — the block's
+    ///     lines are at column zero there, as `moveBlock` writes them.
+    fn init(allocator: Allocator, syntax: *const Syntax, doc: *const Document, ancestors: []const AST.Node.Id) Allocator.Error!CodeFrame {
+        var self: CodeFrame = .{ .ancestors = ancestors };
+        errdefer self.prefix.deinit(allocator);
+        const src = doc.source;
+        for (ancestors) |id| {
+            const kind = doc.ast.nodes[id].kind;
+            if (!frames(kind)) continue;
+            if (syntax.list_attach != null and isListItem(kind)) continue;
+            const m = doc.markerSpan(id) orelse continue;
+            var end = m.end;
+            if (kind == .task_list_item) {
+                if (listMarkerAt(src[m.start..m.end], 0)) |lm| end = m.start + lm.end;
+            }
+            const start_col = locate.columnOf(src, m.start);
+            const end_col = locate.columnOf(src, end);
+            while (self.cols < start_col) : (self.cols += 1) try self.prefix.append(allocator, ' ');
+            if (end_col > self.cols) {
+                if (kind == .block_quote) {
+                    try self.prefix.appendSlice(allocator, src[m.start..end]);
+                } else {
+                    try self.prefix.appendNTimes(allocator, ' ', end_col - self.cols);
+                }
+                self.cols = end_col;
+            }
+        }
+        return self;
+    }
+
+    fn deinit(self: *CodeFrame, allocator: Allocator) void {
+        self.prefix.deinit(allocator);
+    }
+
+    /// The containers that put a prefix on the lines they hold — the ones a
+    /// frame is made of. Not every node with a marker: an AsciiDoc
+    /// admonition's `NOTE: ` is its paragraph's, and a fence written after
+    /// it would be that paragraph's text.
+    fn frames(kind: AST.Node.Kind) bool {
+        return switch (kind) {
+            .block_quote, .list_item, .task_list_item, .definition_list_item, .definition, .footnote => true,
+            else => false,
+        };
+    }
+
+    /// What a blank line inside the containers carries: a quote's `>`, and
+    /// nothing for a list item — see `locate.blankLinePrefix`.
+    fn blank(self: *const CodeFrame) []const u8 {
+        return std.mem.trimEnd(u8, self.prefix.items, " \t");
+    }
+
+    /// How many bytes of the line starting at `at` are markers opening there
+    /// — through the last of them, a task item's checkbox included, since it
+    /// stays on the item's first line — or null where none opens and the line
+    /// carries only the continuation.
+    fn headLen(self: *const CodeFrame, doc: *const Document, at: usize) ?usize {
+        const le = locate.lineEndAt(doc.source, at);
+        const body_len = locate.lineBody(doc.source[at..le]).len;
+        var n: ?usize = null;
+        for (self.ancestors) |a| {
+            if (!frames(doc.ast.nodes[a].kind)) continue;
+            const m = doc.markerSpan(a) orelse continue;
+            if (m.start >= at and m.start < le) n = @min(body_len, @max(n orelse 0, m.end - at));
+        }
+        return n;
+    }
+
+    /// Whether a list item's marker opens on the line starting at `at` — the
+    /// block there is the item's first, and the line its only marker.
+    fn opensItem(self: *const CodeFrame, doc: *const Document, at: usize) bool {
+        const le = locate.lineEndAt(doc.source, at);
+        for (self.ancestors) |a| {
+            if (!isListItem(doc.ast.nodes[a].kind)) continue;
+            const m = doc.markerSpan(a) orelse continue;
+            if (m.start >= at and m.start < le) return true;
+        }
+        return false;
+    }
+
+    /// How much of `body` is the continuation prefix: `len` bytes of blanks
+    /// and quote markers up to `cols` columns, stopping at anything else (a
+    /// lazy line), and `full` when all `cols` were there. A tab that crosses
+    /// the prefix's edge is taken whole and its columns past the edge are
+    /// `pad` — content indentation to write back as spaces.
+    const Strip = struct { len: usize, pad: usize, full: bool };
+
+    fn strip(self: *const CodeFrame, body: []const u8) Strip {
+        var i: usize = 0;
+        var col: usize = 0;
+        while (i < body.len and col < self.cols) : (i += 1) {
+            switch (body[i]) {
+                ' ', '>' => col += 1,
+                '\t' => col += 4 - col % 4,
+                else => break,
+            }
+        }
+        return .{ .len = i, .pad = col -| self.cols, .full = col >= self.cols };
+    }
+
+    /// `rest` behind the continuation prefix and `pad` spaces, or behind the
+    /// blank prefix where it is blank, then `ending`.
+    fn writeLine(self: *const CodeFrame, allocator: Allocator, out: *std.ArrayList(u8), pad: usize, rest: []const u8, ending: []const u8) Allocator.Error!void {
+        if (locate.isBlankLine(rest)) {
+            try out.appendSlice(allocator, self.blank());
+        } else {
+            try out.appendSlice(allocator, self.prefix.items);
+            try out.appendNTimes(allocator, ' ', pad);
+            try out.appendSlice(allocator, rest);
+        }
+        try out.appendSlice(allocator, ending);
+    }
+};
+
+/// The interior of the code block `cb` occupying `[region_start, region_end)`,
+/// with its framing removed — the body of `Editor.toggleCodeBlock`'s unfence
+/// half, where its reasoning lives — written to `out`. Returns where the
+/// splice ends, which is past `region_end` in the one case below that takes
+/// the blank lines after the block.
+///
+/// Where markers open on the fence line (`frame.headLen`), they are not
+/// framing but the containers': they go onto the first line of the body in
+/// place of its continuation, which is what keeps a list item's marker when
+/// its first block is the one unfenced. Where the item's first line would be
+/// left blank, that is not a place to stop: an item whose first line is
+/// blank holds nothing past a blank line after it, so the body's leading
+/// blank lines are skipped to its first line of content, and an EMPTY body
+/// takes the blank lines after the block with it, so that a block following
+/// in the item is still the item's.
 fn buildUnfence(
     allocator: Allocator,
-    src: []const u8,
+    doc: *const Document,
+    frame: *const CodeFrame,
+    cb: AST.Node.Id,
     region_start: usize,
     region_end: usize,
     fence: syntax_mod.CodeFence,
     out: *std.ArrayList(u8),
-) !void {
+) !usize {
+    const src = doc.source;
+    const head = frame.headLen(doc, region_start);
     const first_end = locate.lineEndAt(src, region_start);
-    if (fenceAt(src[region_start..first_end], fence.char, fence.min) == null) {
+    const first_body = locate.lineBody(src[region_start..first_end]);
+    const opening = first_body[head orelse frame.strip(first_body).len ..];
+
+    if (fenceAt(opening, fence.char, fence.min) == null) {
         // No opening fence: a Markdown indented code block, whose framing IS its
         // indentation. Four spaces is the marker; a line indented further keeps
         // the rest, which is the indentation the code itself carried.
         var line_start = region_start;
         while (line_start < region_end) {
             const line_end = locate.lineEndAt(src, line_start);
-            const line = src[line_start..line_end];
-            var j: usize = 0;
-            while (j < line.len and j < 4 and line[j] == ' ') j += 1;
-            try out.appendSlice(allocator, line[j..]);
+            const body = locate.lineBody(src[line_start..line_end]);
+            const ending = src[line_start + body.len .. line_end];
+            const on_head = line_start == region_start and head != null;
+            const st: CodeFrame.Strip = if (on_head) .{ .len = head.?, .pad = 0, .full = true } else frame.strip(body);
+            var rest = body[st.len..];
+            var pad = st.pad;
+            var indent: usize = @min(pad, 4);
+            pad -= indent;
+            while (indent < 4 and rest.len > 0 and rest[0] == ' ') : (indent += 1) rest = rest[1..];
+            if (on_head) {
+                try appendHeadLine(allocator, out, src[region_start .. region_start + head.?], pad, rest, ending);
+            } else {
+                try frame.writeLine(allocator, out, pad, rest, ending);
+            }
             line_start = line_end;
         }
-        return;
+        return region_end;
     }
 
     // Fenced: drop the opening line, and the closing one when there IS one — an
@@ -5498,12 +5712,69 @@ fn buildUnfence(
     // last line is content that must survive.
     var body_end = region_end;
     const last_start = locate.lineStartAt(src, region_end -| 1);
-    if (last_start >= first_end and
-        fenceAt(src[last_start..region_end], fence.char, fence.min) != null)
-    {
-        body_end = last_start;
+    if (last_start >= first_end) {
+        const last = locate.lineBody(src[last_start..region_end]);
+        if (fenceAt(last[frame.strip(last).len..], fence.char, fence.min) != null) body_end = last_start;
     }
-    try out.appendSlice(allocator, src[first_end..@max(first_end, body_end)]);
+    body_end = @max(body_end, first_end);
+    const h = head orelse {
+        // Nothing opens on the fence line: the interior already carries its
+        // containers' prefix, and is kept verbatim.
+        try out.appendSlice(allocator, src[first_end..body_end]);
+        return region_end;
+    };
+    const head_bytes = src[region_start .. region_start + h];
+    const item = frame.opensItem(doc, region_start);
+
+    // The line the head goes onto: the body's first, or in an item its first
+    // with content.
+    var line_start = first_end;
+    if (item) {
+        while (line_start < body_end) {
+            const le = locate.lineEndAt(src, line_start);
+            const body = locate.lineBody(src[line_start..le]);
+            if (!locate.isBlankLine(body[frame.strip(body).len..])) break;
+            line_start = le;
+        }
+    }
+    if (line_start >= body_end) {
+        // An empty body. Nothing is left of the block — but where the fence
+        // line held a list item's marker, the item is kept, empty, and a block
+        // after this one in the item is brought up under it.
+        if (!item) return region_end;
+        try out.appendSlice(allocator, std.mem.trimEnd(u8, head_bytes, " \t"));
+        try out.append(allocator, '\n');
+        var end = region_end;
+        if (doc.ast.nodes[cb].next_sibling != null) {
+            while (end < src.len) {
+                const le = locate.lineEndAt(src, end);
+                const body = locate.lineBody(src[end..le]);
+                if (!locate.isBlankLine(body[frame.strip(body).len..])) break;
+                end = le;
+            }
+        }
+        return end;
+    }
+    const le = locate.lineEndAt(src, line_start);
+    const body = locate.lineBody(src[line_start..le]);
+    const st = frame.strip(body);
+    try appendHeadLine(allocator, out, head_bytes, st.pad, body[st.len..], src[line_start + body.len .. le]);
+    try out.appendSlice(allocator, src[le..@max(le, body_end)]);
+    return region_end;
+}
+
+/// `rest` behind the head of a block's first line — where the line's markers
+/// are — and `pad` spaces; a blank `rest` leaves the head without its
+/// trailing blanks.
+fn appendHeadLine(allocator: Allocator, out: *std.ArrayList(u8), head: []const u8, pad: usize, rest: []const u8, ending: []const u8) Allocator.Error!void {
+    if (locate.isBlankLine(rest)) {
+        try out.appendSlice(allocator, std.mem.trimEnd(u8, head, " \t"));
+    } else {
+        try out.appendSlice(allocator, head);
+        try out.appendNTimes(allocator, ' ', pad);
+        try out.appendSlice(allocator, rest);
+    }
+    try out.appendSlice(allocator, ending);
 }
 
 /// Refuse an info string this format's fence cannot carry back out: a line end

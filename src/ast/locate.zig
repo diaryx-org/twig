@@ -220,7 +220,7 @@ const tab_stop = 4;
 
 /// The COLUMN of `offset` on its own line — not `offset - line_start`, because a
 /// tab in a marker or an indent advances to a tab stop rather than by one.
-fn columnOf(src: []const u8, offset: usize) usize {
+pub fn columnOf(src: []const u8, offset: usize) usize {
     const at = @min(offset, src.len);
     var i = lineStartAt(src, at);
     var col: usize = 0;

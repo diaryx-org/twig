@@ -2147,24 +2147,28 @@ TwigStatus twig_editor_move_block(
 // Fencing INSERTS at the covered region's edges rather than rewriting its lines:
 // the body already parsed where it sits and already carries its container's
 // prefix, so only the two fence lines are minted (and they carry the quote prefix
-// too, which is what makes fencing inside a quote work). The fence is MEASURED,
+// too, which is what makes fencing inside a quote work). INSIDE A LIST ITEM the
+// fence sits at the item's content column: the markers opening the first line
+// (`- `, `1. `, a task item's `- [ ] `) move onto the opening fence and the
+// body's first line is indented to the item's content in their place, so `- a`
+// becomes "- ```", "  a", "  ```" and the block stays the item's. A lazy
+// continuation line is given the prefix it left off. The fence is MEASURED,
 // not fixed — one character longer than the longest run of the fence character in
 // the body — so fencing text that itself contains a fence nests instead of
 // closing early.
 //
 // Unfencing peels the opening line and, when there is one, the closing fence
-// line. A Markdown INDENTED code block has no fence to peel and is dedented by up
+// line; the body's first line takes back the opening line's markers, so "- ```",
+// "  a", "  ```" is `- a` again. A Markdown INDENTED code block has no fence to peel and is dedented by up
 // to four spaces a line instead, so the toggle stays reversible on documents
 // using the older spelling. Note that unfencing can produce a different tree than
 // the one that was fenced: a code body is by definition text the parser did not
 // read as markup, so `# x` inside a fence becomes a heading once the fence is
 // gone. That is what unfencing means.
 //
-// Returns TWIG_STATUS_NOT_EDITABLE INSIDE A LIST ITEM, in both directions. A
-// quote's marker is on every line it covers; a list item's is on its first line
-// only, and its content is held by indentation of the marker's width — so a fence
-// written at column zero there would pull the `- ` into the code body and the
-// item would stop being an item. Refusing beats losing a node.
+// Returns TWIG_STATUS_NOT_EDITABLE for an AsciiDoc list item's own first line —
+// its principal text, where a fence would be text too (a block attached to the
+// item by a `+` line fences at column zero like any other).
 // TWIG_STATUS_INVALID_ARGUMENT for an info string the fence cannot carry (one
 // holding a line end, the fence character itself, or — in Markdown, whose info
 // string ends at whitespace — a space); TWIG_STATUS_UNSUPPORTED_FORMAT for a

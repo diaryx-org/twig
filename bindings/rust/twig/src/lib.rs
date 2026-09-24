@@ -3052,21 +3052,26 @@ impl Editor {
     ///
     /// Fencing *inserts* at the covered region's edges rather than rewriting its
     /// lines, so a body already carrying a quote's `> ` keeps it and the fence
-    /// lines get the same prefix. The fence is **measured** — one character
+    /// lines get the same prefix. **Inside a list item** the fence sits at the
+    /// item's content column: the markers opening the first line (`- `, `1. `,
+    /// a task item's `- [ ] `) move onto the opening fence and the body's first
+    /// line is indented to the item's content in their place, so `- a` becomes
+    /// ``- ```\n  a\n  ```\n`` and the block stays the item's. A lazy
+    /// continuation line is given the prefix it left off. The fence is **measured** — one character
     /// longer than the longest run of the fence character in the body — so
     /// fencing text that itself contains a fence nests instead of closing early.
     ///
     /// Unfencing peels the opening line and, when there is one, the closing fence
-    /// line; a Markdown *indented* code block has no fence to peel and is
+    /// line, and the body's first line takes back the opening line's markers —
+    /// ``- ```\n  a\n  ```\n`` is `- a\n` again; a Markdown *indented* code block has no fence to peel and is
     /// dedented instead, so the toggle stays reversible on the older spelling.
     /// Note that unfencing can yield a different tree than the one that was
     /// fenced: a code body is by definition text the parser did not read as
     /// markup, so `# x` inside a fence becomes a heading once the fence is gone.
     ///
-    /// [`Error::NotEditable`] **inside a list item**, in both directions: a
-    /// quote's marker is on every line, a list item's is on its first line only,
-    /// so a fence at column zero there would pull the `- ` into the code body and
-    /// the item would stop being an item. [`Error::InvalidArgument`] for an info
+    /// [`Error::NotEditable`] on an AsciiDoc list item's own first line — its
+    /// principal text, where a fence would be text too (a block attached to the
+    /// item by a `+` line fences at column zero). [`Error::InvalidArgument`] for an info
     /// string the fence cannot carry (a line end, the fence character, or — in
     /// Markdown, whose info string ends at whitespace — a space);
     /// [`Error::UnsupportedFormat`] for a parse-only format;
@@ -6191,11 +6196,13 @@ mod tests {
     }
 
     #[test]
-    fn editor_toggle_code_block_refuses_inside_a_list_item() {
-        // A fence at column zero here would pull the item's `- ` into the code
-        // body and the item would stop being an item.
+    fn editor_toggle_code_block_inside_a_list_item_keeps_the_item() {
+        // The fence sits at the item's content column, with the item's marker
+        // on its line, so the block stays the item's — and comes back out.
         let mut ed = Editor::new_str("- a\n- b\n", Format::Markdown).expect("editor");
-        assert_eq!(ed.toggle_code_block(2, 3, None), Err(Error::NotEditable));
+        ed.toggle_code_block(2, 3, None).expect("fence");
+        assert_eq!(ed.source_str().unwrap(), "- ```\n  a\n  ```\n- b\n");
+        ed.toggle_code_block(8, 8, None).expect("unfence");
         assert_eq!(ed.source_str().unwrap(), "- a\n- b\n");
     }
 
