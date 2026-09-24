@@ -3899,8 +3899,8 @@ pub export fn twig_editor_move_block(
 /// Fence the blocks `[start, end)` covers as a code block, or unfence the code
 /// block the caret is in. `language` tags the opening fence (`has_language == 0`
 /// for none) and is ignored when unfencing. See `twig.h` for the semantics and
-/// `twig.Editor.toggleCodeBlock` for the implementation — in particular why this
-/// is `not_editable` inside a list item.
+/// `twig.Editor.toggleCodeBlock` for the implementation — in particular how a
+/// fence inside a list item keeps the item's content column.
 pub export fn twig_editor_toggle_code_block(
     ed: ?*TwigEditor,
     start: usize,

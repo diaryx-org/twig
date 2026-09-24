@@ -2668,7 +2668,7 @@ test "thematic_break: inside a list it splits the list rather than corrupting it
     // `containerPrefix` reproduces quote markers but not a list item's indent,
     // so the rule lands at column zero after the caret's item. Nothing is
     // swallowed — the list becomes two lists with a rule between — which is why
-    // this is allowed where the same gap makes `toggleCodeBlock` refuse.
+    // this is allowed rather than refused.
     var fx = try Fixture.init("- a\n- b\n", .markdown);
     defer fx.deinit();
     try fx.ed.insertThematicBreak(2);
@@ -2703,8 +2703,7 @@ test "thematic_break: inside a code fence it lands after the fence, not in the b
 
 test "thematic_break: inside a table it lands after the table, which survives" {
     // The worst of the fallback's cases: a rule written between the header row
-    // and the delimiter row stops the table being a table. A node is lost, which
-    // is the outcome `toggleCodeBlock` refuses a list item for.
+    // and the delimiter row stops the table being a table. A node is lost.
     var fx = try Fixture.init("| a | b |\n|---|---|\n| c | d |\n", .markdown);
     defer fx.deinit();
     try fx.ed.insertThematicBreak(3); // caret in the header's first cell
@@ -4116,22 +4115,228 @@ test "toggleCodeBlock: fencing inside a quote keeps the quote" {
     try testing.expect(code > quote);
 }
 
-test "toggleCodeBlock: inside a list item it refuses instead of eating the marker" {
-    // A fence at column zero here would pull the item's `- ` into the code body,
-    // and the document would LOSE the list item rather than gain a code block.
-    // Refusing is the same choice `insertLink` makes over a half-selected URL.
-    for ([_]format.Format{ .markdown, .djot }) |fmt| {
-        var fx = try Fixture.init("- a\n- b\n", fmt);
-        defer fx.deinit();
-        try testing.expectError(error.NotEditable, fx.ed.toggleCodeBlock(Span.init(2, 3), null));
-        try fx.expectSource("- a\n- b\n");
+/// Whether the (first) code block in the reparsed tree sits inside a node of
+/// `tag` — the proof a fence stayed in its container rather than ending it.
+fn expectCodeWithin(fx: *Fixture, tag: KindTag, text: ?[]const u8) !void {
+    const ast = fx.ed.astView();
+    const cb = fx.find(.{ .tag = .code_block }) orelse return error.NoCodeBlock;
+    if (text) |t| try testing.expectEqualStrings(t, ast.nodes[cb].kind.code_block.text);
+    const doc = &fx.ed.splicer.doc;
+    const inner = doc.span(cb);
+    for (ast.nodes[0..cb], 0..) |n, i| {
+        if (std.meta.activeTag(n.kind) != tag) continue;
+        const outer = doc.span(@intCast(i));
+        if (outer.start <= inner.start and inner.end <= outer.end) return;
     }
-    // And the same in the other direction: a code block already inside an item
-    // is left alone rather than half-unwrapped.
-    var fx = try Fixture.init("- ```\n  a\n  ```\n", .markdown);
+    return error.CodeBlockOutsideContainer;
+}
+
+fn countOf(fx: *Fixture, tag: KindTag) usize {
+    var n: usize = 0;
+    for (fx.ed.astView().nodes) |node| {
+        if (std.meta.activeTag(node.kind) == tag) n += 1;
+    }
+    return n;
+}
+
+/// Toggle a code block on at `on` and expect `fenced`, holding `text` inside
+/// a `within`; toggle it off again at `off` and expect `source` back.
+fn expectCodeRoundTrip(
+    fmt: format.Format,
+    source: []const u8,
+    on: usize,
+    fenced: []const u8,
+    within: KindTag,
+    text: ?[]const u8,
+    off: usize,
+) !void {
+    errdefer std.debug.print("\n{t}: {s}", .{ fmt, source });
+    var fx = try Fixture.init(source, fmt);
     defer fx.deinit();
-    try testing.expectError(error.NotEditable, fx.ed.toggleCodeBlock(Span.init(8, 8), null));
-    try fx.expectSource("- ```\n  a\n  ```\n");
+    try fx.ed.toggleCodeBlock(Span.init(on, on), null);
+    try fx.expectSource(fenced);
+    try expectCodeWithin(&fx, within, text);
+    try fx.ed.toggleCodeBlock(Span.init(off, off), null);
+    try fx.expectSource(source);
+    try fx.expectNoNodeOfKind(.{ .tag = .code_block });
+    // One splice each way, so one undo step each way.
+    _ = try fx.ed.splicer.undo();
+    try fx.expectSource(fenced);
+    _ = try fx.ed.splicer.undo();
+    try fx.expectSource(source);
+}
+
+test "toggleCodeBlock: inside a list item the fence sits at the item's content column" {
+    // A fence at column zero would pull the item's `- ` into the code body and
+    // the document would lose the item. The marker stays on the opening fence's
+    // line instead, and every other line takes the item's continuation — the
+    // same shape `toggleBlockContainer` writes when it wraps a list around a
+    // code block.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        try expectCodeRoundTrip(fmt, "- hello\n", 4, "- ```\n  hello\n  ```\n", .list_item, "hello\n", 9);
+        // Only the item the caret is in; its siblings keep their markers.
+        var fx = try Fixture.init("- a\n- b\n- c\n", fmt);
+        defer fx.deinit();
+        try fx.ed.toggleCodeBlock(Span.init(6, 7), "zig");
+        try fx.expectSource("- a\n- ```zig\n  b\n  ```\n- c\n");
+        try expectCodeLang(&fx, "zig");
+        try testing.expectEqual(@as(usize, 3), countOf(&fx, .list_item));
+        try testing.expectEqual(@as(usize, 1), countOf(&fx, .bullet_list));
+    }
+}
+
+test "toggleCodeBlock: a code block already in a list item unfences into it" {
+    // The other direction from a document that arrived with one — the shape
+    // wrapping a list around a code block leaves — at the offset of its text.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("- ```\n  hello\n  ```\n", fmt);
+        defer fx.deinit();
+        try fx.ed.toggleCodeBlock(Span.init(9, 9), null);
+        try fx.expectSource("- hello\n");
+        try testing.expect(fx.find(.{ .tag = .list_item }) != null);
+        try fx.expectNoNodeOfKind(.{ .tag = .code_block });
+    }
+    // Wrap a list around a code block, then take the code block out of it.
+    var fx = try Fixture.init("```\nhello\n```\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleBlockContainer(Span.init(4, 9), .bullet_list);
+    try fx.expectSource("- ```\n  hello\n  ```\n");
+    try fx.ed.toggleCodeBlock(Span.init(9, 9), null);
+    try fx.expectSource("- hello\n");
+}
+
+test "toggleCodeBlock: ordered, nested, task and quoted items keep their columns" {
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        // An ordered marker is wider, and so is the continuation.
+        try expectCodeRoundTrip(fmt, "1. hello\n", 4, "1. ```\n   hello\n   ```\n", .list_item, "hello\n", 10);
+        try expectCodeRoundTrip(fmt, "10. hello\n", 5, "10. ```\n    hello\n    ```\n", .list_item, "hello\n", 12);
+        // A nested item: both markers' columns. Djot opens a sublist only
+        // after a blank line.
+        if (fmt == .markdown) {
+            try expectCodeRoundTrip(fmt, "- a\n  - b\n", 8, "- a\n  - ```\n    b\n    ```\n", .list_item, "b\n", 16);
+        } else {
+            try expectCodeRoundTrip(fmt, "- a\n\n  - b\n", 9, "- a\n\n  - ```\n    b\n    ```\n", .list_item, "b\n", 17);
+        }
+        try expectCodeRoundTrip(fmt, "- a\n\n  1. b\n", 10, "- a\n\n  1. ```\n     b\n     ```\n", .list_item, "b\n", 19);
+        // A task item keeps its box on the fence line; the body is at the
+        // item's content column, not the box's.
+        try expectCodeRoundTrip(fmt, "- [ ] hello\n", 8, "- [ ] ```\n  hello\n  ```\n", .task_list_item, "hello\n", 12);
+        // An item in a quote, and a quote in an item.
+        try expectCodeRoundTrip(fmt, "> - a\n", 4, "> - ```\n>   a\n>   ```\n", .list_item, "a\n", 12);
+        try expectCodeRoundTrip(fmt, "- > a\n", 4, "- > ```\n  > a\n  > ```\n", .block_quote, "a\n", 12);
+    }
+    // The task item is still one, with the code block as its child.
+    var fx = try Fixture.init("- [x] hello\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(8, 8), null);
+    try fx.expectSource("- [x] ```\n  hello\n  ```\n");
+    const item = fx.find(.{ .tag = .task_list_item }) orelse return error.NoTaskItem;
+    try testing.expect(fx.ed.astView().nodes[item].kind.task_list_item.checked);
+    try expectCodeWithin(&fx, .task_list_item, "hello\n");
+}
+
+test "toggleCodeBlock: an item's later block, and a lazy line, stay in the item" {
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        // Not the item's first block: no marker on its line, so the fence
+        // takes the continuation both ends.
+        try expectCodeRoundTrip(fmt, "- a\n\n  b\n", 7, "- a\n\n  ```\n  b\n  ```\n", .list_item, "b\n", 12);
+    }
+    // A paragraph may leave its container's prefix off a continuation line; a
+    // code body may not, so the lazy line is given it.
+    var lazy = try Fixture.init("- a\nb\n", .markdown);
+    defer lazy.deinit();
+    try lazy.ed.toggleCodeBlock(Span.init(2, 2), null);
+    try lazy.expectSource("- ```\n  a\n  b\n  ```\n");
+    try expectCodeWithin(&lazy, .list_item, "a\nb\n");
+    var quoted = try Fixture.init("> a\nb\n", .markdown);
+    defer quoted.deinit();
+    try quoted.ed.toggleCodeBlock(Span.init(2, 2), null);
+    try quoted.expectSource("> ```\n> a\n> b\n> ```\n");
+    try expectCodeWithin(&quoted, .block_quote, "a\nb\n");
+}
+
+test "toggleCodeBlock: a selection across items fences the whole list" {
+    // The blocks two items share are the list's, so the list is what is
+    // fenced — at its own column, where it sits whole — and comes back whole.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        var fx = try Fixture.init("- a\n- b\n\nc\n", fmt);
+        defer fx.deinit();
+        try fx.ed.toggleCodeBlock(Span.init(2, 7), null);
+        try fx.expectSource("```\n- a\n- b\n```\n\nc\n");
+        try fx.expectNoNodeOfKind(.{ .tag = .list_item });
+        try fx.ed.toggleCodeBlock(Span.init(4, 4), null);
+        try fx.expectSource("- a\n- b\n\nc\n");
+    }
+}
+
+test "toggleCodeBlock: an indented code block in a quote dedents inside it" {
+    // Its four columns are counted after the quote's own marker.
+    var fx = try Fixture.init(">     code\n>     more\n", .markdown);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(6, 6), null);
+    try fx.expectSource("> code\n> more\n");
+    try fx.expectNoNodeOfKind(.{ .tag = .code_block });
+    try testing.expect(fx.find(.{ .tag = .block_quote }) != null);
+}
+
+test "toggleCodeBlock: unfencing an item's first block never leaves its first line blank" {
+    // An item whose first line is blank holds nothing past a blank line after
+    // it, so what would be left on that line is taken from further down.
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        // An empty body keeps the item, empty.
+        var empty = try Fixture.init("- ```\n  ```\n- b\n", fmt);
+        defer empty.deinit();
+        try empty.ed.toggleCodeBlock(Span.init(2, 2), null);
+        try empty.expectSource("-\n- b\n");
+        try testing.expectEqual(@as(usize, 2), countOf(&empty, .list_item));
+        // ...and brings a block after it in the item up under the marker.
+        var next = try Fixture.init("- ```\n  ```\n\n  b\n", fmt);
+        defer next.deinit();
+        try next.ed.toggleCodeBlock(Span.init(2, 2), null);
+        try next.expectSource("-\n  b\n");
+        try testing.expectEqual(@as(usize, 1), countOf(&next, .list_item));
+        try testing.expect(next.find(.{ .tag = .para }).? > next.find(.{ .tag = .list_item }).?);
+        // A body's leading blank lines are passed over to its first content.
+        var blanks = try Fixture.init("- ```\n\n\n  a\n  ```\n", fmt);
+        defer blanks.deinit();
+        try blanks.ed.toggleCodeBlock(Span.init(2, 2), null);
+        try blanks.expectSource("- a\n");
+    }
+}
+
+test "toggleCodeBlock: a tab at an item's content column is the column, not past it" {
+    // The tab reaches column four, past the item's two: the fence is written
+    // at the item's column and the tab's line is left as it was. (How much of
+    // the tab the body keeps is the parser's to say, not this gesture's.)
+    for ([_]format.Format{ .markdown, .djot }) |fmt| {
+        try expectCodeRoundTrip(fmt, "- a\n\n\tb\n", 6, "- a\n\n  ```\n\tb\n  ```\n", .list_item, null, 13);
+    }
+}
+
+test "toggleCodeBlock: an asciidoc admonition's label is not a container prefix" {
+    // `NOTE: ` is the paragraph's own marker, not a prefix its lines carry, so
+    // the fence goes round the whole line — as it always has.
+    var fx = try Fixture.init("NOTE: a\n", .asciidoc);
+    defer fx.deinit();
+    try fx.ed.toggleCodeBlock(Span.init(6, 6), null);
+    try fx.expectSource("```\nNOTE: a\n```\n");
+    try fx.ed.toggleCodeBlock(Span.init(4, 4), null);
+    try fx.expectSource("NOTE: a\n");
+}
+
+test "toggleCodeBlock: asciidoc fences an item's attached block, not its principal text" {
+    // AsciiDoc attaches a block to an item by a `+` line, at column zero; the
+    // item's own first line is its principal text, where a fence is text too.
+    var fx = try Fixture.init("* a\n+\nb\n", .asciidoc);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.toggleCodeBlock(Span.init(2, 2), null));
+    try fx.expectSource("* a\n+\nb\n");
+    try fx.ed.toggleCodeBlock(Span.init(6, 6), null);
+    try fx.expectSource("* a\n+\n```\nb\n```\n");
+    try expectCodeWithin(&fx, .list_item, "b");
+    try fx.ed.toggleCodeBlock(Span.init(10, 10), null);
+    try fx.expectSource("* a\n+\nb\n");
+    try fx.expectNoNodeOfKind(.{ .tag = .code_block });
 }
 
 test "toggleCodeBlock: unfencing an INDENTED Markdown code block dedents it" {
