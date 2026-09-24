@@ -90,6 +90,42 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.11.0
+
+### Added
+
+- **editor** — insert an inline or a display formula ([`07d027b`](https://github.com/diaryx-org/twig/commit/07d027b01e4ce94bcb0523e8b87ff69991b6fc8d))
+
+### Fixed
+
+- **serialize** — djot writes math as djot, and display math is written tight ([`5cf58f6`](https://github.com/diaryx-org/twig/commit/5cf58f68e082147fa2fb416eede3fcaa90c4a3f5))
+- **editor** — toggle a code block inside a list item at the item's content column ([`0ccb7d7`](https://github.com/diaryx-org/twig/commit/0ccb7d7da7f599108f6c46f9a6843f4a05c9b1cb))
+
+### Behavioural changes
+
+- serializing to djot writes inline math as `` $`x` `` and display math as `` $$`x` `` instead of `$x$` and `$$\nx\n$$`; the output now reads back as math rather than as text.
+
+- serializing to Markdown writes display math as `$$x$$` instead of `$$\nx\n$$`.
+
+- fidelity (and `--warn`, and TwigWarning) reports inline and display math converted to djot as faithful rather than degraded, so a conversion that used to warn about them no longer does.
+
+- `Syntax.text_leaf_delims` reports inline and display math as authorable for djot, for Markdown under `math`, and inline math for AsciiDoc; `twig lang syntax` prints those entries without `"authorable":false`.
+
+- a runtime language whose syntax JSON lists `inline_math` or `display_math` delimiters without `"authorable":false` and names no `render_block` renderer is refused at registration (rule `claim_needs_renderer`), where it used to load. One that names `render_block` is now held by the contract to the two math gestures, which it was not before.
+
+- `toggleCodeBlock` (C `twig_editor_toggle_code_block`, Rust `Editor::toggle_code_block`) no longer returns NotEditable inside a Markdown or Djot list item; it fences at the item's content column (`- a` becomes "- ```\n  a\n  ```\n") and unfences back (`- a`), including ordered, nested, task and quoted items.
+
+- In AsciiDoc, a block attached to a list item by a `+` line can now be fenced and unfenced; the item's own first line is still NotEditable.
+
+- A selection spanning several list items now fences the whole list at the list's column instead of returning NotEditable.
+
+- Fencing a paragraph with a lazy continuation line inside a quote or list item now writes the container prefix onto that line, so the fence no longer ends the container (`> a\nb` gives "> ```\n> a\n> b\n> ```\n").
+
+- Unfencing a Markdown indented code block inside a quote now dedents it after the quote marker (`>     code` gives `> code`); it was previously left unchanged.
+
+- Unfencing an empty code block that is a list item's first block keeps the item (`-`), and a block following it in the item moves up under the marker instead of being left outside the item.
+
+
 ## 3.10.0
 
 ### Breaking
