@@ -258,6 +258,12 @@ fn zig_target_for_cargo_target(target: &str, host: &str) -> Option<&'static str>
         "aarch64-pc-windows-gnu" => Some("aarch64-windows-gnu"),
         "x86_64-pc-windows-gnu" => Some("x86_64-windows-gnu"),
         "i686-pc-windows-gnu" => Some("x86-windows-gnu"),
+        // Android links libc, and Zig bundles no bionic — but a static library
+        // needs none at build time: `c_allocator` and friends are extern
+        // declarations, resolved when the NDK links the final `.so` against
+        // the device's bionic. Only the two ABIs Android still ships are here.
+        "aarch64-linux-android" => Some("aarch64-linux-android"),
+        "x86_64-linux-android" => Some("x86_64-linux-android"),
         "aarch64-unknown-linux-gnu" => Some("aarch64-linux-gnu"),
         "aarch64-unknown-linux-musl" => Some("aarch64-linux-musl"),
         "arm-unknown-linux-gnueabi" => Some("arm-linux-gnueabi"),
