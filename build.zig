@@ -40,6 +40,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = !target.result.cpu.arch.isWasm(),
+            // Android has no executables to link into: every consumer is a
+            // `.so`, and a thread-local in non-PIC code uses the local-exec TLS
+            // model, which `ld.lld` refuses in a shared object.
+            .pic = if (target.result.abi.isAndroid()) true else null,
         }),
     });
     c_lib.root_module.addImport("build_options", options_mod);
