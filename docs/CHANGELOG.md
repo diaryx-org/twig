@@ -90,6 +90,13 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.11.1
+
+### Fixed
+
+- **twig-sys** — build for aarch64 and x86_64 Android ([`0547db4`](https://github.com/diaryx-org/twig/commit/0547db485d58031cdc5d3b17fef5a5dede5d7312))
+
+
 ## 3.11.0
 
 ### Added
