@@ -100,9 +100,15 @@ lifted. Where it differs from the text below:
   crate's `Server` and `serve` are built on them — the `serve` step 5 needs
   from this crate.
 
-Not yet: the CLI has no flag that lays a runtime feature over a row, and a
-set's name resolves only once its language is loaded, since the languages
-file names languages rather than rows.
+Since: compiled Markdown's opt-in extensions are features of its three
+rows (`twig.format.features`), by the names of their `TWIG_MD_*` bits, so
+`twig_format_feature_bit` and the Rust crate's `feature_flags` answer for
+both kinds of row, and `highlight_colors` requires `highlight` where the
+flags are read rather than only on the command line. The CLI lays a
+feature over any row with `--feature`, `lang list` shows each language's
+features, and a set's name or extension resolves before its language has
+loaded — the helpers are asked in turn, one whose name begins the set's
+first. `twig_format_dialect_of` gives a set's language.
 
 "Runtime" throughout means *resolved when the program runs*, as opposed to a
 format compiled into `src/languages/`. It names no engine.

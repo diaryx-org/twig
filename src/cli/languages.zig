@@ -25,7 +25,8 @@
 //! Only when `-i`, `-o`, `--lang` or a file's extension names nothing built
 //! in: `format.zig`'s resolvers fall through to `resolveName` and
 //! `resolveExtension` here, which read the file once and spawn only the
-//! helper that answers. A compiled format's name or extension always wins,
+//! helper that answers — or, for a name or extension no line gives, which
+//! may be one of a language's sets, the helpers in turn until one does. A compiled format's name or extension always wins,
 //! and a runtime language may not claim one anyway. `lang list` and
 //! `lang check` spawn on purpose.
 //!
@@ -184,17 +185,38 @@ pub fn configured() []Configured {
 /// The format a configured language named `name` answers to, spawning and
 /// registering its helper on first ask; `null` when no line names it, or
 /// when its helper was refused (the refusal is printed the first time).
+///
+/// A name no line gives may be a row of one — a set, or an alias — which
+/// only its language's description says. Then the helpers are asked, a
+/// language whose name begins `name` (`wiki` for `wiki-strict`) first, until
+/// one has registered a row by that name.
 pub fn resolveName(name: []const u8) ?Format {
     load();
-    const c = findConfigured(name) orelse return null;
-    return ensureLogged(c);
+    if (findConfigured(name)) |c| return ensureLogged(c);
+    return sweep(name, twig.runtime.byName);
 }
 
-/// The format of the configured language owning `ext`, spawning as above.
+/// The format of the configured language owning `ext`, spawning as above;
+/// an extension no line gives may be a set's, and is found the same way.
 pub fn resolveExtension(ext: []const u8) ?Format {
     load();
     for (state.configured.items) |*c| {
         for (c.extensions) |x| if (std.ascii.eqlIgnoreCase(x, ext)) return ensureLogged(c);
+    }
+    return sweep(ext, twig.runtime.byExtension);
+}
+
+/// Load configured languages until `find(key)` answers: those whose name is
+/// a prefix of `key` before a `-` first, then the rest, in file order.
+fn sweep(key: []const u8, find: *const fn ([]const u8) ?Format) ?Format {
+    if (find(key)) |f| return f;
+    for ([_]bool{ true, false }) |prefixed| {
+        for (state.configured.items) |*c| {
+            const named = key.len > c.name.len and std.mem.startsWith(u8, key, c.name) and key[c.name.len] == '-';
+            if (named != prefixed or c.format != null or c.failure != null) continue;
+            _ = ensureLogged(c) orelse continue;
+            if (find(key)) |f| return f;
+        }
     }
     return null;
 }
@@ -338,6 +360,24 @@ fn writeExtensions(w: *Writer, exts: []const []const u8) Writer.Error!void {
     for (exts) |x| try w.print(" .{s}", .{x});
 }
 
+/// `fmt`'s features on a line of their own, the ones its row has on marked
+/// and each requirement named; nothing for a row with none.
+fn writeFeatures(w: *Writer, fmt: Format, indent: []const u8) Writer.Error!void {
+    const features = twig.format.features(fmt);
+    if (features.len == 0) return;
+    try w.print("{s}features:", .{indent});
+    for (features, 0..) |f, i| {
+        try w.print("{s} {s}", .{ if (i == 0) "" else ",", f.name });
+        if (f.default) try w.writeAll(" (on)");
+        if (f.requires.len > 0) {
+            try w.writeAll(" (with");
+            for (f.requires) |r| try w.print(" {s}", .{r});
+            try w.writeAll(")");
+        }
+    }
+    try w.writeByte('\n');
+}
+
 /// `twig lang list`: every compiled format and every configured language,
 /// with what each can do. A configured language is spawned to be asked.
 pub fn list(out: *Writer) Writer.Error!void {
@@ -347,6 +387,7 @@ pub fn list(out: *Writer) Writer.Error!void {
         try writeExtensions(out, e.extensions);
         if (e.dialect_of) |lang| try out.print("  (a {s} dialect)", .{lang.name()});
         try out.writeByte('\n');
+        if (e.dialect_of == null) try writeFeatures(out, e.id, "               ");
     }
     const langs = configured();
     if (langs.len == 0) {
@@ -359,6 +400,7 @@ pub fn list(out: *Writer) Writer.Error!void {
             try out.print("  {s:<12} {s:<18}", .{ c.name, capsWord(f) });
             try writeExtensions(out, twig.format.entryFor(f).extensions);
             try out.print("  ({s})\n", .{c.source});
+            try writeFeatures(out, f, "               ");
             for (twig.runtime.entries()) |*s| {
                 if (s.entry.dialect_of != f) continue;
                 try out.print("  {s:<12} {s:<18}", .{ s.name, capsWord(s.entry.id) });
@@ -413,11 +455,7 @@ pub fn check(
     if (entry.serializeCanonical != null) try out.writeAll("; fidelity measured");
     try out.writeAll("\n");
     const features = twig.runtime.featuresOf(fmt);
-    if (features.len > 0) {
-        try out.writeAll("  features:");
-        for (features) |f| try out.print(" {s}{s}", .{ f.name, if (f.default) " (on)" else "" });
-        try out.writeAll("\n");
-    }
+    try writeFeatures(out, fmt, "  ");
     for (twig.runtime.entries()) |*s| {
         if (s.entry.dialect_of != fmt) continue;
         try out.print("  set {s}:", .{s.name});

@@ -224,7 +224,72 @@ pub const ParseConfig = struct {
     pub fn from(ctx: *const anyopaque) *const ParseConfig {
         return @ptrCast(@alignCast(ctx));
     }
+
+    /// The config that turns on the features `mask` names over `fmt`'s row,
+    /// bit `i` being `features(fmt)[i]`, with what each requires. For a
+    /// Markdown row that is `markdown`, for a runtime row `features`; any
+    /// other row reads neither.
+    pub fn forFeatures(fmt: Format, mask: u32) ParseConfig {
+        if (!isMarkdownRow(fmt)) return .{ .features = mask };
+        const closed = closeFeatures(fmt, mask);
+        var ext: Markdown.ParseOptions.Extensions = .{};
+        inline for (std.meta.fields(Markdown.ParseOptions.Extensions), 0..) |f, i| {
+            @field(ext, f.name) = closed & (@as(u32, 1) << i) != 0;
+        }
+        return .{ .markdown = ext };
+    }
 };
+
+/// Markdown's opt-in extensions as features: one per `Extensions` field, by
+/// its name and in its order, so bit `i` is the `TWIG_MD_*` flag a C caller
+/// already passes. Its dialects are rows (`gfm`, `commonmark`), as a runtime
+/// language's sets are.
+const markdown_features = blk: {
+    const fields = std.meta.fields(Markdown.ParseOptions.Extensions);
+    var out: [fields.len]runtime.Feature = undefined;
+    for (fields, &out) |f, *o| o.* = .{ .name = f.name };
+    // Colours are inert without a highlight to colour.
+    out[std.meta.fieldIndex(Markdown.ParseOptions.Extensions, "highlight_colors").?].requires = &.{"highlight"};
+    break :blk out;
+};
+
+fn isMarkdownRow(fmt: Format) bool {
+    return fmt == .markdown or fmt == .gfm or fmt == .commonmark;
+}
+
+/// The features a caller may turn on over `fmt`'s row, in bit order:
+/// Markdown's extensions for its three rows, a runtime language's declared
+/// features for its rows, and none for any other.
+pub fn features(fmt: Format) []const runtime.Feature {
+    if (isMarkdownRow(fmt)) return &markdown_features;
+    return runtime.featuresOf(fmt);
+}
+
+/// The bit `name` is in `features(fmt)`, or `null` when `fmt` declares no
+/// such feature.
+pub fn featureBit(fmt: Format, name: []const u8) ?u32 {
+    for (features(fmt), 0..) |f, i| {
+        if (std.mem.eql(u8, f.name, name)) return @as(u32, 1) << @intCast(i);
+    }
+    return null;
+}
+
+/// `mask`, with what each of its features requires, transitively, and
+/// without bits `fmt` declares no feature for.
+pub fn closeFeatures(fmt: Format, mask: u32) u32 {
+    const fs = features(fmt);
+    const declared: u32 = if (fs.len >= 32) ~@as(u32, 0) else (@as(u32, 1) << @intCast(fs.len)) - 1;
+    var out = mask & declared;
+    while (true) {
+        var grown = out;
+        for (fs, 0..) |f, i| {
+            if (out & (@as(u32, 1) << @intCast(i)) == 0) continue;
+            for (f.requires) |r| grown |= featureBit(fmt, r) orelse 0;
+        }
+        if (grown == out) return out;
+        out = grown;
+    }
+}
 
 /// A parsed document: the shared `Document` plus the two facts about HOW it
 /// was parsed that the tree does not record — which `Format`'s parser
@@ -834,6 +899,25 @@ pub fn detectFromExtension(file_path: []const u8) ?Format {
     // A registered language cannot claim a compiled row's extension, so the
     // order here decides nothing; it is only which list is shorter.
     return runtime.byExtension(ext);
+}
+
+test "Markdown's extensions are its rows' features, in TWIG_MD_* order" {
+    for ([_]Format{ .markdown, .gfm, .commonmark }) |row| {
+        try std.testing.expectEqual(@as(?u32, 1 << 1), featureBit(row, "math"));
+        try std.testing.expectEqual(@as(?u32, 1 << 4), featureBit(row, "highlight_colors"));
+    }
+    try std.testing.expectEqual(@as(?u32, null), featureBit(.markdown, "tables"));
+    try std.testing.expectEqual(@as(usize, 0), features(.djot).len);
+
+    // Colours bring the highlight they colour; nothing else comes along.
+    const colors = featureBit(.markdown, "highlight_colors").?;
+    try std.testing.expectEqual(colors | featureBit(.markdown, "highlight").?, closeFeatures(.markdown, colors));
+    const cfg = ParseConfig.forFeatures(.gfm, colors | featureBit(.gfm, "math").?);
+    try std.testing.expect(cfg.markdown.highlight and cfg.markdown.highlight_colors and cfg.markdown.math);
+    try std.testing.expect(!cfg.markdown.directives and !cfg.markdown.html_elements);
+    // A row with no features reads none, and a runtime row's mask is its own.
+    try std.testing.expectEqual(@as(u32, 0), closeFeatures(.djot, 0b111));
+    try std.testing.expectEqual(@as(u32, 0b101), ParseConfig.forFeatures(@enumFromInt(runtime.base), 0b101).features);
 }
 
 test "every Format has exactly one registry entry" {

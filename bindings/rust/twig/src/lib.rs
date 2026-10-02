@@ -146,10 +146,13 @@ impl Format {
         Format::from_code(code)
     }
 
-    /// The flags that turn `features` on over this runtime row — what
+    /// The flags that turn `features` on over this row — what
     /// [`Document::parse_with_features`] and [`Editor::new_with_features`]
-    /// pass. [`Error::UnsupportedFormat`] for a compiled format, which has no
-    /// features; [`Error::NotFound`] for a name the language does not declare.
+    /// pass. A runtime row's features are its language's; a Markdown row's
+    /// are its extensions, named as [`MarkdownExtensions`]' fields
+    /// (`"math"`, `"highlight_colors"`, …), whose flags these are.
+    /// [`Error::UnsupportedFormat`] for a compiled format with no features;
+    /// [`Error::NotFound`] for a name the row does not declare.
     pub fn feature_flags(self, features: &[&str]) -> Result<u32, Error> {
         let mut flags = 0u32;
         for name in features {
@@ -192,14 +195,23 @@ impl Format {
     }
     /// The language this format is a dialect of, or `None` for a language
     /// itself: `Some(Format::Markdown)` for [`Format::Commonmark`] and
-    /// [`Format::Gfm`], `Some(Format::Xml)` for [`Format::Svg`], `None` for
-    /// everything else. A dialect shares its language's [`Target`]
-    /// (`Target::from`), which is what makes serializing a GFM document as
+    /// [`Format::Gfm`], `Some(Format::Xml)` for [`Format::Svg`], a runtime
+    /// language's own row for each of its sets, and `None` for everything
+    /// else. A dialect shares its language's [`Target`] (`Target::from`),
+    /// which is what makes serializing a GFM document as
     /// [`Target::Markdown`] a round trip rather than a conversion.
     pub fn dialect_of(self) -> Option<Format> {
         match self {
             Format::Commonmark | Format::Gfm => Some(Format::Markdown),
             Format::Svg => Some(Format::Xml),
+            Format::Runtime(id) => {
+                let mut code: c_int = 0;
+                let status = unsafe { ffi::twig_format_dialect_of(id.0, &mut code) };
+                if status.0 != ffi::TwigStatus::OK {
+                    return None;
+                }
+                Format::from_code(code)
+            }
             _ => None,
         }
     }
@@ -1697,6 +1709,10 @@ impl Drop for Document {
 /// (tables, strikethrough, task lists, …) is the dialect's to decide, which is
 /// why there is no field to turn one off: that is what [`Format::Commonmark`]
 /// is.
+///
+/// This is the typed spelling of a Markdown row's features: each field is
+/// the feature of its name, so `MarkdownExtensions { math: true, .. }` and
+/// `Format::Markdown.feature_flags(&["math"])` are the same flags.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MarkdownExtensions {
     /// Generic directives: `:name`, `::name`, `:::name`.
@@ -1718,8 +1734,8 @@ pub struct MarkdownExtensions {
     /// Coloured highlights on top of `highlight` (Obsidian 1.14): a circle
     /// emoji right after the opening `==` — `==🔴 text==` — is stripped from
     /// the content and recorded as the mark's `data-color` attribute
-    /// (`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`). Inert
-    /// unless `highlight` is also set.
+    /// (`red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`). Turns
+    /// `highlight` on with it, since a colour needs a highlight to colour.
     pub highlight_colors: bool,
 }
 
@@ -4211,6 +4227,21 @@ impl Drop for Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_extensions_are_the_markdown_rows_features() {
+        let typed = MarkdownExtensions { math: true, highlight_colors: true, ..Default::default() };
+        for row in [Format::Markdown, Format::Gfm, Format::Commonmark] {
+            assert_eq!(row.feature_flags(&["math", "highlight_colors"]), Ok(typed.to_flags()));
+        }
+        assert_eq!(Format::Markdown.feature_flags(&["tables"]), Err(Error::NotFound));
+
+        // Colours bring the highlight they colour, by either spelling.
+        let source = "a ==\u{1F534} b== c\n";
+        let mut doc = Document::parse_with_features(source.as_bytes(), Format::Markdown, &["highlight_colors"]).unwrap();
+        assert_eq!(doc.query("mark[data-color=red]").unwrap().len(), 1);
+        assert!(Format::Markdown.supports_with_features(&["highlight_colors"], Gesture::SetMarkColor));
+    }
 
     #[test]
     fn abi_version_matches() {

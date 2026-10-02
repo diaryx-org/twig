@@ -132,9 +132,12 @@ pub fn runHelp(w: *Writer, binary_name: []const u8) !void {
         \\                         html/htm, asciidoc/adoc)
         \\  -o, --output <format>  select convert's output (html, ast, table, canonical)
         \\  --lang <name>          read the input as a runtime language
+        \\  --feature <name>       turn on a feature the input's row declares
+        \\                         (see `lang list`); repeatable
         \\  --dry-run              (edit) print the result instead of writing it
         \\
-        \\markdown extension flags (convert/query/edit; ignored for other inputs):
+        \\markdown extension flags (convert/query/edit; ignored for other inputs;
+        \\each is also --feature <name>, e.g. --feature html_elements):
         \\  --directives           enable generic directives (:name, ::name, :::name)
         \\  --math                 enable $…$ / $$…$$ math
         \\  --highlight            enable ==…== highlight (a `mark` node)

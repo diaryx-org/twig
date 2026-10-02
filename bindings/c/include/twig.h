@@ -119,7 +119,7 @@ extern "C" {
 #define TWIG_MD_MATH          (1u << 1)  // $...$ / $$...$$ math
 #define TWIG_MD_HTML_ELEMENTS (1u << 2)  // parse raw HTML into semantic AST nodes; pair a bare <div> with its </div>, a <span> with its </span>
 #define TWIG_MD_HIGHLIGHT     (1u << 3)  // ==text== highlight, parsed as a `mark`
-#define TWIG_MD_HIGHLIGHT_COLORS (1u << 4)  // ==🔴 text==: the circle emoji becomes the mark's data-color; needs TWIG_MD_HIGHLIGHT
+#define TWIG_MD_HIGHLIGHT_COLORS (1u << 4)  // ==🔴 text==: the circle emoji becomes the mark's data-color; brings TWIG_MD_HIGHLIGHT with it
 
 typedef enum TwigStatus {
     TWIG_STATUS_OK = 0,
@@ -2870,11 +2870,14 @@ TwigStatus twig_language_register(
     size_t err_cap
 );
 
-// The bit a runtime row's language gives the feature `name`, for the flags of
-// twig_parse_ext, twig_editor_create_ext and twig_format_supports_ext.
-// TWIG_STATUS_NOT_FOUND for a name it does not declare;
-// TWIG_STATUS_UNSUPPORTED_FORMAT for a code no runtime row holds, compiled
-// ones included.
+// The bit the feature `name` takes over `format`'s row, for the flags of
+// twig_parse_ext, twig_editor_create_ext and twig_format_supports_ext: a
+// runtime row's declared features, or a Markdown row's extensions by the
+// names of their TWIG_MD_* bits ("directives", "math", "html_elements",
+// "highlight", "highlight_colors"), answered with those bits.
+// TWIG_STATUS_NOT_FOUND for a name the row does not declare;
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a code no row holds, and for a compiled
+// row with no features.
 TwigStatus twig_format_feature_bit(int format, const uint8_t *name, size_t name_len, uint32_t *out_bit);
 
 // The answering end of the helper wire over a host's table: what a helper
@@ -2946,6 +2949,12 @@ TwigStatus twig_format_by_name(const uint8_t *name, size_t name_len, int *out_fo
 // The name a format code answers to. The bytes are the library's, valid for
 // the life of the process, and not NUL-terminated.
 TwigStatus twig_format_name(int format, const uint8_t **out_ptr, size_t *out_len);
+
+// The language a format code is a dialect of: TWIG_FORMAT_MARKDOWN for
+// TWIG_FORMAT_GFM and TWIG_FORMAT_COMMONMARK, TWIG_FORMAT_XML for
+// TWIG_FORMAT_SVG, and a runtime language's own row for each of its sets.
+// TWIG_STATUS_NOT_FOUND for a language's own row, which is nobody's dialect.
+TwigStatus twig_format_dialect_of(int format, int *out_format);
 
 #ifdef __cplusplus
 }
