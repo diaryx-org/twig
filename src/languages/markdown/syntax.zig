@@ -32,7 +32,7 @@ const AST = @import("../../ast/ast.zig");
 /// Defers to the parser's own autolink scanner: Markdown wants an absolute URI
 /// or a CommonMark email and silently reads anything else as RAW HTML, so a
 /// re-derived rule here could turn `<foo>` into a tag.
-fn spellsAutolink(angled: []const u8) bool {
+fn spellsAutolink(_: *const syntax.Syntax, angled: []const u8) bool {
     return markdown.spellsAutolink(angled);
 }
 
@@ -633,9 +633,9 @@ test "markdown spells body-text and line-start literals" {
 }
 
 test "markdown autolinks by scheme, so a bare word would be raw HTML" {
-    try std.testing.expect(spellsAutolink("<https://x.dev>"));
-    try std.testing.expect(spellsAutolink("<a@b.dev>"));
+    try std.testing.expect(spellsAutolink(&syntax.none, "<https://x.dev>"));
+    try std.testing.expect(spellsAutolink(&syntax.none, "<a@b.dev>"));
     // `<foo>` is a TAG, not an autolink — the reason this asks the parser.
-    try std.testing.expect(!spellsAutolink("<foo>"));
-    try std.testing.expect(!spellsAutolink("<foo/bar>"));
+    try std.testing.expect(!spellsAutolink(&syntax.none, "<foo>"));
+    try std.testing.expect(!spellsAutolink(&syntax.none, "<foo/bar>"));
 }

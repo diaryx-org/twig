@@ -309,7 +309,7 @@ fn printWith(gpa: Allocator, entry: *const format.Entry, table: *const Syntax, b
     const view = b.view(root);
     var out: Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    render(gpa, &view, root, &out.writer) catch |err|
+    render(table, gpa, &view, root, &out.writer) catch |err|
         return r.broke(entry, err, "{s}: renderBlock: a {s} fragment does not print", .{ entry.id.name(), what });
     return out.toOwnedSlice();
 }

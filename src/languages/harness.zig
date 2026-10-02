@@ -94,7 +94,7 @@ test "harness: a broken promise is reported, not asserted" {
     // with a `renderBlock` that prints nothing. The contract names the check
     // and the format rather than failing an expectation somewhere inside.
     const Lying = struct {
-        fn render(_: std.mem.Allocator, _: *const @import("../ast/ast.zig"), _: @import("../ast/ast.zig").Node.Id, _: *std.Io.Writer) anyerror!void {}
+        fn render(_: *const @import("../syntax.zig").Syntax, _: std.mem.Allocator, _: *const @import("../ast/ast.zig"), _: @import("../ast/ast.zig").Node.Id, _: *std.Io.Writer) anyerror!void {}
     };
     var table = format.syntaxFor(.djot).*;
     table.renderBlock = &Lying.render;

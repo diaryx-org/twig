@@ -111,11 +111,12 @@ pub fn encodeAlloc(allocator: Allocator, s: *const Syntax, options: Options) All
 }
 
 /// Whether `T` is a function pointer, or an optional one — a renderer, which
-/// the encoding names rather than carries.
+/// the encoding names rather than carries — or the opaque pointer a runtime
+/// language's renderers find it by, which does not cross at all.
 fn isFunction(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .optional => |o| isFunction(o.child),
-        .pointer => |p| @typeInfo(p.child) == .@"fn",
+        .pointer => |p| @typeInfo(p.child) == .@"fn" or p.child == anyopaque,
         else => false,
     };
 }
@@ -186,7 +187,7 @@ fn eqlValue(comptime T: type, a: T, b: T) bool {
         .bool, .int, .@"enum" => a == b,
         .optional => |o| if (a) |x| (if (b) |y| eqlValue(o.child, x, y) else false) else b == null,
         .pointer => |p| blk: {
-            if (@typeInfo(p.child) == .@"fn") break :blk a == b;
+            if (@typeInfo(p.child) == .@"fn" or p.child == anyopaque) break :blk a == b;
             if (a.len != b.len) break :blk false;
             for (a, b) |x, y| {
                 if (!eqlValue(p.child, x, y)) break :blk false;

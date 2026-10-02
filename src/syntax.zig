@@ -46,9 +46,11 @@
 //! The engine still owns the algorithm — WHICH position a byte sits in, WHICH
 //! node to build — and dispatches on presence: a `null` renderer is the same
 //! uniform "unsupported" a `null` alphabet is. No renderer receives the editor,
-//! performs a splice, or is called with a format's name. (Fig's editor grew the
-//! same small family, for the same reason, once its last per-format hooks
-//! turned out to be the spellings that were not a table.)
+//! performs a splice, or is called with a format's name. Each receives the
+//! table it was found in, which is all a compiled renderer needs and how a
+//! runtime language's finds its language (`renderer_context`). (Fig's editor
+//! grew the same small family, for the same reason, once its last per-format
+//! hooks turned out to be the spellings that were not a table.)
 //!
 //! ── The line model ─────────────────────────────────────────────────────────
 //! Every gesture that touches block structure assumes one shape of source,
@@ -425,7 +427,7 @@ pub fn renderTextByAlphabet(
     text: []const u8,
     position: TextPosition,
     out: *Writer,
-) Writer.Error!void {
+) anyerror!void {
     // `assertCoherent` pins both non-null wherever this is the renderer.
     const inline_escapes = syntax.text_escapes.?;
     const block_escapes = syntax.block_start_escapes.?;
@@ -448,9 +450,9 @@ pub fn renderTextByAlphabet(
 /// no adapter.
 pub fn renderBlockVia(
     comptime serializeAstAlloc: fn (Allocator, *const AST) Allocator.Error![]u8,
-) *const fn (Allocator, *const AST, AST.Node.Id, *Writer) anyerror!void {
+) *const fn (*const Syntax, Allocator, *const AST, AST.Node.Id, *Writer) anyerror!void {
     return &struct {
-        fn render(allocator: Allocator, ast: *const AST, root: AST.Node.Id, out: *Writer) anyerror!void {
+        fn render(_: *const Syntax, allocator: Allocator, ast: *const AST, root: AST.Node.Id, out: *Writer) anyerror!void {
             // A shallow copy: the arena and strings are still `ast`'s, and this
             // value is never `deinit`ed.
             var fragment = ast.*;
@@ -755,7 +757,7 @@ pub const Syntax = struct {
         text: []const u8,
         position: TextPosition,
         out: *Writer,
-    ) Writer.Error!void = null,
+    ) anyerror!void = null,
 
     /// Spell the node `root` of `ast`, descendants included, as this format's
     /// source — a fragment printed by the format's own serializer. `null` =
@@ -778,6 +780,7 @@ pub const Syntax = struct {
     /// re-spells them from the tree. So carrying this alongside an alphabet
     /// moves nothing; it is the answer for the formats that have no other.
     renderBlock: ?*const fn (
+        syntax: *const Syntax,
         allocator: Allocator,
         ast: *const AST,
         root: AST.Node.Id,
@@ -796,7 +799,16 @@ pub const Syntax = struct {
     /// classifies on content alone — an `@` not preceded by `:` is an email,
     /// else a `letter:` is a url — which is why `mailto:a@b.dev` is a `url` in
     /// Markdown but an `email` in djot. Both refuse a relative path.
-    spellsAutolink: ?*const fn (angled: []const u8) bool = null,
+    spellsAutolink: ?*const fn (syntax: *const Syntax, angled: []const u8) bool = null,
+
+    /// What this table's own renderers need to find the language that
+    /// answers them: `null` for every compiled table, whose renderers are
+    /// plain functions, and the language and features in force for a table a
+    /// runtime language described (`runtime.zig`). Every renderer is handed
+    /// the table it was found in, so a renderer reads this rather than
+    /// closing over anything. Not a spelling: it does not cross as JSON and
+    /// no gesture reads it.
+    renderer_context: ?*const anyopaque = null,
 
     /// Whether this format can be authored into at all — true once it can spell
     /// ANY one gesture, which is a weaker claim than it looks. HTML answers true
