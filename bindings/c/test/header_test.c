@@ -70,7 +70,7 @@ PIN(TWIG_FORMAT_RUNTIME_BASE == 4096);
 PIN(TWIG_FORMAT_SVG < TWIG_FORMAT_RUNTIME_BASE);
 PIN(TWIG_STATUS_UNSAFE_METADATA == 9);
 PIN(TWIG_STATUS_INVALID_LANGUAGE == 10);
-PIN(TWIG_LANGUAGE_VTABLE_VERSION == 1u);
+PIN(TWIG_LANGUAGE_VTABLE_VERSION == 2u);
 
 // TwigAlignment is twig_builder_add_cell's parameter type, and TWIG_ALIGN_NONE
 // is deliberately not one of its enumerators ("not a cell" isn't an alignment
@@ -886,12 +886,8 @@ static void test_markdown_dialect_codes_match_runtime(void) {
 
 // A read-only language in C: the whole input is one paragraph of one str.
 // The JSON is built by hand, so the input must hold nothing JSON escapes.
-static int whole_parse(void *user_data, const uint8_t *row, size_t row_len,
-                       const uint8_t *input, size_t input_len,
-                       uint8_t **out, size_t *out_len) {
-    (void)user_data;
-    (void)row;
-    (void)row_len;
+static int whole_parse_bytes(const uint8_t *input, size_t input_len,
+                             uint8_t **out, size_t *out_len) {
     char buf[512];
     int n = snprintf(buf, sizeof buf,
         "{\"nodes\":[{\"kind\":\"doc\",\"span\":[0,%zu]},"
@@ -906,6 +902,22 @@ static int whole_parse(void *user_data, const uint8_t *row, size_t row_len,
     return 0;
 }
 
+static int whole_parse(void *user_data, const TwigLanguageCall *call,
+                       uint8_t **out, size_t *out_len) {
+    (void)user_data;
+    return whole_parse_bytes(call->input, call->input_len, out, out_len);
+}
+
+// The same, at version 1: the layout a host built before features.
+static int whole_parse_v1(void *user_data, const uint8_t *row, size_t row_len,
+                          const uint8_t *input, size_t input_len,
+                          uint8_t **out, size_t *out_len) {
+    (void)user_data;
+    (void)row;
+    (void)row_len;
+    return whole_parse_bytes(input, input_len, out, out_len);
+}
+
 static void whole_free(void *user_data, uint8_t *ptr, size_t len) {
     (void)user_data;
     (void)len;
@@ -914,7 +926,10 @@ static void whole_free(void *user_data, uint8_t *ptr, size_t len) {
 
 static void test_a_language_registered_from_c(void) {
     static const char description[] =
-        "{\"name\":\"whole\",\"extensions\":[\"whole\"],\"samples\":[\"hello\"]}";
+        "{\"name\":\"whole\",\"extensions\":[\"whole\"],"
+        "\"features\":[{\"name\":\"loud\"}],"
+        "\"sets\":[{\"name\":\"whole-loud\",\"features\":[\"loud\"]}],"
+        "\"samples\":[\"hello\"]}";
     TwigLanguageVTable vt = {
         .version = TWIG_LANGUAGE_VTABLE_VERSION,
         .user_data = NULL,
@@ -922,6 +937,7 @@ static void test_a_language_registered_from_c(void) {
         .description_len = sizeof(description) - 1,
         .parse = whole_parse,
         .print = NULL,
+        .render = NULL,
         .free = whole_free,
     };
     int code = 0;
@@ -937,8 +953,17 @@ static void test_a_language_registered_from_c(void) {
     CHECK(twig_format_name(code, &name, &name_len) == TWIG_STATUS_OK);
     CHECK(name_len == 5 && memcmp(name, "whole", 5) == 0);
 
+    // Its set is a row of its own; its feature has a bit.
+    int set = 0;
+    CHECK(twig_format_by_name((const uint8_t *)"whole-loud", 10, &set) == TWIG_STATUS_OK);
+    CHECK(set != code && set >= TWIG_FORMAT_RUNTIME_BASE);
+    uint32_t bit = 0;
+    CHECK(twig_format_feature_bit(code, (const uint8_t *)"loud", 4, &bit) == TWIG_STATUS_OK);
+    CHECK(bit == 1u);
+    CHECK(twig_format_feature_bit(code, (const uint8_t *)"soft", 4, &bit) == TWIG_STATUS_NOT_FOUND);
+
     TwigDocument *doc = NULL;
-    CHECK(twig_parse((const uint8_t *)"hi there", 8, code, &doc) == TWIG_STATUS_OK);
+    CHECK(twig_parse_ext((const uint8_t *)"hi there", 8, code, bit, &doc) == TWIG_STATUS_OK);
     const uint8_t *html = NULL;
     size_t html_len = 0;
     CHECK(twig_document_render_html(doc, &html, &html_len) == TWIG_STATUS_OK);
@@ -952,6 +977,33 @@ static void test_a_language_registered_from_c(void) {
     // A second registration under the same name is refused, with a reason.
     CHECK(twig_language_register(&vt, &code, err, sizeof err) == TWIG_STATUS_INVALID_LANGUAGE);
     CHECK(strstr(err, "already a format's") != NULL);
+
+    // The answering end of the wire, over the same table.
+    TwigServer *server = NULL;
+    CHECK(twig_server_create(&vt, &server, err, sizeof err) == TWIG_STATUS_OK);
+    static const char parse_request[] =
+        "{\"op\":\"parse\",\"dialect\":\"whole\",\"features\":[\"loud\"],\"input\":\"x\"}";
+    CHECK(twig_server_handle(server, (const uint8_t *)parse_request, sizeof(parse_request) - 1,
+                             &out, &out_len) == TWIG_STATUS_OK);
+    CHECK(out_len > 20 && memcmp(out, "{\"ok\":true,\"table\":{", 20) == 0);
+    twig_server_destroy(server);
+
+    // A host built against version 1 keeps registering, as a reader.
+    static const char v1_description[] =
+        "{\"name\":\"whole-v1\",\"samples\":[\"hello\"]}";
+    TwigLanguageVTableV1 v1 = {
+        .version = 1,
+        .user_data = NULL,
+        .description = (const uint8_t *)v1_description,
+        .description_len = sizeof(v1_description) - 1,
+        .parse = whole_parse_v1,
+        .print = NULL,
+        .free = whole_free,
+    };
+    CHECK(twig_language_register((const TwigLanguageVTable *)&v1, &code, err, sizeof err) ==
+          TWIG_STATUS_OK);
+    CHECK(twig_parse((const uint8_t *)"hi", 2, code, &doc) == TWIG_STATUS_OK);
+    twig_document_destroy(doc);
 }
 
 int main(void) {

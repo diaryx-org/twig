@@ -213,6 +213,11 @@ pub fn writesOwnSyntax(fmt: Format, target: Target) bool {
 /// `ParsedDoc`'s doc comment below argues against.
 pub const ParseConfig = struct {
     markdown: Markdown.ParseOptions.Extensions = .{},
+    /// The features a caller lays over a runtime row's own — bit `i` is the
+    /// `i`-th its language declares (`runtime.featureBit`), with what each
+    /// requires coming on with it. Ignored by every compiled row, as
+    /// `markdown` is by every row but Markdown's.
+    features: u32 = 0,
 
     /// Recover a `*const ParseConfig` from the opaque pointer the registry
     /// adapters / the splicer pass around.

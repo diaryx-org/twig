@@ -3,7 +3,7 @@ title: "Proposal: runtime languages"
 status: accepted
 author: adammharris
 created: 2026-09-19
-updated: 2026-09-23
+updated: 2026-10-02
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
@@ -51,6 +51,58 @@ description decoded and bound, the renderers as a `render` op on the wire
 and slots in `TwigLanguageVTable`, and the refusal lifted — registration
 already runs `contract.all`, which applies the gesture check to any row that
 authors.
+
+**2026-10-02: the author tier is in, with features and sets in place of
+dialects** (`add(runtime)!: the author tier, with features and sets`). A
+description's `syntax` is decoded and bound, the renderers it names are a
+`render` op on the wire and one slot in the vtable, and the refusal is
+lifted. Where it differs from the text below:
+
+- **Features and sets, not dialects.** A language declares *features* —
+  switches its parser reads, as Markdown's extensions are, each optionally
+  requiring others — and *sets*, each a name for a list of them. The
+  language's own row has its `default` features on; each set is a row of
+  its own (`dialect_of` the language's), as `gfm` is a row over Markdown.
+  A caller lays more features over any row through
+  `ParseConfig.features` — the same flags argument that carries
+  `TWIG_MD_*` for a Markdown row — and can only turn features on: off is
+  another row. Every call names its row and the features in force. A
+  `dialects` key is refused, pointing at `sets`.
+- **A feature patches the table.** A language's `syntax` is the base; a
+  feature's `syntax` is a partial table whose members replace the base's
+  while it is on — per key in the three keyed tables, whole elsewhere — and
+  no two features may patch the same one, so order cannot matter. The table
+  for a combination is built on first use, validated, and kept; one that
+  breaks a rule spells nothing and says why.
+- **Load checks combinations, not only rows.** The whole contract runs
+  under every row's own features, each with one feature more, and with all
+  of them on; a sample may name the features it needs. Running it so found
+  a bug in the compiled Markdown that the default-options harness never
+  reaches, filed as
+  [a task](/docs/tasks/markdown-set-block-multi-line-paragraph.md).
+- **One `render` slot.** The vtable is version 2: its functions take a call
+  record (row, feature mask, input), and one `render` function takes the
+  wire's render request as JSON — `render_text`, `render_block`,
+  `spells_autolink` — so a renderer added later is a new `which`, not a new
+  layout. A version-1 table is still read, as a language that reads and
+  writes. `renderBlockVia(print)` is opted into rather than given: a
+  language that names `render_block` and has no `render` prints its
+  fragments, and one that does not name it has none — the load check
+  refused the first language whose print writes less than every fragment a
+  gesture builds, with no way for it to decline.
+- **Every renderer is handed its table.** `renderBlock` and
+  `spellsAutolink` now take the `*const Syntax` they were found in, as
+  `renderText` did, and `Syntax.renderer_context` is how a runtime table's
+  renderers find their language and features; `renderText` may fail, as a
+  call into a language can.
+- **The answering end through the C ABI.** `twig_server_create` and
+  `twig_server_handle` serve a host's table over the wire, and the Rust
+  crate's `Server` and `serve` are built on them — the `serve` step 5 needs
+  from this crate.
+
+Not yet: the CLI has no flag that lays a runtime feature over a row, and a
+set's name resolves only once its language is loaded, since the languages
+file names languages rather than rows.
 
 "Runtime" throughout means *resolved when the program runs*, as opposed to a
 format compiled into `src/languages/`. It names no engine.

@@ -187,15 +187,36 @@ twig lang check djot2 --against djot a.dj # a twin, held to what it twins
 twig lang check -- ./my-helper --flag     # a helper not yet in the file
 ```
 
-A helper answers three requests — `{"op":"describe"}`,
-`{"op":"parse","dialect":…,"input":…}` with a node table, and, if it writes,
-`{"op":"print","dialect":…,"table":{…}}` with the source — each with
-`{"ok":true,…}` or `{"ok":false,"message":…}`. `twig lang table <file>` prints
-the table a compiled format produces for a file, which is what a helper for
-the same syntax should produce too, and `twig lang syntax <format>` prints a
-compiled format's syntax table — the spellings its editing gestures write —
-in the JSON a language that authors will describe its own in. A helper reads
-and writes; it does not get the editor's authoring gestures yet.
+A helper answers `{"op":"describe"}` with its description,
+`{"op":"parse","dialect":…,"features":[…],"input":…}` with a node table, and,
+if it writes, `{"op":"print","dialect":…,"features":[…],"table":{…}}` with the
+source — each with `{"ok":true,…}` or `{"ok":false,"message":…}`.
+`twig lang table <file>` prints the table a compiled format produces for a
+file, which is what a helper for the same syntax should produce too.
+
+A helper that **authors** describes `"caps":{"author":true}` and a `syntax`:
+the spellings its editing gestures write, in the JSON `twig lang syntax
+<format>` prints for a compiled format. Its syntax's `renderers` name what it
+answers through `{"op":"render","which":…,…}` — a literal (`render_text`), a
+fragment (`render_block`), whether a `<…>` run is an autolink
+(`spells_autolink`). Loading it runs every gesture its syntax offers over its
+samples, and refuses it with the first one that does not do what it says.
+
+A helper may declare **features** — switches its parser reads, like
+Markdown's `--math` — each with a `syntax` patch for what it changes, and
+**sets**, each a named list of them that is a format of its own:
+
+```json
+{"name": "wiki", "caps": {"write": true, "author": true},
+ "syntax": {"heading_marker": "=", "…": "…"},
+ "features": [{"name": "math", "syntax": {"text_escapes": "…$"}}],
+ "sets": [{"name": "wiki-math", "features": ["math"]}],
+ "samples": ["= Title\n", {"text": "$x$\n", "features": ["math"]}]}
+```
+
+`twig lang check wiki` lists both. A set's name resolves once its language
+has loaded; the command line has no flag yet that turns a feature on over a
+row, so reach one through its set.
 
 ---
 
