@@ -724,12 +724,15 @@ fn textSpan(doc: *const Document, text: []const u8) ?Span {
     return null;
 }
 
-/// What `Editor.moveBlock` assumes of every authorable format: over each of
-/// `move_cases`, the start tree printed as the format's own syntax, the block
-/// moved by offset, comes out as the format's own print of the expected tree
-/// — byte for byte, which is both "what a person would have typed" and, by
-/// the canonical round trip `sample` checks, "reparses to the expected tree".
+/// What `Editor.moveBlock` assumes of every format whose table offers it:
+/// over each of `move_cases`, the start tree printed as the format's own
+/// syntax, the block moved by offset, comes out as the format's own print of
+/// the expected tree — byte for byte, which is both "what a person would
+/// have typed" and, by the canonical round trip `sample` checks, "reparses to
+/// the expected tree". A table that authors and cannot move a block — one
+/// whose only spelling is a literal — has nothing here to keep.
 pub fn moveBlock(gpa: Allocator, entry: *const format.Entry, r: *Report) Error!void {
+    if (!Editor.supports(entry.syntax, .move_block)) return;
     const name = entry.id.name();
     const config: format.ParseConfig = .{};
     for (&move_cases) |*c| {

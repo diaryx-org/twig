@@ -107,7 +107,9 @@ extern "C" {
 #define TWIG_FORMAT_RUNTIME_BASE 4096
 
 // Markdown extension flags for the `md_flags` bitmask of twig_parse_ext and
-// twig_editor_create_ext (ignored for non-Markdown formats). Each is an opt-in,
+// twig_editor_create_ext (ignored for compiled non-Markdown formats; for a
+// runtime row the same bits are its language's features — see
+// twig_format_feature_bit). Each is an opt-in,
 // default-off extension; a 0 mask is the plain twig_parse/twig_editor_create.
 // The bits lay OVER whichever Markdown dialect the format code named, so
 // TWIG_FORMAT_GFM with TWIG_MD_MATH is GFM plus math; the default-on set
@@ -426,7 +428,8 @@ TwigStatus twig_parse(
 );
 
 // Like twig_parse, plus `md_flags` — a bitmask of TWIG_MD_* Markdown extensions
-// to enable (ignored for non-Markdown formats). Opens the read/query surface to
+// to enable (ignored for compiled non-Markdown formats), or of a runtime row's
+// features (twig_format_feature_bit). Opens the read/query surface to
 // the same opt-in extensions twig_editor_create_ext gives the edit surface; a 0
 // mask is exactly twig_parse.
 TwigStatus twig_parse_ext(
@@ -819,7 +822,8 @@ TwigStatus twig_editor_create(
 );
 
 // Like twig_editor_create, plus `md_flags` — a bitmask of TWIG_MD_* Markdown
-// extensions to enable (ignored for other formats). The editor reparses with
+// extensions to enable (ignored for other compiled formats), or of a runtime
+// row's features (twig_format_feature_bit). The editor reparses with
 // these flags after every edit, so a directive-bearing document stays
 // parseable — required before twig_editor_filter can match `directive[...]`
 // selectors.
@@ -1145,8 +1149,10 @@ TwigStatus twig_format_supports(
 //
 // Pass the flags the editor was (or will be) created with in
 // twig_editor_create_ext; anything else answers a question about a document you
-// do not have. md_flags is ignored for every non-Markdown format, exactly as it
-// is at creation. Statuses are twig_format_supports's, unchanged.
+// do not have. md_flags is ignored for every compiled non-Markdown format,
+// exactly as it is at creation; for a runtime row it is the features, and the
+// answer is the table those features move it to. Statuses are
+// twig_format_supports's, unchanged.
 //
 // twig_format_supports is this with md_flags == 0, and stays the right call for
 // a toolbar built before any document exists.
@@ -2735,23 +2741,90 @@ TwigStatus twig_builder_query(
 // A format twig did not compile in, carried by a table of the host's functions
 // (docs/proposals/runtime-languages.md). A language READS — its parse turns
 // source into the node table, the JSON `twig convert -o table` prints for a
-// compiled format — and may WRITE, its print turning a node table back into
-// source. It does not author: an editor opens over a runtime format with
-// every gesture unsupported, and twig_format_supports says so.
+// compiled format — may WRITE, its print turning a node table back into
+// source, and may AUTHOR: its description carries a `syntax`, the table an
+// editor's gestures write with (`twig lang syntax <format>` prints a compiled
+// format's), and its `render` answers the renderers that table names.
 //
-// Once registered, the code it is given works at every entry point that takes
-// a format: twig_parse, twig_document_render_html (the shared printer),
+// It may declare FEATURES, switches its parser reads, and SETS, each a name
+// for a list of them registered as a row — a format code — of its own. The
+// flags argument of twig_parse_ext, twig_editor_create_ext and
+// twig_format_supports_ext carries a runtime row's features, bit i the
+// description's features[i] (twig_format_feature_bit), where it carries a
+// Markdown row's TWIG_MD_* extensions.
+//
+// Once registered, its codes work at every entry point that takes a format:
+// twig_parse, twig_document_render_html (the shared printer),
 // twig_document_serialize and twig_builder_serialize (when it prints), the
 // diagnostics (measured when it loaded), and the editor.
 
-// Bumped only when a field of TwigLanguageVTable changes meaning.
-#define TWIG_LANGUAGE_VTABLE_VERSION 1u
+// Bumped only when a field of TwigLanguageVTable changes meaning. Version 2
+// is the table with a call record and a `render` slot; a table of version 1
+// (TwigLanguageVTableV1) is still read, as a language that reads and writes.
+#define TWIG_LANGUAGE_VTABLE_VERSION 2u
 
-// A language function: `input` in (source for parse, a node table without
-// positions for print), and on success an allocation of the host's out
-// through `out`/`out_len`, returning 0. On failure it returns non-zero and may
-// hand out a UTF-8 message the same way. `row` is the name the language
-// registered under. Whatever it hands out, twig releases with `free`.
+// What one call into a language is about.
+typedef struct TwigLanguageCall {
+    // The row the call is through: the language's name, or a set's.
+    const uint8_t *row;
+    size_t row_len;
+    // The features in force, bit i the description's features[i]: the row's
+    // own, what the caller laid over them, and what those require.
+    uint32_t features;
+    // Source for parse; a node table without positions for print; the render
+    // request, JSON, for render.
+    const uint8_t *input;
+    size_t input_len;
+} TwigLanguageCall;
+
+// A language function: `call` in, and on success an allocation of the host's
+// out through `out`/`out_len`, returning 0. On failure it returns non-zero and
+// may hand out a UTF-8 message the same way. Whatever it hands out, twig
+// releases with `free`.
+typedef int (*TwigLanguageCallFn)(
+    void *user_data,
+    const TwigLanguageCall *call,
+    uint8_t **out,
+    size_t *out_len
+);
+
+typedef struct TwigLanguageVTable {
+    // TWIG_LANGUAGE_VTABLE_VERSION, first so a later layout can be told apart.
+    uint32_t version;
+    void *user_data;
+    // The describe document, JSON — read during registration, not kept:
+    //   {"name": "wiki", "extensions": ["wiki"], "aliases": [],
+    //    "caps": {"read": true, "write": true, "author": true},
+    //    "syntax": {"heading_marker": "=", …, "renderers": ["render_block"]},
+    //    "features": [{"name": "math", "default": false, "requires": [],
+    //                  "syntax": {"text_escapes": "…$"}}],
+    //    "sets": [{"name": "wiki-math", "extensions": [], "features": ["math"]}],
+    //    "samples": ["= x\n", {"text": "$x$\n", "features": ["math"]}]}
+    // A name is a lowercase identifier no format already answers to; an
+    // extension is dot-less and no format's. `syntax` is the author tier's; a
+    // feature's `syntax` replaces the members it names while the feature is
+    // on, per key in inline_delims, text_leaf_delims and container_spelling,
+    // and no two features may patch the same one. At least one sample, and
+    // one that needs no feature.
+    const uint8_t *description;
+    size_t description_len;
+    TwigLanguageCallFn parse;
+    // NULL for a language that only reads; required by caps.write.
+    TwigLanguageCallFn print;
+    // NULL for a language whose syntax names no renderers, or names only
+    // render_block and answers it with print. The request is the
+    // helper wire's render without op, dialect and features, which the call
+    // record carries: {"which":"render_text","text":…,"position":…} (position
+    // inline_text, block_start or verbatim), {"which":"render_block",
+    // "table":{…}} (a fragment, without positions, rooted at the node to
+    // print), {"which":"spells_autolink","text":"<…>"}. Answer the spelled
+    // text, or for spells_autolink `true` or `false`.
+    TwigLanguageCallFn render;
+    void (*free)(void *user_data, uint8_t *ptr, size_t len);
+} TwigLanguageVTable;
+
+// A version-1 language function: `input` in, as `TwigLanguageCall.input`;
+// `row` the name the call is through.
 typedef int (*TwigLanguageFn)(
     void *user_data,
     const uint8_t *row,
@@ -2762,31 +2835,34 @@ typedef int (*TwigLanguageFn)(
     size_t *out_len
 );
 
-typedef struct TwigLanguageVTable {
-    // TWIG_LANGUAGE_VTABLE_VERSION, first so a later layout can be told apart.
-    uint32_t version;
+// The table of version 1, still read: a language that reads, and may write.
+// Pass it to twig_language_register cast to `const TwigLanguageVTable *`;
+// `version` tells the two apart. A description it gives with features, sets
+// or caps.author is refused, since its functions have nowhere to be told them.
+typedef struct TwigLanguageVTableV1 {
+    uint32_t version;  // 1
     void *user_data;
-    // The describe document, JSON — read during registration, not kept:
-    //   {"name": "org", "extensions": ["org"], "aliases": [],
-    //    "caps": {"read": true, "write": true}, "samples": ["* x\n"]}
-    // A name is a lowercase identifier no format already answers to; an
-    // extension is dot-less and no format's; at least one sample.
     const uint8_t *description;
     size_t description_len;
     TwigLanguageFn parse;
-    // NULL for a language that only reads; required by caps.write.
     TwigLanguageFn print;
     void (*free)(void *user_data, uint8_t *ptr, size_t len);
-} TwigLanguageVTable;
+} TwigLanguageVTableV1;
 
-// Register a language and run the load check over it: every sample parses to
-// a table twig accepts, a language that prints reparses every sample's print
-// to the same tree, and the fidelity probe measures what a conversion into it
-// loses. On success *out_format is its code, TWIG_FORMAT_RUNTIME_BASE or above.
-// The table is copied; `user_data` must live as long as the process, since
-// there is no unregistration. On refusal nothing is registered, the status is
-// TWIG_STATUS_INVALID_LANGUAGE, and `err_buf` (when non-NULL) holds why,
-// NUL-terminated and truncated to `err_cap`.
+// Register a language — a row for it, and one for each of its sets — and run
+// the load check over it: every sample parses to a table twig accepts, a
+// language that prints reparses every sample's print to the same tree, a
+// language that authors keeps every promise the engine contract holds a
+// compiled format to (each renderer's print reparses; every gesture its table
+// offers, run everywhere it applies, either refuses cleanly or does what it
+// says) — under each row's own features, each with one feature more, and with
+// every feature on — and the fidelity probe measures what a conversion into
+// each row loses. On success *out_format is the code of the language's own
+// row, TWIG_FORMAT_RUNTIME_BASE or above; a set's is found by its name with
+// twig_format_by_name. The table is copied; `user_data` must live as long as
+// the process, since there is no unregistration. On refusal nothing is
+// registered, the status is TWIG_STATUS_INVALID_LANGUAGE, and `err_buf` (when
+// non-NULL) holds why, NUL-terminated and truncated to `err_cap`.
 TwigStatus twig_language_register(
     const TwigLanguageVTable *vtable,
     int *out_format,
@@ -2794,13 +2870,52 @@ TwigStatus twig_language_register(
     size_t err_cap
 );
 
+// The bit a runtime row's language gives the feature `name`, for the flags of
+// twig_parse_ext, twig_editor_create_ext and twig_format_supports_ext.
+// TWIG_STATUS_NOT_FOUND for a name it does not declare;
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a code no runtime row holds, compiled
+// ones included.
+TwigStatus twig_format_feature_bit(int format, const uint8_t *name, size_t name_len, uint32_t *out_bit);
+
+// The answering end of the helper wire over a host's table: what a helper
+// written against this library runs — read a line, hand it to
+// twig_server_handle, write the answer and a newline. The table is copied;
+// `user_data` must outlive the server. A description that does not read is
+// TWIG_STATUS_INVALID_LANGUAGE, with why in `err_buf`. The load check is the
+// calling end's, not this one's.
+typedef struct TwigServer TwigServer;
+
+TwigStatus twig_server_create(
+    const TwigLanguageVTable *vtable,
+    TwigServer **out_server,
+    char *err_buf,
+    size_t err_cap
+);
+
+// One request line (no newline) to one response line (no newline), through
+// `out_ptr`/`out_len`: the library's bytes, valid until the next call on this
+// server or its destruction. A request the server cannot read and a
+// language's refusal are both answered {"ok":false,"message":…}, with
+// TWIG_STATUS_OK.
+TwigStatus twig_server_handle(
+    TwigServer *server,
+    const uint8_t *request,
+    size_t request_len,
+    const uint8_t **out_ptr,
+    size_t *out_len
+);
+
+void twig_server_destroy(TwigServer *server);
+
 // Bumped only when a field of TwigTransport changes meaning.
 #define TWIG_TRANSPORT_VERSION 1u
 
 // A way of trading one line of the helper wire for another. The wire is
 // newline-delimited JSON — {"op":"describe"}, {"op":"parse","dialect":…,
-// "input":…}, {"op":"print","dialect":…,"table":{…}}, each answered by
-// {"ok":true,…} or {"ok":false,"message":…} — and the library speaks it; a
+// "features":[…],"input":…}, {"op":"print","dialect":…,"features":[…],
+// "table":{…}}, {"op":"render","which":…,"dialect":…,"features":[…],…},
+// each answered by {"ok":true,…} or {"ok":false,"message":…} — and the
+// library speaks it; a
 // host supplies only the exchange. `exchange` sends `request` (one line, no
 // newline) and hands out the response line through `out`/`out_len`,
 // returning 0; non-zero is a transport that failed, with an optional message
@@ -2815,7 +2930,7 @@ typedef struct TwigTransport {
 
 // Register the language at the other end of a transport — a helper process's
 // pipes, say: ask it `describe`, register what it describes, and send every
-// later parse and print over the same transport. Otherwise as
+// later parse, print and render over the same transport. Otherwise as
 // twig_language_register.
 TwigStatus twig_language_register_transport(
     const TwigTransport *transport,

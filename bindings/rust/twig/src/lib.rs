@@ -14,7 +14,9 @@ use std::os::raw::{c_char, c_int};
 use std::ptr::NonNull;
 
 pub use error::Error;
-pub use language::{register, Description, Language, RegisterError};
+pub use language::{
+    register, serve, Call, Description, Feature, Language, RegisterError, Sample, Server, Set,
+};
 pub use ffi::TwigSpan as Span;
 
 /// Every format Twig can **parse** — the input axis, as opposed to [`Target`],
@@ -66,11 +68,11 @@ pub enum Format {
     /// format to name. It writes as [`Target::Xml`], and the one gesture it
     /// supports is [`Gesture::SetNodeAttrs`], as XML does.
     Svg,
-    /// A language registered at runtime with [`register`]: a format this
-    /// library did not compile in. It reads, may write, and does not author —
-    /// [`Format::supports`] is `false` for every gesture over it. Its id is
-    /// valid for this process only; persist [`Format::name`] and resolve it
-    /// again with [`Format::by_name`].
+    /// A language registered at runtime with [`register`] — its own row, or
+    /// one of its sets: a format this library did not compile in. It reads,
+    /// may write, and may author, in which case [`Format::supports`] answers
+    /// from the table it described. Its id is valid for this process only;
+    /// persist [`Format::name`] and resolve it again with [`Format::by_name`].
     Runtime(RuntimeId),
 }
 
@@ -142,6 +144,37 @@ impl Format {
             return None;
         }
         Format::from_code(code)
+    }
+
+    /// The flags that turn `features` on over this runtime row — what
+    /// [`Document::parse_with_features`] and [`Editor::new_with_features`]
+    /// pass. [`Error::UnsupportedFormat`] for a compiled format, which has no
+    /// features; [`Error::NotFound`] for a name the language does not declare.
+    pub fn feature_flags(self, features: &[&str]) -> Result<u32, Error> {
+        let mut flags = 0u32;
+        for name in features {
+            let mut bit = 0u32;
+            let status = unsafe {
+                ffi::twig_format_feature_bit(self.code(), name.as_ptr(), name.len(), &mut bit)
+            };
+            Error::from_status(status)?;
+            flags |= bit;
+        }
+        Ok(flags)
+    }
+
+    /// [`Format::supports`] for a runtime row with `features` laid over it —
+    /// the table an [`Editor::new_with_features`] over it holds. `false` for
+    /// a name the language does not declare.
+    pub fn supports_with_features(self, features: &[&str], gesture: Gesture) -> bool {
+        let Ok(flags) = self.feature_flags(features) else {
+            return false;
+        };
+        let (g, k) = gesture.to_c();
+        let mut supported: c_int = 0;
+        let status =
+            unsafe { ffi::twig_format_supports_ext(self.code(), flags, g, k, &mut supported) };
+        Error::from_status(status).is_ok() && supported == 1
     }
 
     /// The name this format answers to: `"markdown"`, `"gfm"`, or the name a
@@ -1179,6 +1212,19 @@ impl Document {
         Ok(Self { raw })
     }
 
+    /// Like [`Document::parse`] over a runtime row, with `features` laid over
+    /// the row's own — the language is told every feature in force.
+    pub fn parse_with_features(input: &[u8], format: Format, features: &[&str]) -> Result<Self, Error> {
+        let flags = format.feature_flags(features)?;
+        let mut raw = std::ptr::null_mut();
+        let status = unsafe {
+            ffi::twig_parse_ext(input.as_ptr(), input.len(), format.code(), flags, &mut raw)
+        };
+        Error::from_status(status)?;
+        let raw = NonNull::new(raw).ok_or(Error::Internal)?;
+        Ok(Self { raw })
+    }
+
     /// [`Document::parse_with`] for a `&str`.
     pub fn parse_str_with(
         input: &str,
@@ -1755,6 +1801,21 @@ impl Editor {
                 extensions.to_flags(),
                 &mut raw,
             )
+        };
+        Error::from_status(status)?;
+        let raw = NonNull::new(raw).ok_or(Error::Internal)?;
+        Ok(Self { raw })
+    }
+
+    /// Like [`Editor::new`] over a runtime row, with `features` laid over
+    /// the row's own: the editor reparses with them after every edit, and its
+    /// gestures write with the table they move the language's to
+    /// ([`Format::supports_with_features`]).
+    pub fn new_with_features(input: &[u8], format: Format, features: &[&str]) -> Result<Self, Error> {
+        let flags = format.feature_flags(features)?;
+        let mut raw = std::ptr::null_mut();
+        let status = unsafe {
+            ffi::twig_editor_create_ext(input.as_ptr(), input.len(), format.code(), flags, &mut raw)
         };
         Error::from_status(status)?;
         let raw = NonNull::new(raw).ok_or(Error::Internal)?;

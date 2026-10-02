@@ -131,19 +131,32 @@ pub enum TwigFormat {
 pub const TWIG_FORMAT_RUNTIME_BASE: c_int = 4096;
 const _: () = assert!((TwigFormat::Svg as c_int) < TWIG_FORMAT_RUNTIME_BASE);
 
-/// Bumped only when a field of [`TwigLanguageVTable`] changes meaning.
-pub const TWIG_LANGUAGE_VTABLE_VERSION: u32 = 1;
+/// Bumped only when a field of [`TwigLanguageVTable`] changes meaning. 2 is
+/// the table with a call record and a `render` slot; a table of version 1
+/// ([`TwigLanguageVTableV1`]) is still read, as a language that reads and
+/// writes.
+pub const TWIG_LANGUAGE_VTABLE_VERSION: u32 = 2;
 
-/// A language function: `input` in, and on success an allocation of the
+/// Mirrors `TwigLanguageCall` in `twig.h`: what one call into a language is
+/// about — the row, the features in force (bit `i` the description's
+/// `features[i]`), and the input.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TwigLanguageCall {
+    pub row: *const u8,
+    pub row_len: usize,
+    pub features: u32,
+    pub input: *const u8,
+    pub input_len: usize,
+}
+
+/// A language function: `call` in, and on success an allocation of the
 /// host's out through `out`/`out_len`, returning 0. On failure it returns
 /// non-zero and may hand out a UTF-8 message the same way. Twig releases
 /// whatever it hands out with the table's `free`.
-pub type TwigLanguageFn = unsafe extern "C" fn(
+pub type TwigLanguageCallFn = unsafe extern "C" fn(
     user_data: *mut std::ffi::c_void,
-    row: *const u8,
-    row_len: usize,
-    input: *const u8,
-    input_len: usize,
+    call: *const TwigLanguageCall,
     out: *mut *mut u8,
     out_len: *mut usize,
 ) -> c_int;
@@ -157,10 +170,44 @@ pub struct TwigLanguageVTable {
     /// The `describe` document, JSON.
     pub description: *const u8,
     pub description_len: usize,
-    pub parse: Option<TwigLanguageFn>,
+    pub parse: Option<TwigLanguageCallFn>,
     /// `None` for a language that only reads.
+    pub print: Option<TwigLanguageCallFn>,
+    /// `None` for a language whose syntax names no renderers, or names only
+    /// `render_block` and answers it with `print`.
+    pub render: Option<TwigLanguageCallFn>,
+    pub free: Option<unsafe extern "C" fn(user_data: *mut std::ffi::c_void, ptr: *mut u8, len: usize)>,
+}
+
+/// A version-1 language function: `input` in, as [`TwigLanguageCall`]'s.
+pub type TwigLanguageFn = unsafe extern "C" fn(
+    user_data: *mut std::ffi::c_void,
+    row: *const u8,
+    row_len: usize,
+    input: *const u8,
+    input_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int;
+
+/// Mirrors `TwigLanguageVTableV1` in `twig.h`: the table of version 1, still
+/// read. Passed to `twig_language_register` as a `*const TwigLanguageVTable`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TwigLanguageVTableV1 {
+    pub version: u32,
+    pub user_data: *mut std::ffi::c_void,
+    pub description: *const u8,
+    pub description_len: usize,
+    pub parse: Option<TwigLanguageFn>,
     pub print: Option<TwigLanguageFn>,
     pub free: Option<unsafe extern "C" fn(user_data: *mut std::ffi::c_void, ptr: *mut u8, len: usize)>,
+}
+
+/// Opaque: the answering end of the helper wire over a host's table.
+#[repr(C)]
+pub struct TwigServer {
+    _private: [u8; 0],
 }
 
 /// Bumped only when a field of [`TwigTransport`] changes meaning.
@@ -189,14 +236,21 @@ pub struct TwigTransport {
 const _: () = {
     assert!(std::mem::size_of::<TwigTransport>() == 32);
     assert!(std::mem::offset_of!(TwigTransport, exchange) == 16);
-    assert!(std::mem::size_of::<TwigLanguageVTable>() == 56);
+    assert!(std::mem::size_of::<TwigLanguageVTable>() == 64);
     assert!(std::mem::offset_of!(TwigLanguageVTable, user_data) == 8);
     assert!(std::mem::offset_of!(TwigLanguageVTable, parse) == 32);
-    assert!(std::mem::offset_of!(TwigLanguageVTable, free) == 48);
+    assert!(std::mem::offset_of!(TwigLanguageVTable, render) == 48);
+    assert!(std::mem::offset_of!(TwigLanguageVTable, free) == 56);
+    assert!(std::mem::size_of::<TwigLanguageVTableV1>() == 56);
+    assert!(std::mem::offset_of!(TwigLanguageVTableV1, free) == 48);
+    assert!(std::mem::size_of::<TwigLanguageCall>() == 40);
+    assert!(std::mem::offset_of!(TwigLanguageCall, features) == 16);
+    assert!(std::mem::offset_of!(TwigLanguageCall, input) == 24);
 };
 
 /// Markdown extension flags for the `md_flags` bitmask of `twig_parse_ext` and
-/// `twig_editor_create_ext`.
+/// `twig_editor_create_ext` — which carries a runtime row's features instead
+/// (`twig_format_feature_bit`).
 pub const TWIG_MD_DIRECTIVES: u32 = 1 << 0;
 pub const TWIG_MD_MATH: u32 = 1 << 1;
 pub const TWIG_MD_HTML_ELEMENTS: u32 = 1 << 2;
@@ -391,6 +445,26 @@ unsafe extern "C" {
         err_cap: usize,
     ) -> TwigStatus;
     pub fn twig_format_by_name(name: *const u8, name_len: usize, out_format: *mut c_int) -> TwigStatus;
+    pub fn twig_format_feature_bit(
+        format: c_int,
+        name: *const u8,
+        name_len: usize,
+        out_bit: *mut u32,
+    ) -> TwigStatus;
+    pub fn twig_server_create(
+        vtable: *const TwigLanguageVTable,
+        out_server: *mut *mut TwigServer,
+        err_buf: *mut c_char,
+        err_cap: usize,
+    ) -> TwigStatus;
+    pub fn twig_server_handle(
+        server: *mut TwigServer,
+        request: *const u8,
+        request_len: usize,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> TwigStatus;
+    pub fn twig_server_destroy(server: *mut TwigServer);
     pub fn twig_format_name(format: c_int, out_ptr: *mut *const u8, out_len: *mut usize) -> TwigStatus;
     pub fn twig_version() -> u32;
     pub fn twig_version_string() -> *const c_char;

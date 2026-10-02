@@ -359,6 +359,12 @@ pub fn list(out: *Writer) Writer.Error!void {
             try out.print("  {s:<12} {s:<18}", .{ c.name, capsWord(f) });
             try writeExtensions(out, twig.format.entryFor(f).extensions);
             try out.print("  ({s})\n", .{c.source});
+            for (twig.runtime.entries()) |*s| {
+                if (s.entry.dialect_of != f) continue;
+                try out.print("  {s:<12} {s:<18}", .{ s.name, capsWord(s.entry.id) });
+                try writeExtensions(out, s.extensions);
+                try out.print("  (a {s} set)\n", .{c.name});
+            }
         } else {
             try out.print("  {s:<12} refused: {s}  ({s})\n", .{ c.name, c.failure.?, c.source });
         }
@@ -402,8 +408,24 @@ pub fn check(
     };
     const entry = twig.format.entryFor(fmt);
     try out.print("{s}: registered ({s}); every sample parsed", .{ fmt.name(), capsWord(fmt) });
-    if (entry.serializeCanonical != null) try out.writeAll(", printed and reparsed to the same tree; fidelity measured");
+    if (entry.serializeCanonical != null) try out.writeAll(", printed and reparsed to the same tree");
+    if (entry.syntax.authorable()) try out.writeAll("; every gesture kept its promise");
+    if (entry.serializeCanonical != null) try out.writeAll("; fidelity measured");
     try out.writeAll("\n");
+    const features = twig.runtime.featuresOf(fmt);
+    if (features.len > 0) {
+        try out.writeAll("  features:");
+        for (features) |f| try out.print(" {s}{s}", .{ f.name, if (f.default) " (on)" else "" });
+        try out.writeAll("\n");
+    }
+    for (twig.runtime.entries()) |*s| {
+        if (s.entry.dialect_of != fmt) continue;
+        try out.print("  set {s}:", .{s.name});
+        for (features, 0..) |f, i| {
+            if (s.mask & (@as(u32, 1) << @intCast(i)) != 0) try out.print(" {s}", .{f.name});
+        }
+        try out.writeAll("\n");
+    }
 
     const sibling = against orelse return;
     const Input = struct { label: []const u8, content: []const u8 };
