@@ -1421,9 +1421,21 @@ fn probeWrapAttrs(t: *Trial, w: Span) Error!void {
 
 fn probeSetBlock(t: *Trial, b: BlockSite) Error!void {
     const ast = &t.before.ast;
+    const table = t.entry.syntax;
+    // A paragraph of several lines, which a marker heading of one line
+    // holds with its soft breaks joined — see `Syntax.heading_continues`.
+    const lines = holdsSoftBreak(ast, b.id);
+    const folds = lines and table.heading_marker != null and !table.heading_continues;
     var e = try t.open();
     defer e.deinit();
-    e.setBlock(b.caret, .heading, 2) catch |err| return t.refused(&e, "set_block heading", err);
+    e.setBlock(b.caret, .heading, 2) catch |err| {
+        // The claim is that the marker before the first line heads them all,
+        // and a refusal over such a paragraph is the reparse saying it did
+        // not.
+        if (lines and table.heading_continues and err == error.NotEditable)
+            return t.broken(&e, "set_block heading", "the table claims heading_continues, and a paragraph of several lines is refused", .{});
+        return t.refused(&e, "set_block heading", err);
+    };
     try t.succeeded(&e, "set_block heading");
     const h = try findText(t.gpa, e.astView(), isHeading, b.text) orelse
         return t.broken(&e, "set_block heading", "no heading over \"{s}\" came back", .{b.text});
@@ -1435,8 +1447,24 @@ fn probeSetBlock(t: *Trial, b: BlockSite) Error!void {
         return t.broken(&e, "set_block heading", "a container around the block was lost", .{});
     e.setBlock(caretIn(&e.splicer.doc, h), .paragraph, 0) catch |err|
         return t.broken(&e, "set_block heading", "setting it back to a paragraph is refused: {t}", .{err});
-    if (!e.astView().eql(ast.*))
+    if (folds) {
+        // The soft breaks became spaces on the way in, so the way back is a
+        // paragraph of the same text on one line rather than the same tree.
+        if (count(e.astView(), isPara) != count(ast, isPara) or
+            try findText(t.gpa, e.astView(), isPara, b.text) == null)
+            return t.broken(&e, "set_block heading", "setting it back to a paragraph does not give the text back", .{});
+    } else if (!e.astView().eql(ast.*))
         return t.broken(&e, "set_block heading", "setting it back to a paragraph does not give the tree back", .{});
+}
+
+/// Whether a soft break lies anywhere under `id` — a block that runs over
+/// more than one line.
+fn holdsSoftBreak(ast: *const AST, id: AST.Node.Id) bool {
+    var c = ast.nodes[id].first_child;
+    while (c) |ch| : (c = ast.nodes[ch].next_sibling) {
+        if (ast.nodes[ch].kind == .soft_break or holdsSoftBreak(ast, ch)) return true;
+    }
+    return false;
 }
 
 fn probeContainer(t: *Trial, b: BlockSite, k: ContainerKind) Error!void {
@@ -1460,16 +1488,29 @@ fn probeCodeBlock(t: *Trial, b: BlockSite) Error!void {
     e.toggleCodeBlock(b.span, "zig") catch |err| return t.refused(&e, "toggle_code_block", err);
     try t.succeeded(&e, "toggle_code_block");
     // The paragraph's bytes where the format fences them as they are, its
-    // text where a renderer prints a fresh block (HTML's `<pre>`).
+    // text where a renderer prints a fresh block (HTML's `<pre>`), and its
+    // lines where a container's prefix comes off them — a quoted paragraph
+    // of several lines, whose bytes carry a `> ` the fence does not.
     const bytes = std.mem.trim(u8, t.source[b.span.start..b.span.end], "\n");
     for (e.astView().nodes) |n| switch (n.kind) {
         .code_block => |c| if (c.lang != null and std.mem.eql(u8, c.lang.?, "zig")) {
             const body = std.mem.trim(u8, c.text, "\n");
-            if (std.mem.eql(u8, body, bytes) or std.mem.eql(u8, body, b.text)) return;
+            if (std.mem.eql(u8, body, bytes) or std.mem.eql(u8, body, b.text) or linesAre(body, b.text)) return;
         },
         else => {},
     };
     return t.broken(&e, "toggle_code_block", "no zig code block holding the paragraph came back", .{});
+}
+
+/// Whether `body` is `text` with some of its spaces line ends — a
+/// paragraph's soft breaks, which `select.textOf` reads as spaces, kept as
+/// the lines they were.
+fn linesAre(body: []const u8, text: []const u8) bool {
+    if (body.len != text.len) return false;
+    for (body, text) |x, y| {
+        if (x != y and !(x == '\n' and y == ' ')) return false;
+    }
+    return true;
 }
 
 fn probeCodeLanguage(t: *Trial, b: BlockSite) Error!void {

@@ -1475,9 +1475,10 @@ fn markdownFeaturesDescription(arena: Allocator, name: []const u8) !Description 
     });
     const sets = try arena.dupe(Set, &.{.{ .name = try std.fmt.allocPrint(arena, "{s}-math", .{name}), .features = &.{"math"} }});
     const samples = try arena.dupe(Sample, &.{
-        .{ .text = "# Title\n\nSome *emphasis* and ==marks==.\n" },
-        // One line per paragraph: `docs/tasks/markdown-set-block-multi-line-paragraph.md`.
-        .{ .text = "A formula, $x^2$, and $$y$$.\n", .features = &.{"math"} },
+        .{ .text = "# Title\n\nSome *emphasis* and\n==marks==.\n" },
+        // A display formula run over three lines, which is the paragraph
+        // that found `setBlock` heading its first line alone.
+        .{ .text = "A formula, $x^2$, and\n$$\ny\n$$\n", .features = &.{"math"} },
         .{ .text = "A ==highlight== here.\n", .features = &.{"highlight"} },
     });
     return .{
