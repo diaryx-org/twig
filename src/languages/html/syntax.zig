@@ -55,7 +55,7 @@ const serializer = @import("serializer.zig");
 /// decodes entities exactly as a `<p>` does. Mirrors `serializer.zig`'s
 /// `writeEscaped` for text content, and stays byte-for-byte what its
 /// `parser.zig` decodes back, so an inserted `str` reparses as itself.
-fn renderText(_: *const syntax.Syntax, text: []const u8, _: syntax.TextPosition, out: *Writer) Writer.Error!void {
+fn renderText(_: *const syntax.Syntax, text: []const u8, _: syntax.TextPosition, out: *Writer) anyerror!void {
     for (text) |c| {
         switch (c) {
             '&' => try out.writeAll("&amp;"),
@@ -69,7 +69,7 @@ fn renderText(_: *const syntax.Syntax, text: []const u8, _: syntax.TextPosition,
 /// The serializer over one node — HTML's printer takes a node id directly, so
 /// no re-rooting adapter is needed. Label-free (`ctx = null`): a fragment the
 /// editor builds resolves nothing by label.
-fn renderBlock(allocator: std.mem.Allocator, ast: *const AST, root: AST.Node.Id, out: *Writer) anyerror!void {
+fn renderBlock(_: *const syntax.Syntax, allocator: std.mem.Allocator, ast: *const AST, root: AST.Node.Id, out: *Writer) anyerror!void {
     try serializer.serializeNode(allocator, ast, root, out, null);
 }
 
@@ -252,7 +252,7 @@ test "html prints a fragment as the tag pair its parser reads back" {
     const view = b.view(h);
     var out: Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try table.renderBlock.?(std.testing.allocator, &view, h, &out.writer);
+    try table.renderBlock.?(&table, std.testing.allocator, &view, h, &out.writer);
     try std.testing.expectEqualStrings("<h2><em>hi</em></h2>\n", out.written());
 
     // The other shapes the editor builds where the alphabet is null, each
@@ -273,7 +273,7 @@ test "html prints a fragment as the tag pair its parser reads back" {
     const qv = c.view(q);
     var qout: Writer.Allocating = .init(std.testing.allocator);
     defer qout.deinit();
-    try table.renderBlock.?(std.testing.allocator, &qv, q, &qout.writer);
+    try table.renderBlock.?(&table, std.testing.allocator, &qv, q, &qout.writer);
     try std.testing.expectEqualStrings(
         "<blockquote>\n<ul>\n<li>\na\n</li>\n<li>\nb\n</li>\n</ul>\n" ++
             "<pre><code class=\"language-zig\">a &lt; b</code></pre>\n" ++

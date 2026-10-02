@@ -14,7 +14,7 @@ const serializer = @import("serializer.zig");
 /// Djot classifies an autolink on content alone, so this defers to the parser's
 /// own scanner rather than re-deriving the rule. `angled` arrives with its
 /// brackets, which `autolinkKindOf` doesn't want.
-fn spellsAutolink(angled: []const u8) bool {
+fn spellsAutolink(_: *const syntax.Syntax, angled: []const u8) bool {
     if (angled.len < 2) return false;
     return inline_mod.InlineParser.autolinkKindOf(angled[1 .. angled.len - 1]) != null;
 }
@@ -197,10 +197,10 @@ test "djot body-text literals extend the link-text alphabet with brace delimiter
 }
 
 test "djot autolinks by content, so a bare mailto: is an email" {
-    try std.testing.expect(spellsAutolink("<https://x.dev>"));
-    try std.testing.expect(spellsAutolink("<a@b.dev>"));
-    try std.testing.expect(spellsAutolink("<mailto:a@b.dev>"));
+    try std.testing.expect(spellsAutolink(&syntax.none, "<https://x.dev>"));
+    try std.testing.expect(spellsAutolink(&syntax.none, "<a@b.dev>"));
+    try std.testing.expect(spellsAutolink(&syntax.none, "<mailto:a@b.dev>"));
     // A relative path is not an autolink in either format.
-    try std.testing.expect(!spellsAutolink("<foo/bar>"));
-    try std.testing.expect(!spellsAutolink("<>"));
+    try std.testing.expect(!spellsAutolink(&syntax.none, "<foo/bar>"));
+    try std.testing.expect(!spellsAutolink(&syntax.none, "<>"));
 }

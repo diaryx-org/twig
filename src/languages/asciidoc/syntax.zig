@@ -48,7 +48,7 @@ const serializer = @import("serializer.zig");
 
 /// `<https://…>` autolinks in AsciiDoc when the interior is a URL of a scheme
 /// the parser knows; a bare word in angle brackets is text.
-fn spellsAutolink(angled: []const u8) bool {
+fn spellsAutolink(_: *const syntax.Syntax, angled: []const u8) bool {
     if (angled.len < 3 or angled[0] != '<' or angled[angled.len - 1] != '>') return false;
     const inner = angled[1 .. angled.len - 1];
     if (std.mem.indexOfAny(u8, inner, " \t\n<>") != null) return false;
@@ -212,10 +212,10 @@ test "the escape alphabets are disjoint and every byte reads back after a backsl
 }
 
 test "asciidoc autolinks a URL in angle brackets and nothing else" {
-    try std.testing.expect(spellsAutolink("<https://x.dev>"));
-    try std.testing.expect(!spellsAutolink("<foo>"));
-    try std.testing.expect(!spellsAutolink("<https://x.dev y>"));
-    try std.testing.expect(!spellsAutolink("<a@b.dev>"));
+    try std.testing.expect(spellsAutolink(&syntax.none, "<https://x.dev>"));
+    try std.testing.expect(!spellsAutolink(&syntax.none, "<foo>"));
+    try std.testing.expect(!spellsAutolink(&syntax.none, "<https://x.dev y>"));
+    try std.testing.expect(!spellsAutolink(&syntax.none, "<a@b.dev>"));
 }
 
 test "the shapes the gesture algorithms cannot write stay null" {

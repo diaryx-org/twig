@@ -833,7 +833,7 @@ pub const Editor = struct {
         const view = b.view(root);
         var out: Writer.Allocating = .init(self.splicer.allocator);
         defer out.deinit();
-        try renderNode(self.splicer.allocator, render, &view, root, &out.writer);
+        try renderNode(self.syntax, self.splicer.allocator, render, &view, root, &out.writer);
         const rendered = std.mem.trimEnd(u8, out.written(), "\r\n");
         return self.commitSplice(start, end, rendered);
     }
@@ -841,8 +841,8 @@ pub const Editor = struct {
     /// One node through `render`, with the renderer's errors folded into the
     /// editor's: a refusal to print is a content refusal, not a format one,
     /// since the renderer exists.
-    fn renderNode(allocator: Allocator, render: RenderBlockFn, ast: *const AST, id: AST.Node.Id, out: *Writer) Error!void {
-        render(allocator, ast, id, out) catch |err| switch (err) {
+    fn renderNode(syntax: *const Syntax, allocator: Allocator, render: RenderBlockFn, ast: *const AST, id: AST.Node.Id, out: *Writer) Error!void {
+        render(syntax, allocator, ast, id, out) catch |err| switch (err) {
             error.OutOfMemory, error.WriteFailed => return error.OutOfMemory,
             else => return error.NotEditable,
         };
@@ -1321,10 +1321,10 @@ pub const Editor = struct {
             if (is_list) {
                 var block = ast.nodes[c].first_child;
                 while (block) |bl| : (block = ast.nodes[bl].next_sibling) {
-                    try renderNode(allocator, render, ast, bl, &out.writer);
+                    try renderNode(self.syntax, allocator, render, ast, bl, &out.writer);
                 }
             } else {
-                try renderNode(allocator, render, ast, c, &out.writer);
+                try renderNode(self.syntax, allocator, render, ast, c, &out.writer);
             }
         }
         const t = doc.span(target);
@@ -1579,7 +1579,7 @@ pub const Editor = struct {
         const view = b.view(root);
         var out: Writer.Allocating = .init(allocator);
         defer out.deinit();
-        try renderNode(allocator, render, &view, root, &out.writer);
+        try renderNode(self.syntax, allocator, render, &view, root, &out.writer);
         // No trim here, unlike `spliceRendered`: `insertBlockAfter`
         // re-terminates every line itself and trims the renderer's trailing
         // newline on the way in.
@@ -1945,7 +1945,7 @@ pub const Editor = struct {
         const view = b.view(root);
         var out: Writer.Allocating = .init(allocator);
         defer out.deinit();
-        try renderNode(allocator, render, &view, root, &out.writer);
+        try renderNode(self.syntax, allocator, render, &view, root, &out.writer);
         const rendered = std.mem.trimEnd(u8, out.written(), "\r\n");
         if (prefix.len == 0) return self.commitSplice(start, target.end, rendered);
         var text: std.ArrayList(u8) = .empty;
@@ -2791,7 +2791,7 @@ pub const Editor = struct {
         defer b.deinit();
         const root = try b.graftSubtree(&doc.ast, block);
         const view = b.view(root);
-        try renderNode(allocator, render, &view, root, w);
+        try renderNode(self.syntax, allocator, render, &view, root, w);
         return doc.span(block);
     }
 
@@ -3404,7 +3404,7 @@ pub const Editor = struct {
                 try out.append(allocator, '>');
                 // Ask about the exact bytes we would emit, so the test and the
                 // output cannot disagree about what was spelled.
-                if (spells(out.items)) return self.commitSplice(target.start, target.end, out.items);
+                if (spells(self.syntax, out.items)) return self.commitSplice(target.start, target.end, out.items);
                 out.clearRetainingCapacity();
             }
         }
@@ -3740,7 +3740,7 @@ pub const Editor = struct {
         const leaf = try b.addLeaf(.{ .text_leaf = .{ .kind = kind, .text = formula } });
         const root = try b.addContainer(.para, &.{leaf});
         const view = b.view(root);
-        try renderNode(allocator, render, &view, root, &out.writer);
+        try renderNode(self.syntax, allocator, render, &view, root, &out.writer);
         const bytes = std.mem.trimEnd(u8, out.written(), "\r\n");
 
         var alone = self.splicer.parse_fn(self.splicer.parse_ctx, allocator, bytes) catch |err| switch (err) {
@@ -3847,7 +3847,11 @@ pub const Editor = struct {
         defer out.deinit();
         const in_verbatim = try self.insideVerbatim(offset);
         writeLiteral(self.syntax, render, text, at_line_start, in_verbatim, &out.writer) catch |err| switch (err) {
-            error.WriteFailed => return error.OutOfMemory,
+            error.WriteFailed, error.OutOfMemory => return error.OutOfMemory,
+            // A renderer that refuses — a runtime language's, which can fail
+            // where a compiled alphabet cannot — refuses this text, as a
+            // fragment renderer's refusal does in `renderNode`.
+            else => return error.NotEditable,
         };
 
         return self.commitSplice(offset, offset, out.written());
@@ -6028,7 +6032,7 @@ fn writeLiteral(
     at_line_start: bool,
     in_verbatim: bool,
     out: *Writer,
-) Writer.Error!void {
+) anyerror!void {
     if (in_verbatim) return render(syntax, text, .verbatim, out);
     var rest = text;
     var block_pos = at_line_start;
