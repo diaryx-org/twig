@@ -214,9 +214,15 @@ Markdown's `--math` — each with a `syntax` patch for what it changes, and
  "samples": ["= Title\n", {"text": "$x$\n", "features": ["math"]}]}
 ```
 
-`twig lang check wiki` lists both. A set's name resolves once its language
-has loaded; the command line has no flag yet that turns a feature on over a
-row, so reach one through its set.
+`twig lang check wiki` and `twig lang list` list both. A set is reached by
+its name or its extensions like any format (`-i wiki-math`, or a file the
+set's extension names), and a feature over any row by `--feature`:
+
+```bash
+twig convert --feature math page.wiki    # the wiki row, plus math
+twig convert -i wiki-math page.wiki      # the same, by its set
+twig convert --feature math notes.md     # Markdown's are features too: --math
+```
 
 ---
 

@@ -466,6 +466,7 @@ unsafe extern "C" {
     ) -> TwigStatus;
     pub fn twig_server_destroy(server: *mut TwigServer);
     pub fn twig_format_name(format: c_int, out_ptr: *mut *const u8, out_len: *mut usize) -> TwigStatus;
+    pub fn twig_format_dialect_of(format: c_int, out_format: *mut c_int) -> TwigStatus;
     pub fn twig_version() -> u32;
     pub fn twig_version_string() -> *const c_char;
     pub fn twig_parse(

@@ -789,9 +789,11 @@ mod tests {
         let format = register(CrlfLines).expect("register");
         let set = Format::by_name("rust-crlf-crlf").expect("the set is a format");
         assert_ne!(set, format);
+        assert_eq!(set.dialect_of(), Some(format));
+        assert_eq!(format.dialect_of(), None);
         assert_eq!(format.feature_flags(&["crlf"]), Ok(1));
         assert_eq!(format.feature_flags(&["tabs"]), Err(Error::NotFound));
-        assert_eq!(Format::Markdown.feature_flags(&["math"]), Err(Error::UnsupportedFormat));
+        assert_eq!(Format::Djot.feature_flags(&["math"]), Err(Error::UnsupportedFormat));
 
         let mut doc = Document::parse_with_features(b"a\nb\n", format, &["crlf"]).unwrap();
         assert_eq!(doc.serialize_to(Target::from(format)).unwrap(), b"a\r\nb\r\n");

@@ -794,18 +794,20 @@ pub export fn twig_language_register(
     return .ok;
 }
 
-/// The bit a feature of a runtime row's language takes in the flags of
+/// The bit a feature of `format`'s row takes in the flags of
 /// `twig_parse_ext`, `twig_editor_create_ext` and
-/// `twig_format_supports_ext` — which carry a runtime row's features where
-/// they carry a Markdown row's `TWIG_MD_*` extensions. `not_found` for a
-/// name the language does not declare; `unsupported_format` for a code no
-/// runtime row holds, compiled ones included.
+/// `twig_format_supports_ext`: a runtime row's declared features, and a
+/// Markdown row's extensions by the names of their `TWIG_MD_*` bits
+/// (`directives`, `math`, `html_elements`, `highlight`,
+/// `highlight_colors`), which are the bits returned. `not_found` for a name
+/// the row does not declare; `unsupported_format` for a code no row holds
+/// and for a compiled row with no features.
 pub export fn twig_format_feature_bit(format: c_int, name_ptr: ?[*]const u8, name_len: usize, out_bit: ?*u32) TwigStatus {
     const name = sliceOf(name_ptr, name_len) orelse return .invalid_argument;
     const out = out_bit orelse return .invalid_argument;
     const fmt = intToFormat(format) orelse return .unsupported_format;
-    if (!twig.runtime.isRegistered(fmt)) return .unsupported_format;
-    out.* = twig.runtime.featureBit(fmt, name) orelse return .not_found;
+    if (twig.format.features(fmt).len == 0 and !twig.runtime.isRegistered(fmt)) return .unsupported_format;
+    out.* = twig.format.featureBit(fmt, name) orelse return .not_found;
     return .ok;
 }
 
@@ -1014,6 +1016,16 @@ pub export fn twig_format_name(format: c_int, out_ptr: ?*?[*]const u8, out_len: 
     return .ok;
 }
 
+/// The language a format code is a dialect of: Markdown's for GFM and
+/// CommonMark, XML's for SVG, and a runtime language's own row for each of
+/// its sets. `not_found` for a language's own row, which is nobody's.
+pub export fn twig_format_dialect_of(format: c_int, out_format: ?*c_int) TwigStatus {
+    const out = out_format orelse return .invalid_argument;
+    const fmt = intToFormat(format) orelse return .unsupported_format;
+    out.* = formatToInt(twig.format.entryFor(fmt).dialect_of orelse return .not_found);
+    return .ok;
+}
+
 pub export fn twig_version() u32 {
     return (@as(u32, build_options.version_major) << 16) |
         (@as(u32, build_options.version_minor) << 8) |
@@ -1179,7 +1191,7 @@ pub export fn twig_parse_ext(
     const target = intToFormat(format) orelse return .unsupported_format;
 
     const allocator = activeAllocator();
-    const cfg = configFromFlags(md_flags);
+    const cfg = configFromFlags(target, md_flags);
     const parsed = twig.format.entryFor(target).parse(&cfg, allocator, source) catch |err| switch (err) {
         error.OutOfMemory => return .out_of_memory,
         // Only XML can reject its input; the others are infallible by design
@@ -2218,27 +2230,23 @@ const TWIG_MD_DIRECTIVES: u32 = 1 << 0;
 const TWIG_MD_MATH: u32 = 1 << 1;
 const TWIG_MD_HTML_ELEMENTS: u32 = 1 << 2;
 const TWIG_MD_HIGHLIGHT: u32 = 1 << 3;
-/// Inert without `TWIG_MD_HIGHLIGHT` — the bits map 1:1 onto `ParseOptions`
-/// and are not implied from one another here; the CLI is where
-/// `--highlight-colors` turns both on.
+/// Brings `TWIG_MD_HIGHLIGHT` with it, as the feature it is requires
+/// (`twig.format.features`): a colour is inert without a highlight to colour.
 const TWIG_MD_HIGHLIGHT_COLORS: u32 = 1 << 4;
 
-/// The parse config a flags argument says: Markdown's extensions for a
-/// Markdown row, a runtime row's features for a runtime row — each row reads
-/// its own half and ignores the other, so the flags need not know which row
-/// they will meet.
-fn configFromFlags(flags: u32) twig.format.ParseConfig {
-    return .{ .markdown = markdownExtensionsFromFlags(flags), .features = flags };
+comptime {
+    // The bits are the wire contract, and the features' order is theirs.
+    for (.{ .{ "directives", TWIG_MD_DIRECTIVES }, .{ "math", TWIG_MD_MATH }, .{ "html_elements", TWIG_MD_HTML_ELEMENTS }, .{ "highlight", TWIG_MD_HIGHLIGHT }, .{ "highlight_colors", TWIG_MD_HIGHLIGHT_COLORS } }) |pair| {
+        if (twig.format.featureBit(.markdown, pair[0]) != pair[1]) @compileError("TWIG_MD_* and Markdown's features disagree on " ++ pair[0]);
+    }
 }
 
-fn markdownExtensionsFromFlags(flags: u32) twig.Markdown.ParseOptions.Extensions {
-    return .{
-        .directives = (flags & TWIG_MD_DIRECTIVES) != 0,
-        .math = (flags & TWIG_MD_MATH) != 0,
-        .html_elements = (flags & TWIG_MD_HTML_ELEMENTS) != 0,
-        .highlight = (flags & TWIG_MD_HIGHLIGHT) != 0,
-        .highlight_colors = (flags & TWIG_MD_HIGHLIGHT_COLORS) != 0,
-    };
+/// The parse config a flags argument says over `fmt`'s row: Markdown's
+/// extensions for a Markdown row, a runtime row's features for a runtime
+/// row, each with what it requires — one model, the bits being the row's
+/// features in order (`twig.format.ParseConfig.forFeatures`).
+fn configFromFlags(fmt: twig.format.Format, flags: u32) twig.format.ParseConfig {
+    return twig.format.ParseConfig.forFeatures(fmt, flags);
 }
 
 // ── error -> status ────────────────────────────────────────────────────────
@@ -2329,7 +2337,7 @@ pub export fn twig_editor_create_ext(
     // the handle's lifetime.
     handle.* = .{
         .editor = undefined,
-        .parse_config = configFromFlags(md_flags),
+        .parse_config = configFromFlags(target, md_flags),
     };
     // `parseToAst` and the spelling come from the same registry row, so the
     // parser and the spelling can never be crossed — and the spelling is taken
@@ -3616,7 +3624,7 @@ pub export fn twig_format_supports_ext(
     const g = gestureFromInt(gesture) orelse return .invalid_argument;
     const decoded = gestureOf(g, kind) orelse return .invalid_argument;
 
-    const cfg = configFromFlags(md_flags);
+    const cfg = configFromFlags(fmt, md_flags);
     slot.* = @intFromBool(twig.Editor.supports(twig.format.syntaxForConfig(fmt, &cfg), decoded));
     return .ok;
 }
@@ -5349,12 +5357,17 @@ test "twig_language_register: a version-2 table's features, set and renderer rea
     try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(code, "crlf", 4, &bit));
     try std.testing.expectEqual(@as(u32, 1), bit);
     try std.testing.expectEqual(TwigStatus.not_found, twig_format_feature_bit(code, "tabs", 4, &bit));
-    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_feature_bit(@intFromEnum(TwigFormat.markdown), "math", 4, &bit));
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_feature_bit(@intFromEnum(TwigFormat.djot), "math", 4, &bit));
 
-    // The set is a row of its own, found by name.
+    // The set is a row of its own, found by name, and a dialect of the
+    // language's row.
     var set: c_int = 0;
     try std.testing.expectEqual(TwigStatus.ok, twig_format_by_name("lines2-crlf", 11, &set));
     try std.testing.expect(set != code and set >= TWIG_FORMAT_RUNTIME_BASE);
+    var parent: c_int = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_dialect_of(set, &parent));
+    try std.testing.expectEqual(code, parent);
+    try std.testing.expectEqual(TwigStatus.not_found, twig_format_dialect_of(code, &parent));
 
     // Laid over the language's row through the flags, or on in the set's
     // row, the feature reaches the print.
@@ -5766,13 +5779,33 @@ test "twig_parse_ext with TWIG_MD_HIGHLIGHT makes ==text== a queryable mark" {
     }
 }
 
+test "twig_format_dialect_of answers compiled dialects and nobody's row" {
+    var out: c_int = -1;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_dialect_of(@intFromEnum(TwigFormat.gfm), &out));
+    try std.testing.expectEqual(@as(c_int, @intFromEnum(TwigFormat.markdown)), out);
+    try std.testing.expectEqual(TwigStatus.not_found, twig_format_dialect_of(@intFromEnum(TwigFormat.markdown), &out));
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_dialect_of(99_999, &out));
+}
+
+test "twig_format_feature_bit answers a Markdown row with its TWIG_MD_* bits" {
+    var bit: u32 = 0;
+    inline for (.{ TwigFormat.markdown, TwigFormat.gfm, TwigFormat.commonmark }) |row| {
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(@intFromEnum(row), "math", 4, &bit));
+        try std.testing.expectEqual(TWIG_MD_MATH, bit);
+    }
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(@intFromEnum(TwigFormat.markdown), "highlight_colors", 16, &bit));
+    try std.testing.expectEqual(TWIG_MD_HIGHLIGHT_COLORS, bit);
+    try std.testing.expectEqual(TwigStatus.not_found, twig_format_feature_bit(@intFromEnum(TwigFormat.markdown), "tables", 6, &bit));
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_feature_bit(@intFromEnum(TwigFormat.asciidoc), "math", 4, &bit));
+}
+
 test "twig_parse_ext with TWIG_MD_HIGHLIGHT_COLORS makes the colour queryable as mark[data-color=red]" {
     const source = "some ==\u{1F534} lit== text\n";
 
     inline for (.{
         .{ @as(u32, 0), @as(usize, 0) },
         .{ TWIG_MD_HIGHLIGHT, @as(usize, 0) }, // a mark, but uncoloured
-        .{ TWIG_MD_HIGHLIGHT_COLORS, @as(usize, 0) }, // inert without HIGHLIGHT
+        .{ TWIG_MD_HIGHLIGHT_COLORS, @as(usize, 1) }, // brings HIGHLIGHT, which it requires
         .{ TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS, @as(usize, 1) },
     }) |case| {
         var doc: ?*TwigDocument = null;
@@ -7164,12 +7197,12 @@ test "twig_format_supports_ext: the Markdown flags widen what may be authored" {
     const color = @intFromEnum(TwigGesture.set_mark_color);
 
     // The pair of gates, flag by flag: a highlight needs HIGHLIGHT, a colour
-    // needs COLORS on top, and COLORS alone is inert exactly as it is in the
-    // parser.
+    // needs COLORS on top, and COLORS brings the HIGHLIGHT it requires, as
+    // it does for the parse.
     inline for (.{
         .{ @as(u32, 0), @as(c_int, 0), @as(c_int, 0) },
         .{ TWIG_MD_HIGHLIGHT, @as(c_int, 1), @as(c_int, 0) },
-        .{ TWIG_MD_HIGHLIGHT_COLORS, @as(c_int, 0), @as(c_int, 0) },
+        .{ TWIG_MD_HIGHLIGHT_COLORS, @as(c_int, 1), @as(c_int, 1) },
         .{ TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS, @as(c_int, 1), @as(c_int, 1) },
     }) |case| {
         try std.testing.expectEqual(

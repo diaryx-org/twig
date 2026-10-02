@@ -33,7 +33,7 @@ pub const Action = enum { help, version, convert, identify, edit, query, filter,
 /// parse, so they fall back to the top-level synopsis.
 pub fn commandUsage(action: Action) []const u8 {
     return switch (action) {
-        .convert => "convert [-i <format>] [-o <format>] [--warn] <file|->",
+        .convert => "convert [-i <format>] [-o <format>] [--feature <name>]... [--warn] <file|->",
         .identify => "identify [-i <format>] <file>",
         .query => "query [-i <format>] <file> <selector>",
         .edit => "edit [-i <format>] <file|-> <operation>",
@@ -219,6 +219,9 @@ pub const ArgError = error{
     UnknownLangCommand,
     /// `lang check` was given no language, or more arguments than it holds.
     BadLangCheck,
+    /// `--feature` named something the input's row does not declare, or was
+    /// given more often than a row has features.
+    UnknownFeature,
 } || format.ResolveInputFormatError;
 
 /// A `[:0]const u8`-argv-slice-backed iterator satisfying the `.next()`
@@ -273,14 +276,24 @@ fn argFail(
 ///                                     too, since colours need a highlight
 ///   --commonmark                      `-i commonmark`: strict CommonMark
 ///   --gfm                             `-i gfm`: the GFM dialect
-/// The last two are not extension flags but spellings of `-i`: a dialect is a
+///   --feature <name>                  a feature the input's row declares
+/// `--feature` is the general spelling: `--feature math` is `--math` over a
+/// Markdown row, and the only way to turn on a runtime language's feature.
+/// Its names are collected here and resolved against the row once `-i` or
+/// the file has named it (`Features.apply`), so it may come before either.
+/// `--commonmark` and `--gfm` are not extension flags but spellings of `-i`: a dialect is a
 /// `Format` row of its own (`format.zig`'s `Entry.dialect_of`), and the
 /// extension flags lay over whichever row `input` names, so `--gfm --math`
 /// and `--math --gfm` are both GFM plus math. The HTML conventions a flavor
 /// renders with come with the row (`Options.dialect`), so `-i gfm` prints
 /// GFM's tables rather than twig-markdown's.
-fn applyExtFlag(arg: []const u8, input: *?InputFormat, cfg: *format.ParseConfig) bool {
-    if (std.mem.eql(u8, arg, "--directives")) {
+fn applyExtFlag(arg: []const u8, args: anytype, stderr: *Writer, binary_name: []const u8, action: Action, input: *?InputFormat, cfg: *format.ParseConfig, feats: *Features) ArgError!bool {
+    if (std.mem.eql(u8, arg, "--feature")) {
+        const name = args.next() orelse return argFail(stderr, binary_name, action, "--feature needs a feature's name", ArgError.MissingFormatValue);
+        if (feats.len == feats.names.len) return argFail(stderr, binary_name, action, "--feature given more often than a row has features", ArgError.UnknownFeature);
+        feats.names[feats.len] = name;
+        feats.len += 1;
+    } else if (std.mem.eql(u8, arg, "--directives")) {
         cfg.markdown.directives = true;
     } else if (std.mem.eql(u8, arg, "--no-directives")) {
         cfg.markdown.directives = false;
@@ -310,6 +323,40 @@ fn applyExtFlag(arg: []const u8, input: *?InputFormat, cfg: *format.ParseConfig)
     }
     return true;
 }
+
+/// The `--feature` names an invocation gave, in order.
+const Features = struct {
+    names: [32][]const u8 = undefined,
+    len: usize = 0,
+
+    /// Turn every named feature on in `cfg`, over `input`'s row, with what
+    /// each requires — or say which name the row does not declare, and what
+    /// it does.
+    fn apply(self: *const Features, stderr: *Writer, input: InputFormat, cfg: *format.ParseConfig) ArgError!void {
+        var mask: u32 = 0;
+        for (self.names[0..self.len]) |name| {
+            mask |= twig.format.featureBit(input, name) orelse {
+                const declared = twig.format.features(input);
+                try stderr.print("error: '{s}' has no feature '{s}'", .{ input.name(), name });
+                if (declared.len == 0) {
+                    try stderr.writeAll("; it declares none\n");
+                } else {
+                    try stderr.writeAll("; it declares");
+                    for (declared, 0..) |f, i| try stderr.print("{s} {s}", .{ if (i == 0) "" else ",", f.name });
+                    try stderr.writeAll("\n");
+                }
+                try stderr.flush();
+                return ArgError.UnknownFeature;
+            };
+        }
+        if (mask == 0) return;
+        const more = format.ParseConfig.forFeatures(input, mask);
+        cfg.features |= more.features;
+        inline for (std.meta.fields(@TypeOf(cfg.markdown))) |f| {
+            @field(cfg.markdown, f.name) = @field(cfg.markdown, f.name) or @field(more.markdown, f.name);
+        }
+    }
+};
 
 pub fn parseConfig(args: anytype, stderr: *Writer) ArgError!CliConfig {
     var config = CliConfig{};
@@ -362,9 +409,10 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
     var warn = false;
     var file: ?[]const u8 = null;
     var parse_config = format.ParseConfig{};
+    var feats: Features = .{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &input_override, &parse_config)) {
+        if (try applyExtFlag(arg, args, stderr, binary_name, .convert, &input_override, &parse_config, &feats)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--lang")) {
             input_override = try langFlag(args, stderr, binary_name, .convert);
@@ -397,6 +445,7 @@ fn parseConvert(args: anytype, stderr: *Writer, binary_name: []const u8) ArgErro
 
     const path = file orelse return argFail(stderr, binary_name, .convert, "convert: missing input file", ArgError.MissingFile);
     const resolved = try format.resolveInputFormat(stderr, path, input_override);
+    try feats.apply(stderr, resolved, &parse_config);
 
     return .{
         .action = .convert,
@@ -528,9 +577,10 @@ fn parseQuery(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!
     var file: ?[]const u8 = null;
     var selector: ?[]const u8 = null;
     var parse_config = format.ParseConfig{};
+    var feats: Features = .{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &input_override, &parse_config)) {
+        if (try applyExtFlag(arg, args, stderr, binary_name, .query, &input_override, &parse_config, &feats)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--lang")) {
             input_override = try langFlag(args, stderr, binary_name, .query);
@@ -554,6 +604,7 @@ fn parseQuery(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!
     const path = file orelse return argFail(stderr, binary_name, .query, "query: missing input file", ArgError.MissingFile);
     const sel = selector orelse return argFail(stderr, binary_name, .query, "query: missing selector", ArgError.MissingSelector);
     const resolved = try format.resolveInputFormat(stderr, path, input_override);
+    try feats.apply(stderr, resolved, &parse_config);
 
     return .{
         .action = .query,
@@ -570,9 +621,10 @@ fn parseFilter(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError
     var unwrap_kept = false;
     var dry_run = false;
     var parse_config = format.ParseConfig{};
+    var feats: Features = .{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &input_override, &parse_config)) {
+        if (try applyExtFlag(arg, args, stderr, binary_name, .filter, &input_override, &parse_config, &feats)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--lang")) {
             input_override = try langFlag(args, stderr, binary_name, .filter);
@@ -602,6 +654,7 @@ fn parseFilter(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError
     const path = file orelse return argFail(stderr, binary_name, .filter, "filter: missing input file", ArgError.MissingFile);
     const drop_sel = drop orelse return argFail(stderr, binary_name, .filter, "filter: missing required --drop <selector>", ArgError.MissingFilterSelector);
     const resolved = try format.resolveInputFormat(stderr, path, input_override);
+    try feats.apply(stderr, resolved, &parse_config);
 
     return .{
         .action = .filter,
@@ -627,9 +680,10 @@ fn parseEdit(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!C
     var text: []const u8 = "";
     var dry_run = false;
     var parse_config = format.ParseConfig{};
+    var feats: Features = .{};
 
     while (args.next()) |arg| {
-        if (applyExtFlag(arg, &input_override, &parse_config)) {
+        if (try applyExtFlag(arg, args, stderr, binary_name, .edit, &input_override, &parse_config, &feats)) {
             // handled
         } else if (std.mem.eql(u8, arg, "--lang")) {
             input_override = try langFlag(args, stderr, binary_name, .edit);
@@ -685,6 +739,7 @@ fn parseEdit(args: anytype, stderr: *Writer, binary_name: []const u8) ArgError!C
     const path = file orelse return argFail(stderr, binary_name, .edit, "edit: missing input file", ArgError.MissingFile);
     const the_op = op orelse return argFail(stderr, binary_name, .edit, "edit: missing an operation (e.g. --replace, --delete, --insert-child)", ArgError.MissingEditOperation);
     const resolved = try format.resolveInputFormat(stderr, path, input_override);
+    try feats.apply(stderr, resolved, &parse_config);
 
     return .{
         .action = .edit,
@@ -937,6 +992,26 @@ test "parseConfig: convert --directives / --math / --highlight set the markdown 
     var a3 = TestArgs{ .items = &.{ "twig", "convert", "--highlight", "--no-highlight", "doc.md" } };
     const c3 = try parseConfig(&a3, &w3);
     try testing.expect(!c3.options.convert.parse_config.markdown.highlight);
+}
+
+test "parseConfig: --feature names a row's feature, before or after the file names the row" {
+    var buf: [512]u8 = undefined;
+    var w = scratchWriter(&buf);
+    var a = TestArgs{ .items = &.{ "twig", "query", "--feature", "highlight_colors", "doc.md", "mark", "--feature", "math" } };
+    const c = try parseConfig(&a, &w);
+    const md = c.options.query.parse_config.markdown;
+    try testing.expect(md.math and md.highlight_colors and md.highlight);
+    try testing.expect(!md.directives);
+
+    // A name the row does not declare says what it does declare.
+    var w2 = scratchWriter(&buf);
+    var bad = TestArgs{ .items = &.{ "twig", "convert", "--feature", "tables", "doc.md" } };
+    try testing.expectError(error.UnknownFeature, parseConfig(&bad, &w2));
+    try testing.expect(std.mem.indexOf(u8, w2.buffered(), "'markdown' has no feature 'tables'; it declares directives, math") != null);
+    var w3 = scratchWriter(&buf);
+    var none = TestArgs{ .items = &.{ "twig", "convert", "--feature", "math", "doc.dj" } };
+    try testing.expectError(error.UnknownFeature, parseConfig(&none, &w3));
+    try testing.expect(std.mem.indexOf(u8, w3.buffered(), "it declares none") != null);
 }
 
 test "parseConfig: --highlight-colors turns highlight on with it; --no-highlight-colors takes only the colours off" {

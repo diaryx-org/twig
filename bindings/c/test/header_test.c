@@ -961,6 +961,13 @@ static void test_a_language_registered_from_c(void) {
     CHECK(twig_format_feature_bit(code, (const uint8_t *)"loud", 4, &bit) == TWIG_STATUS_OK);
     CHECK(bit == 1u);
     CHECK(twig_format_feature_bit(code, (const uint8_t *)"soft", 4, &bit) == TWIG_STATUS_NOT_FOUND);
+    int parent = 0;
+    CHECK(twig_format_dialect_of(set, &parent) == TWIG_STATUS_OK && parent == code);
+    CHECK(twig_format_dialect_of(code, &parent) == TWIG_STATUS_NOT_FOUND);
+    // Markdown's extensions answer by name with their TWIG_MD_* bits.
+    uint32_t md_bit = 0;
+    CHECK(twig_format_feature_bit(TWIG_FORMAT_GFM, (const uint8_t *)"math", 4, &md_bit) == TWIG_STATUS_OK);
+    CHECK(md_bit == TWIG_MD_MATH);
 
     TwigDocument *doc = NULL;
     CHECK(twig_parse_ext((const uint8_t *)"hi there", 8, code, bit, &doc) == TWIG_STATUS_OK);

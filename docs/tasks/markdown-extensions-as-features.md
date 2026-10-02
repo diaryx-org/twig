@@ -4,7 +4,7 @@ description: 'A runtime language now declares features and sets, and a caller tu
 author: adammharris
 created: 2026-10-02
 updated: 2026-10-02
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
@@ -43,3 +43,12 @@ and `twig_format_feature_bit(code, "math")` of a runtime one.
   is documented as the typed spelling of the same flags.
 - `twig lang list` shows Markdown's features as it shows a runtime
   language's.
+
+## Done
+
+In `add(format): Markdown's extensions are features, and the CLI turns
+features on`. `twig.format.features` is the one list for both kinds of
+row; a C caller's `TWIG_MD_HIGHLIGHT_COLORS` now brings
+`TWIG_MD_HIGHLIGHT` with it, which is the behavioural change. The typed
+`Markdown.ParseOptions.Extensions` in Zig is unchanged, and colours stay
+inert without a highlight there, since it is the parser's own options.
