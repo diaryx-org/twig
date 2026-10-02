@@ -282,4 +282,7 @@ pub const samples: []const []const u8 = &.{
     "# Heading\n\n> Quote\n\n- first\n- second\n",
     "{#intro .note}\nA paragraph.\n",
     "``` zig\nconst x = 1;\n```\n",
+    // A paragraph of several lines, which a djot heading continues over —
+    // the claim `Syntax.heading_continues` makes for this table.
+    "A paragraph that runs\nover two lines.\n",
 };

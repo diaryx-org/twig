@@ -103,6 +103,7 @@ pub const table: syntax.Syntax = .{
         .ordered_list = .{ .marker = "", .cont = "  ", .blank = "", .numbered = true },
     }),
     .heading_marker = '=',
+    // A section title is one line, so `heading_continues` stays false.
     .thematic_break = "'''",
     .code_fence = .{ .char = '`', .info_forbids = " \t" },
     .task_marker = .{ .unchecked = "[ ]", .checked = "[x]" },

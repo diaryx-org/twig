@@ -4,7 +4,7 @@ description: '`Editor.setBlock(.heading)` over a Markdown paragraph that spans m
 author: adammharris
 created: 2026-10-02
 updated: 2026-10-02
-status: open
+status: done
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
@@ -41,3 +41,17 @@ heading over the paragraph's text — its soft breaks joined, which a heading
 renders the same — or refuses with `error.NotEditable`. Whichever it is, the
 gesture check passes over a Markdown sample with a multi-line paragraph, and
 `Markdown.samples` gains one so the compiled harness holds it.
+
+## Resolution
+
+One heading, its soft breaks joined. `Syntax` now says which kind of heading
+a format's marker writes: `heading_continues`, true for djot and left at its
+default `false` for Markdown and AsciiDoc. Where it is false,
+`setBlockByMarker` writes the paragraph as one line, each soft break (its
+span, continuation prefix included) a space, and refuses a hard break or a
+line end inside a leaf with `error.NotEditable`. Either way the splice is
+kept only if the reparse gives back one heading of the level asked for over
+the paragraph's text, so a heading the format reads differently is refused
+rather than reported. `Markdown.samples` and djot's gained a paragraph of
+several lines, the `mdf` runtime samples are multi-line again, and the
+gesture check holds a table claiming `heading_continues` to it.

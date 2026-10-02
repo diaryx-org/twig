@@ -44,6 +44,7 @@ const AST = @import("ast.zig");
 const Document = @import("../document.zig");
 const Span = @import("../span.zig");
 const locate = @import("locate.zig");
+const select = @import("select.zig");
 const table_edit = @import("table_edit.zig");
 const syntax_mod = @import("../syntax.zig");
 
@@ -709,6 +710,22 @@ pub const Editor = struct {
     /// under a fresh node of the requested kind and the format prints it — the
     /// same tree, re-spelled, which is why a marker is preferred when there is
     /// one. A format with neither is `error.UnsupportedFormat`.
+    ///
+    /// A HEADING OF ONE LINE. Where the format's marker heading ends at its
+    /// line end (`Syntax.heading_continues` is false — Markdown's ATX heading,
+    /// AsciiDoc's section title), a block of several lines is written as ONE:
+    /// each soft break becomes a space, which a heading renders the same, and
+    /// the continuation prefix behind it goes too. A hard break has no
+    /// one-line spelling, so a block holding one is `error.NotEditable`, as is
+    /// a line end inside a leaf (a code span run over two lines). Writing the
+    /// marker before the first line alone made a heading of that line and a
+    /// paragraph of the rest, and reported success.
+    ///
+    /// Either way the reparse is the judge of a heading: the splice is kept
+    /// only if a heading of `level` holding the block's text comes back where
+    /// it was written, and is `error.NotEditable` otherwise — a `Number #`
+    /// whose `#` an ATX heading reads as its closing run is refused, not
+    /// silently cut.
     pub fn setBlock(self: *Editor, offset: usize, kind: BlockKind, level: u32) Error!void {
         if (self.syntax.heading_marker) |marker| return self.setBlockByMarker(offset, kind, level, marker);
         if (self.syntax.renderBlock) |render| return self.setBlockByRender(offset, kind, level, render);
@@ -746,17 +763,63 @@ pub const Editor = struct {
         if (end > block_span.start and src[end - 1] == '\r') end -= 1;
 
         const allocator = self.splicer.allocator;
-        const prefix_len: usize = if (kind == .heading) level + 1 else 0; // marker*level + " "
-        const buf = try allocator.alloc(u8, prefix_len + content.len);
-        defer allocator.free(buf);
-        if (kind == .heading) {
-            @memset(buf[0..level], marker);
-            buf[level] = ' ';
-        }
-        @memcpy(buf[prefix_len..], content);
+        const doc = &self.splicer.doc;
+        if (kind == .paragraph) return self.commitSplice(start, end, content);
 
-        return self.commitSplice(start, end, buf);
+        // marker*level + " " + the text, on one line where a heading is one.
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
+        try buf.appendNTimes(allocator, marker, level);
+        try buf.append(allocator, ' ');
+        if (self.syntax.heading_continues) {
+            try buf.appendSlice(allocator, content);
+        } else {
+            try appendBlockAsOneLine(allocator, doc, block, cs, &buf);
+        }
+
+        const text = try select.textOf(allocator, &doc.ast, block);
+        defer allocator.free(text);
+        const want: HeadingCheck = .{
+            .level = level,
+            .text = std.mem.trim(u8, text, " "),
+            .within = Span.init(start, start + buf.items.len),
+        };
+        return self.commitSpliceChecked(start, end, buf.items, want.check());
     }
+
+    /// What `setBlock` looks for in the reparse: a heading of `level` over
+    /// the bytes it wrote that holds exactly `text`, read as
+    /// `select.textOf` reads it — a break of either kind is a space, which is
+    /// what makes a block's soft breaks and the spaces that replaced them the
+    /// same text.
+    const HeadingCheck = struct {
+        level: u32,
+        text: []const u8,
+        within: Span,
+
+        fn accept(ctx: *const anyopaque, doc: *const Document) bool {
+            const self: *const HeadingCheck = @ptrCast(@alignCast(ctx));
+            for (doc.ast.nodes, 0..) |n, i| {
+                const h = switch (n.kind) {
+                    .heading => |h| h,
+                    else => continue,
+                };
+                if (h.level != self.level) continue;
+                const sp = doc.span(@intCast(i));
+                // Overlapping, not inside: Markdown starts a quoted block's
+                // span at the `> ` its line carries, before the bytes written.
+                if (sp.end <= self.within.start or sp.start >= self.within.end) continue;
+                var rest = self.text;
+                if (!consumeText(&doc.ast, @intCast(i), &rest)) continue;
+                if (std.mem.trim(u8, rest, " ").len == 0) return true;
+            }
+            return false;
+        }
+
+        fn check(self: *const HeadingCheck) Splicer.Check {
+            return .{ .ctx = self, .accept = accept };
+        }
+    };
 
     /// `setBlock` over a format with no leading marker but a fragment
     /// renderer: BUILD the block and let the format print it.
@@ -4242,6 +4305,85 @@ fn gapIsClean(
         end = line_start;
     }
     return isSeparatorRun(src[start..end]);
+}
+
+/// Consume from `rest` the text of the subtree at `id`, as `select.textOf`
+/// spells it, and answer whether it matched — `textOf` without the
+/// allocation, for a reparse check that has nowhere to report running out of
+/// memory. The subtree's leading spaces go, as the `trim` over the text it is
+/// compared with did.
+fn consumeText(ast: *const AST, id: AST.Node.Id, rest: *[]const u8) bool {
+    var lead = true;
+    return consumeTextInner(ast, id, rest, &lead);
+}
+
+fn consumeTextInner(ast: *const AST, id: AST.Node.Id, rest: *[]const u8, lead: *bool) bool {
+    const piece: []const u8 = switch (ast.nodes[id].kind) {
+        .str => |t| t,
+        .text_leaf => |l| l.text,
+        .smart_punctuation => |v| v.ascii(),
+        .raw_inline => |v| v.text,
+        .code_block => |v| v.text,
+        .raw_block => |v| v.text,
+        .non_breaking_space, .soft_break, .hard_break => " ",
+        else => {
+            var child = ast.nodes[id].first_child;
+            while (child) |c| : (child = ast.nodes[c].next_sibling) {
+                if (!consumeTextInner(ast, c, rest, lead)) return false;
+            }
+            return true;
+        },
+    };
+    const p = if (lead.*) std.mem.trimStart(u8, piece, " ") else piece;
+    if (p.len > 0) lead.* = false;
+    if (!std.mem.startsWith(u8, rest.*, p)) return false;
+    rest.* = rest.*[p.len..];
+    return true;
+}
+
+/// The content `cs` of `block` written as ONE LINE, for a heading that ends at
+/// its line end: each soft break — whose span, where the parser records it as
+/// Markdown's does, runs from the line's trailing spaces to the next line's
+/// text and so covers the continuation prefix between — becomes one space.
+/// `error.NotEditable` for a hard break, which one line cannot spell, and for
+/// any line end left after that: one inside a leaf, a code span or a link
+/// title run over two lines, whose bytes this does not know how to fold.
+fn appendBlockAsOneLine(
+    allocator: Allocator,
+    doc: *const Document,
+    block: AST.Node.Id,
+    cs: Span,
+    out: *std.ArrayList(u8),
+) Editor.Error!void {
+    const src = doc.source;
+    var breaks: std.ArrayList(AST.Node.Id) = .empty;
+    defer breaks.deinit(allocator);
+    try collectBreaks(allocator, &doc.ast, block, &breaks);
+
+    const from = out.items.len;
+    var at = cs.start;
+    for (breaks.items) |id| {
+        if (std.meta.activeTag(doc.ast.nodes[id].kind) == .hard_break) return error.NotEditable;
+        const sp = doc.span(id);
+        if (sp.start < at or sp.end > cs.end) return error.NotEditable;
+        try out.appendSlice(allocator, std.mem.trimEnd(u8, src[at..sp.start], " \t"));
+        try out.append(allocator, ' ');
+        at = sp.end;
+        while (at < cs.end and (src[at] == ' ' or src[at] == '\t')) at += 1;
+    }
+    try out.appendSlice(allocator, src[at..cs.end]);
+    if (std.mem.indexOfAny(u8, out.items[from..], "\r\n") != null) return error.NotEditable;
+}
+
+/// Every soft and hard break under `id`, in document order.
+fn collectBreaks(allocator: Allocator, ast: *const AST, id: AST.Node.Id, out: *std.ArrayList(AST.Node.Id)) Allocator.Error!void {
+    var child = ast.nodes[id].first_child;
+    while (child) |c| : (child = ast.nodes[c].next_sibling) {
+        switch (ast.nodes[c].kind) {
+            .soft_break, .hard_break => try out.append(allocator, c),
+            else => try collectBreaks(allocator, ast, c, out),
+        }
+    }
 }
 
 /// B's content written as ONE LINE — what a marker heading A can hold. Each of

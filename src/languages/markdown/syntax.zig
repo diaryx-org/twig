@@ -85,6 +85,10 @@ const base: syntax.Syntax = .{
         .bullet_list = .{ .marker = "- ", .cont = "  ", .blank = "" },
         .ordered_list = .{ .marker = "", .cont = "", .blank = "", .numbered = true },
     }),
+    // An ATX heading is one line, so `heading_continues` stays false: a
+    // paragraph of several lines becomes a heading with its soft breaks
+    // joined, where a `## ` before the first line alone would head that line
+    // and leave the rest a paragraph.
     .heading_marker = '#',
     // What the serializer emits. `---` is only a break when a blank line comes
     // first — after a paragraph line it is a setext `<h2>` underline — which is

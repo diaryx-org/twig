@@ -144,6 +144,9 @@ pub const samples: []const []const u8 = &.{
     "# Heading\n\n> Quote\n\n- first\n- second\n",
     "- [x] done\n- [ ] pending\n",
     "``` zig\nconst x = 1;\n```\n",
+    // A paragraph of several lines, at the top level and in a quote: an ATX
+    // heading is one line, so `setBlock` has to join them.
+    "A paragraph that runs\nover two lines.\n\n> A quote that runs\n> over two lines.\n",
 };
 
 /// Strict CommonMark's harness samples: only what the spec itself spells, so

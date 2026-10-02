@@ -806,6 +806,51 @@ test "setBlock: a setext heading's underline collapses away" {
     try fx.expectSource("### hello\n");
 }
 
+test "setBlock: a Markdown paragraph of several lines becomes one heading, its soft breaks joined" {
+    // `docs/tasks/markdown-set-block-multi-line-paragraph.md`: the marker
+    // before the first line alone made `## a` a heading and `b` a paragraph,
+    // and reported success. An ATX heading is one line.
+    var md = try Fixture.init("a\nb\n", .markdown);
+    defer md.deinit();
+    try md.ed.setBlock(0, .heading, 2);
+    try md.expectSource("## a b\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&md, .heading));
+    try testing.expectEqual(@as(usize, 0), countKind(&md, .para));
+
+    // The continuation prefix goes with the line end, trailing spaces and
+    // lazy lines included, and the quote stays.
+    var quoted = try Fixture.init("> a \n> *b\nc*\n", .markdown);
+    defer quoted.deinit();
+    try quoted.ed.setBlock(2, .heading, 1);
+    try quoted.expectSource("> # a *b c*\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&quoted, .block_quote));
+
+    // A hard break has no one-line spelling, and a code span run over two
+    // lines is not folded: both refused, the source untouched.
+    for ([_][]const u8{ "a  \nb\n", "a\\\nb\n", "`a\nb`\n" }) |src| {
+        var fx = try Fixture.init(src, .markdown);
+        defer fx.deinit();
+        try testing.expectError(error.NotEditable, fx.ed.setBlock(0, .heading, 2));
+        try fx.expectSource(src);
+    }
+
+    // Djot's heading continues onto its next line, so its line breaks stay.
+    var dj = try Fixture.init("a\nb\n", .djot);
+    defer dj.deinit();
+    try dj.ed.setBlock(0, .heading, 2);
+    try dj.expectSource("## a\nb\n");
+    try testing.expectEqual(@as(usize, 1), countKind(&dj, .heading));
+}
+
+test "setBlock: a heading the reparse reads differently is refused" {
+    // `#` after a space closes an ATX heading, so `## Number #` would be a
+    // heading over `Number` — text the paragraph had, cut.
+    var fx = try Fixture.init("Number #\n", .markdown);
+    defer fx.deinit();
+    try testing.expectError(error.NotEditable, fx.ed.setBlock(0, .heading, 2));
+    try fx.expectSource("Number #\n");
+}
+
 test "setBlock: an out-of-range level is refused, and a parse-only format too" {
     var fx = try Fixture.init("hello\n", .djot);
     defer fx.deinit();

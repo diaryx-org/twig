@@ -64,6 +64,11 @@
 //!     container's `marker`, a task box, a footnote definition) is written at
 //!     the start of the block's first line, after the enclosing containers'
 //!     prefixes.
+//!   * A heading written with `heading_marker` is ONE LINE unless the table
+//!     says it continues (`heading_continues`, djot's): where it is one line,
+//!     a paragraph of several becomes a heading by having its soft breaks
+//!     joined into spaces, since a marker before the first line alone would
+//!     head that line and leave the rest a paragraph.
 //!   * A container is a PREFIX on every line it covers: `marker` on a block's
 //!     first line, `cont` on its continuation lines, `blank` on an empty line
 //!     inside it. Nesting concatenates prefixes, outermost first, so a
@@ -496,6 +501,28 @@ pub const Syntax = struct {
     /// The byte that opens an ATX heading, repeated `level` times then a space.
     /// `null` = this format has no heading marker, so `setBlock` is unsupported.
     heading_marker: ?u8 = null,
+
+    /// Whether a heading written with `heading_marker` CONTINUES onto the
+    /// line after it, as djot's does: `## a` + `b` is one heading over
+    /// `a b`. Then `Editor.setBlock` turns a paragraph of several lines into a
+    /// heading by writing the marker before its first line and keeping every
+    /// byte after it, soft breaks and hard ones included.
+    ///
+    /// `false` = a marker heading ends at its line end — Markdown's ATX
+    /// heading, AsciiDoc's section title — so the marker before a paragraph's
+    /// first line makes a heading of that line and leaves the rest a
+    /// paragraph. `setBlock` writes such a paragraph as one line instead,
+    /// each soft break a space (which a heading renders the same), and
+    /// refuses one holding a hard break, which one line cannot spell.
+    ///
+    /// The weaker claim is the default, because it is right everywhere: a
+    /// one-line heading is a heading in every format with a marker, and only
+    /// the soft breaks are lost. Measured rather than asserted — `setBlock`
+    /// keeps its splice only if one heading over the paragraph's text comes
+    /// back, and `contract.zig`'s gesture check holds a table claiming this
+    /// to that over every sample paragraph of several lines. Implies
+    /// `heading_marker != null`, which `assertCoherent` pins.
+    heading_continues: bool = false,
 
     /// A thematic break, as the whole line it occupies (no trailing newline).
     /// `null` = this format has no thematic break, so `insertThematicBreak` is
@@ -991,6 +1018,11 @@ pub const Syntax = struct {
         // claims rest on the same renderer, and so does an authorable formula:
         // `Editor.insertInlineMath` prints the leaf through it, because a fixed
         // `Delims` pair cannot say how djot's fence widens around a backtick.
+        // A claim about the line after a marker heading, in a table with no
+        // marker, is a claim about nothing: the renderer path prints whole
+        // fragments and never reads it.
+        if (self.heading_continues and self.heading_marker == null)
+            return fail(why, .continues_needs_marker, "heading_continues");
         if (self.renderBlock == null) {
             if (self.names_leaf_containers) return fail(why, .claim_needs_renderer, "names_leaf_containers");
             if (self.block_attrs != null) return fail(why, .claim_needs_renderer, "block_attrs");
@@ -1115,6 +1147,7 @@ pub const Rule = enum {
     table_bar,
     split_needs_markers,
     split_needs_join,
+    continues_needs_marker,
     claim_needs_renderer,
     inline_spelling,
     line_spelling,
@@ -1136,6 +1169,7 @@ pub const Rule = enum {
             .table_bar => "a table's bar is non-empty and appears in no padding or delimiter cell, and no delimiter cell is empty",
             .split_needs_markers => "a format that splits blocks spells a heading marker and a code fence",
             .split_needs_join => "a format that splits blocks can join them",
+            .continues_needs_marker => "a heading that continues onto its next line is written with a heading marker",
             .claim_needs_renderer => "a directive, attribute or formula claim needs a block renderer to print through",
             .inline_spelling => "an inline delimiter is non-empty and holds no line end",
             .line_spelling => "a spelling written inside a line holds no line end, and a marker is not empty",
@@ -1198,6 +1232,7 @@ test "a parse-only format spells nothing" {
     try std.testing.expect(s.inline_delims.get(.strong) == null);
     try std.testing.expect(s.container_spelling.get(.block_quote) == null);
     try std.testing.expect(s.heading_marker == null);
+    try std.testing.expect(!s.heading_continues);
     try std.testing.expect(s.text_escapes == null);
     try std.testing.expect(s.block_start_escapes == null);
     try std.testing.expect(s.renderText == null);
@@ -1215,6 +1250,10 @@ test "validate names the rule a table breaks" {
     const half_link: Syntax = .{ .link_text_escapes = "[]" };
     try std.testing.expectError(error.Incoherent, half_link.validate(&why));
     try std.testing.expectEqual(Rule.link_halves, why.rule);
+
+    const continues_alone: Syntax = .{ .heading_continues = true };
+    try std.testing.expectError(error.Incoherent, continues_alone.validate(&why));
+    try std.testing.expectEqual(Rule.continues_needs_marker, why.rule);
 
     const split_alone: Syntax = .{ .block_separator = "\n", .line_join = "\n" };
     try std.testing.expectError(error.Incoherent, split_alone.validate(&why));

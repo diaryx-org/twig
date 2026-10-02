@@ -64,6 +64,10 @@ pub const table: syntax.Syntax = .{
         .ordered_list = .{ .marker = "", .cont = "", .blank = "", .numbered = true },
     }),
     .heading_marker = '#',
+    // A djot heading runs to the blank line, not the line end: `## a` + `b`
+    // is one heading, so a paragraph of several lines keeps its line breaks
+    // when it becomes one.
+    .heading_continues = true,
     // What the serializer emits. Djot also reads a bare `***`/`---`, but the
     // spaced form is the canonical spelling and the one a round-trip reproduces.
     .thematic_break = "* * *",
