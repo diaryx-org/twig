@@ -109,7 +109,7 @@ const VerbatimKind = enum {
 pub const InlineParser = struct {
     subject: []const u8,
     matches: EventList = .empty,
-    openers: [20]std.ArrayList(Opener) = [_]std.ArrayList(Opener){.empty} ** 20,
+    openers: [20]std.ArrayList(Opener) = @splat(.empty),
     verbatim: usize = 0,
     verbatim_type: VerbatimKind = .verbatim,
     destination: bool = false,
@@ -136,7 +136,7 @@ pub const InlineParser = struct {
     }
 
     fn openers_(self: *InlineParser, k: OpenerKind) *std.ArrayList(Opener) {
-        return &self.openers[@intFromEnum(k)];
+        return &self.openers[@backingInt(k)];
     }
 
     fn addMatch(self: *InlineParser, allocator: Allocator, start: usize, end: usize, annot: Annotation) Allocator.Error!void {

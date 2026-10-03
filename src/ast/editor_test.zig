@@ -366,10 +366,10 @@ test "toggleInline: html spells every kind the toolbar vocabulary names" {
     // them, so no toolbar button is dark. (The two quote containers it cannot
     // spell are not in this vocabulary: the parser produces them, no gesture
     // does. See `html/syntax.zig`.)
-    inline for (std.meta.fields(Editor.InlineKind)) |f| {
+    inline for (@typeInfo(Editor.InlineKind).@"enum".field_names, @typeInfo(Editor.InlineKind).@"enum".field_values) |_, f_value| {
         var one = try Fixture.init("<p>a x b</p>\n", .html);
         defer one.deinit();
-        try one.ed.wrapRange(Span.init(5, 6), @enumFromInt(f.value));
+        try one.ed.wrapRange(Span.init(5, 6), @fromBackingInt(@intCast(f_value)));
     }
 }
 
@@ -4887,12 +4887,12 @@ comptime {
     // A `Gesture` variant added without a row above would silently go untested,
     // which is the one failure this whole test exists to prevent.
     @setEvalBranchQuota(10_000);
-    for (std.meta.fields(Editor.Gesture)) |f| {
+    for (std.meta.fieldNames(Editor.Gesture)) |f_name| {
         var seen = false;
         for (all_gestures) |g| {
-            if (std.mem.eql(u8, @tagName(g), f.name)) seen = true;
+            if (std.mem.eql(u8, @tagName(g), f_name)) seen = true;
         }
-        if (!seen) @compileError("all_gestures is missing Gesture." ++ f.name);
+        if (!seen) @compileError("all_gestures is missing Gesture." ++ f_name);
     }
 }
 
@@ -4945,8 +4945,8 @@ test "supports matches what every gesture's gate actually does" {
     // Any other error (`NoBlock` where the caret isn't in a list, `NotEditable`,
     // `EditConflict`) is a position answer, not a format one, and counts as
     // supported — which is precisely the distinction `supports` documents.
-    inline for (std.meta.fields(format.Format)) |f| {
-        const fmt: format.Format = @enumFromInt(f.value);
+    inline for (@typeInfo(format.Format).@"enum".field_names, @typeInfo(format.Format).@"enum".field_values) |_, f_value| {
+        const fmt: format.Format = @fromBackingInt(@intCast(f_value));
         const syntax = format.syntaxFor(fmt);
         for (all_gestures) |g| {
             var fx = try Fixture.init(minimalSource(fmt), fmt);

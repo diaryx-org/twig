@@ -102,7 +102,7 @@ fn kindTag(kind: anytype) Splicer.KindTag {
 }
 
 /// Room for the widest marker/indent a list can produce (`999. ` and friends).
-const container_indent = " " ** 24;
+const container_indent = &@as([24]u8, @splat(' '));
 
 pub const Editor = struct {
     /// The kind vocabularies, re-exported so a caller needs only this type:

@@ -117,7 +117,7 @@ pub const Format = enum(u16) {
     /// row, the registered name of a runtime one.
     pub fn name(self: Format) []const u8 {
         return switch (self) {
-            _ => runtime.nameOf(@intFromEnum(self)),
+            _ => runtime.nameOf(@backingInt(self)),
             inline else => |f| @tagName(f),
         };
     }
@@ -153,7 +153,7 @@ pub const Target = enum(u16) {
     /// See `Format.name`.
     pub fn name(self: Target) []const u8 {
         return switch (self) {
-            _ => runtime.nameOf(@intFromEnum(self)),
+            _ => runtime.nameOf(@backingInt(self)),
             inline else => |t| @tagName(t),
         };
     }
@@ -182,7 +182,7 @@ pub fn targetFor(fmt: Format) Target {
         .commonmark, .gfm => .markdown,
         .svg => .xml,
         // A registered language writes as itself, under the same value.
-        _ => @enumFromInt(@intFromEnum(fmt)),
+        _ => @fromBackingInt(@intCast(@backingInt(fmt))),
         inline else => |f| @field(Target, @tagName(f)),
     };
 }
@@ -832,8 +832,8 @@ pub fn detectFromExtension(file_path: []const u8) ?Format {
 }
 
 test "every Format has exactly one registry entry" {
-    inline for (std.meta.fields(Format)) |f| {
-        const fmt: Format = @enumFromInt(f.value);
+    inline for (@typeInfo(Format).@"enum".field_names, @typeInfo(Format).@"enum".field_values) |_, f_value| {
+        const fmt: Format = @fromBackingInt(@intCast(f_value));
         var seen: usize = 0;
         for (&registry) |*e| {
             if (e.id == fmt) seen += 1;
@@ -843,8 +843,8 @@ test "every Format has exactly one registry entry" {
 }
 
 test "every Target has exactly one targets entry" {
-    inline for (std.meta.fields(Target)) |f| {
-        const t: Target = @enumFromInt(f.value);
+    inline for (@typeInfo(Target).@"enum".field_names, @typeInfo(Target).@"enum".field_values) |_, f_value| {
+        const t: Target = @fromBackingInt(@intCast(f_value));
         var seen: usize = 0;
         for (&targets) |*e| {
             if (e.id == t) seen += 1;
@@ -861,8 +861,8 @@ test "every Format is also a Target, and the two agree in both directions" {
     // spells a different language. A dialect lands on its LANGUAGE's target,
     // and the language is what reads that target back — so the two arms
     // `targetFor` spells by hand are pinned to `Entry.dialect_of` here.
-    inline for (std.meta.fields(Format)) |f| {
-        const fmt: Format = @enumFromInt(f.value);
+    inline for (@typeInfo(Format).@"enum".field_names, @typeInfo(Format).@"enum".field_values) |_, f_value| {
+        const fmt: Format = @fromBackingInt(@intCast(f_value));
         const t = targetFor(fmt);
         const lang = entryFor(fmt).dialect_of orelse fmt;
         try std.testing.expectEqualStrings(@tagName(lang), @tagName(t));

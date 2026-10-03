@@ -68,7 +68,7 @@ pub const Report = struct {
         w.print(fmt, args) catch {};
         // By value rather than `isRegistered`: registration runs these
         // checks over a row it has filled and not yet published.
-        if (@intFromEnum(entry.id) >= runtime.base and runtime.lastFailure().len != 0) {
+        if (@backingInt(entry.id) >= runtime.base and runtime.lastFailure().len != 0) {
             w.print(": {s}", .{runtime.lastFailure()}) catch {};
         } else {
             w.print(": {t}", .{err}) catch {};

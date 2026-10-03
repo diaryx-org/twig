@@ -55,7 +55,7 @@ const Renderer = struct {
     dlist_depth: u32 = 0,
     /// Enclosing delimited blocks per delimiter byte, so a nested block of
     /// the same kind gets a longer delimiter.
-    delim_depth: [256]u8 = [_]u8{0} ** 256,
+    delim_depth: [256]u8 = @splat(0),
     /// Footnote labels whose body has been written at a reference already;
     /// a later reference to the same label is `footnote:label[]`.
     footnotes_written: std.StringHashMapUnmanaged(void) = .empty,

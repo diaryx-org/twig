@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/c_abi.zig"),
             .target = wasm_target,
-            .optimize = .ReleaseSmall,
+            .optimize = .small,
             .strip = true,
         }),
     });
@@ -86,9 +86,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // `zig build bench -- <file>`: parse a document under a counting allocator
     // and report allocation counts/bytes. Force ReleaseFast unless the user
@@ -98,7 +96,7 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench/main.zig"),
             .target = target,
-            .optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseFast,
+            .optimize = if (b.user_input_options.contains("optimize")) optimize else .fast,
             .imports = &.{
                 .{ .name = "twig", .module = mod },
             },
@@ -107,9 +105,7 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Parse a file under a counting allocator (bench [--format f] [--iters N] <file>)");
     const bench_cmd = b.addRunArtifact(bench);
     bench_step.dependOn(&bench_cmd.step);
-    if (b.args) |args| {
-        bench_cmd.addArgs(args);
-    }
+    bench_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -180,7 +176,9 @@ pub fn build(b: *std.Build) void {
     // whose answers are not build inputs, so neither may ever be served from
     // the cache.
 
-    const version_check_run = b.addSystemCommand(&.{ "sh", b.pathFromRoot("scripts/sync-version.sh"), "--check" });
+    const version_check_run = b.addSystemCommand(&.{"sh"});
+    version_check_run.addFileArg(b.path("scripts/sync-version.sh"));
+    version_check_run.addArg("--check");
     version_check_run.has_side_effects = true;
     const version_check_step = b.step("sync-version-check", "Fail if the Rust manifests' version has drifted from build.zig.zon");
     version_check_step.dependOn(&version_check_run.step);
@@ -188,7 +186,8 @@ pub fn build(b: *std.Build) void {
     // The pre-release gate: what CI runs, in one command. It does not check the
     // changelog: `release release` regenerates that region itself, after this
     // runs, so a stale region is not a reason to refuse a release.
-    const rust_check_run = b.addSystemCommand(&.{ "sh", b.pathFromRoot("scripts/rust-check.sh") });
+    const rust_check_run = b.addSystemCommand(&.{"sh"});
+    rust_check_run.addFileArg(b.path("scripts/rust-check.sh"));
     rust_check_run.has_side_effects = true;
     const check_step = b.step("check", "Pre-release gate: version sync + zig build + tests + C ABI library + the Rust binding suite (skipped with a note if cargo is missing)");
     check_step.dependOn(version_check_step);

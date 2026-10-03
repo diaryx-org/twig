@@ -189,8 +189,8 @@ test "Extensions covers exactly the flags every preset leaves off" {
     // these on; a preset that did would make an extension impossible to
     // leave off over it, and this is where that would show.
     inline for (.{ Options{}, commonmark, gfm }) |preset| {
-        inline for (std.meta.fields(Extensions)) |f| {
-            try std.testing.expect(!@field(preset, f.name));
+        inline for (comptime std.meta.fieldNames(Extensions)) |f_name| {
+            try std.testing.expect(!@field(preset, f_name));
         }
         // Nothing asked for is the preset exactly.
         try std.testing.expectEqual(preset, withExtensions(preset, .{}));

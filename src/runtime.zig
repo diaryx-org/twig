@@ -227,22 +227,22 @@ fn slotOf(value: u16) ?*const Slot {
 /// Whether `fmt` names a registered language — false for a compiled row, and
 /// for a value in the runtime range that no registration has been given.
 pub fn isRegistered(fmt: Format) bool {
-    return slotOf(@intFromEnum(fmt)) != null;
+    return slotOf(@backingInt(fmt)) != null;
 }
 
 /// The `Format` a wire code names, if a language holds it.
 pub fn formatFromCode(code: i64) ?Format {
     const value = std.math.cast(u16, code) orelse return null;
     _ = slotOf(value) orelse return null;
-    return @enumFromInt(value);
+    return @fromBackingInt(@intCast(value));
 }
 
 pub fn entryFor(fmt: Format) ?*const format.Entry {
-    return if (slotOf(@intFromEnum(fmt))) |s| &s.entry else null;
+    return if (slotOf(@backingInt(fmt))) |s| &s.entry else null;
 }
 
 pub fn targetEntryFor(t: Target) ?*const format.TargetEntry {
-    return if (slotOf(@intFromEnum(t))) |s| &s.target else null;
+    return if (slotOf(@backingInt(t))) |s| &s.target else null;
 }
 
 /// The name a runtime `Format` or `Target` value was registered under, or
@@ -277,7 +277,7 @@ pub fn byExtension(ext: []const u8) ?Format {
 
 /// What a conversion into `t` keeps, as the load-time probe measured it.
 pub fn measured(t: Target) ?*const diagnostics.Measured {
-    const s = slotOf(@intFromEnum(t)) orelse return null;
+    const s = slotOf(@backingInt(t)) orelse return null;
     return if (s.measured) |*m| m else null;
 }
 
@@ -389,7 +389,7 @@ pub fn register(gpa: Allocator, language: Language, description: Description, di
     if (i >= capacity) return refuseFull(diag);
 
     const owned = try own(gpa, description);
-    const id: Format = @enumFromInt(base + i);
+    const id: Format = @fromBackingInt(@intCast(base + i));
     const fns = rows[i];
     slots[i] = .{
         .language = language,
@@ -405,7 +405,7 @@ pub fn register(gpa: Allocator, language: Language, description: Description, di
             .serializeCanonical = if (owned.write) fns.serializeCanonical else null,
         },
         .target = .{
-            .id = @enumFromInt(base + i),
+            .id = @fromBackingInt(@intCast(base + i)),
             .reads_back_as = id,
             .serializeFromAst = if (owned.write) fns.serializeFromAst else null,
         },
@@ -543,7 +543,7 @@ test "runtime: a registered language is a row every consumer reaches" {
     try testing.expectEqual(fmt, format.parseFormatName("djot-twin").?);
     try testing.expectEqual(fmt, format.parseFormatName("djt").?);
     try testing.expectEqual(fmt, format.detectFromExtension("notes.DJTWIN").?);
-    try testing.expectEqual(@intFromEnum(fmt), @intFromEnum(format.targetFor(fmt)));
+    try testing.expectEqual(@backingInt(fmt), @backingInt(format.targetFor(fmt)));
 
     const src = "Hello *world*.\n";
     const cfg: format.ParseConfig = .{};
