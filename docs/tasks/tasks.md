@@ -8,8 +8,6 @@ part_of: '[Twig](/README.md)'
 contents:
 - '[A gesture over an AsciiDoc paragraph admonition takes its label into the new block](/docs/tasks/asciidoc-admonition-label-gestures.md)'
 - '[A djot directive written with a bare attribute or a label does not read back as one](/docs/tasks/djot-insert-directive-round-trip.md)'
-- '[setBlock makes a heading of a Markdown paragraph''s first line and leaves the rest a paragraph](/docs/tasks/markdown-set-block-multi-line-paragraph.md)'
-- '[Markdown''s extensions as named features, the way a runtime language declares them](/docs/tasks/markdown-extensions-as-features.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 

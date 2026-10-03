@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-10-02
 updated: 2026-10-02
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # Markdown's extensions as named features, the way a runtime language declares them

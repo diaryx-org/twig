@@ -17,6 +17,8 @@ contents:
 - '[Decide whether twig carries a runtime-language contract](/docs/tasks/closed/runtime-languages.md)'
 - '[References and footnotes become `Document` columns, so `ParsedDoc` can stop being a union](/docs/tasks/closed/side-tables-as-document-columns.md)'
 - '[A block inserted after a split at a paragraph''s end leaves two blank lines behind it](/docs/tasks/closed/block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines.md)'
+- '[Markdown''s extensions as named features, the way a runtime language declares them](/docs/tasks/closed/markdown-extensions-as-features.md)'
+- '[setBlock makes a heading of a Markdown paragraph''s first line and leaves the rest a paragraph](/docs/tasks/closed/markdown-set-block-multi-line-paragraph.md)'
 ---
 
 # Closed tasks

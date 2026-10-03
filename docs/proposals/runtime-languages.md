@@ -79,7 +79,7 @@ lifted. Where it differs from the text below:
   of them on; a sample may name the features it needs. Running it so found
   a bug in the compiled Markdown that the default-options harness never
   reaches, filed as
-  [a task](/docs/tasks/markdown-set-block-multi-line-paragraph.md).
+  [a task](/docs/tasks/closed/markdown-set-block-multi-line-paragraph.md).
 - **One `render` slot.** The vtable is version 2: its functions take a call
   record (row, feature mask, input), and one `render` function takes the
   wire's render request as JSON — `render_text`, `render_block`,
