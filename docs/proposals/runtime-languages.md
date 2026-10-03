@@ -562,6 +562,21 @@ base, which is why the range is reserved in a minor and the ABI stays at 6.
    first format twig does not compile in — the twig-native prototype at
    read tier, or whichever of Org and the wiki dialects someone brings
    first.
+
+   Built, 2026-10-02, as a local repository not yet published: `djot.mjs`
+   is `js/languages/djot.js` there, over djot.js 0.3.2 vendored with its
+   corpus, and it reads, writes and authors. `twig lang check js-djot
+   --against djot` passes the load check and gives djot's table on every
+   harness sample and on 248 of the corpus's 260 cases; the twelve that
+   differ are two twig bugs ([empty `str`](/docs/tasks/djot-word-attributes-split-an-empty-str.md),
+   [caption span](/docs/tasks/djot-table-caption-content-span-runs-backwards.md))
+   and one change in djot since 0.3.2, written up in its
+   `docs/twin-differences.md`. Where it departs from the text above: the
+   twin reads djot.js's event stream as well as its AST, for the positions
+   of attributes, fence bodies and verbatim interiors the AST does not
+   keep; and an authoring helper's load check costs about 4 s per CLI
+   invocation, against 40 ms for one that reads and writes
+   ([a task](/docs/tasks/runtime-load-check-cost-per-invocation.md)).
 6. **Measure before an editor gets one.** The per-edit cost of an
    in-process runtime format at leaf's keystroke rate, with the djot twin as
    the benchmark against the compiled row. The number decides whether the
@@ -583,9 +598,20 @@ base, which is why the range is reserved in a minor and the ABI stays at 6.
    the cost: on the 34 KB document 0.38 ms of parse, 0.41 ms of encode and
    1.78 ms of decode, which builds a `std.json.Value` tree with a map per
    row before reading a field. So the first number says the JSON can stay
-   and its reader cannot ([a task](/docs/tasks/table-decode-without-a-value-tree.md));
-   the engine's half — djot.js on QuickJS through `twig-quickjs` — is the
-   number that decides the rest.
+   and its reader cannot ([a task](/docs/tasks/table-decode-without-a-value-tree.md)).
+
+   The engine's half, from `twig-quickjs`'s djot twin on djot.js's 12.6 KB
+   bench readme (release build, same machine): a parse is 13–14 ms
+   in-process and 14–15 ms through the helper, against 0.09 ms compiled —
+   about 150x, of which djot.js's own parse is 6.7 ms and the event pass
+   the twin reads positions from 3.3 ms. The table's decode is under a
+   millisecond of that. So the table stays JSON: the contract is a small
+   part of a scripted language's cost, and typed arrays would not move it.
+   And a script does not keep up with typing past a few kilobytes — one
+   frame is spent on a 12.6 KB document — so a language an editor reparses
+   per keystroke reaches leaf compiled, or once the runtime row reparses
+   only the blocks a keystroke touched; the twig-native prototype waits to
+   be compiled.
 
 Steps 2 through 4 are a core minor and a Rust minor each, none breaking; 5
 is a repository; 6 is a number. Versions are Adam's to name. Each step is
