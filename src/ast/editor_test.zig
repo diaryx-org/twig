@@ -807,7 +807,7 @@ test "setBlock: a setext heading's underline collapses away" {
 }
 
 test "setBlock: a Markdown paragraph of several lines becomes one heading, its soft breaks joined" {
-    // `docs/tasks/markdown-set-block-multi-line-paragraph.md`: the marker
+    // `docs/tasks/closed/markdown-set-block-multi-line-paragraph.md`: the marker
     // before the first line alone made `## a` a heading and `b` a paragraph,
     // and reported success. An ATX heading is one line.
     var md = try Fixture.init("a\nb\n", .markdown);
