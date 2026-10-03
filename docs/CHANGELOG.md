@@ -90,6 +90,24 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 4.0.1
+
+### Breaking
+
+- build with Zig 0.17.0 ([`4eb2ca1`](https://github.com/diaryx-org/twig/commit/4eb2ca1f9e8c588dd66b0fef1f8bae234ac866b5))
+
+### Added
+
+- **bench** — bench-edit times a keystroke through a runtime twin against compiled djot ([`6680f32`](https://github.com/diaryx-org/twig/commit/6680f32f4cac261ea95c3e262b13b622869ca915))
+
+### Behavioural changes
+
+- building twig from source needs Zig 0.17.0 — `zig build`,
+  `zig fetch` consumers, and the twig-sys crate wherever it compiles the
+  core rather than linking a prebuilt payload. Zig 0.16.0 refuses the tree
+  at build.zig.
+
+
 ## 4.0.0
 
 ### Breaking
