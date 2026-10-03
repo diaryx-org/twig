@@ -90,6 +90,20 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 3.11.2
+
+### Breaking
+
+- build with Zig 0.17.0 ([`77dad95`](https://github.com/diaryx-org/twig/commit/77dad95cd9c13189ef67e72e94c4405e07111ad1))
+
+### Behavioural changes
+
+- building twig from source needs Zig 0.17.0 — `zig build`,
+  `zig fetch` consumers, and the twig-sys crate wherever it compiles the
+  core rather than linking a prebuilt payload. Zig 0.16.0 refuses the tree
+  at build.zig.
+
+
 ## 3.11.1
 
 ### Fixed
