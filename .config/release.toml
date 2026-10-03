@@ -7,7 +7,9 @@
 # apart, it is the same line as a Cargo workspace's.
 name = "twig"
 url = "https://github.com/diaryx-org/twig"
-release_branch = "main"
+# The 3.11 maintenance branch: Zig-toolchain backports for consumers still on
+# twig-doc 3, cut after 4.0.0. main releases 4.x.
+release_branch = "release-3.11"
 
 # Where the version is decided. The prefix is matched against the raw line, so
 # the zon's indentation is part of it.

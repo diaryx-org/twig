@@ -169,3 +169,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           body_path: RELEASE_NOTES.md
+          # A 3.11.x release is a backport cut after 4.0.0: it must not take
+          # "Latest" from the newest major.
+          make_latest: false

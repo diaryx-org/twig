@@ -17,8 +17,11 @@ name: Homebrew
 # Prerequisite before the first tagged release succeeds: install the diaryx-bot
 # GitHub App on diaryx-org/homebrew-tap (Contents:write) and add its App ID +
 # private key as the TAP_APP_ID / TAP_APP_KEY secrets on this repo.
+#
+# Not on a tag here. This is the 3.11 maintenance branch, and its tags are cut
+# after 4.0.0: the tap holds the newest twig, and a 3.11.x tag writing the
+# formula would take it back a major.
 on:
-  push: { tags: [v*.*.*] }
   workflow_dispatch:
 permissions:
   contents: write # caps what the called workflow may request
