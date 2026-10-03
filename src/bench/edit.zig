@@ -83,7 +83,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Where the runtime row's time goes: the language's parse, its table
     // written out, and the table read back (decoded and checked).
-    var best = [_]u64{std.math.maxInt(u64)} ** 4;
+    var best: [4]u64 = @splat(std.math.maxInt(u64));
     for (0..5) |_| {
         const t0 = Io.Clock.awake.now(io);
         var doc = try twig.Djot.parse(gpa, source);

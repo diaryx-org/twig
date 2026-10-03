@@ -47,7 +47,7 @@ constructs documents programmatically.
 ## Build requirements
 
 The bindings compile Twig's Zig implementation into a static library at build
-time, so **a [Zig](https://ziglang.org) 0.16.0 compiler must be on `PATH`**.
+time, so **a [Zig](https://ziglang.org) 0.17.0 compiler must be on `PATH`**.
 The Zig source is vendored into the published crate; nothing is downloaded at
 build time. Cross-compilation is supported for any target Zig can emit (the
 `build.rs` maps the Cargo target triple to a Zig target).

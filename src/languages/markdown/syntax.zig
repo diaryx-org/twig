@@ -244,7 +244,7 @@ const Key = struct {
 
     fn index(k: Key) usize {
         var i: usize = @intFromBool(k.strikethrough);
-        i = i * 3 + @intFromEnum(k.highlights);
+        i = i * 3 + @backingInt(k.highlights);
         i = i * 2 + @intFromBool(k.directives);
         i = i * 2 + @intFromBool(k.html_elements);
         i = i * 2 + @intFromBool(k.math);
@@ -268,7 +268,7 @@ const Key = struct {
         rest /= 2;
         const directives = rest % 2 == 1;
         rest /= 2;
-        const highlights: Highlights = @enumFromInt(rest % 3);
+        const highlights: Highlights = @fromBackingInt(@intCast(rest % 3));
         rest /= 3;
         return .{
             .strikethrough = rest == 1,

@@ -188,7 +188,7 @@ pub const Tag = enum {
     version,
     warning,
 
-    pub const count = @typeInfo(Tag).@"enum".fields.len;
+    pub const count = @typeInfo(Tag).@"enum".field_names.len;
 
     pub fn name(self: Tag) []const u8 {
         return @tagName(self);
@@ -1114,7 +1114,7 @@ fn closeTop(
     if (dissolves(frame.tag, parent)) {
         if (frame.tag == .thead) markHeadRows(b, frame.children.items);
         if (frame.tag == .line_block) bumpLineIndent(b, frame.children.items);
-        if (coverage) |c| c.dissolved[@intFromEnum(frame.tag)] += 1;
+        if (coverage) |c| c.dissolved[@backingInt(frame.tag)] += 1;
         // A dissolving element at the root would leave the document with no
         // node; pformat never produces one (a doctree's root is always
         // `<document>`), so this cannot fire, and returning without recording a
@@ -1134,7 +1134,7 @@ fn closeTop(
     const semantic = decodeKind(b, frame.tag, parent, frame.children.items, attr_buf.items);
     const kind: Node.Kind = semantic orelse .{ .container = .{ .name = frame.tag.name() } };
     if (coverage) |c| {
-        const slot = @intFromEnum(frame.tag);
+        const slot = @backingInt(frame.tag);
         if (semantic != null) c.semantic[slot] += 1 else c.generic[slot] += 1;
     }
 
@@ -1550,8 +1550,8 @@ test "an element with no children is one line" {
     var cov: Coverage = .{};
     var ast = try decode(testing.allocator, src, &cov);
     defer ast.deinit();
-    try testing.expectEqual(@as(u32, 1), cov.generic[@intFromEnum(Tag.comment)]);
-    try testing.expectEqual(@as(u32, 0), cov.semantic[@intFromEnum(Tag.comment)]);
+    try testing.expectEqual(@as(u32, 1), cov.generic[@backingInt(Tag.comment)]);
+    try testing.expectEqual(@as(u32, 0), cov.semantic[@backingInt(Tag.comment)]);
 }
 
 test "a literal block with a lone text child decodes to a code block" {
@@ -1570,7 +1570,7 @@ test "a literal block with a lone text child decodes to a code block" {
     // The `xml:space` attribute rides along untouched rather than being
     // absorbed, which is what makes the write-back exact.
     try testing.expectEqualStrings("preserve", ast.attrsOf(lb).get("xml:space").?);
-    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.literal_block)]);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@backingInt(Tag.literal_block)]);
 
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
@@ -1628,7 +1628,7 @@ test "a citation reference keeps the written label and leaves refname in attrs" 
     try testing.expectEqual(AST.TextLeafKind.citation_reference, ast.nodes[ref].kind.text_leaf.kind);
     try testing.expectEqualStrings("CIT1", ast.nodes[ref].kind.text_leaf.text);
     try testing.expectEqualStrings("cit1", ast.attrsOf(ref).get("refname").?);
-    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.citation_reference)]);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@backingInt(Tag.citation_reference)]);
 
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
@@ -1740,11 +1740,11 @@ test "a table is flattened out of tgroup/thead/tbody and built back into them" {
 
     // The three wrappers produced no node, and are counted as neither semantic
     // nor generic.
-    try testing.expectEqual(@as(u32, 1), cov.dissolved[@intFromEnum(Tag.tgroup)]);
-    try testing.expectEqual(@as(u32, 1), cov.dissolved[@intFromEnum(Tag.thead)]);
-    try testing.expectEqual(@as(u32, 1), cov.dissolved[@intFromEnum(Tag.tbody)]);
-    try testing.expectEqual(@as(u32, 0), cov.generic[@intFromEnum(Tag.tgroup)]);
-    try testing.expectEqual(@as(u32, 2), cov.semantic[@intFromEnum(Tag.colspec)]);
+    try testing.expectEqual(@as(u32, 1), cov.dissolved[@backingInt(Tag.tgroup)]);
+    try testing.expectEqual(@as(u32, 1), cov.dissolved[@backingInt(Tag.thead)]);
+    try testing.expectEqual(@as(u32, 1), cov.dissolved[@backingInt(Tag.tbody)]);
+    try testing.expectEqual(@as(u32, 0), cov.generic[@backingInt(Tag.tgroup)]);
+    try testing.expectEqual(@as(u32, 2), cov.semantic[@backingInt(Tag.colspec)]);
 
     // And it all comes back — `cols="2"` recounted, the groups re-nested, the
     // caption spelled `<title>` again.
@@ -1811,10 +1811,10 @@ test "a line block's nesting flattens to a per-line indent and is rebuilt from i
 
     // One block is the construct; the other five were wrappers and produced no
     // node at all, counted as neither semantic nor generic.
-    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.line_block)]);
-    try testing.expectEqual(@as(u32, 5), cov.dissolved[@intFromEnum(Tag.line_block)]);
-    try testing.expectEqual(@as(u32, 0), cov.generic[@intFromEnum(Tag.line_block)]);
-    try testing.expectEqual(@as(u32, 9), cov.semantic[@intFromEnum(Tag.line)]);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@backingInt(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 5), cov.dissolved[@backingInt(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 0), cov.generic[@backingInt(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 9), cov.semantic[@backingInt(Tag.line)]);
 
     // And all six come back, in the right places, from the nine numbers.
     const out = try encodeAlloc(testing.allocator, &ast);
@@ -1867,9 +1867,9 @@ test "an option list is a definition list, told apart on the way out by its opti
     try testing.expectEqualStrings("option_argument", ast.nodes[arg].kind.container.name);
     try testing.expectEqualStrings(" ", ast.attrsOf(arg).get("delimiter").?);
 
-    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.option_list)]);
-    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.option_group)]);
-    try testing.expectEqual(@as(u32, 2), cov.generic[@intFromEnum(Tag.option)]);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@backingInt(Tag.option_list)]);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@backingInt(Tag.option_group)]);
+    try testing.expectEqual(@as(u32, 2), cov.generic[@backingInt(Tag.option)]);
 
     // And `isOptionList` finds the options again, so all four spell themselves
     // back rather than decaying to a definition list.
@@ -1990,7 +1990,7 @@ test "only a NESTED line block dissolves; the outermost keeps its attributes" {
     const block = ast.nodes[ast.root].first_child.?;
     try testing.expect(ast.nodes[block].kind == .line_block);
     try testing.expectEqualStrings("linear", ast.attrsOf(block).get("classes").?);
-    try testing.expectEqual(@as(u32, 0), cov.dissolved[@intFromEnum(Tag.line_block)]);
+    try testing.expectEqual(@as(u32, 0), cov.dissolved[@backingInt(Tag.line_block)]);
     try testing.expectEqual(@as(u32, 0), ast.nodes[ast.nodes[block].first_child.?].kind.line.indent);
 
     const out = try encodeAlloc(testing.allocator, &ast);
@@ -2063,9 +2063,9 @@ test "an unmapped element decodes to a generic container named after its tag" {
     const sm = ast.nodes[ast.root].first_child.?;
     try testing.expectEqualStrings("system_message", ast.nodes[sm].kind.container.name);
     try testing.expectEqualStrings("ERROR", ast.attrsOf(sm).get("type").?);
-    try testing.expectEqual(@as(u32, 1), cov.generic[@intFromEnum(Tag.system_message)]);
+    try testing.expectEqual(@as(u32, 1), cov.generic[@backingInt(Tag.system_message)]);
     // ...while the paragraph inside it took the semantic path.
-    try testing.expectEqual(@as(u32, 1), cov.semantic[@intFromEnum(Tag.paragraph)]);
+    try testing.expectEqual(@as(u32, 1), cov.semantic[@backingInt(Tag.paragraph)]);
 
     const out = try encodeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);

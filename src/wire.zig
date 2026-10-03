@@ -172,14 +172,14 @@ fn buildRequest(w: *Writer, op: []const u8, call_: runtime.Call, extra: anytype)
     try w.writeAll("{\"op\":");
     try Stringify.value(op, .{}, w);
     try writeCall(w, call_);
-    inline for (std.meta.fields(@TypeOf(extra))) |f| {
+    inline for (comptime std.meta.fieldNames(@TypeOf(extra))) |f_name| {
         try w.writeAll(",");
-        try Stringify.value(f.name, .{}, w);
+        try Stringify.value(f_name, .{}, w);
         try w.writeAll(":");
-        if (comptime std.mem.eql(u8, f.name, "table")) {
-            try w.writeAll(@field(extra, f.name));
+        if (comptime std.mem.eql(u8, f_name, "table")) {
+            try w.writeAll(@field(extra, f_name));
         } else {
-            try Stringify.value(@field(extra, f.name), .{}, w);
+            try Stringify.value(@field(extra, f_name), .{}, w);
         }
     }
     try w.writeByte('}');

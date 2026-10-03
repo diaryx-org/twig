@@ -117,7 +117,7 @@ pub const Format = enum(u16) {
     /// row, the registered name of a runtime one.
     pub fn name(self: Format) []const u8 {
         return switch (self) {
-            _ => runtime.nameOf(@intFromEnum(self)),
+            _ => runtime.nameOf(@backingInt(self)),
             inline else => |f| @tagName(f),
         };
     }
@@ -153,7 +153,7 @@ pub const Target = enum(u16) {
     /// See `Format.name`.
     pub fn name(self: Target) []const u8 {
         return switch (self) {
-            _ => runtime.nameOf(@intFromEnum(self)),
+            _ => runtime.nameOf(@backingInt(self)),
             inline else => |t| @tagName(t),
         };
     }
@@ -182,7 +182,7 @@ pub fn targetFor(fmt: Format) Target {
         .commonmark, .gfm => .markdown,
         .svg => .xml,
         // A registered language writes as itself, under the same value.
-        _ => @enumFromInt(@intFromEnum(fmt)),
+        _ => @fromBackingInt(@intCast(@backingInt(fmt))),
         inline else => |f| @field(Target, @tagName(f)),
     };
 }
@@ -233,8 +233,8 @@ pub const ParseConfig = struct {
         if (!isMarkdownRow(fmt)) return .{ .features = mask };
         const closed = closeFeatures(fmt, mask);
         var ext: Markdown.ParseOptions.Extensions = .{};
-        inline for (std.meta.fields(Markdown.ParseOptions.Extensions), 0..) |f, i| {
-            @field(ext, f.name) = closed & (@as(u32, 1) << i) != 0;
+        inline for (comptime std.meta.fieldNames(Markdown.ParseOptions.Extensions), 0..) |f_name, i| {
+            @field(ext, f_name) = closed & (@as(u32, 1) << i) != 0;
         }
         return .{ .markdown = ext };
     }
@@ -245,9 +245,9 @@ pub const ParseConfig = struct {
 /// already passes. Its dialects are rows (`gfm`, `commonmark`), as a runtime
 /// language's sets are.
 const markdown_features = blk: {
-    const fields = std.meta.fields(Markdown.ParseOptions.Extensions);
+    const fields = std.meta.fieldNames(Markdown.ParseOptions.Extensions);
     var out: [fields.len]runtime.Feature = undefined;
-    for (fields, &out) |f, *o| o.* = .{ .name = f.name };
+    for (fields, &out) |f, *o| o.* = .{ .name = f };
     // Colours are inert without a highlight to colour.
     out[std.meta.fieldIndex(Markdown.ParseOptions.Extensions, "highlight_colors").?].requires = &.{"highlight"};
     break :blk out;
@@ -917,12 +917,12 @@ test "Markdown's extensions are its rows' features, in TWIG_MD_* order" {
     try std.testing.expect(!cfg.markdown.directives and !cfg.markdown.html_elements);
     // A row with no features reads none, and a runtime row's mask is its own.
     try std.testing.expectEqual(@as(u32, 0), closeFeatures(.djot, 0b111));
-    try std.testing.expectEqual(@as(u32, 0b101), ParseConfig.forFeatures(@enumFromInt(runtime.base), 0b101).features);
+    try std.testing.expectEqual(@as(u32, 0b101), ParseConfig.forFeatures(@fromBackingInt(@intCast(runtime.base)), 0b101).features);
 }
 
 test "every Format has exactly one registry entry" {
-    inline for (std.meta.fields(Format)) |f| {
-        const fmt: Format = @enumFromInt(f.value);
+    inline for (@typeInfo(Format).@"enum".field_names, @typeInfo(Format).@"enum".field_values) |_, f_value| {
+        const fmt: Format = @fromBackingInt(@intCast(f_value));
         var seen: usize = 0;
         for (&registry) |*e| {
             if (e.id == fmt) seen += 1;
@@ -932,8 +932,8 @@ test "every Format has exactly one registry entry" {
 }
 
 test "every Target has exactly one targets entry" {
-    inline for (std.meta.fields(Target)) |f| {
-        const t: Target = @enumFromInt(f.value);
+    inline for (@typeInfo(Target).@"enum".field_names, @typeInfo(Target).@"enum".field_values) |_, f_value| {
+        const t: Target = @fromBackingInt(@intCast(f_value));
         var seen: usize = 0;
         for (&targets) |*e| {
             if (e.id == t) seen += 1;
@@ -950,8 +950,8 @@ test "every Format is also a Target, and the two agree in both directions" {
     // spells a different language. A dialect lands on its LANGUAGE's target,
     // and the language is what reads that target back — so the two arms
     // `targetFor` spells by hand are pinned to `Entry.dialect_of` here.
-    inline for (std.meta.fields(Format)) |f| {
-        const fmt: Format = @enumFromInt(f.value);
+    inline for (@typeInfo(Format).@"enum".field_names, @typeInfo(Format).@"enum".field_values) |_, f_value| {
+        const fmt: Format = @fromBackingInt(@intCast(f_value));
         const t = targetFor(fmt);
         const lang = entryFor(fmt).dialect_of orelse fmt;
         try std.testing.expectEqualStrings(@tagName(lang), @tagName(t));
