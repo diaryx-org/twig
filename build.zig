@@ -111,6 +111,26 @@ pub fn build(b: *std.Build) void {
         bench_cmd.addArgs(args);
     }
 
+    // `zig build bench-edit -- <file.dj>`: a keystroke's cost through a
+    // runtime row against the compiled row it twins (src/bench/edit.zig).
+    const bench_edit = b.addExecutable(.{
+        .name = "twig-bench-edit",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench/edit.zig"),
+            .target = target,
+            .optimize = if (b.user_input_options.contains("optimize")) optimize else .ReleaseFast,
+            .imports = &.{
+                .{ .name = "twig", .module = mod },
+            },
+        }),
+    });
+    const bench_edit_step = b.step("bench-edit", "Time keystrokes through a runtime djot twin against compiled djot (bench-edit [--keys N] <file.dj>)");
+    const bench_edit_cmd = b.addRunArtifact(bench_edit);
+    bench_edit_step.dependOn(&bench_edit_cmd.step);
+    if (b.args) |args| {
+        bench_edit_cmd.addArgs(args);
+    }
+
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
