@@ -90,6 +90,44 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 4.0.0
+
+### Breaking
+
+- **syntax** — every renderer is handed the table it was found in ([`3be2e6f`](https://github.com/diaryx-org/twig/commit/3be2e6f68db54b4733943e274edba67d035c96b1))
+- **runtime** — the author tier, with features and sets ([`28adf5b`](https://github.com/diaryx-org/twig/commit/28adf5b355b5d6b6e772750dc03bb5e34e40f1f4))
+
+### Added
+
+- **format** — Markdown's extensions are features, and the CLI turns features on ([`e09b343`](https://github.com/diaryx-org/twig/commit/e09b343aa6c4a35403cc2b7b02c5c3eeb3ef711c))
+
+### Fixed
+
+- **markdown** — setBlock joins a multi-line paragraph into one heading ([`ea2e64d`](https://github.com/diaryx-org/twig/commit/ea2e64ddabc78be2daac0201189a6c2ce0a68fd2))
+
+### Behavioural changes
+
+- a description declaring `caps.author` and a `syntax` registers, and its rows author, where it was refused; one declaring `dialects` is refused with a message pointing at `sets`.
+
+- registering a language that authors runs every gesture its table offers over its samples, so it takes longer and refuses what breaks a promise.
+
+- helper-wire `parse` and `print` requests carry a `features` array, and a helper may receive `render` requests.
+
+- the flags argument of `twig_parse_ext`, `twig_editor_create_ext` and `twig_format_supports_ext` turns on a runtime row's features, where it was ignored for a runtime row.
+
+- `twig lang check` prints "; every gesture kept its promise" for a language that authors and lists its features and sets; `twig lang list` lists a configured language's sets under it.
+
+- `TWIG_MD_HIGHLIGHT_COLORS` without `TWIG_MD_HIGHLIGHT` now turns highlights on too (it was inert), in `twig_parse_ext`, `twig_editor_create_ext` and `twig_format_supports_ext`, and in Rust's `MarkdownExtensions { highlight_colors: true, .. }`.
+
+- `twig_format_feature_bit` answers a Markdown row with its `TWIG_MD_*` bits rather than `TWIG_STATUS_UNSUPPORTED_FORMAT`; Rust's `Format::feature_flags` likewise.
+
+- `Format::dialect_of` in Rust answers `Some` for a runtime set, where it answered `None`.
+
+- `twig` with a format name or extension no languages-file line gives now spawns configured helpers to look for a set by that name before failing.
+
+- `Editor.setBlock(.heading)` over a Markdown paragraph of several lines writes one heading with its soft breaks joined by spaces (`a\nb` becomes `## a b`) where it wrote `## a\nb` (a heading and a paragraph); a paragraph holding a hard break, or whose heading the reparse reads differently (`Number #`), is now `error.NotEditable`; a runtime table that does not state `heading_continues: true` gets the one-line behaviour.
+
+
 ## 3.11.1
 
 ### Fixed
