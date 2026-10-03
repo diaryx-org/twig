@@ -568,6 +568,25 @@ base, which is why the range is reserved in a minor and the ABI stays at 6.
    table stays JSON or becomes typed arrays, and whether the twig-native
    prototype reaches leaf as a script or waits to be compiled.
 
+   The contract's half, measured with no engine (`zig build bench-edit`,
+   2026-10-02, ReleaseFast, Apple silicon): a twin whose parse is djot's
+   own, written out as a table, against the compiled row, one byte typed
+   mid-document per keystroke.
+
+   | document | compiled key | runtime key | ratio |
+   |---|---|---|---|
+   | 8 KB | 0.06 ms | 0.44 ms | 7.1x |
+   | 34 KB | 0.33 ms | 2.36 ms | 7.3x |
+   | 135 KB | 1.36 ms | 9.45 ms | 6.9x |
+
+   The table is 4.5–6x the source, and reading it back is three quarters of
+   the cost: on the 34 KB document 0.38 ms of parse, 0.41 ms of encode and
+   1.78 ms of decode, which builds a `std.json.Value` tree with a map per
+   row before reading a field. So the first number says the JSON can stay
+   and its reader cannot ([a task](/docs/tasks/table-decode-without-a-value-tree.md));
+   the engine's half — djot.js on QuickJS through `twig-quickjs` — is the
+   number that decides the rest.
+
 Steps 2 through 4 are a core minor and a Rust minor each, none breaking; 5
 is a repository; 6 is a number. Versions are Adam's to name. Each step is
 verified the way the tasks before this one were: `zig build check` green,
