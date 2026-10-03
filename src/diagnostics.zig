@@ -372,7 +372,7 @@ fn sectionHeading(ast: *const AST, id: Node.Id) ?Node.Kind.Heading {
 
 /// The more severe of two answers, `faithful` < `degraded` < `dropped`.
 fn worst(a: Fidelity, b: Fidelity) Fidelity {
-    return if (@intFromEnum(b) > @intFromEnum(a)) b else a;
+    return if (@backingInt(b) > @backingInt(a)) b else a;
 }
 
 /// A table's instance-level answer: whether its FIRST row is a header.

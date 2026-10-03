@@ -352,8 +352,8 @@ const Features = struct {
         if (mask == 0) return;
         const more = format.ParseConfig.forFeatures(input, mask);
         cfg.features |= more.features;
-        inline for (std.meta.fields(@TypeOf(cfg.markdown))) |f| {
-            @field(cfg.markdown, f.name) = @field(cfg.markdown, f.name) or @field(more.markdown, f.name);
+        inline for (comptime std.meta.fieldNames(@TypeOf(cfg.markdown))) |f_name| {
+            @field(cfg.markdown, f_name) = @field(cfg.markdown, f_name) or @field(more.markdown, f_name);
         }
     }
 };

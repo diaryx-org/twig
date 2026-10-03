@@ -984,7 +984,7 @@ pub const Renderer = struct {
                 // frontmatter never contains it. (The obscurer `<!--`+`<script`
                 // double-escape can only *swallow* trailing markup, not inject —
                 // a lesser, non-injection corruption left to the Stage-2 pass.)
-                if (std.ascii.indexOfIgnoreCase(v.text, "</script") != null)
+                if (std.ascii.findIgnoreCase(v.text, "</script") != null)
                     return error.UnsafeMetadata;
                 // Inert, self-describing data island: a `<script>` whose type
                 // isn't a JS MIME is neither executed nor displayed by the

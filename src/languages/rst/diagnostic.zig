@@ -410,7 +410,7 @@ pub const Report = struct {
     /// `--strict` flag asks.
     pub fn hasAtLeast(self: Report, severity: Severity) bool {
         for (self.diagnostics) |d| {
-            if (@intFromEnum(d.severity) >= @intFromEnum(severity)) return true;
+            if (@backingInt(d.severity) >= @backingInt(severity)) return true;
         }
         return false;
     }

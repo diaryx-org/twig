@@ -66,7 +66,7 @@ test "harness: every gesture, everywhere, over every authorable format" {
             else => return err,
         };
     }
-    var seen = [_]bool{false} ** known_findings.len;
+    var seen: [known_findings.len]bool = @splat(false);
     var unknown: usize = 0;
     var messages = std.mem.splitScalar(u8, log.items, 0);
     next: while (messages.next()) |m| {

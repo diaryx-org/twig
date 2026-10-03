@@ -20,7 +20,7 @@ permissions:
   contents: write # create the GitHub release
 
 env:
-  ZIG_VERSION: "0.16.0"
+  ZIG_VERSION: "0.17.0"
   # Ordered list consumed by the publish/dry-run steps. Payload crates first,
   # then the FFI crate, then the safe wrapper. Keep in sync with
   # bindings/rust/prebuilt-targets.tsv.

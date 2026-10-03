@@ -523,14 +523,14 @@ fn slotOf(value: u16) ?*Slot {
 /// Whether `fmt` names a registered row — false for a compiled row, and for
 /// a value in the runtime range that no registration has been given.
 pub fn isRegistered(fmt: Format) bool {
-    return slotOf(@intFromEnum(fmt)) != null;
+    return slotOf(@backingInt(fmt)) != null;
 }
 
 /// The `Format` a wire code names, if a row holds it.
 pub fn formatFromCode(code: i64) ?Format {
     const value = std.math.cast(u16, code) orelse return null;
     _ = slotOf(value) orelse return null;
-    return @enumFromInt(value);
+    return @fromBackingInt(@intCast(value));
 }
 
 /// `slotOf`, or a row being loaded: its value reaches no caller before it is
@@ -544,11 +544,11 @@ fn slotOrLoading(value: u16) ?*Slot {
 }
 
 pub fn entryFor(fmt: Format) ?*const format.Entry {
-    return if (slotOrLoading(@intFromEnum(fmt))) |s| &s.entry else null;
+    return if (slotOrLoading(@backingInt(fmt))) |s| &s.entry else null;
 }
 
 pub fn targetEntryFor(t: Target) ?*const format.TargetEntry {
-    return if (slotOrLoading(@intFromEnum(t))) |s| &s.target else null;
+    return if (slotOrLoading(@backingInt(t))) |s| &s.target else null;
 }
 
 /// The name a runtime `Format` or `Target` value was registered under, or
@@ -579,7 +579,7 @@ pub fn byExtension(ext: []const u8) ?Format {
 
 /// What a conversion into `t` keeps, as the load-time probe measured it.
 pub fn measured(t: Target) ?*const diagnostics.Measured {
-    const s = slotOf(@intFromEnum(t)) orelse return null;
+    const s = slotOf(@backingInt(t)) orelse return null;
     return if (s.measured) |*m| m else null;
 }
 
@@ -587,7 +587,7 @@ pub fn measured(t: Target) ?*const diagnostics.Measured {
 /// or `null` when `fmt` is not a registered row or its language declares no
 /// such feature.
 pub fn featureBit(fmt: Format, name: []const u8) ?u32 {
-    const s = slotOf(@intFromEnum(fmt)) orelse return null;
+    const s = slotOf(@backingInt(fmt)) orelse return null;
     for (s.lang.description.features, 0..) |f, i| {
         if (std.mem.eql(u8, f.name, name)) return @as(u32, 1) << @intCast(i);
     }
@@ -597,7 +597,7 @@ pub fn featureBit(fmt: Format, name: []const u8) ?u32 {
 /// The features `fmt`'s language declares, in bit order; empty for a
 /// compiled row.
 pub fn featuresOf(fmt: Format) []const Feature {
-    const s = slotOf(@intFromEnum(fmt)) orelse return &.{};
+    const s = slotOf(@backingInt(fmt)) orelse return &.{};
     return s.lang.description.features;
 }
 
@@ -865,7 +865,7 @@ pub fn register(gpa: Allocator, language: Language, description: Description, di
     }
     for (0..row_count) |r| {
         const i = first + r;
-        const id: Format = @enumFromInt(base + i);
+        const id: Format = @fromBackingInt(@intCast(base + i));
         const own_row = r == 0;
         const set: ?Set = if (own_row) null else d.sets[r - 1];
         const mask = if (set) |s| lang.close(maskOf(d, s.features)) else default_mask;
@@ -878,7 +878,7 @@ pub fn register(gpa: Allocator, language: Language, description: Description, di
             .mask = mask,
             .entry = .{
                 .id = id,
-                .dialect_of = if (own_row) null else @enumFromInt(base + first),
+                .dialect_of = if (own_row) null else @fromBackingInt(@intCast(base + first)),
                 .samples = try samplesUnder(a, d, lang, mask),
                 .extensions = if (set) |s| s.extensions else d.extensions,
                 .aliases = if (set) |s| s.aliases else d.aliases,
@@ -889,7 +889,7 @@ pub fn register(gpa: Allocator, language: Language, description: Description, di
                 .syntaxFor = if (d.author) fns.syntaxFor else null,
             },
             .target = .{
-                .id = @enumFromInt(base + i),
+                .id = @fromBackingInt(@intCast(base + i)),
                 .reads_back_as = id,
                 .serializeFromAst = if (d.write) fns.serializeFromAst else null,
             },
@@ -911,7 +911,7 @@ pub fn register(gpa: Allocator, language: Language, description: Description, di
     };
     published_ok = true;
     count.store(@intCast(first + row_count), .release);
-    return @enumFromInt(base + first);
+    return @fromBackingInt(@intCast(base + first));
 }
 
 fn refuseFull(diag: *Writer) error{RegistryFull} {
@@ -1311,7 +1311,7 @@ test "runtime: a registered language is a row every consumer reaches" {
     try testing.expectEqual(fmt, format.parseFormatName("djot-twin").?);
     try testing.expectEqual(fmt, format.parseFormatName("djt").?);
     try testing.expectEqual(fmt, format.detectFromExtension("notes.DJTWIN").?);
-    try testing.expectEqual(@intFromEnum(fmt), @intFromEnum(format.targetFor(fmt)));
+    try testing.expectEqual(@backingInt(fmt), @backingInt(format.targetFor(fmt)));
 
     const src = "Hello *world*.\n";
     const cfg: format.ParseConfig = .{};

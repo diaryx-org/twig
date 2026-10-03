@@ -77,10 +77,10 @@ pub const TwigFormat = enum(c_int) {
 pub const TWIG_FORMAT_RUNTIME_BASE: c_int = 4096;
 
 comptime {
-    for (std.meta.fields(TwigFormat)) |f| {
-        if (f.value >= TWIG_FORMAT_RUNTIME_BASE)
-            @compileError("TwigFormat." ++ f.name ++ " takes the wire code " ++
-                std.fmt.comptimePrint("{d}", .{f.value}) ++ ", but codes from " ++
+    for (@typeInfo(TwigFormat).@"enum".field_names, @typeInfo(TwigFormat).@"enum".field_values) |f_name, f_value| {
+        if (f_value >= TWIG_FORMAT_RUNTIME_BASE)
+            @compileError("TwigFormat." ++ f_name ++ " takes the wire code " ++
+                std.fmt.comptimePrint("{d}", .{f_value}) ++ ", but codes from " ++
                 std.fmt.comptimePrint("{d}", .{TWIG_FORMAT_RUNTIME_BASE}) ++
                 " up are reserved for languages registered at runtime (TWIG_FORMAT_RUNTIME_BASE)");
     }
@@ -463,14 +463,14 @@ fn sliceOf(ptr: ?[*]const u8, len: usize) ?[]const u8 {
 /// and `intToTarget` go through it so a new code is added once.
 fn intToWire(format: c_int) ?TwigFormat {
     return switch (format) {
-        @intFromEnum(TwigFormat.djot) => .djot,
-        @intFromEnum(TwigFormat.markdown) => .markdown,
-        @intFromEnum(TwigFormat.xml) => .xml,
-        @intFromEnum(TwigFormat.html) => .html,
-        @intFromEnum(TwigFormat.asciidoc) => .asciidoc,
-        @intFromEnum(TwigFormat.commonmark) => .commonmark,
-        @intFromEnum(TwigFormat.gfm) => .gfm,
-        @intFromEnum(TwigFormat.svg) => .svg,
+        @backingInt(TwigFormat.djot) => .djot,
+        @backingInt(TwigFormat.markdown) => .markdown,
+        @backingInt(TwigFormat.xml) => .xml,
+        @backingInt(TwigFormat.html) => .html,
+        @backingInt(TwigFormat.asciidoc) => .asciidoc,
+        @backingInt(TwigFormat.commonmark) => .commonmark,
+        @backingInt(TwigFormat.gfm) => .gfm,
+        @backingInt(TwigFormat.svg) => .svg,
         else => null,
     };
 }
@@ -511,8 +511,8 @@ fn intToTarget(format: c_int) ?twig.format.Target {
 /// runtime value IS its code; a compiled one is the `TwigFormat` of its name.
 fn formatToInt(fmt: twig.Format) c_int {
     return switch (fmt) {
-        _ => @intFromEnum(fmt),
-        inline else => |f| @intFromEnum(@field(TwigFormat, @tagName(f))),
+        _ => @backingInt(fmt),
+        inline else => |f| @backingInt(@field(TwigFormat, @tagName(f))),
     };
 }
 
@@ -2737,7 +2737,7 @@ fn kindElementName(node: *const twig.AST.Node) ?[]const u8 {
 /// block as a leaf, and a wrapper as a container.
 fn kindDirectiveForm(node: *const twig.AST.Node) c_int {
     return switch (node.kind) {
-        .container => |c| if (c.form) |f| @intFromEnum(switch (f) {
+        .container => |c| if (c.form) |f| @backingInt(switch (f) {
             .inline_text => TwigDirectiveForm.text,
             .block_leaf => TwigDirectiveForm.leaf,
             .block_fenced => TwigDirectiveForm.container,
@@ -3708,16 +3708,16 @@ pub export fn twig_editor_table_edit(
     const handle = asEditor(raw);
     const e = &handle.editor;
     const result: twig.Editor.Error!void = switch (op) {
-        @intFromEnum(TwigTableOp.insert_row) => e.tableInsertRow(offset, arg != 0),
-        @intFromEnum(TwigTableOp.delete_row) => e.tableDeleteRow(offset),
-        @intFromEnum(TwigTableOp.insert_column) => e.tableInsertColumn(offset, arg != 0),
-        @intFromEnum(TwigTableOp.delete_column) => e.tableDeleteColumn(offset),
-        @intFromEnum(TwigTableOp.set_alignment) => e.tableSetAlignment(
+        @backingInt(TwigTableOp.insert_row) => e.tableInsertRow(offset, arg != 0),
+        @backingInt(TwigTableOp.delete_row) => e.tableDeleteRow(offset),
+        @backingInt(TwigTableOp.insert_column) => e.tableInsertColumn(offset, arg != 0),
+        @backingInt(TwigTableOp.delete_column) => e.tableDeleteColumn(offset),
+        @backingInt(TwigTableOp.set_alignment) => e.tableSetAlignment(
             offset,
             alignmentOf(arg) orelse return .invalid_argument,
         ),
-        @intFromEnum(TwigTableOp.move_row) => e.tableMoveRow(offset, arg != 0),
-        @intFromEnum(TwigTableOp.move_column) => e.tableMoveColumn(offset, arg != 0),
+        @backingInt(TwigTableOp.move_row) => e.tableMoveRow(offset, arg != 0),
+        @backingInt(TwigTableOp.move_column) => e.tableMoveColumn(offset, arg != 0),
         else => return .invalid_argument,
     };
     result catch |err| return statusOfEditorError(err);
@@ -4514,36 +4514,36 @@ pub export fn twig_builder_destroy(b: ?*TwigBuilder) void {
 /// unknown. Any of these may still be given children via `twig_builder_set_children`.
 fn voidKind(kind: c_int) ?twig.AST.Node.Kind {
     return switch (kind) {
-        @intFromEnum(TwigNodeKind.doc) => .doc,
-        @intFromEnum(TwigNodeKind.para) => .para,
-        @intFromEnum(TwigNodeKind.thematic_break) => .thematic_break,
-        @intFromEnum(TwigNodeKind.section) => .section,
+        @backingInt(TwigNodeKind.doc) => .doc,
+        @backingInt(TwigNodeKind.para) => .para,
+        @backingInt(TwigNodeKind.thematic_break) => .thematic_break,
+        @backingInt(TwigNodeKind.section) => .section,
         // `div`/`span` are no longer kinds of their own; the legacy codes
         // still build what they always built, now spelled as a `container`.
-        @intFromEnum(TwigNodeKind.div) => .{ .container = .{ .name = "div", .form = .block_fenced } },
-        @intFromEnum(TwigNodeKind.span) => .{ .container = .{ .name = "span", .form = .inline_text } },
-        @intFromEnum(TwigNodeKind.block_quote) => .block_quote,
-        @intFromEnum(TwigNodeKind.definition_list) => .definition_list,
-        @intFromEnum(TwigNodeKind.table) => .table,
-        @intFromEnum(TwigNodeKind.list_item) => .list_item,
-        @intFromEnum(TwigNodeKind.definition_list_item) => .definition_list_item,
-        @intFromEnum(TwigNodeKind.term) => .term,
-        @intFromEnum(TwigNodeKind.definition) => .definition,
-        @intFromEnum(TwigNodeKind.caption) => .caption,
-        @intFromEnum(TwigNodeKind.column) => .column,
-        @intFromEnum(TwigNodeKind.line_block) => .line_block,
-        @intFromEnum(TwigNodeKind.soft_break) => .soft_break,
-        @intFromEnum(TwigNodeKind.hard_break) => .hard_break,
-        @intFromEnum(TwigNodeKind.non_breaking_space) => .non_breaking_space,
-        @intFromEnum(TwigNodeKind.emph) => .{ .inline_mark = .emph },
-        @intFromEnum(TwigNodeKind.strong) => .{ .inline_mark = .strong },
-        @intFromEnum(TwigNodeKind.mark) => .{ .inline_mark = .mark },
-        @intFromEnum(TwigNodeKind.superscript) => .{ .inline_mark = .superscript },
-        @intFromEnum(TwigNodeKind.subscript) => .{ .inline_mark = .subscript },
-        @intFromEnum(TwigNodeKind.insert) => .{ .inline_mark = .insert },
-        @intFromEnum(TwigNodeKind.delete) => .{ .inline_mark = .delete },
-        @intFromEnum(TwigNodeKind.double_quoted) => .{ .inline_mark = .double_quoted },
-        @intFromEnum(TwigNodeKind.single_quoted) => .{ .inline_mark = .single_quoted },
+        @backingInt(TwigNodeKind.div) => .{ .container = .{ .name = "div", .form = .block_fenced } },
+        @backingInt(TwigNodeKind.span) => .{ .container = .{ .name = "span", .form = .inline_text } },
+        @backingInt(TwigNodeKind.block_quote) => .block_quote,
+        @backingInt(TwigNodeKind.definition_list) => .definition_list,
+        @backingInt(TwigNodeKind.table) => .table,
+        @backingInt(TwigNodeKind.list_item) => .list_item,
+        @backingInt(TwigNodeKind.definition_list_item) => .definition_list_item,
+        @backingInt(TwigNodeKind.term) => .term,
+        @backingInt(TwigNodeKind.definition) => .definition,
+        @backingInt(TwigNodeKind.caption) => .caption,
+        @backingInt(TwigNodeKind.column) => .column,
+        @backingInt(TwigNodeKind.line_block) => .line_block,
+        @backingInt(TwigNodeKind.soft_break) => .soft_break,
+        @backingInt(TwigNodeKind.hard_break) => .hard_break,
+        @backingInt(TwigNodeKind.non_breaking_space) => .non_breaking_space,
+        @backingInt(TwigNodeKind.emph) => .{ .inline_mark = .emph },
+        @backingInt(TwigNodeKind.strong) => .{ .inline_mark = .strong },
+        @backingInt(TwigNodeKind.mark) => .{ .inline_mark = .mark },
+        @backingInt(TwigNodeKind.superscript) => .{ .inline_mark = .superscript },
+        @backingInt(TwigNodeKind.subscript) => .{ .inline_mark = .subscript },
+        @backingInt(TwigNodeKind.insert) => .{ .inline_mark = .insert },
+        @backingInt(TwigNodeKind.delete) => .{ .inline_mark = .delete },
+        @backingInt(TwigNodeKind.double_quoted) => .{ .inline_mark = .double_quoted },
+        @backingInt(TwigNodeKind.single_quoted) => .{ .inline_mark = .single_quoted },
         else => null,
     };
 }
@@ -4573,20 +4573,20 @@ pub export fn twig_builder_add_text(
     const handle = asBuilder(b orelse return .invalid_argument);
     const text = sliceOf(text_ptr, text_len) orelse return .invalid_argument;
     const node_kind: twig.AST.Node.Kind = switch (kind) {
-        @intFromEnum(TwigNodeKind.str) => .{ .str = text },
-        @intFromEnum(TwigNodeKind.symb) => .{ .text_leaf = .{ .kind = .symb, .text = text } },
-        @intFromEnum(TwigNodeKind.verbatim) => .{ .text_leaf = .{ .kind = .verbatim, .text = text } },
-        @intFromEnum(TwigNodeKind.inline_math) => .{ .text_leaf = .{ .kind = .inline_math, .text = text } },
-        @intFromEnum(TwigNodeKind.display_math) => .{ .text_leaf = .{ .kind = .display_math, .text = text } },
-        @intFromEnum(TwigNodeKind.url) => .{ .text_leaf = .{ .kind = .url, .text = text } },
-        @intFromEnum(TwigNodeKind.email) => .{ .text_leaf = .{ .kind = .email, .text = text } },
-        @intFromEnum(TwigNodeKind.footnote_reference) => .{ .text_leaf = .{ .kind = .footnote_reference, .text = text } },
+        @backingInt(TwigNodeKind.str) => .{ .str = text },
+        @backingInt(TwigNodeKind.symb) => .{ .text_leaf = .{ .kind = .symb, .text = text } },
+        @backingInt(TwigNodeKind.verbatim) => .{ .text_leaf = .{ .kind = .verbatim, .text = text } },
+        @backingInt(TwigNodeKind.inline_math) => .{ .text_leaf = .{ .kind = .inline_math, .text = text } },
+        @backingInt(TwigNodeKind.display_math) => .{ .text_leaf = .{ .kind = .display_math, .text = text } },
+        @backingInt(TwigNodeKind.url) => .{ .text_leaf = .{ .kind = .url, .text = text } },
+        @backingInt(TwigNodeKind.email) => .{ .text_leaf = .{ .kind = .email, .text = text } },
+        @backingInt(TwigNodeKind.footnote_reference) => .{ .text_leaf = .{ .kind = .footnote_reference, .text = text } },
         // The label/name as WRITTEN — see `AST.TextLeafKind.citation_reference`.
-        @intFromEnum(TwigNodeKind.citation_reference) => .{ .text_leaf = .{ .kind = .citation_reference, .text = text } },
-        @intFromEnum(TwigNodeKind.substitution_reference) => .{ .text_leaf = .{ .kind = .substitution_reference, .text = text } },
-        @intFromEnum(TwigNodeKind.comment) => .{ .markup_leaf = .{ .kind = .comment, .text = text } },
-        @intFromEnum(TwigNodeKind.doctype) => .{ .markup_leaf = .{ .kind = .doctype, .text = text } },
-        @intFromEnum(TwigNodeKind.cdata) => .{ .markup_leaf = .{ .kind = .cdata, .text = text } },
+        @backingInt(TwigNodeKind.citation_reference) => .{ .text_leaf = .{ .kind = .citation_reference, .text = text } },
+        @backingInt(TwigNodeKind.substitution_reference) => .{ .text_leaf = .{ .kind = .substitution_reference, .text = text } },
+        @backingInt(TwigNodeKind.comment) => .{ .markup_leaf = .{ .kind = .comment, .text = text } },
+        @backingInt(TwigNodeKind.doctype) => .{ .markup_leaf = .{ .kind = .doctype, .text = text } },
+        @backingInt(TwigNodeKind.cdata) => .{ .markup_leaf = .{ .kind = .cdata, .text = text } },
         else => return .invalid_argument,
     };
     return emitNode(out_id, handle.builder.addNode(node_kind));
@@ -4659,13 +4659,13 @@ pub export fn twig_builder_add_raw_inline(
 
 fn smartPunctOf(kind: c_int) ?twig.AST.SmartPunctuationKind {
     return switch (kind) {
-        @intFromEnum(TwigSmartPunctuation.left_single_quote) => .left_single_quote,
-        @intFromEnum(TwigSmartPunctuation.right_single_quote) => .right_single_quote,
-        @intFromEnum(TwigSmartPunctuation.left_double_quote) => .left_double_quote,
-        @intFromEnum(TwigSmartPunctuation.right_double_quote) => .right_double_quote,
-        @intFromEnum(TwigSmartPunctuation.ellipses) => .ellipses,
-        @intFromEnum(TwigSmartPunctuation.em_dash) => .em_dash,
-        @intFromEnum(TwigSmartPunctuation.en_dash) => .en_dash,
+        @backingInt(TwigSmartPunctuation.left_single_quote) => .left_single_quote,
+        @backingInt(TwigSmartPunctuation.right_single_quote) => .right_single_quote,
+        @backingInt(TwigSmartPunctuation.left_double_quote) => .left_double_quote,
+        @backingInt(TwigSmartPunctuation.right_double_quote) => .right_double_quote,
+        @backingInt(TwigSmartPunctuation.ellipses) => .ellipses,
+        @backingInt(TwigSmartPunctuation.em_dash) => .em_dash,
+        @backingInt(TwigSmartPunctuation.en_dash) => .en_dash,
         else => null,
     };
 }
@@ -4731,9 +4731,9 @@ pub export fn twig_builder_add_image(
 
 fn directiveFormOf(form: c_int) ?twig.AST.Form {
     return switch (form) {
-        @intFromEnum(TwigDirectiveForm.text) => .inline_text,
-        @intFromEnum(TwigDirectiveForm.leaf) => .block_leaf,
-        @intFromEnum(TwigDirectiveForm.container) => .block_fenced,
+        @backingInt(TwigDirectiveForm.text) => .inline_text,
+        @backingInt(TwigDirectiveForm.leaf) => .block_leaf,
+        @backingInt(TwigDirectiveForm.container) => .block_fenced,
         else => null,
     };
 }
@@ -4832,9 +4832,9 @@ pub export fn twig_builder_add_reference(
 
 fn bulletStyleOf(style: c_int) ?twig.Document.Spelling.Bullet {
     return switch (style) {
-        @intFromEnum(TwigBulletStyle.dash) => .dash,
-        @intFromEnum(TwigBulletStyle.plus) => .plus,
-        @intFromEnum(TwigBulletStyle.star) => .star,
+        @backingInt(TwigBulletStyle.dash) => .dash,
+        @backingInt(TwigBulletStyle.plus) => .plus,
+        @backingInt(TwigBulletStyle.star) => .star,
         else => null,
     };
 }
@@ -4858,20 +4858,20 @@ pub export fn twig_builder_add_bullet_list(
 
 fn numberingOf(numbering: c_int) ?twig.AST.ListNumbering {
     return switch (numbering) {
-        @intFromEnum(TwigOrderedNumbering.decimal) => .decimal,
-        @intFromEnum(TwigOrderedNumbering.lower_alpha) => .lower_alpha,
-        @intFromEnum(TwigOrderedNumbering.upper_alpha) => .upper_alpha,
-        @intFromEnum(TwigOrderedNumbering.lower_roman) => .lower_roman,
-        @intFromEnum(TwigOrderedNumbering.upper_roman) => .upper_roman,
+        @backingInt(TwigOrderedNumbering.decimal) => .decimal,
+        @backingInt(TwigOrderedNumbering.lower_alpha) => .lower_alpha,
+        @backingInt(TwigOrderedNumbering.upper_alpha) => .upper_alpha,
+        @backingInt(TwigOrderedNumbering.lower_roman) => .lower_roman,
+        @backingInt(TwigOrderedNumbering.upper_roman) => .upper_roman,
         else => null,
     };
 }
 
 fn delimOf(delim: c_int) ?twig.Document.Spelling.OrderedDelim {
     return switch (delim) {
-        @intFromEnum(TwigOrderedDelim.period) => .period,
-        @intFromEnum(TwigOrderedDelim.paren_after) => .paren_after,
-        @intFromEnum(TwigOrderedDelim.paren_both) => .paren_both,
+        @backingInt(TwigOrderedDelim.period) => .period,
+        @backingInt(TwigOrderedDelim.paren_after) => .paren_after,
+        @backingInt(TwigOrderedDelim.paren_both) => .paren_both,
         else => null,
     };
 }
@@ -4927,10 +4927,10 @@ pub export fn twig_builder_add_line(b: ?*TwigBuilder, indent: u32, out_id: ?*u32
 
 fn alignmentOf(alignment: c_int) ?twig.AST.Alignment {
     return switch (alignment) {
-        @intFromEnum(TwigAlignment.default) => .default,
-        @intFromEnum(TwigAlignment.left) => .left,
-        @intFromEnum(TwigAlignment.right) => .right,
-        @intFromEnum(TwigAlignment.center) => .center,
+        @backingInt(TwigAlignment.default) => .default,
+        @backingInt(TwigAlignment.left) => .left,
+        @backingInt(TwigAlignment.right) => .right,
+        @backingInt(TwigAlignment.center) => .center,
         else => null,
     };
 }
@@ -5357,7 +5357,7 @@ test "twig_language_register: a version-2 table's features, set and renderer rea
     try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(code, "crlf", 4, &bit));
     try std.testing.expectEqual(@as(u32, 1), bit);
     try std.testing.expectEqual(TwigStatus.not_found, twig_format_feature_bit(code, "tabs", 4, &bit));
-    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_feature_bit(@intFromEnum(TwigFormat.djot), "math", 4, &bit));
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_feature_bit(@backingInt(TwigFormat.djot), "math", 4, &bit));
 
     // The set is a row of its own, found by name, and a dialect of the
     // language's row.
@@ -5391,7 +5391,7 @@ test "twig_language_register: a version-2 table's features, set and renderer rea
     try std.testing.expectEqual(TwigStatus.ok, twig_format_is_authorable(code, &authorable));
     try std.testing.expectEqual(@as(c_int, 1), authorable);
     var supported: c_int = 0;
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(code, @intFromEnum(TwigGesture.insert_literal), 0, &supported));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(code, @backingInt(TwigGesture.insert_literal), 0, &supported));
     try std.testing.expectEqual(@as(c_int, 1), supported);
     var ed: ?*TwigEditor = null;
     try std.testing.expectEqual(TwigStatus.ok, twig_editor_create_ext(source.ptr, source.len, code, bit, &ed));
@@ -5458,7 +5458,7 @@ test "twig_language_register: a host's table becomes a format every entry point 
     try std.testing.expectEqual(TwigStatus.ok, twig_format_by_name("lines", 5, &by_name));
     try std.testing.expectEqual(code, by_name);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_by_name("gfm", 3, &by_name));
-    try std.testing.expectEqual(@intFromEnum(TwigFormat.gfm), by_name);
+    try std.testing.expectEqual(@backingInt(TwigFormat.gfm), by_name);
     var name: ?[*]const u8 = null;
     var len: usize = 0;
     try std.testing.expectEqual(TwigStatus.ok, twig_format_name(code, &name, &len));
@@ -5477,7 +5477,7 @@ test "twig_language_register: a host's table becomes a format every entry point 
     // Into Markdown, and from a Markdown parse into "lines".
     var out_ptr: ?[*]const u8 = null;
     var out_len: usize = 0;
-    try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, @intFromEnum(TwigFormat.markdown), &out_ptr, &out_len));
+    try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, @backingInt(TwigFormat.markdown), &out_ptr, &out_len));
     try std.testing.expectEqualStrings("alpha\n\nbeta\n", out_ptr.?[0..out_len]);
     try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, code, &out_ptr, &out_len));
     try std.testing.expectEqualStrings(source, out_ptr.?[0..out_len]);
@@ -5495,16 +5495,16 @@ test "twig_language_register: a host's table becomes a format every entry point 
     var warnings_len: usize = 0;
     try std.testing.expectEqual(TwigStatus.ok, twig_document_diagnostics(doc, code, &warnings, &warnings_len));
     var supported: c_int = 1;
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(code, @intFromEnum(TwigGesture.set_block), 0, &supported));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(code, @backingInt(TwigGesture.set_block), 0, &supported));
     try std.testing.expectEqual(@as(c_int, 0), supported);
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(code, 0, @intFromEnum(TwigGesture.set_block), 0, &supported));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(code, 0, @backingInt(TwigGesture.set_block), 0, &supported));
     var b: ?*TwigBuilder = null;
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_create(&b));
     defer twig_builder_destroy(b);
     var heading: u32 = 0;
     var text: u32 = 0;
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_heading(b, 2, &heading));
-    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_text(b, @intFromEnum(TwigNodeKind.str), "T", 1, &text));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_text(b, @backingInt(TwigNodeKind.str), "T", 1, &text));
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, heading, @ptrCast(&text), 1));
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_serialize(b, heading, code, &out_ptr, &out_len));
     try std.testing.expectEqualStrings("T\n", out_ptr.?[0..out_len]);
@@ -5591,7 +5591,7 @@ test "twig_parse + twig_document_render_html renders markdown" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.markdown), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -5606,7 +5606,7 @@ test "twig_parse accepts HTML input" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.html), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.html), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -5625,7 +5625,7 @@ test "twig_parse_ext with TWIG_MD_HTML_ELEMENTS makes an embedded <img> queryabl
         var doc: ?*TwigDocument = null;
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_parse_ext(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), case[0], &doc),
+            twig_parse_ext(source.ptr, source.len, @backingInt(TwigFormat.markdown), case[0], &doc),
         );
         defer twig_document_destroy(doc);
 
@@ -5643,12 +5643,12 @@ test "twig_parse_ext with TWIG_MD_HTML_ELEMENTS makes an embedded <img> queryabl
 test "TWIG_FORMAT_SVG names the xml dialect, and writes as xml" {
     const src = "<svg viewBox=\"0 0 1 1\"><rect x=\"0\"/></svg>";
     var doc: ?*TwigDocument = null;
-    try std.testing.expectEqual(TwigStatus.ok, twig_parse(src.ptr, src.len, @intFromEnum(TwigFormat.svg), &doc));
+    try std.testing.expectEqual(TwigStatus.ok, twig_parse(src.ptr, src.len, @backingInt(TwigFormat.svg), &doc));
     defer twig_document_destroy(doc);
     var out: ?[*]const u8 = null;
     var len: usize = 0;
     inline for (.{ TwigFormat.svg, TwigFormat.xml }) |target| {
-        try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, @intFromEnum(target), &out, &len));
+        try std.testing.expectEqual(TwigStatus.ok, twig_document_serialize(doc, @backingInt(target), &out, &len));
         try std.testing.expectEqualStrings(src, out.?[0..len]);
     }
     // An editor over it takes the same gesture xml does, and no other.
@@ -5666,7 +5666,7 @@ test "TWIG_FORMAT_SVG names the xml dialect, and writes as xml" {
     }
     try std.testing.expectEqual(TwigStatus.ok, twig_editor_set_node_attrs(fx.ed, rect, &x, 1, null));
     try fx.expectSource("<svg viewBox=\"0 0 1 1\"><rect x=\"5\"/></svg>");
-    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_set_block(fx.ed, 0, @intFromEnum(TwigBlockKind.heading), 1, null));
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_set_block(fx.ed, 0, @backingInt(TwigBlockKind.heading), 1, null));
 }
 
 test "TWIG_FORMAT_COMMONMARK and TWIG_FORMAT_GFM name a Markdown dialect, and md_flags lay over it" {
@@ -5684,7 +5684,7 @@ test "TWIG_FORMAT_COMMONMARK and TWIG_FORMAT_GFM name a Markdown dialect, and md
         var doc: ?*TwigDocument = null;
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_parse_ext(source.ptr, source.len, @intFromEnum(case[0]), case[1], &doc),
+            twig_parse_ext(source.ptr, source.len, @backingInt(case[0]), case[1], &doc),
         );
         defer twig_document_destroy(doc);
         inline for (.{ .{ "delete", case[2] }, .{ "table", case[3] }, .{ "inline_math", case[4] } }) |q| {
@@ -5705,7 +5705,7 @@ test "TWIG_FORMAT_COMMONMARK and TWIG_FORMAT_GFM name a Markdown dialect, and md
         var doc: ?*TwigDocument = null;
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_parse(table.ptr, table.len, @intFromEnum(case[0]), &doc),
+            twig_parse(table.ptr, table.len, @backingInt(case[0]), &doc),
         );
         defer twig_document_destroy(doc);
         var ptr: ?[*]const u8 = null;
@@ -5723,7 +5723,7 @@ test "a dialect code on the write side means its language" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.gfm), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.gfm), &doc),
     );
     defer twig_document_destroy(doc);
     var ptr: ?[*]const u8 = null;
@@ -5731,7 +5731,7 @@ test "a dialect code on the write side means its language" {
     inline for (.{ TwigFormat.gfm, TwigFormat.markdown, TwigFormat.commonmark }) |target| {
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_document_serialize(doc, @intFromEnum(target), &ptr, &len),
+            twig_document_serialize(doc, @backingInt(target), &ptr, &len),
         );
         try std.testing.expectEqualStrings(source, ptr.?[0..len]);
     }
@@ -5741,9 +5741,9 @@ test "a dialect code on the write side means its language" {
     var out: c_int = -1;
     inline for (.{ .{ TwigFormat.commonmark, 0 }, .{ TwigFormat.gfm, 1 }, .{ TwigFormat.markdown, 1 } }) |case| {
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
-            @intFromEnum(case[0]),
-            @intFromEnum(TwigGesture.toggle_inline),
-            @intFromEnum(TwigInlineKind.delete),
+            @backingInt(case[0]),
+            @backingInt(TwigGesture.toggle_inline),
+            @backingInt(TwigInlineKind.delete),
             &out,
         ));
         try std.testing.expectEqual(@as(c_int, case[1]), out);
@@ -5752,7 +5752,7 @@ test "a dialect code on the write side means its language" {
     defer fx.deinit();
     try std.testing.expectEqual(
         TwigStatus.unsupported_format,
-        twig_editor_toggle_inline(fx.ed, 2, 6, @intFromEnum(TwigInlineKind.delete), null),
+        twig_editor_toggle_inline(fx.ed, 2, 6, @backingInt(TwigInlineKind.delete), null),
     );
     try fx.expectSource("a word b\n");
 }
@@ -5764,7 +5764,7 @@ test "twig_parse_ext with TWIG_MD_HIGHLIGHT makes ==text== a queryable mark" {
         var doc: ?*TwigDocument = null;
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_parse_ext(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), case[0], &doc),
+            twig_parse_ext(source.ptr, source.len, @backingInt(TwigFormat.markdown), case[0], &doc),
         );
         defer twig_document_destroy(doc);
 
@@ -5781,22 +5781,22 @@ test "twig_parse_ext with TWIG_MD_HIGHLIGHT makes ==text== a queryable mark" {
 
 test "twig_format_dialect_of answers compiled dialects and nobody's row" {
     var out: c_int = -1;
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_dialect_of(@intFromEnum(TwigFormat.gfm), &out));
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(TwigFormat.markdown)), out);
-    try std.testing.expectEqual(TwigStatus.not_found, twig_format_dialect_of(@intFromEnum(TwigFormat.markdown), &out));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_dialect_of(@backingInt(TwigFormat.gfm), &out));
+    try std.testing.expectEqual(@as(c_int, @backingInt(TwigFormat.markdown)), out);
+    try std.testing.expectEqual(TwigStatus.not_found, twig_format_dialect_of(@backingInt(TwigFormat.markdown), &out));
     try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_dialect_of(99_999, &out));
 }
 
 test "twig_format_feature_bit answers a Markdown row with its TWIG_MD_* bits" {
     var bit: u32 = 0;
     inline for (.{ TwigFormat.markdown, TwigFormat.gfm, TwigFormat.commonmark }) |row| {
-        try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(@intFromEnum(row), "math", 4, &bit));
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(@backingInt(row), "math", 4, &bit));
         try std.testing.expectEqual(TWIG_MD_MATH, bit);
     }
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(@intFromEnum(TwigFormat.markdown), "highlight_colors", 16, &bit));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_feature_bit(@backingInt(TwigFormat.markdown), "highlight_colors", 16, &bit));
     try std.testing.expectEqual(TWIG_MD_HIGHLIGHT_COLORS, bit);
-    try std.testing.expectEqual(TwigStatus.not_found, twig_format_feature_bit(@intFromEnum(TwigFormat.markdown), "tables", 6, &bit));
-    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_feature_bit(@intFromEnum(TwigFormat.asciidoc), "math", 4, &bit));
+    try std.testing.expectEqual(TwigStatus.not_found, twig_format_feature_bit(@backingInt(TwigFormat.markdown), "tables", 6, &bit));
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_feature_bit(@backingInt(TwigFormat.asciidoc), "math", 4, &bit));
 }
 
 test "twig_parse_ext with TWIG_MD_HIGHLIGHT_COLORS makes the colour queryable as mark[data-color=red]" {
@@ -5811,7 +5811,7 @@ test "twig_parse_ext with TWIG_MD_HIGHLIGHT_COLORS makes the colour queryable as
         var doc: ?*TwigDocument = null;
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_parse_ext(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), case[0], &doc),
+            twig_parse_ext(source.ptr, source.len, @backingInt(TwigFormat.markdown), case[0], &doc),
         );
         defer twig_document_destroy(doc);
 
@@ -5835,7 +5835,7 @@ test "twig_editor_nodes exposes an element's name and attributes" {
     var ed: ?*TwigEditor = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_editor_create_ext(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), TWIG_MD_HTML_ELEMENTS, &ed),
+        twig_editor_create_ext(source.ptr, source.len, @backingInt(TwigFormat.markdown), TWIG_MD_HTML_ELEMENTS, &ed),
     );
     defer twig_editor_destroy(ed);
 
@@ -5882,7 +5882,7 @@ test "twig_document_serialize round-trips markdown and rejects xml-target cross-
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.markdown), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -5890,14 +5890,14 @@ test "twig_document_serialize round-trips markdown and rejects xml-target cross-
     var len: usize = 0;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_document_serialize(doc, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+        twig_document_serialize(doc, @backingInt(TwigFormat.markdown), &ptr, &len),
     );
     try std.testing.expect(std.mem.indexOf(u8, ptr.?[0..len], "# hi") != null);
 
     // Markdown -> XML has no serializer (see `serializeDocument`).
     try std.testing.expectEqual(
         TwigStatus.unsupported_format,
-        twig_document_serialize(doc, @intFromEnum(TwigFormat.xml), &ptr, &len),
+        twig_document_serialize(doc, @backingInt(TwigFormat.xml), &ptr, &len),
     );
 }
 
@@ -5906,7 +5906,7 @@ test "twig_document_serialize cross-converts markdown to djot" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.markdown), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -5914,7 +5914,7 @@ test "twig_document_serialize cross-converts markdown to djot" {
     var len: usize = 0;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_document_serialize(doc, @intFromEnum(TwigFormat.djot), &ptr, &len),
+        twig_document_serialize(doc, @backingInt(TwigFormat.djot), &ptr, &len),
     );
     // Markdown `*markdown*` (emphasis) renders djot-style with underscores.
     try std.testing.expect(std.mem.indexOf(u8, ptr.?[0..len], "_markdown_") != null);
@@ -5931,18 +5931,18 @@ test "twig_builder list style/delim params still spell the serialized markers" {
     var txt: u32 = 0;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_builder_add_text(b, @intFromEnum(TwigNodeKind.str), "a", 1, &txt),
+        twig_builder_add_text(b, @backingInt(TwigNodeKind.str), "a", 1, &txt),
     );
     var para: u32 = 0;
-    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.para), &para));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @backingInt(TwigNodeKind.para), &para));
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, para, @ptrCast(&txt), 1));
     var item: u32 = 0;
-    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.list_item), &item));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @backingInt(TwigNodeKind.list_item), &item));
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, item, @ptrCast(&para), 1));
     var list: u32 = 0;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_builder_add_bullet_list(b, @intFromEnum(TwigBulletStyle.star), 1, &list),
+        twig_builder_add_bullet_list(b, @backingInt(TwigBulletStyle.star), 1, &list),
     );
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, list, @ptrCast(&item), 1));
 
@@ -5950,7 +5950,7 @@ test "twig_builder list style/delim params still spell the serialized markers" {
     var len: usize = 0;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_builder_serialize(b, list, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+        twig_builder_serialize(b, list, @backingInt(TwigFormat.markdown), &ptr, &len),
     );
     try std.testing.expect(std.mem.startsWith(u8, ptr.?[0..len], "* a"));
 
@@ -5958,21 +5958,21 @@ test "twig_builder list style/delim params still spell the serialized markers" {
     var txt2: u32 = 0;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_builder_add_text(b, @intFromEnum(TwigNodeKind.str), "b", 1, &txt2),
+        twig_builder_add_text(b, @backingInt(TwigNodeKind.str), "b", 1, &txt2),
     );
     var para2: u32 = 0;
-    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.para), &para2));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @backingInt(TwigNodeKind.para), &para2));
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, para2, @ptrCast(&txt2), 1));
     var item2: u32 = 0;
-    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(TwigNodeKind.list_item), &item2));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @backingInt(TwigNodeKind.list_item), &item2));
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_set_children(b, item2, @ptrCast(&para2), 1));
     var olist: u32 = 0;
     try std.testing.expectEqual(
         TwigStatus.ok,
         twig_builder_add_ordered_list(
             b,
-            @intFromEnum(TwigOrderedNumbering.decimal),
-            @intFromEnum(TwigOrderedDelim.paren_after),
+            @backingInt(TwigOrderedNumbering.decimal),
+            @backingInt(TwigOrderedDelim.paren_after),
             1,
             0,
             0,
@@ -5983,7 +5983,7 @@ test "twig_builder list style/delim params still spell the serialized markers" {
 
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_builder_serialize(b, olist, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+        twig_builder_serialize(b, olist, @backingInt(TwigFormat.markdown), &ptr, &len),
     );
     try std.testing.expect(std.mem.startsWith(u8, ptr.?[0..len], "1) b"));
 }
@@ -5993,7 +5993,7 @@ test "twig_document_node_span accessors mirror the query match fields" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.markdown), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -6034,7 +6034,7 @@ test "twig_document_attrs_span reports the block a node's attrs were written as"
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse_ext(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), TWIG_MD_DIRECTIVES, &doc),
+        twig_parse_ext(source.ptr, source.len, @backingInt(TwigFormat.markdown), TWIG_MD_DIRECTIVES, &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -6069,7 +6069,7 @@ test "twig_document_cell_colspan/_rowspan report a merged cell's grid extent" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.html), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.html), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -6115,7 +6115,7 @@ test "twig_builder_add_cell_spanning builds a merged cell; add_cell is its (1,1)
     try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_cell_spanning(
         bld,
         0,
-        @intFromEnum(TwigAlignment.default),
+        @backingInt(TwigAlignment.default),
         2,
         3,
         &wide,
@@ -6126,7 +6126,7 @@ test "twig_builder_add_cell_spanning builds a merged cell; add_cell is its (1,1)
     var plain: u32 = undefined;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_builder_add_cell(bld, 0, @intFromEnum(TwigAlignment.default), &plain),
+        twig_builder_add_cell(bld, 0, @backingInt(TwigAlignment.default), &plain),
     );
     try bSetChildren(bld, plain, &.{plain_text});
 
@@ -6135,7 +6135,7 @@ test "twig_builder_add_cell_spanning builds a merged cell; add_cell is its (1,1)
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_builder_add_cell_spanning(
         bld,
         0,
-        @intFromEnum(TwigAlignment.default),
+        @backingInt(TwigAlignment.default),
         0,
         1,
         &rejected,
@@ -6161,7 +6161,7 @@ test "twig_document_nodes / _children / _subtree / _node_at walk a parse-only do
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.markdown), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -6272,7 +6272,7 @@ test "twig_editor_document views the live tree and tracks edits" {
     );
     try std.testing.expectEqual(
         TwigStatus.unsupported_format,
-        twig_document_serialize(doc, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+        twig_document_serialize(doc, @backingInt(TwigFormat.markdown), &ptr, &len),
     );
 
     // Destroying a borrowed view is a no-op; the editor still works after it.
@@ -6285,7 +6285,7 @@ test "twig_document_ast_json dumps the shared AST as JSON" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.djot), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.djot), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -6300,7 +6300,7 @@ test "twig_document_query finds nodes by selector and reports kind + spans" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.markdown), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -6326,7 +6326,7 @@ test "twig_document_query rejects a malformed selector" {
     var doc: ?*TwigDocument = null;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_parse(source.ptr, source.len, @intFromEnum(TwigFormat.markdown), &doc),
+        twig_parse(source.ptr, source.len, @backingInt(TwigFormat.markdown), &doc),
     );
     defer twig_document_destroy(doc);
 
@@ -6354,7 +6354,7 @@ const EditorFixture = struct {
         var ed: ?*TwigEditor = null;
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_editor_create(source.ptr, source.len, @intFromEnum(format), &ed),
+            twig_editor_create(source.ptr, source.len, @backingInt(format), &ed),
         );
         return .{ .ed = ed.? };
     }
@@ -6366,7 +6366,7 @@ const EditorFixture = struct {
         var ed: ?*TwigEditor = null;
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_editor_create_ext(source.ptr, source.len, @intFromEnum(format), md_flags, &ed),
+            twig_editor_create_ext(source.ptr, source.len, @backingInt(format), md_flags, &ed),
         );
         return .{ .ed = ed.? };
     }
@@ -6578,7 +6578,7 @@ test "twig_editor: ast_json and query reflect the current tree" {
 // these are deliberately shallow — one per status, not one per behaviour.
 
 fn toggleContainer(fx: *EditorFixture, start: usize, end: usize, kind: TwigBlockContainerKind) TwigStatus {
-    return twig_editor_toggle_block_container(fx.ed, start, end, @intFromEnum(kind), null);
+    return twig_editor_toggle_block_container(fx.ed, start, end, @backingInt(kind), null);
 }
 
 test "toolbar: the wire codes reach the right gesture" {
@@ -6592,13 +6592,13 @@ test "toolbar: the wire codes reach the right gesture" {
 
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_editor_toggle_inline(fx.ed, 2, 3, @intFromEnum(TwigInlineKind.strong), null),
+        twig_editor_toggle_inline(fx.ed, 2, 3, @backingInt(TwigInlineKind.strong), null),
     );
     try fx.expectSource("> *a*\n");
 
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_editor_set_block(fx.ed, 3, @intFromEnum(TwigBlockKind.heading), 2, null),
+        twig_editor_set_block(fx.ed, 3, @backingInt(TwigBlockKind.heading), 2, null),
     );
     try fx.expectSource("> ## *a*\n");
 
@@ -6697,7 +6697,7 @@ test "toolbar: out_change reports the byte effect of a gesture" {
     var change: TwigChange = undefined;
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_editor_wrap_range(fx.ed, 0, 1, @intFromEnum(TwigInlineKind.emph), &change),
+        twig_editor_wrap_range(fx.ed, 0, 1, @backingInt(TwigInlineKind.emph), &change),
     );
     try fx.expectSource("_a_\n");
     // `a` [0,1) became `_a_` [0,3).
@@ -6727,7 +6727,7 @@ test "toolbar: every Editor error maps to its own status" {
     // InvalidLevel -> invalid_argument.
     try std.testing.expectEqual(
         TwigStatus.invalid_argument,
-        twig_editor_set_block(dj.ed, 0, @intFromEnum(TwigBlockKind.heading), 9, null),
+        twig_editor_set_block(dj.ed, 0, @backingInt(TwigBlockKind.heading), 9, null),
     );
     // NoBlock -> not_found. Renumbering asks for an ordered list and this
     // document has none. (The blank line between two paragraphs used to serve
@@ -6745,7 +6745,7 @@ test "toolbar: every Editor error maps to its own status" {
     try std.testing.expectEqual(TwigStatus.unsupported_format, toggleContainer(&xml, 3, 5, .block_quote));
     try std.testing.expectEqual(
         TwigStatus.unsupported_format,
-        twig_editor_toggle_inline(xml.ed, 3, 5, @intFromEnum(TwigInlineKind.strong), null),
+        twig_editor_toggle_inline(xml.ed, 3, 5, @backingInt(TwigInlineKind.strong), null),
     );
     // …and Markdown, which spells `strong` but not `mark` — the same status from
     // a `null` one level deeper in the table.
@@ -6753,7 +6753,7 @@ test "toolbar: every Editor error maps to its own status" {
     defer md.deinit();
     try std.testing.expectEqual(
         TwigStatus.unsupported_format,
-        twig_editor_toggle_inline(md.ed, 2, 6, @intFromEnum(TwigInlineKind.mark), null),
+        twig_editor_toggle_inline(md.ed, 2, 6, @backingInt(TwigInlineKind.mark), null),
     );
 }
 
@@ -6847,11 +6847,11 @@ test "twig_editor_move_block: the wire reaches the gesture, and each refusal is 
     // on a live editor of every format.
     var supported: c_int = -1;
     for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm, .svg }) |fmt| {
-        const code = @intFromEnum(fmt);
+        const code = @backingInt(fmt);
         const src: []const u8 = if (fmt == .xml or fmt == .svg) "<r>ab</r>" else "ab\n";
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
             code,
-            @intFromEnum(TwigGesture.move_block),
+            @backingInt(TwigGesture.move_block),
             0,
             &supported,
         ));
@@ -6891,14 +6891,14 @@ test "twig_editor_insert_*_math: the wire reaches the gestures, and the refusals
     // the parse config's.
     var supported: c_int = -1;
     inline for (.{ TwigGesture.insert_inline_math, TwigGesture.insert_display_math }) |g| {
-        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.markdown), @intFromEnum(g), 0, &supported));
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@backingInt(TwigFormat.markdown), @backingInt(g), 0, &supported));
         try std.testing.expectEqual(@as(c_int, 0), supported);
-        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(@intFromEnum(TwigFormat.markdown), TWIG_MD_MATH, @intFromEnum(g), 0, &supported));
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(@backingInt(TwigFormat.markdown), TWIG_MD_MATH, @backingInt(g), 0, &supported));
         try std.testing.expectEqual(@as(c_int, 1), supported);
-        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.djot), @intFromEnum(g), 0, &supported));
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@backingInt(TwigFormat.djot), @backingInt(g), 0, &supported));
         try std.testing.expectEqual(@as(c_int, 1), supported);
     }
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.asciidoc), @intFromEnum(TwigGesture.insert_display_math), 0, &supported));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@backingInt(TwigFormat.asciidoc), @backingInt(TwigGesture.insert_display_math), 0, &supported));
     try std.testing.expectEqual(@as(c_int, 0), supported);
 }
 
@@ -6909,11 +6909,11 @@ test "twig_format_supports: the join's wire code answers for the join, not the s
     // the whole reason `join_blocks` is a code of its own.
     var supported: c_int = -1;
     for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm, .svg }) |fmt| {
-        const code = @intFromEnum(fmt);
+        const code = @backingInt(fmt);
         const src: []const u8 = if (fmt == .xml or fmt == .svg) "<r>ab</r>" else "ab\n";
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
             code,
-            @intFromEnum(TwigGesture.join_blocks),
+            @backingInt(TwigGesture.join_blocks),
             0,
             &supported,
         ));
@@ -6931,23 +6931,23 @@ test "twig_format_supports: the join's wire code answers for the join, not the s
     // code fails here rather than in a caller's cached capability table.
     var split: c_int = -1;
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
-        @intFromEnum(TwigFormat.html),
-        @intFromEnum(TwigGesture.split_block),
+        @backingInt(TwigFormat.html),
+        @backingInt(TwigGesture.split_block),
         0,
         &split,
     ));
     try std.testing.expectEqual(@as(c_int, 0), split);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
-        @intFromEnum(TwigFormat.html),
-        @intFromEnum(TwigGesture.join_blocks),
+        @backingInt(TwigFormat.html),
+        @backingInt(TwigGesture.join_blocks),
         0,
         &supported,
     ));
     try std.testing.expectEqual(@as(c_int, 1), supported);
     // A kind is required to be 0 for a gesture that takes none.
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(
-        @intFromEnum(TwigFormat.markdown),
-        @intFromEnum(TwigGesture.join_blocks),
+        @backingInt(TwigFormat.markdown),
+        @backingInt(TwigGesture.join_blocks),
         1,
         &supported,
     ));
@@ -6967,13 +6967,13 @@ test "toolbar: a NULL editor is invalid_argument on every gesture" {
 /// Add a node, asserting success, and return its id.
 fn bAdd(b: *TwigBuilder, kind: TwigNodeKind) !u32 {
     var id: u32 = undefined;
-    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @intFromEnum(kind), &id));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add(b, @backingInt(kind), &id));
     return id;
 }
 
 fn bAddText(b: *TwigBuilder, kind: TwigNodeKind, text: []const u8) !u32 {
     var id: u32 = undefined;
-    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_text(b, @intFromEnum(kind), text.ptr, text.len, &id));
+    try std.testing.expectEqual(TwigStatus.ok, twig_builder_add_text(b, @backingInt(kind), text.ptr, text.len, &id));
     return id;
 }
 
@@ -7014,7 +7014,7 @@ test "twig_builder: build a small doc and render/serialize/query/dump it" {
     // Serialize to Markdown.
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_builder_serialize(bld, doc, @intFromEnum(TwigFormat.markdown), &ptr, &len),
+        twig_builder_serialize(bld, doc, @backingInt(TwigFormat.markdown), &ptr, &len),
     );
     const md = ptr.?[0..len];
     try std.testing.expect(std.mem.indexOf(u8, md, "# Title") != null);
@@ -7074,13 +7074,13 @@ test "twig_builder: invalid kind codes and out-of-range ids are rejected" {
     // `heading` carries a payload — not selectable via the void-kind `add`.
     try std.testing.expectEqual(
         TwigStatus.invalid_argument,
-        twig_builder_add(bld, @intFromEnum(TwigNodeKind.heading), &id),
+        twig_builder_add(bld, @backingInt(TwigNodeKind.heading), &id),
     );
     // `para` is void, not a string kind — not selectable via `add_text`.
     const t = "x";
     try std.testing.expectEqual(
         TwigStatus.invalid_argument,
-        twig_builder_add_text(bld, @intFromEnum(TwigNodeKind.para), t.ptr, t.len, &id),
+        twig_builder_add_text(bld, @backingInt(TwigNodeKind.para), t.ptr, t.len, &id),
     );
     // A completely unknown code.
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_builder_add(bld, 9999, &id));
@@ -7108,7 +7108,7 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
     // editor and check the two agree.
     var supported: c_int = -1;
     for ([_]TwigFormat{ .djot, .markdown, .html, .xml, .asciidoc, .commonmark, .gfm, .svg }) |fmt| {
-        const code = @intFromEnum(fmt);
+        const code = @backingInt(fmt);
         // Only has to PARSE — every gesture consults the syntax table before it
         // reads a byte of source, so this never has to be somewhere the gesture
         // would succeed. XML is the one format that rejects bare text.
@@ -7116,8 +7116,8 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
 
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
             code,
-            @intFromEnum(TwigGesture.toggle_inline),
-            @intFromEnum(TwigInlineKind.mark),
+            @backingInt(TwigGesture.toggle_inline),
+            @backingInt(TwigInlineKind.mark),
             &supported,
         ));
         var ed: ?*TwigEditor = null;
@@ -7126,7 +7126,7 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
             twig_editor_create(src.ptr, src.len, code, &ed),
         );
         defer twig_editor_destroy(ed);
-        const got = twig_editor_toggle_inline(ed, 0, 2, @intFromEnum(TwigInlineKind.mark), null);
+        const got = twig_editor_toggle_inline(ed, 0, 2, @backingInt(TwigInlineKind.mark), null);
         try std.testing.expectEqual(supported == 1, got != .unsupported_format);
     }
 
@@ -7134,16 +7134,16 @@ test "twig_format_supports: the wire answer agrees with the gesture's own refusa
     // toggle (`Delims.authorable`), while djot authors it freely — the
     // asymmetry a caller would get wrong by reading a serializer.
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
-        @intFromEnum(TwigFormat.markdown),
-        @intFromEnum(TwigGesture.toggle_inline),
-        @intFromEnum(TwigInlineKind.mark),
+        @backingInt(TwigFormat.markdown),
+        @backingInt(TwigGesture.toggle_inline),
+        @backingInt(TwigInlineKind.mark),
         &supported,
     ));
     try std.testing.expectEqual(@as(c_int, 0), supported);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
-        @intFromEnum(TwigFormat.djot),
-        @intFromEnum(TwigGesture.toggle_inline),
-        @intFromEnum(TwigInlineKind.mark),
+        @backingInt(TwigFormat.djot),
+        @backingInt(TwigGesture.toggle_inline),
+        @backingInt(TwigInlineKind.mark),
         &supported,
     ));
     try std.testing.expectEqual(@as(c_int, 1), supported);
@@ -7158,12 +7158,12 @@ test "twig_editor_toggle_inline: markdown authors GFM strikethrough with no flag
     defer fx.deinit();
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_editor_toggle_inline(fx.ed, 2, 6, @intFromEnum(TwigInlineKind.delete), null),
+        twig_editor_toggle_inline(fx.ed, 2, 6, @backingInt(TwigInlineKind.delete), null),
     );
     try fx.expectSource("a ~~word~~ b\n");
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_editor_toggle_inline(fx.ed, 4, 8, @intFromEnum(TwigInlineKind.delete), null),
+        twig_editor_toggle_inline(fx.ed, 4, 8, @backingInt(TwigInlineKind.delete), null),
     );
     try fx.expectSource("a word b\n");
 
@@ -7172,18 +7172,18 @@ test "twig_editor_toggle_inline: markdown authors GFM strikethrough with no flag
     var out: c_int = -1;
     inline for (.{ @as(u32, 0), TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS }) |flags| {
         try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(
-            @intFromEnum(TwigFormat.markdown),
+            @backingInt(TwigFormat.markdown),
             flags,
-            @intFromEnum(TwigGesture.toggle_inline),
-            @intFromEnum(TwigInlineKind.delete),
+            @backingInt(TwigGesture.toggle_inline),
+            @backingInt(TwigInlineKind.delete),
             &out,
         ));
         try std.testing.expectEqual(@as(c_int, 1), out);
     }
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
-        @intFromEnum(TwigFormat.markdown),
-        @intFromEnum(TwigGesture.toggle_inline),
-        @intFromEnum(TwigInlineKind.delete),
+        @backingInt(TwigFormat.markdown),
+        @backingInt(TwigGesture.toggle_inline),
+        @backingInt(TwigInlineKind.delete),
         &out,
     ));
     try std.testing.expectEqual(@as(c_int, 1), out);
@@ -7191,10 +7191,10 @@ test "twig_editor_toggle_inline: markdown authors GFM strikethrough with no flag
 
 test "twig_format_supports_ext: the Markdown flags widen what may be authored" {
     var out: c_int = -1;
-    const md = @intFromEnum(TwigFormat.markdown);
-    const toggle = @intFromEnum(TwigGesture.toggle_inline);
-    const mark = @intFromEnum(TwigInlineKind.mark);
-    const color = @intFromEnum(TwigGesture.set_mark_color);
+    const md = @backingInt(TwigFormat.markdown);
+    const toggle = @backingInt(TwigGesture.toggle_inline);
+    const mark = @backingInt(TwigInlineKind.mark);
+    const color = @backingInt(TwigGesture.set_mark_color);
 
     // The pair of gates, flag by flag: a highlight needs HIGHLIGHT, a colour
     // needs COLORS on top, and COLORS brings the HIGHLIGHT it requires, as
@@ -7233,7 +7233,7 @@ test "twig_format_supports_ext: the Markdown flags widen what may be authored" {
     // A flag bitmask is ignored for a format that has no Markdown extensions,
     // exactly as it is at creation.
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(
-        @intFromEnum(TwigFormat.djot),
+        @backingInt(TwigFormat.djot),
         TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS,
         toggle,
         mark,
@@ -7241,7 +7241,7 @@ test "twig_format_supports_ext: the Markdown flags widen what may be authored" {
     ));
     try std.testing.expectEqual(@as(c_int, 1), out);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(
-        @intFromEnum(TwigFormat.djot),
+        @backingInt(TwigFormat.djot),
         TWIG_MD_HIGHLIGHT | TWIG_MD_HIGHLIGHT_COLORS,
         color,
         0,
@@ -7316,7 +7316,7 @@ test "twig_editor: a coloured highlight is two gestures over a flagged editor" {
     // The composition the header documents: wrap, then colour at `start + 2`.
     try std.testing.expectEqual(
         TwigStatus.ok,
-        twig_editor_toggle_inline(fx.ed, 2, 6, @intFromEnum(TwigInlineKind.mark), null),
+        twig_editor_toggle_inline(fx.ed, 2, 6, @backingInt(TwigInlineKind.mark), null),
     );
     try fx.expectSource("a ==word== b\n");
     const green = "green";
@@ -7332,20 +7332,20 @@ test "twig_editor: a coloured highlight is two gestures over a flagged editor" {
     defer plain.deinit();
     try std.testing.expectEqual(
         TwigStatus.unsupported_format,
-        twig_editor_toggle_inline(plain.ed, 2, 6, @intFromEnum(TwigInlineKind.mark), null),
+        twig_editor_toggle_inline(plain.ed, 2, 6, @backingInt(TwigInlineKind.mark), null),
     );
     try plain.expectSource("a word b\n");
 }
 
 test "twig_editor_set_block_attrs: gated on TWIG_MD_HTML_ELEMENTS, and the div is what the reparse reads" {
     var out: c_int = -1;
-    const md = @intFromEnum(TwigFormat.markdown);
-    const gesture = @intFromEnum(TwigGesture.set_block_attrs);
+    const md = @backingInt(TwigFormat.markdown);
+    const gesture = @backingInt(TwigGesture.set_block_attrs);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(md, gesture, 0, &out));
     try std.testing.expectEqual(@as(c_int, 0), out);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(md, TWIG_MD_HTML_ELEMENTS, gesture, 0, &out));
     try std.testing.expectEqual(@as(c_int, 1), out);
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.djot), gesture, 0, &out));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@backingInt(TwigFormat.djot), gesture, 0, &out));
     try std.testing.expectEqual(@as(c_int, 1), out);
 
     const src = "hello\n";
@@ -7377,13 +7377,13 @@ test "twig_editor_set_block_attrs: gated on TWIG_MD_HTML_ELEMENTS, and the div i
 
 test "twig_editor_set_node_attrs: XML's tag is rewritten in place, by node id, and every prose format refuses" {
     var out: c_int = -1;
-    const gesture = @intFromEnum(TwigGesture.set_node_attrs);
+    const gesture = @backingInt(TwigGesture.set_node_attrs);
     for ([_]TwigFormat{ .xml, .svg }) |fmt| {
-        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(fmt), gesture, 0, &out));
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@backingInt(fmt), gesture, 0, &out));
         try std.testing.expectEqual(@as(c_int, 1), out);
     }
     for ([_]TwigFormat{ .djot, .markdown, .html, .asciidoc, .commonmark, .gfm }) |fmt| {
-        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(fmt), gesture, 0, &out));
+        try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@backingInt(fmt), gesture, 0, &out));
         try std.testing.expectEqual(@as(c_int, 0), out);
     }
 
@@ -7433,13 +7433,13 @@ test "twig_editor_set_node_attrs: XML's tag is rewritten in place, by node id, a
 
 test "twig_editor_wrap_range_attrs: gated like the block gesture, and the span is what the reparse reads" {
     var out: c_int = -1;
-    const md = @intFromEnum(TwigFormat.markdown);
-    const gesture = @intFromEnum(TwigGesture.wrap_range_attrs);
+    const md = @backingInt(TwigFormat.markdown);
+    const gesture = @backingInt(TwigGesture.wrap_range_attrs);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(md, gesture, 0, &out));
     try std.testing.expectEqual(@as(c_int, 0), out);
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(md, TWIG_MD_HTML_ELEMENTS, gesture, 0, &out));
     try std.testing.expectEqual(@as(c_int, 1), out);
-    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@intFromEnum(TwigFormat.asciidoc), gesture, 0, &out));
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(@backingInt(TwigFormat.asciidoc), gesture, 0, &out));
     try std.testing.expectEqual(@as(c_int, 0), out);
 
     const src = "a big b\n";
@@ -7459,15 +7459,15 @@ test "twig_editor_wrap_range_attrs: gated like the block gesture, and the span i
 
 test "twig_format_supports: a kind is read in the gesture's own space, or rejected" {
     var out: c_int = -1;
-    const md = @intFromEnum(TwigFormat.markdown);
+    const md = @backingInt(TwigFormat.markdown);
 
     // `1` is `emph` to an inline gesture and `bullet_list` to the container
     // one — the same integer, two vocabularies, exactly as the `twig_editor_*`
     // calls already read it.
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
         md,
-        @intFromEnum(TwigGesture.toggle_block_container),
-        @intFromEnum(TwigBlockContainerKind.bullet_list),
+        @backingInt(TwigGesture.toggle_block_container),
+        @backingInt(TwigBlockContainerKind.bullet_list),
         &out,
     ));
     try std.testing.expectEqual(@as(c_int, 1), out);
@@ -7476,13 +7476,13 @@ test "twig_format_supports: a kind is read in the gesture's own space, or reject
     // `delete` inline and nothing at all to the container gesture.
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
         md,
-        @intFromEnum(TwigGesture.toggle_inline),
+        @backingInt(TwigGesture.toggle_inline),
         7,
         &out,
     ));
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(
         md,
-        @intFromEnum(TwigGesture.toggle_block_container),
+        @backingInt(TwigGesture.toggle_block_container),
         7,
         &out,
     ));
@@ -7491,14 +7491,14 @@ test "twig_format_supports: a kind is read in the gesture's own space, or reject
     // caller that forgot to reset the argument gets told, not answered.
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
         md,
-        @intFromEnum(TwigGesture.insert_link),
+        @backingInt(TwigGesture.insert_link),
         0,
         &out,
     ));
     try std.testing.expectEqual(@as(c_int, 1), out);
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_supports(
         md,
-        @intFromEnum(TwigGesture.insert_link),
+        @backingInt(TwigGesture.insert_link),
         3,
         &out,
     ));
@@ -7514,14 +7514,14 @@ test "twig_format_is_authorable: the read-only question, and its weakness" {
     for ([_]TwigFormat{ .djot, .markdown, .html, .asciidoc, .commonmark, .gfm }) |fmt| {
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_format_is_authorable(@intFromEnum(fmt), &out),
+            twig_format_is_authorable(@backingInt(fmt), &out),
         );
         try std.testing.expectEqual(@as(c_int, 1), out);
     }
     for ([_]TwigFormat{ .xml, .svg }) |fmt| {
         try std.testing.expectEqual(
             TwigStatus.ok,
-            twig_format_is_authorable(@intFromEnum(fmt), &out),
+            twig_format_is_authorable(@backingInt(fmt), &out),
         );
         try std.testing.expectEqual(@as(c_int, 0), out);
     }
@@ -7530,8 +7530,8 @@ test "twig_format_is_authorable: the read-only question, and its weakness" {
     // and yet a task-box button over it would fail.
     var supported: c_int = -1;
     try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(
-        @intFromEnum(TwigFormat.html),
-        @intFromEnum(TwigGesture.toggle_task_item),
+        @backingInt(TwigFormat.html),
+        @backingInt(TwigGesture.toggle_task_item),
         0,
         &supported,
     ));

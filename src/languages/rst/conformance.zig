@@ -233,13 +233,13 @@ pub fn writeCoverage(w: *std.Io.Writer, coverage: doctree.Coverage) std.Io.Write
     );
     try w.writeAll("  unmapped elements, by instance count:\n");
     // A simple selection sort over ~95 slots — this only runs on failure.
-    var printed = std.EnumSet(doctree.Tag).initEmpty();
+    var printed = std.EnumSet(doctree.Tag).empty;
     while (true) {
         var best: ?doctree.Tag = null;
         var best_n: u32 = 0;
         for (std.enums.values(doctree.Tag)) |tag| {
             if (printed.contains(tag)) continue;
-            const n = coverage.generic[@intFromEnum(tag)];
+            const n = coverage.generic[@backingInt(tag)];
             if (n > best_n) {
                 best = tag;
                 best_n = n;

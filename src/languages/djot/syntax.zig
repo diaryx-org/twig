@@ -160,8 +160,8 @@ pub const table: syntax.Syntax = .{
 };
 
 test "djot spells every inline kind" {
-    inline for (std.meta.fields(syntax.InlineKind)) |f| {
-        try std.testing.expect(table.inline_delims.get(@enumFromInt(f.value)) != null);
+    inline for (@typeInfo(syntax.InlineKind).@"enum".field_names, @typeInfo(syntax.InlineKind).@"enum".field_values) |_, f_value| {
+        try std.testing.expect(table.inline_delims.get(@fromBackingInt(@intCast(f_value))) != null);
     }
     table.assertCoherent();
     try std.testing.expect(table.authorable());

@@ -106,7 +106,7 @@ fn build_from_source(cargo_target: &str, cargo_host: &str) {
                  `zig` to build from source failed: {e}.\n\
                  Prebuilt targets need no Zig: aarch64-apple-darwin, x86_64-unknown-linux-gnu, \
                  aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, wasm32-unknown-unknown.\n\
-                 For any other target install Zig 0.16+ (https://ziglang.org/download/)."
+                 For any other target install Zig 0.17+ (https://ziglang.org/download/)."
             )
         });
 

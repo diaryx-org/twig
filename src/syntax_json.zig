@@ -95,8 +95,8 @@ pub fn encode(writer: *Writer, s: *const Syntax, options: Options) Writer.Error!
     if (r.render_text or r.render_block or r.spells_autolink) {
         try w.objectField("renderers");
         try w.beginArray();
-        inline for (std.meta.fields(Renderers)) |f| {
-            if (@field(r, f.name)) try w.write(f.name);
+        inline for (comptime std.meta.fieldNames(Renderers)) |f_name| {
+            if (@field(r, f_name)) try w.write(f_name);
         }
         try w.endArray();
     }
@@ -126,13 +126,13 @@ fn isEnumArray(comptime T: type) bool {
 }
 
 fn writeMembers(w: *Stringify, comptime T: type, v: T) Writer.Error!void {
-    inline for (std.meta.fields(T)) |f| {
-        if (comptime isFunction(f.type)) continue;
-        const value = @field(v, f.name);
-        const at_default = if (f.defaultValue()) |d| eqlValue(f.type, value, d) else false;
+    inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types, @typeInfo(T).@"struct".field_attrs) |f_name, f_type, f_attrs| {
+        if (comptime isFunction(f_type)) continue;
+        const value = @field(v, f_name);
+        const at_default = if (f_attrs.defaultValue(f_type)) |d| eqlValue(f_type, value, d) else false;
         if (!at_default) {
-            try w.objectField(f.name);
-            try writeValue(w, f.type, value);
+            try w.objectField(f_name);
+            try writeValue(w, f_type, value);
         }
     }
 }
@@ -195,8 +195,8 @@ fn eqlValue(comptime T: type, a: T, b: T) bool {
             break :blk true;
         },
         .@"struct" => blk: {
-            inline for (std.meta.fields(T)) |f| {
-                if (!eqlValue(f.type, @field(a, f.name), @field(b, f.name))) break :blk false;
+            inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types, @typeInfo(T).@"struct".field_attrs) |f_name, f_type, _| {
+                if (!eqlValue(f_type, @field(a, f_name), @field(b, f_name))) break :blk false;
             }
             break :blk true;
         },
@@ -228,9 +228,9 @@ pub fn fromValue(arena: Allocator, value: std.json.Value, problem: *Problem) Err
                 .string => |n| n,
                 else => return r.fail("renderers", "holds a value that is not a renderer's name"),
             };
-            inline for (std.meta.fields(Renderers)) |f| {
-                if (std.mem.eql(u8, name, f.name)) {
-                    @field(decoded.renderers, f.name) = true;
+            inline for (comptime std.meta.fieldNames(Renderers)) |f_name| {
+                if (std.mem.eql(u8, name, f_name)) {
+                    @field(decoded.renderers, f_name) = true;
                     break;
                 }
             } else return r.fail("renderers", "names a renderer that is not render_text, render_block or spells_autolink");
@@ -274,15 +274,15 @@ const Reader = struct {
         comptime ignore: []const []const u8,
     ) Error!T {
         var out: T = undefined;
-        inline for (std.meta.fields(T)) |f| {
-            if (comptime isFunction(f.type)) {
-                @field(out, f.name) = f.defaultValue().?;
-            } else if (obj.get(f.name)) |v| {
-                @field(out, f.name) = try self.value(f.type, v, try self.join(path, f.name));
-            } else if (f.defaultValue()) |d| {
-                @field(out, f.name) = d;
+        inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types, @typeInfo(T).@"struct".field_attrs) |f_name, f_type, f_attrs| {
+            if (comptime isFunction(f_type)) {
+                @field(out, f_name) = f_attrs.defaultValue(f_type).?;
+            } else if (obj.get(f_name)) |v| {
+                @field(out, f_name) = try self.value(f_type, v, try self.join(path, f_name));
+            } else if (f_attrs.defaultValue(f_type)) |d| {
+                @field(out, f_name) = d;
             } else {
-                return self.fail(try self.join(path, f.name), "is missing, and has no default");
+                return self.fail(try self.join(path, f_name), "is missing, and has no default");
             }
         }
         for (obj.keys()) |key| {
@@ -295,9 +295,9 @@ const Reader = struct {
         inline for (ignore) |name| {
             if (std.mem.eql(u8, key, name)) return true;
         }
-        inline for (std.meta.fields(T)) |f| {
-            if (comptime isFunction(f.type)) continue;
-            if (std.mem.eql(u8, key, f.name)) return true;
+        inline for (@typeInfo(T).@"struct".field_names, @typeInfo(T).@"struct".field_types, @typeInfo(T).@"struct".field_attrs) |f_name, f_type, _| {
+            if (comptime isFunction(f_type)) continue;
+            if (std.mem.eql(u8, key, f_name)) return true;
         }
         return false;
     }

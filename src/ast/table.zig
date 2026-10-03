@@ -243,7 +243,7 @@ const LabelRow = struct {
 
     fn lessThan(_: void, a: LabelRow, b: LabelRow) bool {
         if (a.node != b.node) return a.node < b.node;
-        return @intFromEnum(a.registry) < @intFromEnum(b.registry);
+        return @backingInt(a.registry) < @backingInt(b.registry);
     }
 };
 
@@ -407,10 +407,10 @@ fn readSpelling(p: *Problem, i: usize, row: std.json.ObjectMap) error{InvalidTab
         .string => |s| s,
         else => return fail(p, i, "spelling", "expected a name"),
     };
-    inline for (std.meta.fields(Document.Spelling)) |f| {
-        if (std.mem.eql(u8, key, f.name)) {
-            const v = std.meta.stringToEnum(f.type, name) orelse return fail(p, i, "spelling", "not one of the names this spelling takes");
-            return @unionInit(Document.Spelling, f.name, v);
+    inline for (@typeInfo(Document.Spelling).@"union".field_names, @typeInfo(Document.Spelling).@"union".field_types, @typeInfo(Document.Spelling).@"union".field_attrs) |f_name, f_type, _| {
+        if (std.mem.eql(u8, key, f_name)) {
+            const v = std.meta.stringToEnum(f_type, name) orelse return fail(p, i, "spelling", "not one of the names this spelling takes");
+            return @unionInit(Document.Spelling, f_name, v);
         }
     }
     return fail(p, i, "spelling", "not a spelling");
@@ -508,7 +508,7 @@ fn readLabels(allocator: Allocator, p: *Problem, ast: *const AST, items: []const
             else => return fail(p, node, "labels", "label is a string"),
         };
         if (!std.mem.eql(u8, label, own)) return fail(p, node, "labels", "label differs from the definition's own");
-        const map = labels.maps()[@intFromEnum(registry)];
+        const map = labels.maps()[@backingInt(registry)];
         try map.put(allocator, own, node);
     }
     return labels;
