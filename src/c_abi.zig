@@ -2761,10 +2761,11 @@ fn containerOriginOf(doc: *const twig.Document, node: *const twig.AST.Node) c_in
     };
 }
 
-/// A heading's level, or 0 for any other kind.
+/// A heading's level, a verse line's indent, or 0 for any other kind.
 fn kindLevel(node: *const twig.AST.Node) u32 {
     return switch (node.kind) {
         .heading => |h| h.level,
+        .line => |l| l.indent,
         else => 0,
     };
 }
@@ -3497,6 +3498,7 @@ const TwigGesture = enum(c_int) {
     move_block = 31,
     insert_inline_math = 32,
     insert_display_math = 33,
+    toggle_line_block = 34,
 };
 
 /// Map a raw C `int` to a `TwigGesture`, or `null` if it names none.
@@ -3536,6 +3538,7 @@ fn gestureFromInt(v: c_int) ?TwigGesture {
         31 => .move_block,
         32 => .insert_inline_math,
         33 => .insert_display_math,
+        34 => .toggle_line_block,
         else => null,
     };
 }
@@ -4326,6 +4329,23 @@ pub export fn twig_editor_insert_display_math(
     const formula = sliceOf(formula_ptr, formula_len) orelse return .invalid_argument;
 
     handle.editor.insertDisplayMath(offset, formula) catch |err|
+        return statusOfEditorError(err);
+    if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
+    return .ok;
+}
+
+/// Make the paragraphs `[start, end)` touches a verse, or the verse `start` is
+/// in back into paragraphs. See `twig.h` for the semantics and
+/// `twig.Editor.toggleLineBlock` for the implementation.
+pub export fn twig_editor_toggle_line_block(
+    ed: ?*TwigEditor,
+    start: usize,
+    end: usize,
+    out_change: ?*TwigChange,
+) TwigStatus {
+    const raw = ed orelse return .invalid_argument;
+    const handle = asEditor(raw);
+    handle.editor.toggleLineBlock(start, end) catch |err|
         return statusOfEditorError(err);
     if (out_change) |slot| slot.* = changeC(handle.editor.lastChange().?);
     return .ok;
@@ -7539,4 +7559,39 @@ test "twig_format_is_authorable: the read-only question, and its weakness" {
 
     try std.testing.expectEqual(TwigStatus.unsupported_format, twig_format_is_authorable(9999, &out));
     try std.testing.expectEqual(TwigStatus.invalid_argument, twig_format_is_authorable(0, null));
+}
+
+test "twig_editor_toggle_line_block: gated on TWIG_MD_HTML_ELEMENTS, and a line reports its indent as level" {
+    const md = @backingInt(TwigFormat.markdown);
+    const gesture = @backingInt(TwigGesture.toggle_line_block);
+    var supported: c_int = -1;
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports(md, gesture, 0, &supported));
+    try std.testing.expectEqual(@as(c_int, 0), supported);
+    try std.testing.expectEqual(TwigStatus.ok, twig_format_supports_ext(md, TWIG_MD_HTML_ELEMENTS, gesture, 0, &supported));
+    try std.testing.expectEqual(@as(c_int, 1), supported);
+
+    const src = "One\n\u{2003}two\n";
+    var plain: ?*TwigEditor = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_create(src.ptr, src.len, md, &plain));
+    defer twig_editor_destroy(plain);
+    try std.testing.expectEqual(TwigStatus.unsupported_format, twig_editor_toggle_line_block(plain, 0, 0, null));
+
+    var ed: ?*TwigEditor = null;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_create_ext(src.ptr, src.len, md, TWIG_MD_HTML_ELEMENTS, &ed));
+    defer twig_editor_destroy(ed);
+    var change: TwigChange = undefined;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_toggle_line_block(ed, 0, 0, &change));
+
+    var nodes: ?[*]const TwigFlatNode = null;
+    var count: usize = 0;
+    try std.testing.expectEqual(TwigStatus.ok, twig_editor_nodes(ed, &nodes, &count));
+    var levels: [2]u32 = .{ 99, 99 };
+    var n: usize = 0;
+    for (nodes.?[0..count]) |node| {
+        if (!std.mem.eql(u8, std.mem.span(node.kind), "line")) continue;
+        levels[n] = node.level;
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1 }, &levels);
 }

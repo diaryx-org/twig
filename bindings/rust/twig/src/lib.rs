@@ -638,7 +638,8 @@ pub struct FlatNode {
     pub next_sibling: Option<NodeId>,
     pub span: Range<usize>,
     pub content_span: Option<Range<usize>>,
-    /// A heading's level; `None` for every other kind.
+    /// A heading's level, or a verse `line`'s indent when it is indented;
+    /// `None` for every other kind and for a line at the margin.
     pub level: Option<u32>,
     pub kind: Kind,
     /// The node's text payload — a `str`'s bytes, a `code_block`'s body — and
@@ -999,6 +1000,10 @@ pub enum Gesture {
     /// [`MarkdownExtensions::math`]; not AsciiDoc, whose one math spelling
     /// reads back inline.
     InsertDisplayMath,
+    /// Make paragraphs a verse, or a verse paragraphs — [`Editor::toggle_line_block`].
+    /// Supported where the format reads a verse back, which for Markdown means
+    /// [`MarkdownExtensions::html_elements`]: ask [`Format::supports_with`].
+    ToggleLineBlock,
 }
 
 impl Gesture {
@@ -1042,6 +1047,7 @@ impl Gesture {
             Gesture::MoveBlock => (31, 0),
             Gesture::InsertInlineMath => (32, 0),
             Gesture::InsertDisplayMath => (33, 0),
+            Gesture::ToggleLineBlock => (34, 0),
         }
     }
 }
@@ -3285,6 +3291,41 @@ impl Editor {
         self.change_op(|ed, out| unsafe {
             ffi::twig_editor_insert_display_math(ed, offset, formula.as_ptr(), formula.len(), out)
         })
+    }
+
+    /// Make the paragraphs `start..end` touches a verse — a `line_block` — or,
+    /// when `start` is inside a verse, turn it back into paragraphs: the one
+    /// Verse button, toggling as the container buttons do.
+    ///
+    /// On: the paragraph at `start` and every sibling paragraph through the
+    /// one at `end` become one verse. Each paragraph is a stanza, every line
+    /// break inside it ends a line, and a line's leading em spaces (U+2003)
+    /// are its indent, which each `line` node reports as its
+    /// [`FlatNode::level`]. Markdown writes `<div class="verse">` around the
+    /// stanzas with each line ended by a `\` hard break; djot a `::: verse`
+    /// div; AsciiDoc `[verse]` over a `____` block. Paragraphs that are
+    /// exactly the children of an attribute wrapper — a centred paragraph's
+    /// div — take its attributes with them.
+    ///
+    /// Off: one paragraph per stanza, the lines joined by plain line breaks
+    /// and each indent kept as em spaces, so toggling on again gives the same
+    /// verse.
+    ///
+    /// [`Error::UnsupportedFormat`] where the format cannot read a verse back:
+    /// HTML, XML, and Markdown without [`MarkdownExtensions::html_elements`].
+    /// [`Error::NotFound`] when `start` is in neither a paragraph nor a verse;
+    /// [`Error::NotEditable`] when the range reaches something other than a
+    /// sibling paragraph, or the block is inside a list item.
+    ///
+    /// ```no_run
+    /// # use twig::{Format, Gesture, MarkdownExtensions};
+    /// let exts = MarkdownExtensions { html_elements: true, ..Default::default() };
+    /// assert!(!Format::Markdown.supports(Gesture::ToggleLineBlock));
+    /// assert!(Format::Markdown.supports_with(exts, Gesture::ToggleLineBlock));
+    /// assert!(Format::Djot.supports(Gesture::ToggleLineBlock));
+    /// ```
+    pub fn toggle_line_block(&mut self, start: usize, end: usize) -> Result<Change, Error> {
+        self.change_op(|ed, out| unsafe { ffi::twig_editor_toggle_line_block(ed, start, end, out) })
     }
 
     /// Shared plumbing for the change-returning ops: run `op` (which fills a
@@ -7149,6 +7190,7 @@ mod tests {
             Gesture::MoveBlock,
             Gesture::InsertInlineMath,
             Gesture::InsertDisplayMath,
+            Gesture::ToggleLineBlock,
         ]);
         all
     }
@@ -7163,7 +7205,7 @@ mod tests {
         let mut codes: Vec<c_int> = all_gestures().iter().map(|g| g.to_c().0).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes, (0..=33).collect::<Vec<c_int>>());
+        assert_eq!(codes, (0..=34).collect::<Vec<c_int>>());
 
         let mut supported = -1;
         for code in &codes {
@@ -7181,7 +7223,7 @@ mod tests {
         let status = unsafe {
             ffi::twig_format_supports(
                 ffi::TwigFormat::from(Format::Markdown) as c_int,
-                34,
+                35,
                 0,
                 &mut supported,
             )
@@ -7320,5 +7362,33 @@ mod tests {
             ffi::twig_format_supports(ffi::TwigFormat::Markdown as c_int, 9999, 0, &mut out)
         };
         assert_eq!(Error::from_status(status), Err(Error::InvalidArgument));
+    }
+
+    #[test]
+    fn toggle_line_block_makes_a_verse_whose_lines_report_their_indent() {
+        let exts = MarkdownExtensions {
+            html_elements: true,
+            ..Default::default()
+        };
+        assert!(!Format::Markdown.supports(Gesture::ToggleLineBlock));
+        assert!(Format::Markdown.supports_with(exts, Gesture::ToggleLineBlock));
+        assert!(Format::Djot.supports(Gesture::ToggleLineBlock));
+        assert!(!Format::Html.supports(Gesture::ToggleLineBlock));
+
+        let mut ed = Editor::new_ext("One\n\u{2003}two\n".as_bytes(), Format::Markdown, exts).expect("editor");
+        ed.toggle_line_block(0, 0).expect("toggle on");
+        assert_eq!(
+            ed.source_str().expect("source"),
+            "<div class=\"verse\">\n\nOne\\\n\u{2003}two\n\n</div>\n"
+        );
+        let nodes = ed.nodes().expect("nodes");
+        let levels: Vec<Option<u32>> = nodes.iter().filter(|n| n.kind == Kind::Line).map(|n| n.level).collect();
+        assert_eq!(levels, vec![None, Some(1)]);
+
+        ed.toggle_line_block(0, 0).expect("toggle off");
+        assert_eq!(ed.source_str().expect("source"), "One\n\u{2003}two\n");
+
+        let mut plain = Editor::new("One\n".as_bytes(), Format::Markdown).expect("editor");
+        assert_eq!(plain.toggle_line_block(0, 0), Err(Error::UnsupportedFormat));
     }
 }

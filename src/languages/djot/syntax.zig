@@ -152,6 +152,8 @@ pub const table: syntax.Syntax = .{
     // each.
     .block_attrs = .native,
     .inline_attrs = true,
+    // `::: verse`, read as a line block by `ast/verse.zig`.
+    .line_blocks = true,
     // No `cell_line_break`: djot has no native in-cell hard break, and spelling
     // one as `<br>` would emit non-idiomatic djot that any other djot reader
     // renders as literal `<br>` text. So it stays `null` — `insertLineBreak`

@@ -192,6 +192,7 @@ pub fn renderers(gpa: Allocator, entry: *const format.Entry, r: *Report) Error!v
         if (t.block_attrs) |shape| try blockAttrs(gpa, entry, cfg, shape, r);
         if (t.inline_attrs) try inlineAttrs(gpa, entry, cfg, r);
         if (t.node_attrs != null) try nodeAttrs(gpa, entry, cfg, r);
+        if (t.line_blocks) try lineBlocks(gpa, entry, cfg, r);
     }
 }
 
@@ -409,6 +410,61 @@ pub fn blockAttrs(gpa: Allocator, entry: *const format.Entry, cfg: *const format
         return;
     }
     return r.fail("{s}: block_attrs: an attributed paragraph does not reparse as one:\n{s}", .{ name, printed });
+}
+
+/// What `Editor.toggleLineBlock` assumes of a table claiming
+/// `Syntax.line_blocks`: a verse — two stanzas, an indented line, a class —
+/// printed through `renderBlock` reparses as a `line_block` with the same
+/// lines in the same order, the same indents, the stanza break where it was,
+/// and the class.
+pub fn lineBlocks(gpa: Allocator, entry: *const format.Entry, cfg: *const format.ParseConfig, r: *Report) Error!void {
+    const name = entry.id.name();
+    var b = AST.Builder.init(gpa);
+    defer b.deinit();
+    const want_text = [_][]const u8{ "first", "second", "", "third" };
+    const want_indent = [_]u32{ 0, 1, 0, 0 };
+    var lines: [want_text.len]AST.Node.Id = undefined;
+    for (want_text, want_indent, 0..) |t, ind, i| {
+        lines[i] = if (t.len == 0)
+            try b.addContainer(.{ .line = .{} }, &.{})
+        else
+            try b.addContainer(.{ .line = .{ .indent = ind } }, &.{try b.addLeaf(.{ .str = t })});
+    }
+    const block = try b.addContainer(.line_block, &lines);
+    try b.setAttrs(block, .{ .entries = &.{.{ .key = "class", .value = "c" }} });
+    const printed = try printWith(gpa, entry, tableFor(entry, cfg), &b, block, r, "verse");
+    defer gpa.free(printed);
+
+    var parsed = entry.parse(cfg, gpa, printed) catch |err|
+        return r.broke(entry, err, "{s}: line_blocks: a verse's print does not reparse", .{name});
+    defer parsed.deinit();
+    const ast = &parsed.doc.ast;
+    for (ast.nodes, 0..) |n, i| {
+        if (n.kind != .line_block) continue;
+        const id: AST.Node.Id = @intCast(i);
+        const class = ast.attrsOf(id).get("class") orelse "";
+        if (!std.mem.eql(u8, std.mem.trim(u8, class, " "), "c"))
+            return r.fail("{s}: line_blocks: the verse comes back without its class:\n{s}", .{ name, printed });
+        var it = ast.children(id);
+        var k: usize = 0;
+        while (it.next()) |line| : (k += 1) {
+            if (k >= want_text.len) break;
+            const indent = switch (ast.nodes[line.id].kind) {
+                .line => |l| l.indent,
+                else => return r.fail("{s}: line_blocks: a verse child is not a line:\n{s}", .{ name, printed }),
+            };
+            const first = ast.nodes[line.id].first_child;
+            const text: []const u8 = if (first) |f| switch (ast.nodes[f].kind) {
+                .str => |s| s,
+                else => "?",
+            } else "";
+            if (indent != want_indent[k] or !std.mem.eql(u8, text, want_text[k]))
+                return r.fail("{s}: line_blocks: line {d} comes back as {d}×\"{s}\", not {d}×\"{s}\":\n{s}", .{ name, k, indent, text, want_indent[k], want_text[k], printed });
+        }
+        if (k != want_text.len) return r.fail("{s}: line_blocks: the verse comes back with {d} lines, not {d}:\n{s}", .{ name, k, want_text.len, printed });
+        return;
+    }
+    return r.fail("{s}: line_blocks: a verse does not reparse as one:\n{s}", .{ name, printed });
 }
 
 /// The first element-origin container of `doc` — what a parser made of a
@@ -1254,6 +1310,7 @@ fn gesturesOver(gpa: Allocator, entry: *const format.Entry, source: []const u8, 
         if (Editor.supports(table, .insert_directive)) try t.keep(probeDirective(&t, b));
         if (Editor.supports(table, .insert_display_math)) try t.keep(probeDisplayMath(&t, b));
         if (Editor.supports(table, .set_block_attrs)) try t.keep(probeBlockAttrs(&t, b));
+        if (Editor.supports(table, .toggle_line_block) and b.kind == .para) try t.keep(probeLineBlock(&t, b));
         if (Editor.supports(table, .move_block)) try t.keep(probeMove(&t, b));
     }
 
@@ -1600,6 +1657,14 @@ fn probeBlockAttrs(t: *Trial, b: BlockSite) Error!void {
     defer e.deinit();
     e.setBlockAttrs(b.caret, claim_attrs.entries) catch |err| return t.refused(&e, "set_block_attrs", err);
     try t.succeeded(&e, "set_block_attrs");
+}
+
+/// On and off again: a paragraph made a verse, then the verse made prose.
+fn probeLineBlock(t: *Trial, b: BlockSite) Error!void {
+    var e = try t.open();
+    defer e.deinit();
+    e.toggleLineBlock(b.caret, b.caret) catch |err| return t.refused(&e, "toggle_line_block", err);
+    try t.succeeded(&e, "toggle_line_block");
 }
 
 fn probeMove(t: *Trial, b: BlockSite) Error!void {

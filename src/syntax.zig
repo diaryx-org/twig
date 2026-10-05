@@ -760,6 +760,16 @@ pub const Syntax = struct {
     /// Measured like `block_attrs`; implies `renderBlock != null`.
     inline_attrs: bool = false,
 
+    /// Whether a `line_block` — a verse — printed through `renderBlock`
+    /// reparses as a `line_block` with the same lines, indents and stanza
+    /// breaks. AsciiDoc's `[verse]` is native; djot's `::: verse` and
+    /// Markdown's `<div class="verse">` are divs `ast/verse.zig` reads as
+    /// one, which Markdown pairs only under `html_elements`. `false` =
+    /// `Editor.toggleLineBlock` is `error.UnsupportedFormat`: HTML writes a
+    /// `div.line-block` its parser hands back as a plain container. Measured
+    /// like `block_attrs`; implies `renderBlock != null`.
+    line_blocks: bool = false,
+
     // ── Renderers ──────────────────────────────────────────────────────────
     // The spellings that are not a table. Every field above is bytes an
     // algorithm in `ast/editor.zig` writes; each field here is the algorithm's
@@ -1027,6 +1037,7 @@ pub const Syntax = struct {
             if (self.names_leaf_containers) return fail(why, .claim_needs_renderer, "names_leaf_containers");
             if (self.block_attrs != null) return fail(why, .claim_needs_renderer, "block_attrs");
             if (self.inline_attrs) return fail(why, .claim_needs_renderer, "inline_attrs");
+            if (self.line_blocks) return fail(why, .claim_needs_renderer, "line_blocks");
             inline for (.{ .inline_math, .display_math }) |k| {
                 if (self.authorableDelimsFor(.{ .text_leaf = k }) != null)
                     return fail(why, .claim_needs_renderer, "text_leaf_delims." ++ @tagName(k));

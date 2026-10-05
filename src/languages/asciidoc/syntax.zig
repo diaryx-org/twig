@@ -152,6 +152,8 @@ pub const table: syntax.Syntax = .{
     // in full. A run's `[#id.role]#text#` does not — no slot for a third key,
     // so `inline_attrs` stays false; see `Syntax.inline_attrs`.
     .block_attrs = .native,
+    // `[verse]` over a `____` block is AsciiDoc's own line block.
+    .line_blocks = true,
 
     // ── Deliberately absent ────────────────────────────────────────────────
     // `inline_attrs`: above.

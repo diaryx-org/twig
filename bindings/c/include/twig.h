@@ -206,11 +206,11 @@ typedef struct TwigKeyVal {
 // twig_editor_nodes returns, the JSON-free read path. `id` is the node's index
 // in the arena; parent / first_child / next_sibling are ids or TWIG_NO_NODE.
 // content_span is meaningful only when has_content_span is non-zero. `level` is
-// a heading's level (0 otherwise). `kind` is static, library-owned storage
-// (never freed). text_ptr/destination_ptr borrow the node's payload in the
-// current parse and stay valid until the next successful edit or
-// twig_editor_destroy; each pointer is NULL when the kind carries no such
-// payload.
+// a heading's level, or a verse `line`'s indent (0 otherwise). `kind` is
+// static, library-owned storage (never freed). text_ptr/destination_ptr borrow
+// the node's payload in the current parse and stay valid until the next
+// successful edit or twig_editor_destroy; each pointer is NULL when the kind
+// carries no such payload.
 //
 // `head` and `alignment` surface a row/cell payload the way `level` surfaces a
 // heading's, so a table can be rendered from the snapshot alone. Each is -1
@@ -1098,6 +1098,7 @@ typedef enum TwigGesture {
     TWIG_GESTURE_MOVE_BLOCK = 31,
     TWIG_GESTURE_INSERT_INLINE_MATH = 32,
     TWIG_GESTURE_INSERT_DISPLAY_MATH = 33,
+    TWIG_GESTURE_TOGGLE_LINE_BLOCK = 34,
 } TwigGesture;
 
 // Whether `format` (a TWIG_FORMAT_* code) can spell `gesture` — writes 1 or 0
@@ -2332,6 +2333,35 @@ TwigStatus twig_editor_insert_display_math(
     size_t offset,
     const uint8_t *formula_ptr,
     size_t formula_len,
+    TwigChange *out_change
+);
+
+// Make the paragraphs [start, end) touches a VERSE — a line_block — or, when
+// `start` is inside a verse, turn it back into paragraphs. The one Verse
+// button, toggling as the container buttons do.
+//
+// On: the paragraph at `start` and every sibling paragraph through the one at
+// `end` become one verse. Each paragraph is a stanza, every line break inside
+// it ends a line, and a line's leading em spaces (U+2003) are its indent —
+// which each `line` node then reports as its `level`. Markdown writes it as
+// `<div class="verse">` around the stanzas, each line ended by a `\` hard
+// break; djot as a `::: verse` div; AsciiDoc as `[verse]` over a `____`
+// block. Paragraphs that are exactly the children of an attribute wrapper (a
+// centred paragraph's div) take its attributes with them.
+//
+// Off: one paragraph per stanza, lines joined by plain line breaks, each
+// line's indent kept as em spaces, so toggling on again gives the same verse.
+//
+// TWIG_STATUS_UNSUPPORTED_FORMAT where the format cannot read a verse back:
+// HTML, XML, and Markdown without TWIG_MD_HTML_ELEMENTS — ask
+// twig_format_supports_ext with TWIG_GESTURE_TOGGLE_LINE_BLOCK.
+// TWIG_STATUS_NOT_FOUND when `start` is in neither a paragraph nor a verse;
+// TWIG_STATUS_NOT_EDITABLE when the range reaches something other than a
+// sibling paragraph, or the block is inside a list item.
+TwigStatus twig_editor_toggle_line_block(
+    TwigEditor *editor,
+    size_t start,
+    size_t end,
     TwigChange *out_change
 );
 

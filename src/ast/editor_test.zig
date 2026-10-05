@@ -4925,6 +4925,7 @@ const all_gestures = blk: {
         .move_block,
         .insert_inline_math,
         .insert_display_math,
+        .toggle_line_block,
     };
 };
 
@@ -4981,6 +4982,7 @@ fn runGesture(ed: *Editor, g: Editor.Gesture) Editor.Error!void {
         .move_block => ed.moveBlock(0, ed.sourceBytes().len),
         .insert_inline_math => ed.insertInlineMath(0, "x"),
         .insert_display_math => ed.insertDisplayMath(0, "x"),
+        .toggle_line_block => ed.toggleLineBlock(0, 0),
     };
 }
 
@@ -5444,4 +5446,87 @@ test "move_block: the source's length is the document's end, terminated or not" 
     defer quote.deinit();
     try quote.ed.moveBlock(0, 6);
     try quote.expectSource("> a\n\nx");
+}
+
+// ── toggleLineBlock ────────────────────────────────────────────────────────
+
+/// The first `line_block` in the fixture's tree, or null — `KindRef` names
+/// inline and container kinds, not this one.
+fn findLineBlock(fx: *Fixture) ?AST.Node.Id {
+    for (fx.ed.astView().nodes, 0..) |n, i| {
+        if (n.kind == .line_block) return @intCast(i);
+    }
+    return null;
+}
+
+test "toggleLineBlock: two Markdown paragraphs become one verse of two stanzas, and back" {
+    var fx = try Fixture.initWith("before\n\nRoses are red,\nviolets blue.\n\nSugar is sweet.\n\nafter\n", .markdown, &html_elements_cfg);
+    defer fx.deinit();
+    const start = std.mem.indexOf(u8, fx.ed.sourceBytes(), "Roses").?;
+    const end = std.mem.indexOf(u8, fx.ed.sourceBytes(), "sweet").?;
+    try fx.ed.toggleLineBlock(start, end);
+    try fx.expectSource("before\n\n<div class=\"verse\">\n\nRoses are red,\\\nviolets blue.\n\nSugar is sweet.\n\n</div>\n\nafter\n");
+    try testing.expect(findLineBlock(&fx) != null);
+
+    // Off again, from anywhere inside: one paragraph per stanza, the lines
+    // joined by plain breaks.
+    const inside = std.mem.indexOf(u8, fx.ed.sourceBytes(), "violets").?;
+    try fx.ed.toggleLineBlock(inside, inside);
+    try fx.expectSource("before\n\nRoses are red,\nviolets blue.\n\nSugar is sweet.\n\nafter\n");
+    try testing.expect(findLineBlock(&fx) == null);
+}
+
+test "toggleLineBlock: a centred paragraph's wrapper becomes the verse and keeps its class" {
+    var fx = try Fixture.initWith("<div class=\"center\">\n\nOne\nTwo\n\n</div>\n", .markdown, &html_elements_cfg);
+    defer fx.deinit();
+    const at = std.mem.indexOf(u8, fx.ed.sourceBytes(), "One").?;
+    try fx.ed.toggleLineBlock(at, at);
+    try fx.expectSource("<div class=\"verse center\">\n\nOne\\\nTwo\n\n</div>\n");
+    const lb = findLineBlock(&fx).?;
+    try testing.expectEqualStrings("center", fx.ed.astView().attrsOf(lb).get("class").?);
+
+    // And off: the class comes back on a div around the paragraph.
+    try fx.ed.toggleLineBlock(at, at);
+    try fx.expectSource("<div class=\"center\">\n\nOne\nTwo\n\n</div>\n");
+}
+
+test "toggleLineBlock: an indent survives the round trip as em spaces" {
+    var fx = try Fixture.initWith("<div class=\"verse\">\n\nzero\n\u{2003}one\n\n</div>\n", .markdown, &html_elements_cfg);
+    defer fx.deinit();
+    const at = std.mem.indexOf(u8, fx.ed.sourceBytes(), "zero").?;
+    try fx.ed.toggleLineBlock(at, at);
+    try fx.expectSource("zero\n\u{2003}one\n");
+    try fx.ed.toggleLineBlock(0, 0);
+    try fx.expectSource("<div class=\"verse\">\n\nzero\\\n\u{2003}one\n\n</div>\n");
+    const lb = findLineBlock(&fx).?;
+    var it = fx.ed.astView().children(lb);
+    _ = it.next();
+    const second = it.next().?;
+    try testing.expectEqual(@as(u32, 1), fx.ed.astView().nodes[second.id].kind.line.indent);
+}
+
+test "toggleLineBlock: djot writes `::: verse`, and a wrapper's attribute line is replaced, not doubled" {
+    var fx = try Fixture.init("{.center}\n::: c\nOne\nTwo\n:::\n", .djot);
+    defer fx.deinit();
+    const at = std.mem.indexOf(u8, fx.ed.sourceBytes(), "One").?;
+    try fx.ed.toggleLineBlock(at, at);
+    const lb = findLineBlock(&fx).?;
+    try testing.expectEqualStrings("center c", fx.ed.astView().attrsOf(lb).get("class").?);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, fx.ed.sourceBytes(), "{"));
+    try testing.expect(std.mem.indexOf(u8, fx.ed.sourceBytes(), "::: verse\nOne\\\nTwo\n:::") != null);
+}
+
+test "toggleLineBlock: refused across a heading, and unsupported where a verse cannot be read back" {
+    var fx = try Fixture.initWith("one\n\n# Heading\n\ntwo\n", .markdown, &html_elements_cfg);
+    defer fx.deinit();
+    const end = std.mem.indexOf(u8, fx.ed.sourceBytes(), "two").?;
+    try testing.expectError(error.NotEditable, fx.ed.toggleLineBlock(0, end));
+    try fx.expectSource("one\n\n# Heading\n\ntwo\n");
+
+    var plain = try Fixture.init("one\n", .markdown);
+    defer plain.deinit();
+    try testing.expectError(error.UnsupportedFormat, plain.ed.toggleLineBlock(0, 0));
+    var html = try Fixture.init("<p>one</p>\n", .html);
+    defer html.deinit();
+    try testing.expectError(error.UnsupportedFormat, html.ed.toggleLineBlock(0, 0));
 }

@@ -328,6 +328,9 @@ fn derive(comptime k: Key) syntax.Syntax {
     // `wrapped` shape — rather than on the block.
     t.block_attrs = if (k.html_elements) .wrapped else null;
     t.inline_attrs = k.html_elements;
+    // A verse is a `<div class="verse">`, which is a container only when
+    // `html_elements` pairs its tags — see `ast/verse.zig`.
+    t.line_blocks = k.html_elements;
     // A pipe table, a task box and a footnote each read back only under
     // their own flag; without it the gesture would write a paragraph of
     // pipes, a literal `[ ]`, or a `[^label]` that is text. The serializer

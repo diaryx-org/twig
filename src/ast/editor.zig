@@ -44,6 +44,7 @@ const AST = @import("ast.zig");
 const Document = @import("../document.zig");
 const Span = @import("../span.zig");
 const locate = @import("locate.zig");
+const verse = @import("verse.zig");
 const select = @import("select.zig");
 const table_edit = @import("table_edit.zig");
 const syntax_mod = @import("../syntax.zig");
@@ -305,6 +306,7 @@ pub const Editor = struct {
         move_block,
         insert_inline_math,
         insert_display_math,
+        toggle_line_block,
     };
 
     /// Whether `syntax` can spell `gesture` — the toolbar's gray-out question,
@@ -410,6 +412,11 @@ pub const Editor = struct {
             // (`attrs_writer.writeHtmlAttrs`) into a span the parser recorded,
             // so no renderer is consulted and none has to be present.
             .set_node_attrs => syntax.node_attrs != null,
+            // The claim and the printer, as for the attribute gestures: a
+            // verse printed through `renderBlock` reparses as one, which
+            // Markdown can say only under `html_elements` (`ast/verse.zig`).
+            // `assertCoherent` pins the second onto the first.
+            .toggle_line_block => syntax.line_blocks and syntax.renderBlock != null,
             // A block moves as its LINES, re-prefixed for the container it
             // lands in, and every prefix is read off the document — so what
             // the table has to say is only how two blocks are kept apart: a
@@ -1711,6 +1718,175 @@ pub const Editor = struct {
             try out.append(allocator, '\n');
         }
         return pos;
+    }
+
+    // ── Verse ──────────────────────────────────────────────────────────────
+
+    /// Make the paragraphs `[start, end)` touches a verse, or a verse back
+    /// into paragraphs — the one Verse button, which toggles as the
+    /// container buttons do.
+    ///
+    /// ON, when `start` is in a paragraph: that paragraph and every sibling
+    /// paragraph through the one `end` is in become one `line_block`. Each
+    /// paragraph is a stanza, every break inside it ends a line, and a line's
+    /// leading em spaces are its indent — the reading `ast/verse.zig` gives
+    /// the printed block back, so the gesture and the parser cannot disagree.
+    /// When the paragraphs are exactly the children of an attribute wrapper —
+    /// a centred paragraph's `<div class="center">`, djot's `{.center}` div —
+    /// the wrapper becomes the verse and its attributes ride on it, so
+    /// centring survives being made a poem.
+    ///
+    /// OFF, when `start` is inside a verse: the verse becomes one paragraph
+    /// per stanza, its lines joined by plain line breaks and each line's
+    /// indent kept as em spaces at its start, so toggling back on gives the
+    /// same verse. Attributes the verse carried come back on a div around
+    /// the paragraphs.
+    ///
+    /// `error.UnsupportedFormat` where the format cannot read a verse back
+    /// (see `Syntax.line_blocks`). `error.NoBlock` when `start` is in neither
+    /// a paragraph nor a verse, or `end` in no paragraph. `error.NotEditable`
+    /// when the range crosses into something that is not a sibling
+    /// paragraph — a heading, a list, another container — or the block sits
+    /// in a list item, whose continuation indent the printed lines cannot
+    /// reproduce. `error.InvalidRange` for a range past the source.
+    pub fn toggleLineBlock(self: *Editor, start: usize, end: usize) Error!void {
+        if (!self.syntax.line_blocks) return error.UnsupportedFormat;
+        const render = self.syntax.renderBlock orelse return error.UnsupportedFormat;
+        try self.checkRange(start, end);
+        const doc = &self.splicer.doc;
+        const ast = &doc.ast;
+        const allocator = self.splicer.allocator;
+
+        var chain: std.ArrayList(AST.Node.Id) = .empty;
+        defer chain.deinit(allocator);
+        try locate.caretChain(allocator, doc, start, &chain);
+        if (insideListItem(doc, chain.items)) return error.NotEditable;
+        if (locate.innermostOfKind(doc, chain.items, .line_block)) |lb| return self.unwrapLineBlock(lb, render);
+
+        const first, const parent = innermostPara(doc, chain.items) orelse return error.NoBlock;
+        var last = first;
+        if (end > start) {
+            var end_chain: std.ArrayList(AST.Node.Id) = .empty;
+            defer end_chain.deinit(allocator);
+            try locate.caretChain(allocator, doc, end, &end_chain);
+            last, _ = innermostPara(doc, end_chain.items) orelse return error.NoBlock;
+        }
+        // `first` through `last`, every one a paragraph and a sibling.
+        var cur = first;
+        while (cur != last) {
+            cur = ast.nodes[cur].next_sibling orelse return error.NotEditable;
+            if (ast.nodes[cur].kind != .para) return error.NotEditable;
+        }
+
+        // The wrapper the paragraphs are exactly the children of, if any.
+        const wrapper: ?AST.Node.Id = if (parent) |p| blk: {
+            const c = switch (ast.nodes[p].kind) {
+                .container => |c| c,
+                else => break :blk null,
+            };
+            if (c.form != .block_fenced or c.text != null) break :blk null;
+            if (c.name.len != 0 and !std.mem.eql(u8, c.name, "div")) break :blk null;
+            if (ast.nodes[p].first_child != first or ast.nodes[last].next_sibling != null) break :blk null;
+            break :blk p;
+        } else null;
+
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        var lines: std.ArrayList(AST.Node.Id) = .empty;
+        defer lines.deinit(allocator);
+        var kids: std.ArrayList(AST.Node.Id) = .empty;
+        defer kids.deinit(allocator);
+        var para = first;
+        while (true) {
+            if (para != first) try lines.append(allocator, try b.addContainer(.{ .line = .{} }, &.{}));
+            var child = ast.nodes[para].first_child;
+            while (child) |c| : (child = ast.nodes[c].next_sibling) {
+                switch (ast.nodes[c].kind) {
+                    .soft_break, .hard_break => {
+                        if (kids.items.len != 0) try lines.append(allocator, try b.addContainer(.{ .line = .{} }, kids.items));
+                        kids.clearRetainingCapacity();
+                    },
+                    else => try kids.append(allocator, try b.graftSubtree(ast, c)),
+                }
+            }
+            if (kids.items.len != 0) try lines.append(allocator, try b.addContainer(.{ .line = .{} }, kids.items));
+            kids.clearRetainingCapacity();
+            if (para == last) break;
+            para = ast.nodes[para].next_sibling.?;
+        }
+        const root = try b.addContainer(.line_block, lines.items);
+        var target = Span.init(doc.span(first).start, doc.span(last).end);
+        if (wrapper) |w| {
+            const attrs = ast.attrsOf(w);
+            if (!attrs.isEmpty()) try b.setAttrs(root, attrs);
+            target = self.withAttrLine(w);
+        }
+        return self.spliceRenderedPrefixed(&b, root, render, self.withoutLineEnd(target));
+    }
+
+    /// `span` short of the line end(s) it closes on — djot runs a
+    /// paragraph's span past its own newline, and the printed block brings
+    /// none, so splicing over that newline would join the next line to it.
+    fn withoutLineEnd(self: *const Editor, span: Span) Span {
+        const src = self.sourceBytes();
+        var end = span.end;
+        while (end > span.start and (src[end - 1] == '\n' or src[end - 1] == '\r')) end -= 1;
+        return Span.init(span.start, end);
+    }
+
+    /// `toggleLineBlock`'s OFF half: the verse `lb` as paragraphs.
+    fn unwrapLineBlock(self: *Editor, lb: AST.Node.Id, render: RenderBlockFn) Error!void {
+        const doc = &self.splicer.doc;
+        const ast = &doc.ast;
+        const allocator = self.splicer.allocator;
+        var b = AST.Builder.init(allocator);
+        defer b.deinit();
+        var paras: std.ArrayList(AST.Node.Id) = .empty;
+        defer paras.deinit(allocator);
+        var kids: std.ArrayList(AST.Node.Id) = .empty;
+        defer kids.deinit(allocator);
+        var line_it = ast.children(lb);
+        while (line_it.next()) |line| {
+            if (ast.nodes[line.id].first_child == null) {
+                if (kids.items.len != 0) try paras.append(allocator, try b.addContainer(.para, kids.items));
+                kids.clearRetainingCapacity();
+                continue;
+            }
+            if (kids.items.len != 0) try kids.append(allocator, try b.addLeaf(.soft_break));
+            const indent = switch (ast.nodes[line.id].kind) {
+                .line => |l| l.indent,
+                else => 0,
+            };
+            if (indent != 0) {
+                const pad = try allocator.alloc(u8, indent * verse.em_space.len);
+                defer allocator.free(pad);
+                for (0..indent) |i| @memcpy(pad[i * verse.em_space.len ..][0..verse.em_space.len], verse.em_space);
+                try kids.append(allocator, try b.addLeaf(.{ .str = pad }));
+            }
+            var child = ast.nodes[line.id].first_child;
+            while (child) |c| : (child = ast.nodes[c].next_sibling) try kids.append(allocator, try b.graftSubtree(ast, c));
+        }
+        if (kids.items.len != 0) try paras.append(allocator, try b.addContainer(.para, kids.items));
+        if (paras.items.len == 0) try paras.append(allocator, try b.addContainer(.para, &.{}));
+
+        const attrs = ast.attrsOf(lb);
+        const root = if (!attrs.isEmpty()) blk: {
+            const div = try b.addContainer(.{ .container = .{ .name = "div", .form = .block_fenced } }, paras.items);
+            try b.setAttrs(div, attrs);
+            break :blk div;
+        } else if (paras.items.len == 1) paras.items[0] else try b.addContainer(.doc, paras.items);
+        return self.spliceRenderedPrefixed(&b, root, render, self.withoutLineEnd(self.withAttrLine(lb)));
+    }
+
+    /// `id`'s span, widened back over an attribute line written before it —
+    /// djot's `{…}` above a div — so a re-print that writes its own does not
+    /// leave the old one to merge into it.
+    fn withAttrLine(self: *const Editor, id: AST.Node.Id) Span {
+        const doc = &self.splicer.doc;
+        const span = doc.span(id);
+        const attrs = doc.attrsSpan(id) orelse return span;
+        if (attrs.start >= span.start) return span;
+        return Span.init(locate.lineStartAt(doc.source, attrs.start), span.end);
     }
 
     // ── Block attributes ───────────────────────────────────────────────────
@@ -5068,6 +5244,18 @@ fn writesClosers(doc: *const Document, src: []const u8, id: AST.Node.Id) bool {
 
 /// Whether `chain` passes through a list item — the containers `containerPrefix`
 /// cannot reproduce, and so the ones a gesture that relies on it must refuse.
+/// The innermost paragraph on `chain` and its parent (`null` for the root),
+/// or `null` when there is none — where `toggleLineBlock` starts.
+fn innermostPara(doc: *const Document, chain: []const AST.Node.Id) ?struct { AST.Node.Id, ?AST.Node.Id } {
+    var i = chain.len;
+    while (i > 0) {
+        i -= 1;
+        if (doc.ast.nodes[chain[i]].kind != .para) continue;
+        return .{ chain[i], if (i == 0) null else chain[i - 1] };
+    }
+    return null;
+}
+
 fn insideListItem(doc: *const Document, chain: []const AST.Node.Id) bool {
     for (chain) |id| {
         switch (std.meta.activeTag(doc.ast.nodes[id].kind)) {

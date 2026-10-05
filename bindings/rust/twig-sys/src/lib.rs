@@ -998,6 +998,12 @@ unsafe extern "C" {
         formula_len: usize,
         out_change: *mut TwigChange,
     ) -> TwigStatus;
+    pub fn twig_editor_toggle_line_block(
+        editor: *mut TwigEditor,
+        start: usize,
+        end: usize,
+        out_change: *mut TwigChange,
+    ) -> TwigStatus;
 
     pub fn twig_builder_create(out_builder: *mut *mut TwigBuilder) -> TwigStatus;
     pub fn twig_builder_destroy(builder: *mut TwigBuilder);
