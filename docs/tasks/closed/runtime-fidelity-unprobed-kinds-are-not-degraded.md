@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-10-02
 updated: 2026-10-05
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A runtime target reports every kind its fidelity probe did not reach as degraded
