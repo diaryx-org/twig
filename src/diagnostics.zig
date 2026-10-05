@@ -1781,8 +1781,81 @@ pub const measured_probes: []const Probe = blk: {
     out = out ++ &probes;
     for (std.enums.values(AST.InlineMark)) |m| out = out ++ &[_]Probe{MarkProbe(m)};
     for (std.enums.values(AST.TextLeafKind)) |k| out = out ++ &[_]Probe{LeafProbe(k, leaf_probe_text.get(@tagName(k)).?)};
+    out = out ++ &structural_probes;
     break :blk out;
 };
+
+/// The kinds a compiled table answers `faithful` by construction — they ride
+/// along with the parent that spells them, or between the leaves either side
+/// — and a registered language has no construction to answer from. Each is measured inside its parent's shape,
+/// so a runtime target reports one only when the round trip really loses it,
+/// and its attributes from what came back rather than by default.
+const structural_probes = [_]Probe{
+    .{ .label = "doc", .want = .{ .tag = .doc }, .kind = .doc, .build = buildPlainPara },
+    .{ .label = "str", .want = .{ .tag = .str }, .kind = .{ .str = "x" }, .build = buildPlainPara },
+    .{ .label = "row", .want = .{ .tag = .row }, .kind = .{ .row = .{ .head = true } }, .build = buildCaptionedTable },
+    .{ .label = "cell", .want = .{ .tag = .cell }, .kind = .{ .cell = .{ .head = true, .alignment = .default } }, .build = buildCaptionedTable },
+    .{ .label = "caption", .want = .{ .tag = .caption }, .kind = .caption, .build = buildCaptionedTable },
+    .{ .label = "list_item", .want = .{ .tag = .list_item }, .kind = .list_item, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            const p = try b.addContainer(.para, &.{try str(b, "x")});
+            const li = try b.addContainer(.list_item, &.{p});
+            return blockDoc(b, .{ .bullet_list = .{ .tight = true } }, &.{li});
+        }
+    }.f },
+    .{ .label = "definition_list_item", .want = .{ .tag = .definition_list_item }, .kind = .definition_list_item, .build = buildDefinitionList },
+    .{ .label = "term", .want = .{ .tag = .term }, .kind = .term, .build = buildDefinitionList },
+    .{ .label = "definition", .want = .{ .tag = .definition }, .kind = .definition, .build = buildDefinitionList },
+    .{ .label = "soft_break", .want = .{ .tag = .soft_break }, .kind = .soft_break, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            return blockDoc(b, .para, &.{ try str(b, "x"), try b.addLeaf(.soft_break), try str(b, "y") });
+        }
+    }.f },
+    .{ .label = "task_list_item", .want = .{ .tag = .task_list_item }, .kind = .{ .task_list_item = .{ .checked = true } }, .build = struct {
+        fn f(b: *AST.Builder) anyerror!Node.Id {
+            const p = try b.addContainer(.para, &.{try str(b, "x")});
+            const li = try b.addContainer(.{ .task_list_item = .{ .checked = true } }, &.{p});
+            return blockDoc(b, .{ .task_list = .{ .tight = true } }, &.{li});
+        }
+    }.f },
+};
+
+test "every kind has a measured probe, so a runtime target answers for it" {
+    var missing = false;
+    for (std.enums.values(std.meta.Tag(Node.Kind))) |tag| {
+        const probed = for (measured_probes) |p| {
+            if (std.meta.activeTag(p.kind) == tag) break true;
+        } else false;
+        if (!probed) {
+            std.debug.print("\nno measured probe builds a `{t}`\n", .{tag});
+            missing = true;
+        }
+    }
+    if (missing) return error.KindUnprobed;
+}
+
+fn buildDefinitionList(b: *AST.Builder) anyerror!Node.Id {
+    const t = try b.addContainer(.term, &.{try str(b, "t")});
+    const p = try b.addContainer(.para, &.{try str(b, "d")});
+    const d = try b.addContainer(.definition, &.{p});
+    const item = try b.addContainer(.definition_list_item, &.{ t, d });
+    return blockDoc(b, .definition_list, &.{item});
+}
+
+fn buildPlainPara(b: *AST.Builder) anyerror!Node.Id {
+    return blockDoc(b, .para, &.{try str(b, "x")});
+}
+
+/// A table whose caption has text, which the `table` probe's does not: an
+/// empty caption is one a target may rightly not write.
+fn buildCaptionedTable(b: *AST.Builder) anyerror!Node.Id {
+    const cap = try b.addContainer(.caption, &.{try str(b, "c")});
+    const c1 = try b.addContainer(.{ .cell = .{ .head = true, .alignment = .default } }, &.{try str(b, "a")});
+    const r1 = try b.addContainer(.{ .row = .{ .head = true } }, &.{c1});
+    const c2 = try b.addContainer(.{ .cell = .{ .head = false, .alignment = .default } }, &.{try str(b, "1")});
+    const r2 = try b.addContainer(.{ .row = .{ .head = false } }, &.{c2});
+    return blockDoc(b, .table, &.{ cap, r1, r2 });
+}
 
 /// What a round-trip through one target keeps, per `measured_probes` entry.
 pub const Measured = struct {
