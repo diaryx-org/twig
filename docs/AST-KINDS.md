@@ -315,6 +315,18 @@ including its 0→2 jumps.
 An empty line (no children) is content, not a separator: it is the stanza
 break, and 7 of the corpus's 47 lines are one.
 
+Markdown and djot have no verse construct, so `ast/verse.zig` gives them one
+out of what they already have: a fenced div classed `verse` — Markdown's
+`<div class="verse">` under `html_elements`, djot's `::: verse` — whose
+children are all paragraphs is read as a line block. Each paragraph is a
+stanza, every break inside it (soft or hard) ends a line, and a line's leading
+em spaces (U+2003) are its `indent`, because an em space is the one
+indentation both formats keep where they strip a line's leading ASCII space.
+The serializers write the same shape back, each line ended by a `\` hard
+break so that a reader which ignores the div still breaks the lines. What
+neither can say is a stanza break before the first line, after the last, or
+twice in a row.
+
 ### `table`, `column`, `cell`
 
 A table's children are `[caption?, column*, row*]`. The caption comes first

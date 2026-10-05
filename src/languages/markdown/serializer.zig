@@ -10,6 +10,7 @@ const markdown = @import("markdown.zig");
 const md_syntax = @import("syntax.zig");
 const attrs_writer = @import("../../attrs_writer.zig");
 const html_lang = @import("../html/html.zig");
+const verse = @import("../../ast/verse.zig");
 const Document = @import("../../document.zig");
 const AST = markdown.AST;
 const Node = AST.Node;
@@ -33,6 +34,27 @@ const Ctx = struct {
     /// ordinary `  \n`, which would break the row in two.
     in_cell: bool = false,
 };
+
+/// Where a backslash goes so that `text`, opening a line, reads back as text
+/// and not as the block syntax it starts with — before the byte at the
+/// returned index — or `null` when it needs none. A run of digits then `.`
+/// or `)` is an ordered-list marker, escaped at the punctuation; every other
+/// case is the first byte.
+fn verseEscapeAt(text: []const u8) ?usize {
+    if (text.len == 0) return null;
+    switch (text[0]) {
+        '#', '>', '-', '+', '*', '=', '<', '`', '~', '_', '|' => return 0,
+        ':' => return if (text.len == 1 or text[1] == ' ' or text[1] == '\t') 0 else null,
+        '[' => return 0,
+        '0'...'9' => {
+            var i: usize = 0;
+            while (i < text.len and i < 9 and std.ascii.isDigit(text[i])) i += 1;
+            if (i < text.len and (text[i] == '.' or text[i] == ')')) return i;
+            return null;
+        },
+        else => return null,
+    }
+}
 
 const Renderer = struct {
     allocator: Allocator,
@@ -345,7 +367,6 @@ const Renderer = struct {
             .ordered_list,
             .task_list,
             .definition_list,
-            .line_block,
             .table,
             => true,
             else => false,
@@ -380,6 +401,108 @@ const Renderer = struct {
         try self.renderBlockBare(id, ctx);
         try self.writeBlankLine(ctx);
         try self.writeTagLine(ctx, "div", null);
+    }
+
+    /// A `line_block`, as the verse `ast/verse.zig` reads back: the block is
+    /// a `<div>` whose class leads with `verse` (any class and attribute the
+    /// block carries rides on the same tag), each stanza a paragraph, each
+    /// line inside one ended by a `\` hard break, and a line's `indent`
+    /// written as that many em spaces at its start.
+    ///
+    /// `\` rather than the two trailing spaces `hard_break` spells elsewhere:
+    /// it is visible, no editor strips it, and every CommonMark renderer —
+    /// one that drops the div included — still breaks the line there, so a
+    /// poem read anywhere keeps its lines. The em space is the indentation
+    /// both a CommonMark parser and a browser leave alone; ASCII spaces at a
+    /// paragraph line's start are stripped by the one and collapsed by the
+    /// other.
+    ///
+    /// What Markdown cannot say is dropped, and `diagnostics.zig` claims it:
+    /// a stanza break before the first line or after the last, and a second
+    /// one in a row — a blank line is a blank line however many there are.
+    /// Without `html_elements` the tags are two raw HTML blocks around the
+    /// paragraphs, so a reader that does not pair them still gets the lines.
+    fn renderVerse(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
+        try self.writePrefix(ctx);
+        try self.writer.writeAll("<div");
+        try self.writeVerseAttrs(id);
+        try self.writer.writeAll(">\n");
+        try self.writeBlankLine(ctx);
+        var in_stanza = false;
+        var it = self.ast.children(id);
+        while (it.next()) |line| {
+            if (self.ast.nodes[line.id].first_child == null) {
+                if (in_stanza) {
+                    try self.writer.writeByte('\n');
+                    try self.writeBlankLine(ctx);
+                    in_stanza = false;
+                }
+                continue;
+            }
+            if (in_stanza) try self.writer.writeAll("\\\n");
+            try self.writePrefix(ctx);
+            const indent = switch (self.ast.nodes[line.id].kind) {
+                .line => |l| l.indent,
+                else => 0,
+            };
+            for (0..indent) |_| try self.writer.writeAll(verse.em_space);
+            try self.renderVerseLine(line.id, ctx, indent == 0);
+            in_stanza = true;
+        }
+        if (in_stanza) {
+            try self.writer.writeByte('\n');
+            try self.writeBlankLine(ctx);
+        }
+        try self.writeTagLine(ctx, "div", null);
+    }
+
+    /// The tag's attributes: the block's own, with `verse` first in its class.
+    fn writeVerseAttrs(self: *Renderer, id: Node.Id) Writer.Error!void {
+        const attrs = self.ast.attrsOf(id);
+        var entries: std.ArrayList(AST.KeyVal) = .empty;
+        defer entries.deinit(self.allocator);
+        var class: std.ArrayList(u8) = .empty;
+        defer class.deinit(self.allocator);
+        class.appendSlice(self.allocator, verse.class_token) catch return error.WriteFailed;
+        var placed = false;
+        for (attrs.entries) |kv| {
+            if (std.mem.eql(u8, kv.key, "class")) {
+                if (kv.value) |v| {
+                    var toks = std.mem.tokenizeAny(u8, v, " \t\r\n");
+                    while (toks.next()) |t| {
+                        if (std.mem.eql(u8, t, verse.class_token)) continue;
+                        class.append(self.allocator, ' ') catch return error.WriteFailed;
+                        class.appendSlice(self.allocator, t) catch return error.WriteFailed;
+                    }
+                }
+                if (!placed) entries.append(self.allocator, .{ .key = "class", .value = class.items }) catch return error.WriteFailed;
+                placed = true;
+                continue;
+            }
+            entries.append(self.allocator, kv) catch return error.WriteFailed;
+        }
+        if (!placed) entries.insert(self.allocator, 0, .{ .key = "class", .value = class.items }) catch return error.WriteFailed;
+        try attrs_writer.writeHtmlAttrs(self.writer, .{ .entries = entries.items });
+    }
+
+    /// One verse line's inlines. At the margin, a `str` that opens with
+    /// something a line start reads as block syntax — a heading's `#`, a
+    /// quote's `>`, a list marker, a fence, a tag — takes a backslash, or the
+    /// reparse would read a heading or a list where the poem had a line.
+    fn renderVerseLine(self: *Renderer, line: Node.Id, ctx: Ctx, at_margin: bool) Writer.Error!void {
+        const first = self.ast.nodes[line].first_child orelse return;
+        if (at_margin) switch (self.ast.nodes[first].kind) {
+            .str => |text| if (verseEscapeAt(text)) |at| {
+                try self.writer.writeAll(text[0..at]);
+                try self.writer.writeByte('\\');
+                try self.writeInlineText(text[at..], ctx);
+                var it: AST.ChildIterator = .{ .ast = self.ast, .next_id = self.ast.nodes[first].next_sibling };
+                while (it.next()) |c| try self.renderInline(c.id, ctx);
+                return;
+            },
+            else => {},
+        };
+        try self.renderInlineChildren(line, ctx);
     }
 
     fn renderBlockBare(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
@@ -458,29 +581,10 @@ const Renderer = struct {
                     first = false;
                 }
             },
-            // As in the djot serializer: one paragraph, hard breaks between the
-            // lines, the block identity and every `indent` lost (CommonMark
-            // strips a continuation line's leading space too).
-            //
-            // The break is spelled `\` rather than the two trailing spaces this
-            // serializer uses everywhere else, and the reason is the STANZA
-            // BREAK: an empty line is real content here (7 of the docutils
-            // corpus's 47 lines are one), and a line holding only two spaces is
-            // a BLANK line to CommonMark, which would end the paragraph and
-            // split the poem in two. `\` is a hard break the parser reads back
-            // (`markdown/inline.zig`'s backslash-before-newline arm) and is not
-            // whitespace-only, so the block survives as one.
-            .line_block => {
-                var it = self.ast.children(id);
-                var first = true;
-                while (it.next()) |line| {
-                    if (!first) try self.writer.writeAll("\\\n");
-                    try self.writePrefix(ctx);
-                    try self.renderInlineChildren(line.id, ctx);
-                    first = false;
-                }
-                if (!first) try self.writer.writeByte('\n');
-            },
+            // A verse — see `ast/verse.zig`, which reads this spelling back:
+            // a `<div class="verse">` whose paragraphs are the stanzas, each
+            // line ended by a `\` hard break and indented by em spaces.
+            .line_block => try self.renderVerse(id, ctx),
             .definition_list => {
                 var it = self.ast.children(id);
                 while (it.next()) |dli| {
@@ -955,28 +1059,49 @@ test "non-canonical list markers survive the Document path, canonicalize on the 
     try testing.expect(std.mem.indexOf(u8, canonical, "* a") == null);
 }
 
-test "a line block's stanza break survives as a break, not as a paragraph split" {
+test "a line block is a verse div: stanzas are paragraphs, lines end in `\\`, indents are em spaces" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
     const l0 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "Roses are red," })});
     const gap = try b.addContainer(.{ .line = .{} }, &.{});
     const l1 = try b.addContainer(.{ .line = .{ .indent = 1 } }, &.{try b.addLeaf(.{ .str = "violets are blue." })});
-    const block = try b.addContainer(.line_block, &.{ l0, gap, l1 });
+    const l2 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "1. not a list" })});
+    const block = try b.addContainer(.line_block, &.{ l0, gap, l1, l2 });
+    try b.setAttrs(block, .{ .entries = &.{.{ .key = "class", .value = "center" }} });
     var ast = try b.finish(try b.addContainer(.doc, &.{block}));
     defer ast.deinit();
 
     const out = try serializeAstAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
-    try testing.expectEqualStrings("Roses are red,\\\n\\\nviolets are blue.\n", out);
+    try testing.expectEqualStrings(
+        "<div class=\"verse center\">\n\nRoses are red,\n\n\u{2003}violets are blue.\\\n1\\. not a list\n\n</div>\n",
+        out,
+    );
 
-    // The reason the break is spelled `\` here and `  ` everywhere else: two
-    // trailing spaces on the empty line would make it a BLANK line, which ends
-    // the paragraph and splits the poem in two. Re-parsed, this is one.
-    var back = try markdown.parse(testing.allocator, out, .commonmark);
+    // Under `html_elements` the div pairs and `ast/verse.zig` reads it back:
+    // one block, three lines and the stanza break, the indent, and the class
+    // without `verse`.
+    var back = try markdown.parse(testing.allocator, out, .{ .html_elements = true });
     defer back.deinit();
-    const first = back.ast.nodes[back.ast.root].first_child.?;
-    try testing.expect(back.ast.nodes[first].kind == .para);
-    try testing.expectEqual(@as(?Node.Id, null), back.ast.nodes[first].next_sibling);
+    const lb = back.ast.nodes[back.ast.root].first_child.?;
+    try testing.expect(back.ast.nodes[lb].kind == .line_block);
+    try testing.expectEqualStrings("center", back.ast.attrsOf(lb).get("class").?);
+    var n: usize = 0;
+    var it = back.ast.children(lb);
+    while (it.next()) |line| : (n += 1) {
+        const want: u32 = if (n == 2) 1 else 0;
+        try testing.expectEqual(want, back.ast.nodes[line.id].kind.line.indent);
+    }
+    try testing.expectEqual(@as(usize, 4), n);
+
+    // Without it the tags are raw blocks, and every line still breaks.
+    var plain = try markdown.parse(testing.allocator, out, .commonmark);
+    defer plain.deinit();
+    var hard: usize = 0;
+    for (plain.ast.nodes) |node| {
+        if (node.kind == .hard_break) hard += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), hard);
 }
 
 test "serializeAlloc: fenced code info string abuts the fence, no space" {

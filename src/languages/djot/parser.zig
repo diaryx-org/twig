@@ -25,6 +25,7 @@ const AST = ast_mod;
 const Node = AST.Node;
 const Document = @import("../../document.zig");
 const compact = @import("../../ast/compact.zig");
+const verse = @import("../../ast/verse.zig");
 const Span = @import("../../span.zig");
 const event = @import("event.zig");
 const Event = event.Event;
@@ -689,10 +690,14 @@ pub const TreeBuilder = struct {
         self.auto_references = .empty;
         self.footnotes = .empty;
 
+        // A `::: verse` div of paragraphs is a `line_block` — see
+        // `ast/verse.zig`. Before compaction, which sweeps what it leaves.
+        const versed = try verse.run(self.allocator, raw);
+
         // Drop the delimiter runs the inline pass built and abandoned, so the
         // arena is the document rather than the search for it (see
         // `ast/compact.zig`).
-        return compact.run(self.allocator, raw);
+        return compact.run(self.allocator, versed);
     }
 
     fn handleEvent(self: *TreeBuilder, ev: Event) Allocator.Error!void {

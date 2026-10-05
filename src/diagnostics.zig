@@ -434,13 +434,13 @@ fn djotFidelity(kind: Node.Kind) Fidelity {
         // Djot has no definition-list syntax; the serializer emits the term and
         // definition as ordinary blocks.
         .definition_list => .degraded,
-        // No verse construct either: a line block is written as one paragraph
-        // with hard breaks. The text and the breaks survive, the block does
-        // not, and each line's `indent` goes with it — djot strips the leading
-        // space of a continuation line. Unlike `term`/`row`/`cell`, `line` is
-        // NOT faithful-by-riding-along here, because the parent it rides on
-        // does not come back either; it is reported on its own.
-        .line_block, .line => .degraded,
+        // Djot has no verse construct of its own, but a `::: verse` div of
+        // paragraphs reads back as a line block (`ast/verse.zig`): a stanza
+        // per paragraph, a `\` per line, an em space per step of `indent` —
+        // the one indentation djot does not strip. What it cannot say is a
+        // stanza break before the first line, after the last, or twice in a
+        // row; the probe has none, and a blank line is a blank line.
+        .line_block, .line => .faithful,
         // Djot has ONE footnote registry, so a citation is written as a footnote
         // definition and comes back a `footnote`. The content and the
         // definition/use link both survive; the second registry does not, which
@@ -543,7 +543,12 @@ fn markdownFidelity(kind: Node.Kind) Fidelity {
         // again, and it has no substitution mechanism either.
         .citation => .degraded,
         .substitution => .dropped,
-        // Same spelling and same loss as djot's — see that arm.
+        // Written as djot writes it, inside `<div class="verse">` rather than
+        // `::: verse` — but only `ParseOptions.html_elements` pairs that div
+        // back into a container for `ast/verse.zig` to read, and these tables
+        // answer for the default options. Without it the tags are two raw
+        // blocks and the stanzas plain paragraphs: every line and its break
+        // survive, the block and each line's `indent` do not.
         .line_block, .line => .degraded,
         // GFM's pipe table has no column axis either — same as djot.
         .column => .dropped,
@@ -903,6 +908,9 @@ fn djotAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         // after djot.js), so the heading node comes back bare. Without an id
         // the set stays on the heading; the probe carries one.
         .heading => .all(.degraded),
+        // A verse is a div, and a div's attributes are the line before its
+        // fence; `verse` is added to the class and taken off again.
+        .line_block => .all(.faithful),
         // Every other kind carries its attributes into the serializer and out
         // the far side of nothing: no `{…}` is written for a quote, a list, a
         // fence, a table, a link, an image or a mark, though djot could hold
@@ -917,7 +925,6 @@ fn djotAttrsFidelity(kind: Node.Kind) AttrsFidelity {
         .ordered_list,
         .task_list,
         .definition_list,
-        .line_block,
         .table,
         .list_item,
         .task_list_item,

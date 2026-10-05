@@ -92,6 +92,7 @@ const Builder = AST.Builder;
 const Span = @import("../../span.zig");
 const Document = @import("../../document.zig");
 const compact = @import("../../ast/compact.zig");
+const verse = @import("../../ast/verse.zig");
 const Options = @import("options.zig");
 const inline_mod = @import("inline.zig");
 const attrs_mod = @import("attributes.zig");
@@ -1074,6 +1075,11 @@ pub const Parser = struct {
         raw.labels = .{ .references = self.link_references, .footnotes = self.footnotes };
         self.link_references = .empty;
         self.footnotes = .empty;
+
+        // A `<div class="verse">` of paragraphs is a `line_block` — see
+        // `ast/verse.zig`. Before compaction, which sweeps the paragraphs and
+        // breaks it leaves behind.
+        raw = try verse.run(self.allocator, raw);
 
         // Drop the delimiter runs `inline.zig` emitted speculatively and then
         // abandoned when the run resolved into a mark — see `ast/compact.zig`.

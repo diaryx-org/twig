@@ -6,6 +6,7 @@ const Writer = std.Io.Writer;
 const djot = @import("djot.zig");
 const dj_syntax = @import("syntax.zig");
 const attrs_writer = @import("../../attrs_writer.zig");
+const verse = @import("../../ast/verse.zig");
 const select = @import("../../ast/select.zig");
 const parser = @import("parser.zig");
 const Document = @import("../../document.zig");
@@ -62,6 +63,34 @@ fn isGeneratedId(id: []const u8, slug: []const u8) bool {
     if (id.len < base.len + 2 or !std.mem.startsWith(u8, id, base) or id[base.len] != '-') return false;
     for (id[base.len + 1 ..]) |c| if (!std.ascii.isDigit(c)) return false;
     return true;
+}
+
+/// Where a backslash goes so that `text`, opening a paragraph, reads back as
+/// text and not as the block it starts — before the byte at the returned
+/// index — or `null`. A list marker — digits, one letter, or a roman numeral,
+/// then `.` or `)` and a space (`1. `, `a) `, `iv. `) — is escaped at the
+/// punctuation; every other case is the first byte. A word that only ends in
+/// a full stop (`Fin.`) is not a marker and is left alone.
+fn verseEscapeAt(text: []const u8) ?usize {
+    if (text.len == 0) return null;
+    switch (text[0]) {
+        '#', '>', '-', '+', '*', ':', '|', '^', '[', '{', '`', '~', '(', '=', '_' => return 0,
+        else => {},
+    }
+    var i: usize = 0;
+    while (i < text.len and i < 9 and std.ascii.isAlphanumeric(text[i])) i += 1;
+    if (i == 0 or i + 1 >= text.len) return null;
+    if (text[i] != '.' and text[i] != ')') return null;
+    if (text[i + 1] != ' ' and text[i + 1] != '\t') return null;
+    const word = text[0..i];
+    const digits = for (word) |c| {
+        if (!std.ascii.isDigit(c)) break false;
+    } else true;
+    const roman = for (word) |c| {
+        if (std.mem.indexOfScalar(u8, "ivxlcdmIVXLCDM", c) == null) break false;
+    } else true;
+    if (!(digits or roman or word.len == 1)) return null;
+    return i;
 }
 
 const Renderer = struct {
@@ -372,6 +401,92 @@ const Renderer = struct {
         try self.writer.writeByte('\n');
     }
 
+    /// A `line_block` as the verse `ast/verse.zig` reads back: a `::: verse`
+    /// div whose paragraphs are the stanzas, each line inside one ended by a
+    /// `\` hard break, a line's `indent` written as that many em spaces —
+    /// the indentation djot keeps where it strips a line's leading ASCII
+    /// space. Any other class and attribute the block carries goes on the
+    /// line before the fence, where a div's attributes live.
+    ///
+    /// The fence's body is not indented as another div's is: a poem's lines
+    /// are its own margin, and the stripped indent would only be noise.
+    /// What djot cannot say is dropped, as in Markdown: a stanza break before
+    /// the first line or after the last, and a second in a row.
+    fn renderVerse(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
+        const attrs = self.ast.attrsOf(id);
+        var kept: std.ArrayList(AST.KeyVal) = .empty;
+        defer kept.deinit(self.allocator);
+        var class: std.ArrayList(u8) = .empty;
+        defer class.deinit(self.allocator);
+        for (attrs.entries) |kv| {
+            if (std.mem.eql(u8, kv.key, "class")) {
+                if (kv.value) |v| {
+                    var toks = std.mem.tokenizeAny(u8, v, " \t\r\n");
+                    while (toks.next()) |t| {
+                        if (std.mem.eql(u8, t, verse.class_token)) continue;
+                        if (class.items.len != 0) class.append(self.allocator, ' ') catch return error.WriteFailed;
+                        class.appendSlice(self.allocator, t) catch return error.WriteFailed;
+                    }
+                }
+                if (class.items.len != 0) kept.append(self.allocator, .{ .key = "class", .value = class.items }) catch return error.WriteFailed;
+                continue;
+            }
+            kept.append(self.allocator, kv) catch return error.WriteFailed;
+        }
+        if (kept.items.len != 0) {
+            if (dj_syntax.table.attr_spelling) |sp| {
+                try self.writePrefix(ctx);
+                try attrs_writer.write(self.writer, .{ .entries = kept.items }, sp, "");
+                try self.writer.writeByte('\n');
+            }
+        }
+        try self.writePrefix(ctx);
+        try self.writer.print("::: {s}\n", .{verse.class_token});
+        var in_stanza = false;
+        var it = self.ast.children(id);
+        while (it.next()) |line| {
+            if (self.ast.nodes[line.id].first_child == null) {
+                if (in_stanza) {
+                    try self.writer.writeByte('\n');
+                    try self.writePrefix(ctx);
+                    try self.writer.writeByte('\n');
+                    in_stanza = false;
+                }
+                continue;
+            }
+            if (in_stanza) try self.writer.writeAll("\\\n");
+            try self.writePrefix(ctx);
+            const indent = switch (self.ast.nodes[line.id].kind) {
+                .line => |l| l.indent,
+                else => 0,
+            };
+            for (0..indent) |_| try self.writer.writeAll(verse.em_space);
+            try self.renderVerseLine(line.id, ctx, indent == 0 and !in_stanza);
+            in_stanza = true;
+        }
+        if (in_stanza) try self.writer.writeByte('\n');
+        try self.writePrefix(ctx);
+        try self.writer.writeAll(":::\n");
+    }
+
+    /// One verse line's inlines; a stanza's first line, at the margin, takes
+    /// a backslash before what djot would read as the start of a block.
+    fn renderVerseLine(self: *Renderer, line: Node.Id, ctx: Ctx, opens_stanza: bool) Writer.Error!void {
+        const first = self.ast.nodes[line].first_child orelse return;
+        if (opens_stanza) switch (self.ast.nodes[first].kind) {
+            .str => |text| if (verseEscapeAt(text)) |at| {
+                try self.writer.writeAll(text[0..at]);
+                try self.writer.writeByte('\\');
+                try self.writeInlineText(text[at..], ctx);
+                var it: AST.ChildIterator = .{ .ast = self.ast, .next_id = self.ast.nodes[first].next_sibling };
+                while (it.next()) |c| try self.renderInline(c.id, ctx);
+                return;
+            },
+            else => {},
+        };
+        try self.renderInlineChildren(line, ctx);
+    }
+
     fn renderBlock(self: *Renderer, id: Node.Id, ctx: Ctx) Writer.Error!void {
         const node = self.ast.nodes[id];
         switch (node.kind) {
@@ -553,27 +668,8 @@ const Renderer = struct {
                     }
                 }
             },
-            // Djot has no verse construct. The closest honest spelling is ONE
-            // paragraph whose lines are separated by hard breaks: the text and
-            // the line boundaries survive, the block's identity and each line's
-            // `indent` do not — djot strips the leading space of a continuation
-            // line, so there is nowhere to put the indent even if it were
-            // written. `diagnostics.zig` claims `degraded` for both kinds.
-            //
-            // The break goes BEFORE the next line rather than after the current
-            // one so the block does not end on a dangling `\`, which djot reads
-            // as a hard break into the following block.
-            .line_block => {
-                var it = self.ast.children(id);
-                var first = true;
-                while (it.next()) |line| {
-                    if (!first) try self.writer.writeAll("\\\n");
-                    try self.writePrefix(ctx);
-                    try self.renderInlineChildren(line.id, ctx);
-                    first = false;
-                }
-                if (!first) try self.writer.writeByte('\n');
-            },
+            // A verse — see `ast/verse.zig`, which reads this spelling back.
+            .line_block => try self.renderVerse(id, ctx),
             .table => {
                 // Djot writes the caption as a `^ ` block AFTER the table, so
                 // it has to be found before the rows are walked. The parser
@@ -1062,15 +1158,11 @@ test "serializeAlloc: backtick-edged verbatim and raw text are space-padded" {
     }
 }
 
-test "serializeAstAlloc: a line block degrades to one paragraph of hard breaks" {
+test "serializeAstAlloc: a line block is a `::: verse` div of stanzas, and reads back as one" {
     var b = AST.Builder.init(testing.allocator);
     defer b.deinit();
     const l0 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "Roses are red," })});
-    // The indent has nowhere to go: djot strips a continuation line's leading
-    // space, so it is dropped rather than written and lost on re-parse.
     const l1 = try b.addContainer(.{ .line = .{ .indent = 1 } }, &.{try b.addLeaf(.{ .str = "violets are blue." })});
-    // A stanza break stays a break rather than ending the paragraph, because
-    // `\` is not whitespace.
     const gap = try b.addContainer(.{ .line = .{} }, &.{});
     const last = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "Fin." })});
     const block = try b.addContainer(.line_block, &.{ l0, l1, gap, last });
@@ -1079,7 +1171,41 @@ test "serializeAstAlloc: a line block degrades to one paragraph of hard breaks" 
 
     const out = try serializeAstAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
-    try testing.expectEqualStrings("Roses are red,\\\nviolets are blue.\\\n\\\nFin.\n", out);
+    // The indent is an em space, the one leading space djot keeps; the stanza
+    // break is a blank line, so the poem is two paragraphs in one div.
+    try testing.expectEqualStrings("::: verse\nRoses are red,\\\n\u{2003}violets are blue.\n\nFin.\n:::\n", out);
+
+    var back = try djot.parse(testing.allocator, out);
+    defer back.deinit();
+    const lb = back.ast.nodes[back.ast.root].first_child.?;
+    try testing.expect(back.ast.nodes[lb].kind == .line_block);
+    var indents: [4]u32 = undefined;
+    var empties: [4]bool = undefined;
+    var n: usize = 0;
+    var it = back.ast.children(lb);
+    while (it.next()) |line| : (n += 1) {
+        indents[n] = back.ast.nodes[line.id].kind.line.indent;
+        empties[n] = back.ast.nodes[line.id].first_child == null;
+    }
+    try testing.expectEqual(@as(usize, 4), n);
+    try testing.expectEqualSlices(u32, &.{ 0, 1, 0, 0 }, &indents);
+    try testing.expectEqualSlices(bool, &.{ false, false, true, false }, &empties);
+}
+
+test "serializeAstAlloc: a verse line that opens a stanza with block syntax is escaped" {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const l0 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "# not a heading" })});
+    const l1 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "- mid-stanza, left alone" })});
+    const gap = try b.addContainer(.{ .line = .{} }, &.{});
+    const l2 = try b.addContainer(.{ .line = .{} }, &.{try b.addLeaf(.{ .str = "iv. not a list" })});
+    const block = try b.addContainer(.line_block, &.{ l0, l1, gap, l2 });
+    var ast = try b.finish(try b.addContainer(.doc, &.{block}));
+    defer ast.deinit();
+
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("::: verse\n\\# not a heading\\\n- mid-stanza, left alone\n\niv\\. not a list\n:::\n", out);
 }
 
 test "serializeAlloc: a loose bullet list's first paragraph starts on the marker's line, not a bare marker + newline" {

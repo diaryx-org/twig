@@ -187,6 +187,7 @@ test {
     _ = runtime;
     _ = wire;
     _ = @import("ast/compact.zig");
+    _ = @import("ast/verse.zig");
     _ = @import("ast/containment_test.zig");
     _ = Rst;
     _ = Asciidoc;
