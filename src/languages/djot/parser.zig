@@ -1211,21 +1211,20 @@ pub const TreeBuilder = struct {
         var tip_id = self.getTip();
         if (tip_id == null) return; // no inline sibling to attach to
 
-        var ends_with_space = false;
         if (self.nodes.items[tip_id.?].kind == .str) {
             const text = self.nodes.items[tip_id.?].kind.str;
-            if (lastWord(text)) |word_start| {
-                const whole = text;
-                const word = whole[word_start..];
-                self.nodes.items[tip_id.?].kind = .{ .str = whole[0..word_start] };
-                const word_id = try self.addNode(.{ .str = word }, self.spans.items[tip_id.?]);
+            // Nothing but whitespace: the attributes attach to nothing.
+            const word_start = lastWord(text) orelse return;
+            // A word that starts the `str` is the whole `str`, and takes the
+            // attributes itself: splitting there would leave an empty `str`
+            // no source spells. djot.js splits only past `m.index > 0`.
+            if (word_start > 0) {
+                self.nodes.items[tip_id.?].kind = .{ .str = text[0..word_start] };
+                const word_id = try self.addNode(.{ .str = text[word_start..] }, self.spans.items[tip_id.?]);
                 self.addChildToTip(word_id);
                 tip_id = word_id;
-            } else {
-                ends_with_space = true;
             }
         }
-        if (ends_with_space) return;
         try self.mergeAttrsOntoNode(tip_id.?, &c.attrs);
     }
 
@@ -2037,6 +2036,37 @@ test "attrs_span: inline attributes are the block after the span" {
     const span_node = id orelse return error.TestExpectedNonNull;
     const as = doc.attrsSpan(span_node) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("{.x}", src[as.start..as.end]);
+}
+
+test "attributes: a word with nothing before it in its `str` takes them whole" {
+    // Splitting the last word off only makes sense with text before it;
+    // otherwise the split leaves an empty `str` over the word's bytes.
+    const src = "hi{key=\"x\"}\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    const str = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("hi", ast.nodes[str].kind.str);
+    try testing.expectEqualStrings("x", ast.attrsOf(str).get("key").?);
+    try testing.expect(ast.nodes[str].next_sibling == null);
+}
+
+test "attributes: a word after text in its `str` is split off to take them" {
+    const src = "x word{.a}\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    const before = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("x ", ast.nodes[before].kind.str);
+    try testing.expect(ast.nodes[before].attrs == null);
+    const word = ast.nodes[before].next_sibling orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("word", ast.nodes[word].kind.str);
+    try testing.expectEqualStrings("a", ast.attrsOf(word).get("class").?);
+    try testing.expect(ast.nodes[word].next_sibling == null);
 }
 
 test "attrs_span: two blocks merged into one set report no range" {
