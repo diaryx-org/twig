@@ -90,6 +90,95 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 4.1.0
+
+### Added
+
+- **markdown,djot** — a div classed verse reads and writes as a line block ([`6eab96a`](https://github.com/diaryx-org/twig/commit/6eab96ab9006aa88488d767c11e6a792d3680add))
+- **editor** — toggle paragraphs into a verse and back ([`c2e5ddc`](https://github.com/diaryx-org/twig/commit/c2e5ddcb03a99352d5d5dbfc69678a084752c382))
+
+### Fixed
+
+- **djot** — a captioned table's span and interior run to its caption ([`62062f4`](https://github.com/diaryx-org/twig/commit/62062f47706644b02c39910c56a4a01620f0092b))
+- **djot** — a word with nothing before it takes its attributes whole ([`c3c59c1`](https://github.com/diaryx-org/twig/commit/c3c59c1f1c59727733e370a2c664770d16bbdb70))
+- **runtime** — converting from a runtime row keeps the labels and spelling its table carried ([`502b389`](https://github.com/diaryx-org/twig/commit/502b38908f930529ec5385774b57949f1e458c8b))
+- **cli** — convert reports a runtime language's reason for refusing a print ([`96cfa2d`](https://github.com/diaryx-org/twig/commit/96cfa2db15ae994ea2653f51b023a65d2c8b2973))
+- **diagnostics** — a runtime target measures the kinds that ride along with their parent ([`4ce8135`](https://github.com/diaryx-org/twig/commit/4ce813591b76479645cd231168c0617e0abdc0bf))
+- **cli** — a helper is registered at the author tier only by lang check and lang list ([`4a21a9f`](https://github.com/diaryx-org/twig/commit/4a21a9f59a4859a2dc016690dff3789654e03816))
+
+### Behavioural changes
+
+- A djot `table` with a caption now has a `span` and a `content_span` that run from its first row to the end of its caption. `| a | b |\n\n^ cap\n` reported `span` `0..10` and `content_span` `13..10`, and now reports `0..17` for both. A table without a caption is unchanged.
+
+- In djot, inline attributes after a `str` that is a single word (`hi{key="x"}`, or the word left by an earlier split, as in `x word{.a}{.b}`) now go on that `str`. Twig produced an empty `str` before it, and split the word again for a second attribute block; the HTML is unchanged.
+
+- Converting a document parsed by a runtime language to djot, Markdown or AsciiDoc (`twig convert -i <runtime> -o djot`, `twig_document_serialize`) now keeps the list markers and label provenance the language's table gave: a `+` list stays `+`, a `1)` list stays `1)`, and a djot heading's implicit reference is not written out as a definition. Before, every list was spelled canonically and every reference written explicitly.
+
+- `twig convert` into a runtime language that refuses the document now prints the language's own reason (`quoteless: print failed: this language has no block quotes`) where it printed `LanguageFailed`.
+
+- `twig convert --warn` and `twig_document_diagnostics` into a runtime language no longer report `str`, `doc`, list items, table rows, cells, captions, definition-list parts or soft breaks as degraded unless the language actually loses them on a round trip; their attributes are reported from the same measurement.
+
+- Outside `twig lang check` and `twig lang list`, the CLI registers a runtime language without its author tier: such a language's `syntax` is no longer decoded or checked, and a table that would break a rule no longer stops `twig convert` or `twig query` from loading it. Each invocation over an authoring helper is correspondingly faster.
+
+- Under html_elements, Markdown `<div class="verse">` around paragraphs now parses to a `line_block` of `line`s instead of a `div` container of paragraphs; a div classed verse that holds anything else is unchanged.
+
+- djot `::: verse` around paragraphs now parses to a `line_block` of `line`s instead of a div of paragraphs.
+
+- A `line_block` serializes to Markdown as `<div class="verse">` with one paragraph per stanza, and to djot as a `::: verse` div, where both wrote one paragraph of hard breaks; each line's `indent` is now written as em spaces instead of dropped.
+
+- The flat node table (`twig_editor_nodes`, `FlatNode::level`) reports a `line`'s indent as its `level`, where every line reported 0 / `None`.
+
+### Breaking
+
+- build with Zig 0.17.0 ([`4eb2ca1`](https://github.com/diaryx-org/twig/commit/4eb2ca1f9e8c588dd66b0fef1f8bae234ac866b5))
+
+### Added
+
+- **bench** — bench-edit times a keystroke through a runtime twin against compiled djot ([`6680f32`](https://github.com/diaryx-org/twig/commit/6680f32f4cac261ea95c3e262b13b622869ca915))
+
+### Behavioural changes
+
+- building twig from source needs Zig 0.17.0 — `zig build`,
+  `zig fetch` consumers, and the twig-sys crate wherever it compiles the
+  core rather than linking a prebuilt payload. Zig 0.16.0 refuses the tree
+  at build.zig.
+
+### Breaking
+
+- **syntax** — every renderer is handed the table it was found in ([`4363ddd`](https://github.com/diaryx-org/twig/commit/4363ddd207cdb56608c8c2515aac248480e5f4e6))
+- **runtime** — the author tier, with features and sets ([`ed89bd3`](https://github.com/diaryx-org/twig/commit/ed89bd39c684a3079660c935bf282167055e9e4a))
+
+### Added
+
+- **format** — Markdown's extensions are features, and the CLI turns features on ([`b9a34ad`](https://github.com/diaryx-org/twig/commit/b9a34ad494a5582f826cf50485a1163a2bedbd45))
+
+### Fixed
+
+- **markdown** — setBlock joins a multi-line paragraph into one heading ([`98a7a57`](https://github.com/diaryx-org/twig/commit/98a7a57ded13031787ae5f927f1c643f8061dbcf))
+
+### Behavioural changes
+
+- a description declaring `caps.author` and a `syntax` registers, and its rows author, where it was refused; one declaring `dialects` is refused with a message pointing at `sets`.
+
+- registering a language that authors runs every gesture its table offers over its samples, so it takes longer and refuses what breaks a promise.
+
+- helper-wire `parse` and `print` requests carry a `features` array, and a helper may receive `render` requests.
+
+- the flags argument of `twig_parse_ext`, `twig_editor_create_ext` and `twig_format_supports_ext` turns on a runtime row's features, where it was ignored for a runtime row.
+
+- `twig lang check` prints "; every gesture kept its promise" for a language that authors and lists its features and sets; `twig lang list` lists a configured language's sets under it.
+
+- `TWIG_MD_HIGHLIGHT_COLORS` without `TWIG_MD_HIGHLIGHT` now turns highlights on too (it was inert), in `twig_parse_ext`, `twig_editor_create_ext` and `twig_format_supports_ext`, and in Rust's `MarkdownExtensions { highlight_colors: true, .. }`.
+
+- `twig_format_feature_bit` answers a Markdown row with its `TWIG_MD_*` bits rather than `TWIG_STATUS_UNSUPPORTED_FORMAT`; Rust's `Format::feature_flags` likewise.
+
+- `Format::dialect_of` in Rust answers `Some` for a runtime set, where it answered `None`.
+
+- `twig` with a format name or extension no languages-file line gives now spawns configured helpers to look for a set by that name before failing.
+
+- `Editor.setBlock(.heading)` over a Markdown paragraph of several lines writes one heading with its soft breaks joined by spaces (`a\nb` becomes `## a b`) where it wrote `## a\nb` (a heading and a paragraph); a paragraph holding a hard break, or whose heading the reparse reads differently (`Number #`), is now `error.NotEditable`; a runtime table that does not state `heading_continues: true` gets the one-line behaviour.
+
+
 ## 4.0.1
 
 ### Breaking
