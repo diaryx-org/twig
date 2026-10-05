@@ -41,6 +41,7 @@ pub const entryFor = twig.format.entryFor;
 pub const targetEntryFor = twig.format.targetEntryFor;
 pub const targetFor = twig.format.targetFor;
 pub const writesOwnSyntax = twig.format.writesOwnSyntax;
+pub const serializeConvertedAlloc = twig.format.serializeConvertedAlloc;
 /// `twig.format.parseFormatName`, then the configured languages
 /// (`languages.zig`): a name nothing compiled answers to spawns the helper
 /// whose line gives it.

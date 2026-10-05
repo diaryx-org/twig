@@ -37,6 +37,17 @@
 //! terminal, so a helper that wants to say why it refused something can. One
 //! process per helper per invocation; it is never respawned, because an
 //! invocation that loses its helper has nothing left to do with it.
+//!
+//! ── What a helper is registered as ─────────────────────────────────────────
+//! Every command the CLI has reads, writes or splices; none authors, since
+//! the edit commands splice bytes and never write through a `Syntax`. So a
+//! helper is registered at the tiers it declares less `author`, with its
+//! `syntax` and its features' patches set aside, and the load check skips
+//! the gestures it would only run for a table nothing here writes with —
+//! the most of its cost: about 4 s for `twig-quickjs`'s djot twin, against
+//! 40 ms for read and write. No unchecked table is ever bound, because
+//! none is bound at all. `lang check` and `lang list`, which say what a
+//! language authors, register it whole and run everything.
 
 const std = @import("std");
 const Io = std.Io;
@@ -71,6 +82,10 @@ var state: struct {
     stderr: ?*Writer = null,
     loaded: bool = false,
     configured: std.ArrayList(Configured) = .empty,
+    /// Whether a helper is registered at the author tier it declares. Only
+    /// `lang check` and `lang list`, which report it, turn this on; see
+    /// "What a helper is registered as" above.
+    author_tier: bool = false,
 } = .{};
 
 /// Give the module what it needs to read files and spawn: called once from
@@ -327,7 +342,21 @@ pub fn spawnAndRegister(name: ?[]const u8, command: []const []const u8, diag: *W
         diag.print("the helper describes itself as `{s}`, but its line calls it `{s}`", .{ description.name, want }) catch {};
         return error.NameMismatch;
     };
-    return twig.runtime.register(a, twig.wire.language(&helper.transport), description, diag);
+    const registered = if (state.author_tier) description else try withoutAuthorTier(arena.allocator(), description);
+    return twig.runtime.register(a, twig.wire.language(&helper.transport), registered, diag);
+}
+
+/// `d` as a language that reads and writes: no `author`, no `syntax`, and
+/// no feature patching one.
+fn withoutAuthorTier(a: Allocator, d: twig.runtime.Description) Allocator.Error!twig.runtime.Description {
+    if (!d.author) return d;
+    var out = d;
+    out.author = false;
+    out.syntax = null;
+    const features = try a.dupe(twig.runtime.Feature, d.features);
+    for (features) |*f| f.syntax = null;
+    out.features = features;
+    return out;
 }
 
 /// `command` with a leading `~` in any argument expanded to `$HOME`.
@@ -381,6 +410,7 @@ fn writeFeatures(w: *Writer, fmt: Format, indent: []const u8) Writer.Error!void 
 /// `twig lang list`: every compiled format and every configured language,
 /// with what each can do. A configured language is spawned to be asked.
 pub fn list(out: *Writer) Writer.Error!void {
+    state.author_tier = true;
     try out.writeAll("compiled:\n");
     for (&twig.format.registry) |*e| {
         try out.print("  {s:<12} {s:<18}", .{ e.id.name(), capsWord(e.id) });
@@ -427,6 +457,7 @@ pub fn check(
     against: ?Format,
     files: []const []const u8,
 ) CheckError!void {
+    state.author_tier = true;
     const a = state.allocator;
     var diag: Writer.Allocating = .init(a);
     const fmt = if (name) |n| blk: {
@@ -541,6 +572,7 @@ fn resetForTest(a: Allocator) void {
     state.allocator = a;
     test_stderr = .fixed(&test_stderr_buf);
     state.stderr = &test_stderr;
+    state.author_tier = false;
 }
 
 test "languages: one line a language; an earlier file wins a name" {
@@ -602,6 +634,8 @@ test "languages: a helper process is spawned, described, registered and asked" {
     defer arena.deinit();
     const a = arena.allocator();
     resetForTest(a);
+    // The registry outlives the test, so what it holds must too.
+    state.allocator = std.heap.page_allocator;
     state.io = testing.io;
     var env = std.process.Environ.Map.init(a);
     state.environ = &env;
@@ -634,4 +668,49 @@ test "languages: a helper process is spawned, described, registered and asked" {
     try testing.expect(std.mem.indexOf(u8, diag.written(), "did not answer") != null);
     diag.clearRetainingCapacity();
     try testing.expectError(error.SpawnFailed, spawnAndRegister(null, &.{"/nonexistent/twig-helper"}, &diag.writer));
+}
+
+/// `sh_helper`, claiming the author tier with a table that spells nothing —
+/// which only a check that decodes and holds the table would notice.
+const sh_author_helper =
+    \\while IFS= read -r line; do
+    \\  case "$line" in
+    \\    *describe*) printf '%s\n' '{"ok":true,"description":{"name":"shy","extensions":["shy"],"caps":{"read":true,"author":true},"syntax":{"heading_markr":"#"},"samples":["x"]}}' ;;
+    \\    *parse*) printf '%s\n' '{"ok":true,"table":{"nodes":[{"kind":"doc","span":[0,1]},{"kind":"para","parent":0,"span":[0,1]},{"kind":"str","parent":1,"span":[0,1],"text":"x"}]}}' ;;
+    \\    *) printf '%s\n' '{"ok":false,"message":"shy only reads"}' ;;
+    \\  esac
+    \\done
+;
+
+test "languages: a helper is registered without its author tier unless lang check or list asks" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    resetForTest(a);
+    // The registry outlives the test, so what it holds must too.
+    state.allocator = std.heap.page_allocator;
+    state.io = testing.io;
+    var env = std.process.Environ.Map.init(a);
+    state.environ = &env;
+    defer state.environ = null;
+
+    // With the full check, the table is decoded and refused.
+    state.author_tier = true;
+    var diag: Writer.Allocating = .init(testing.allocator);
+    defer diag.deinit();
+    try testing.expectError(error.InvalidLanguage, spawnAndRegister(null, &.{ "sh", "-c", sh_author_helper }, &diag.writer));
+    try testing.expect(std.mem.indexOf(u8, diag.written(), "heading_markr") != null);
+
+    // Without it, the language reads, and authors nothing.
+    state.author_tier = false;
+    diag.clearRetainingCapacity();
+    const fmt = spawnAndRegister(null, &.{ "sh", "-c", sh_author_helper }, &diag.writer) catch |err| {
+        std.debug.print("\nrefused: {s}\n", .{diag.written()});
+        return err;
+    };
+    try testing.expect(!twig.format.syntaxFor(fmt).authorable());
+    var doc = try twig.format.entryFor(fmt).parse(&twig.format.ParseConfig{}, testing.allocator, "x");
+    defer doc.deinit();
+    try testing.expectEqual(@as(usize, 3), doc.doc.ast.nodes.len);
 }

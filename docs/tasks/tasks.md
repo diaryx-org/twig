@@ -3,20 +3,14 @@ title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 author: adammharris
 created: 2026-09-15
-updated: 2026-10-02
+updated: 2026-10-05
 part_of: '[Twig](/README.md)'
 contents:
 - '[A gesture over an AsciiDoc paragraph admonition takes its label into the new block](/docs/tasks/asciidoc-admonition-label-gestures.md)'
 - '[A djot directive written with a bare attribute or a label does not read back as one](/docs/tasks/djot-insert-directive-round-trip.md)'
 - '[Read a node table without building a JSON value tree first](/docs/tasks/table-decode-without-a-value-tree.md)'
-- '[A djot word''s attributes split off an empty `str` when nothing precedes the word](/docs/tasks/djot-word-attributes-split-an-empty-str.md)'
-- '[A djot table with a caption gets a `content_span` that runs backwards](/docs/tasks/djot-table-caption-content-span-runs-backwards.md)'
 - '[The CLI writes stdout from offset 0, so `>>` overwrites what the file held](/docs/tasks/cli-stdout-overwrites-an-appended-file.md)'
-- '[`twig convert` drops a runtime language''s reason for refusing a print](/docs/tasks/runtime-print-refusal-reaches-convert.md)'
-- '[Converting from a runtime row to its compiled sibling ignores the table''s labels and spelling](/docs/tasks/runtime-conversion-keeps-labels-and-spelling.md)'
-- '[A runtime target reports every kind its fidelity probe did not reach as degraded](/docs/tasks/runtime-fidelity-unprobed-kinds-are-not-degraded.md)'
 - '[The Rust crate cannot write a document''s node table, or read its list spelling](/docs/tasks/rust-node-table-encoder.md)'
-- '[Every CLI invocation that loads an authoring helper re-runs the whole gesture check](/docs/tasks/runtime-load-check-cost-per-invocation.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 

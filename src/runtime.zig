@@ -1341,11 +1341,58 @@ test "runtime: a registered language is a row every consumer reaches" {
     const t = format.targetFor(fmt);
     try testing.expectEqual(diagnostics.Fidelity.faithful, diagnostics.fidelity(t, .{ .heading = .{ .level = 2 } }));
     try testing.expectEqual(diagnostics.fidelity(.djot, .{ .inline_mark = .superscript }), diagnostics.fidelity(t, .{ .inline_mark = .superscript }));
+    // A plain paragraph costs nothing: the kinds that ride along with their
+    // parent were measured too, not defaulted to a loss.
+    {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        var plain = try Djot.parse(testing.allocator, "Just a paragraph.\n\n| a |\n|---|\n| 1 |\n\n^ cap\n\n- [x] done\n");
+        defer plain.deinit();
+        const warnings = try diagnostics.analyze(arena.allocator(), &plain.ast, plain.ast.root, t);
+        for (warnings) |w| std.debug.print("\nunexpected warning: {s} at {s}\n", .{ w.kind, w.path });
+        try testing.expectEqual(@as(usize, 0), warnings.len);
+    }
 
     // An editor opens over it, and has nothing to author with.
     var editor = try Editor.init(testing.allocator, src, &cfg, format.entryFor(fmt).parseToAst, format.entryFor(fmt).syntax);
     defer editor.deinit();
     try testing.expect(!format.entryFor(fmt).syntax.authorable());
+}
+
+test "runtime: converting a twin's parse to its compiled sibling reads as the sibling's own" {
+    var diag: Writer.Allocating = .init(testing.allocator);
+    defer diag.deinit();
+    const fmt = register(std.heap.page_allocator, .{ .parse = DjotTwin.parse, .print = DjotTwin.print }, .{
+        .name = "djot-converting",
+        .extensions = &.{"djconv"},
+        .write = true,
+        .samples = plainSamples(&.{"# Heading\n\nSee [Heading].\n\n+ a\n+ b\n\n1) one\n2) two\n"}),
+    }, &diag.writer) catch |err| {
+        std.debug.print("\nrefused: {s}\n", .{diag.written()});
+        return err;
+    };
+
+    // An implicit heading reference stays implicit, and a list keeps its
+    // marker: the table said both, as djot's own parse does.
+    const src = "# Heading\n\nSee [Heading].\n\n+ a\n+ b\n\n1) one\n2) two\n";
+    const cfg: format.ParseConfig = .{};
+    var twin = try format.entryFor(fmt).parse(&cfg, testing.allocator, src);
+    defer twin.deinit();
+    var real = try format.entryFor(.djot).parse(&cfg, testing.allocator, src);
+    defer real.deinit();
+    const from_real = try format.serializeCanonicalAlloc(testing.allocator, &real);
+    defer testing.allocator.free(from_real);
+    const from_twin = try format.serializeConvertedAlloc(testing.allocator, &twin, .djot);
+    defer testing.allocator.free(from_twin);
+    try testing.expectEqualStrings(from_real, from_twin);
+    try testing.expectEqualStrings(src, from_twin);
+
+    // A compiled row's document still crosses as a bare tree.
+    var md = try format.entryFor(.markdown).parse(&cfg, testing.allocator, "+ a\n");
+    defer md.deinit();
+    const from_md = try format.serializeConvertedAlloc(testing.allocator, &md, .djot);
+    defer testing.allocator.free(from_md);
+    try testing.expectEqualStrings("- a\n", from_md);
 }
 
 test "runtime: a language that authors is edited like the compiled format it twins" {

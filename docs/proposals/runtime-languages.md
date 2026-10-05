@@ -3,7 +3,7 @@ title: "Proposal: runtime languages"
 status: accepted
 author: adammharris
 created: 2026-09-19
-updated: 2026-10-02
+updated: 2026-10-05
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
@@ -109,6 +109,16 @@ feature over any row with `--feature`, `lang list` shows each language's
 features, and a set's name or extension resolves before its language has
 loaded — the helpers are asked in turn, one whose name begins the set's
 first. `twig_format_dialect_of` gives a set's language.
+
+**2026-10-05: the CLI registers a helper without its author tier.** No CLI
+command authors, so outside `lang check` and `lang list` a helper is
+registered with `author`, `syntax` and its features' patches set aside, and
+its load check is a read/write language's: `twig convert` through
+`twig-quickjs`'s djot twin went from 5.6 s to 0.13 s
+([the task](/docs/tasks/closed/runtime-load-check-cost-per-invocation.md)). Load
+is still the validation moment for everything that is bound; a table no
+command writes with is not bound. A host that edits — the Rust crate, the
+C ABI — registers the whole description and runs everything, as before.
 
 "Runtime" throughout means *resolved when the program runs*, as opposed to a
 format compiled into `src/languages/`. It names no engine.
@@ -563,20 +573,22 @@ base, which is why the range is reserved in a minor and the ABI stays at 6.
    read tier, or whichever of Org and the wiki dialects someone brings
    first.
 
-   Built, 2026-10-02, as a local repository not yet published: `djot.mjs`
+   Built, 2026-10-02, and published since as
+   [diaryx-org/twig-quickjs](https://github.com/diaryx-org/twig-quickjs): `djot.mjs`
    is `js/languages/djot.js` there, over djot.js 0.3.2 vendored with its
    corpus, and it reads, writes and authors. `twig lang check js-djot
    --against djot` passes the load check and gives djot's table on every
    harness sample and on 248 of the corpus's 260 cases; the twelve that
-   differ are two twig bugs ([empty `str`](/docs/tasks/djot-word-attributes-split-an-empty-str.md),
-   [caption span](/docs/tasks/djot-table-caption-content-span-runs-backwards.md))
+   differ are two twig bugs ([empty `str`](/docs/tasks/closed/djot-word-attributes-split-an-empty-str.md),
+   [caption span](/docs/tasks/closed/djot-table-caption-content-span-runs-backwards.md))
    and one change in djot since 0.3.2, written up in its
-   `docs/twin-differences.md`. Where it departs from the text above: the
+   `docs/twin-differences.md`; the two twig bugs are fixed since. Where it departs from the text above: the
    twin reads djot.js's event stream as well as its AST, for the positions
    of attributes, fence bodies and verbatim interiors the AST does not
-   keep; and an authoring helper's load check costs about 4 s per CLI
-   invocation, against 40 ms for one that reads and writes
-   ([a task](/docs/tasks/runtime-load-check-cost-per-invocation.md)).
+   keep; and an authoring helper's load check cost about 4 s per CLI
+   invocation, against 40 ms for one that reads and writes, until the CLI
+   stopped registering the author tier it never uses
+   ([a task](/docs/tasks/closed/runtime-load-check-cost-per-invocation.md)).
 6. **Measure before an editor gets one.** The per-edit cost of an
    in-process runtime format at leaf's keystroke rate, with the djot twin as
    the benchmark against the compiled row. The number decides whether the
