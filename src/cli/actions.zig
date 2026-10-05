@@ -326,8 +326,9 @@ fn convertSource(
             // Plain `-o canonical` (or `-o <input's own format>`): round-trip
             // through the INPUT format's own `Document`-aware serializer.
             // `-o <a different target>`: cross-format conversion through that
-            // TARGET row's `serializeFromAst`, fed the bare shared `AST` (see
-            // `format.TargetEntry.serializeFromAst`'s doc comment).
+            // TARGET row, fed the bare shared `AST` — or, from a runtime row,
+            // the `Document` with its table's labels and spelling (see
+            // `format.serializeConvertedAlloc`).
             //
             // `asFormat()` is the test rather than `==` because the two sides
             // are now different types: an export-only target can never equal
@@ -350,15 +351,15 @@ fn convertSource(
                 };
             } else blk: {
                 const target_entry = format.targetEntryFor(target);
-                const serializeFn = target_entry.serializeFromAst orelse {
+                if (target_entry.serializeFromAst == null) {
                     stderr.print(
                         "error: conversion to {s} is not supported yet: no serializer\n",
                         .{target.name()},
                     ) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;
-                };
-                break :blk serializeFn(allocator, doc.ast()) catch |err| {
+                }
+                break :blk format.serializeConvertedAlloc(allocator, &doc, target) catch |err| {
                     stderr.print("error: failed to convert '{s}' from {s} to {s}: {t}\n", .{ display_name, input.name(), target.name(), err }) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;

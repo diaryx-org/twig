@@ -1277,7 +1277,7 @@ fn serializeDocument(
     const result = if (twig.format.writesOwnSyntax(parsed.format, target))
         twig.format.serializeCanonicalAlloc(allocator, parsed)
     else
-        twig.format.serializeFromAstAlloc(allocator, parsed.ast(), target);
+        twig.format.serializeConvertedAlloc(allocator, parsed, target);
     // `null` is this function's "the registry has no serializer for that",
     // which the caller reports as `unsupported_format`.
     return result catch |err| switch (err) {
