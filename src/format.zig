@@ -489,6 +489,18 @@ fn serializeFromAstMarkdown(allocator: Allocator, ast: *const AST) anyerror![]u8
     return markdown_serializer.serializeAstAlloc(allocator, ast);
 }
 
+fn serializeFromDocumentDjot(allocator: Allocator, doc: *const Document) anyerror![]u8 {
+    return djot_serializer.serializeAlloc(allocator, doc);
+}
+
+fn serializeFromDocumentMarkdown(allocator: Allocator, doc: *const Document) anyerror![]u8 {
+    return markdown_serializer.serializeAlloc(allocator, doc);
+}
+
+fn serializeFromDocumentAsciidoc(allocator: Allocator, doc: *const Document) anyerror![]u8 {
+    return asciidoc_serializer.serializeAlloc(allocator, doc);
+}
+
 fn serializeCanonicalAsciidoc(allocator: Allocator, doc: *const ParsedDoc) anyerror![]u8 {
     return asciidoc_serializer.serializeAlloc(allocator, &doc.doc);
 }
@@ -741,11 +753,18 @@ pub const TargetEntry = struct {
     /// into the same `error.UnsupportedFormat`. For an export-only target this
     /// is the ONLY function in either table that would be non-null.
     serializeFromAst: ?*const fn (Allocator, *const AST) anyerror![]u8 = null,
+    /// Serialize a `Document` another row parsed as this target's syntax,
+    /// reading its `labels` and `node_spelling` as this target's own
+    /// canonical serializer does — what `serializeConvertedAlloc` takes for a
+    /// runtime row's document, whose table stated both in the vocabulary
+    /// every row shares. A compiled row's document crosses as a bare `AST`,
+    /// as it always has. `null` where the target has no such serializer.
+    serializeFromDocument: ?*const fn (Allocator, *const Document) anyerror![]u8 = null,
 };
 
 pub const targets = [_]TargetEntry{
-    .{ .id = .djot, .reads_back_as = .djot, .serializeFromAst = serializeFromAstDjot },
-    .{ .id = .markdown, .reads_back_as = .markdown, .serializeFromAst = serializeFromAstMarkdown },
+    .{ .id = .djot, .reads_back_as = .djot, .serializeFromAst = serializeFromAstDjot, .serializeFromDocument = serializeFromDocumentDjot },
+    .{ .id = .markdown, .reads_back_as = .markdown, .serializeFromAst = serializeFromAstMarkdown, .serializeFromDocument = serializeFromDocumentMarkdown },
     .{
         .id = .xml,
         .reads_back_as = .xml,
@@ -758,7 +777,7 @@ pub const targets = [_]TargetEntry{
         // `-o xml` still works, through the input row's `serializeCanonical`.
     },
     .{ .id = .html, .reads_back_as = .html, .serializeFromAst = serializeFromAstHtml },
-    .{ .id = .asciidoc, .reads_back_as = .asciidoc, .serializeFromAst = serializeFromAstAsciidoc },
+    .{ .id = .asciidoc, .reads_back_as = .asciidoc, .serializeFromAst = serializeFromAstAsciidoc, .serializeFromDocument = serializeFromDocumentAsciidoc },
 };
 
 /// Look up `fmt`'s entry. Every `Format` variant has exactly one `registry`
@@ -857,6 +876,21 @@ pub fn serializeCanonicalAlloc(allocator: Allocator, doc: *const ParsedDoc) anye
 pub fn serializeFromAstAlloc(allocator: Allocator, ast: *const AST, target: Target) anyerror![]u8 {
     const f = targetEntryFor(target).serializeFromAst orelse return error.UnsupportedFormat;
     return f(allocator, ast);
+}
+
+/// Serialize `doc` as `target`'s syntax where `target` is not the syntax it
+/// was parsed from (`convert -o <target>`, `twig_document_serialize`). A
+/// runtime row's document keeps the labels and spelling its table carried, so
+/// converting a twin's parse reads as converting its compiled sibling's
+/// would; any other crosses as a bare `AST`. `error.UnsupportedFormat` when
+/// `target` has no AST serializer.
+pub fn serializeConvertedAlloc(allocator: Allocator, doc: *const ParsedDoc, target: Target) anyerror![]u8 {
+    const t = targetEntryFor(target);
+    if (t.serializeFromAst == null) return error.UnsupportedFormat;
+    if (runtime.isRegistered(doc.format)) {
+        if (t.serializeFromDocument) |f| return f(allocator, &doc.doc);
+    }
+    return t.serializeFromAst.?(allocator, doc.ast());
 }
 
 /// Map an input name to a `Format`: the enum's own tag name first
