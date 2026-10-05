@@ -1211,21 +1211,20 @@ pub const TreeBuilder = struct {
         var tip_id = self.getTip();
         if (tip_id == null) return; // no inline sibling to attach to
 
-        var ends_with_space = false;
         if (self.nodes.items[tip_id.?].kind == .str) {
             const text = self.nodes.items[tip_id.?].kind.str;
-            if (lastWord(text)) |word_start| {
-                const whole = text;
-                const word = whole[word_start..];
-                self.nodes.items[tip_id.?].kind = .{ .str = whole[0..word_start] };
-                const word_id = try self.addNode(.{ .str = word }, self.spans.items[tip_id.?]);
+            // Nothing but whitespace: the attributes attach to nothing.
+            const word_start = lastWord(text) orelse return;
+            // A word that starts the `str` is the whole `str`, and takes the
+            // attributes itself: splitting there would leave an empty `str`
+            // no source spells. djot.js splits only past `m.index > 0`.
+            if (word_start > 0) {
+                self.nodes.items[tip_id.?].kind = .{ .str = text[0..word_start] };
+                const word_id = try self.addNode(.{ .str = text[word_start..] }, self.spans.items[tip_id.?]);
                 self.addChildToTip(word_id);
                 tip_id = word_id;
-            } else {
-                ends_with_space = true;
             }
         }
-        if (ends_with_space) return;
         try self.mergeAttrsOntoNode(tip_id.?, &c.attrs);
     }
 
@@ -1510,11 +1509,18 @@ pub const TreeBuilder = struct {
             if (self.nodes.items[old_capt].kind == .caption) {
                 self.nodes.items[capt_id].next_sibling = self.nodes.items[old_capt].next_sibling;
                 self.nodes.items[tip_id].first_child = capt_id;
-                // The table's own content_span was derived from its OLD
-                // first child (the placeholder/earlier caption); re-derive
-                // now that the caption swap changed where its interior
-                // starts.
-                self.setContentSpan(tip_id, self.contentSpanFromChildren(capt_id));
+                // A caption is written after the rows it names but is the
+                // table's first child, so neither the table's span (which
+                // stopped at its last row) nor a first-to-last-child range
+                // covers it. Both run from the rows' start to the caption's
+                // end; an earlier caption this one replaced lies inside.
+                const table_span = &self.spans.items[tip_id];
+                table_span.end = @max(table_span.end, ev.end + 1);
+                const rows_start = if (self.nodes.items[capt_id].next_sibling) |row|
+                    self.spans.items[row].start
+                else
+                    table_span.start;
+                self.setContentSpan(tip_id, Span.init(rows_start, table_span.end));
             }
         }
     }
@@ -1954,6 +1960,26 @@ test "span: a table stops at its last row" {
     try testing.expectEqualStrings("| a |\n| b |\n", src[sp.start..sp.end]);
 }
 
+test "span: a captioned table runs to its caption, and so does its interior" {
+    const src = "| a | b |\n\n^ With a _caption_\nand another line.\n\nafter\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const table = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[table].kind == .table);
+    const whole = "| a | b |\n\n^ With a _caption_\nand another line.\n";
+    const sp = doc.span(table);
+    try testing.expectEqualStrings(whole, src[sp.start..sp.end]);
+    const cs = doc.contentSpan(table) orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings(whole, src[cs.start..cs.end]);
+
+    const caption = ast.nodes[table].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[caption].kind == .caption);
+    const caps = doc.span(caption);
+    try testing.expect(sp.start <= caps.start and caps.end <= sp.end);
+}
+
 test "span: trailing blank lines at end of input belong to no block" {
     const src = "> q\n\n\n\n";
     var doc = try parseDoc(testing.allocator, src);
@@ -2010,6 +2036,37 @@ test "attrs_span: inline attributes are the block after the span" {
     const span_node = id orelse return error.TestExpectedNonNull;
     const as = doc.attrsSpan(span_node) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("{.x}", src[as.start..as.end]);
+}
+
+test "attributes: a word with nothing before it in its `str` takes them whole" {
+    // Splitting the last word off only makes sense with text before it;
+    // otherwise the split leaves an empty `str` over the word's bytes.
+    const src = "hi{key=\"x\"}\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    const str = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("hi", ast.nodes[str].kind.str);
+    try testing.expectEqualStrings("x", ast.attrsOf(str).get("key").?);
+    try testing.expect(ast.nodes[str].next_sibling == null);
+}
+
+test "attributes: a word after text in its `str` is split off to take them" {
+    const src = "x word{.a}\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const para = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    const before = ast.nodes[para].first_child orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("x ", ast.nodes[before].kind.str);
+    try testing.expect(ast.nodes[before].attrs == null);
+    const word = ast.nodes[before].next_sibling orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("word", ast.nodes[word].kind.str);
+    try testing.expectEqualStrings("a", ast.attrsOf(word).get("class").?);
+    try testing.expect(ast.nodes[word].next_sibling == null);
 }
 
 test "attrs_span: two blocks merged into one set report no range" {

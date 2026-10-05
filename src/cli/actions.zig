@@ -190,6 +190,13 @@ fn parseFailure(input: format.InputFormat, err: anyerror) []const u8 {
     return if (twig.runtime.isRegistered(input)) languages.failureOf(err) else @errorName(err);
 }
 
+/// Why a print failed: a runtime language's own reason when the failure was
+/// one (only a runtime row's functions fail with `LanguageFailed`, and the
+/// registry records why before returning it), the error's name otherwise.
+fn printFailure(err: anyerror) []const u8 {
+    return if (err == error.LanguageFailed) languages.failureOf(err) else @errorName(err);
+}
+
 pub fn runIdentify(stdout: *Writer, opts: args_mod.IdentifyOptions) !void {
     try stdout.print("{s}\n", .{opts.input.name()});
     try stdout.flush();
@@ -326,8 +333,9 @@ fn convertSource(
             // Plain `-o canonical` (or `-o <input's own format>`): round-trip
             // through the INPUT format's own `Document`-aware serializer.
             // `-o <a different target>`: cross-format conversion through that
-            // TARGET row's `serializeFromAst`, fed the bare shared `AST` (see
-            // `format.TargetEntry.serializeFromAst`'s doc comment).
+            // TARGET row, fed the bare shared `AST` — or, from a runtime row,
+            // the `Document` with its table's labels and spelling (see
+            // `format.serializeConvertedAlloc`).
             //
             // `asFormat()` is the test rather than `==` because the two sides
             // are now different types: an export-only target can never equal
@@ -344,22 +352,22 @@ fn convertSource(
                     return error.ActionFailed;
                 };
                 break :blk serializeFn(allocator, &doc) catch |err| {
-                    stderr.print("error: failed to serialize '{s}' to canonical form: {t}\n", .{ display_name, err }) catch {};
+                    stderr.print("error: failed to serialize '{s}' to canonical form: {s}\n", .{ display_name, printFailure(err) }) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;
                 };
             } else blk: {
                 const target_entry = format.targetEntryFor(target);
-                const serializeFn = target_entry.serializeFromAst orelse {
+                if (target_entry.serializeFromAst == null) {
                     stderr.print(
                         "error: conversion to {s} is not supported yet: no serializer\n",
                         .{target.name()},
                     ) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;
-                };
-                break :blk serializeFn(allocator, doc.ast()) catch |err| {
-                    stderr.print("error: failed to convert '{s}' from {s} to {s}: {t}\n", .{ display_name, input.name(), target.name(), err }) catch {};
+                }
+                break :blk format.serializeConvertedAlloc(allocator, &doc, target) catch |err| {
+                    stderr.print("error: failed to convert '{s}' from {s} to {s}: {s}\n", .{ display_name, input.name(), target.name(), printFailure(err) }) catch {};
                     stderr.flush() catch {};
                     return error.ActionFailed;
                 };
@@ -929,4 +937,55 @@ test "applyEditByLocator: an edit that breaks the reparse rolls back and reports
     // Replacing <a>'s interior with "<b>" makes `<a><b></a>` — malformed.
     try testing.expectError(error.ActionFailed, applyEditByLocator(testing.allocator, "<a>ok</a>", .xml, .{}, .replace_content, "0", 0, "<b>", &err));
     try testing.expect(std.mem.indexOf(u8, err.buffered(), "no longer parses") != null);
+}
+
+/// A runtime language that reads djot and prints it, except that it refuses
+/// a block quote by name — a print refusal for `convert` to report.
+const QuoteRefusing = struct {
+    const Call = twig.runtime.Call;
+    const Error = twig.runtime.Error;
+
+    fn parse(_: ?*anyopaque, allocator: std.mem.Allocator, _: Call, source: []const u8, _: *Writer) Error![]u8 {
+        var doc = twig.Djot.parse(allocator, source) catch return error.LanguageFailed;
+        defer doc.deinit();
+        return twig.ast_table.encodeAlloc(allocator, &doc, .{ .pretty = false });
+    }
+
+    fn print(_: ?*anyopaque, allocator: std.mem.Allocator, _: Call, text: []const u8, diag: *Writer) Error![]u8 {
+        var doc = twig.ast_table.decodeBare(allocator, text, null) catch return error.LanguageFailed;
+        defer doc.deinit();
+        for (doc.ast.nodes) |n| if (n.kind == .block_quote) {
+            diag.writeAll("this language has no block quotes") catch {};
+            return error.LanguageFailed;
+        };
+        return twig.Djot.serializer.serializeAlloc(allocator, &doc) catch error.LanguageFailed;
+    }
+};
+
+test "convertSource: a runtime language's reason for refusing a print is reported" {
+    var diag: Writer.Allocating = .init(testing.allocator);
+    defer diag.deinit();
+    const fmt = twig.runtime.register(std.heap.page_allocator, .{ .parse = QuoteRefusing.parse, .print = QuoteRefusing.print }, .{
+        .name = "quoteless",
+        .extensions = &.{"quoteless"},
+        .write = true,
+        .samples = &.{.{ .text = "Plain *text*.\n" }},
+    }, &diag.writer) catch |err| {
+        std.debug.print("\nrefused: {s}\n", .{diag.written()});
+        return err;
+    };
+
+    var out_buf: [512]u8 = undefined;
+    var err_buf: [512]u8 = undefined;
+    // Its own syntax, through the canonical print.
+    var out = Writer.fixed(&out_buf);
+    var err = Writer.fixed(&err_buf);
+    try testing.expectError(error.ActionFailed, convertSource(testing.allocator, "> q\n", "-", fmt, .{}, .canonical, null, false, &out, &err));
+    try testing.expect(std.mem.indexOf(u8, err.buffered(), "this language has no block quotes") != null);
+
+    // Into it from a compiled format.
+    var out2 = Writer.fixed(&out_buf);
+    var err2 = Writer.fixed(&err_buf);
+    try testing.expectError(error.ActionFailed, convertSource(testing.allocator, "> q\n", "-", .djot, .{}, .canonical, twig.format.targetFor(fmt), false, &out2, &err2));
+    try testing.expect(std.mem.indexOf(u8, err2.buffered(), "this language has no block quotes") != null);
 }

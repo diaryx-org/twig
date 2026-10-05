@@ -19,6 +19,12 @@ contents:
 - '[A block inserted after a split at a paragraph''s end leaves two blank lines behind it](/docs/tasks/closed/block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines.md)'
 - '[Markdown''s extensions as named features, the way a runtime language declares them](/docs/tasks/closed/markdown-extensions-as-features.md)'
 - '[setBlock makes a heading of a Markdown paragraph''s first line and leaves the rest a paragraph](/docs/tasks/closed/markdown-set-block-multi-line-paragraph.md)'
+- '[A djot table with a caption gets a `content_span` that runs backwards](/docs/tasks/closed/djot-table-caption-content-span-runs-backwards.md)'
+- '[A djot word''s attributes split off an empty `str` when nothing precedes the word](/docs/tasks/closed/djot-word-attributes-split-an-empty-str.md)'
+- '[Converting from a runtime row to its compiled sibling ignores the table''s labels and spelling](/docs/tasks/closed/runtime-conversion-keeps-labels-and-spelling.md)'
+- '[`twig convert` drops a runtime language''s reason for refusing a print](/docs/tasks/closed/runtime-print-refusal-reaches-convert.md)'
+- '[A runtime target reports every kind its fidelity probe did not reach as degraded](/docs/tasks/closed/runtime-fidelity-unprobed-kinds-are-not-degraded.md)'
+- '[Every CLI invocation that loads an authoring helper re-runs the whole gesture check](/docs/tasks/closed/runtime-load-check-cost-per-invocation.md)'
 ---
 
 # Closed tasks
