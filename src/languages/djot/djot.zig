@@ -285,4 +285,7 @@ pub const samples: []const []const u8 = &.{
     // A paragraph of several lines, which a djot heading continues over —
     // the claim `Syntax.heading_continues` makes for this table.
     "A paragraph that runs\nover two lines.\n",
+    // A caption written after the rows it names, which the table's span
+    // and interior run to.
+    "| a | b |\n\n^ A _caption_\n",
 };

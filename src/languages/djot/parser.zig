@@ -1510,11 +1510,18 @@ pub const TreeBuilder = struct {
             if (self.nodes.items[old_capt].kind == .caption) {
                 self.nodes.items[capt_id].next_sibling = self.nodes.items[old_capt].next_sibling;
                 self.nodes.items[tip_id].first_child = capt_id;
-                // The table's own content_span was derived from its OLD
-                // first child (the placeholder/earlier caption); re-derive
-                // now that the caption swap changed where its interior
-                // starts.
-                self.setContentSpan(tip_id, self.contentSpanFromChildren(capt_id));
+                // A caption is written after the rows it names but is the
+                // table's first child, so neither the table's span (which
+                // stopped at its last row) nor a first-to-last-child range
+                // covers it. Both run from the rows' start to the caption's
+                // end; an earlier caption this one replaced lies inside.
+                const table_span = &self.spans.items[tip_id];
+                table_span.end = @max(table_span.end, ev.end + 1);
+                const rows_start = if (self.nodes.items[capt_id].next_sibling) |row|
+                    self.spans.items[row].start
+                else
+                    table_span.start;
+                self.setContentSpan(tip_id, Span.init(rows_start, table_span.end));
             }
         }
     }
@@ -1952,6 +1959,26 @@ test "span: a table stops at its last row" {
     try testing.expect(ast.nodes[table].kind == .table);
     const sp = doc.span(table);
     try testing.expectEqualStrings("| a |\n| b |\n", src[sp.start..sp.end]);
+}
+
+test "span: a captioned table runs to its caption, and so does its interior" {
+    const src = "| a | b |\n\n^ With a _caption_\nand another line.\n\nafter\n";
+    var doc = try parseDoc(testing.allocator, src);
+    defer doc.deinit();
+    const ast = doc.ast;
+
+    const table = ast.nodes[ast.root].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[table].kind == .table);
+    const whole = "| a | b |\n\n^ With a _caption_\nand another line.\n";
+    const sp = doc.span(table);
+    try testing.expectEqualStrings(whole, src[sp.start..sp.end]);
+    const cs = doc.contentSpan(table) orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings(whole, src[cs.start..cs.end]);
+
+    const caption = ast.nodes[table].first_child orelse return error.TestExpectedNonNull;
+    try testing.expect(ast.nodes[caption].kind == .caption);
+    const caps = doc.span(caption);
+    try testing.expect(sp.start <= caps.start and caps.end <= sp.end);
 }
 
 test "span: trailing blank lines at end of input belong to no block" {
