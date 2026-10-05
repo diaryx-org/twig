@@ -5,7 +5,7 @@ author: adammharris
 created: 2026-10-02
 updated: 2026-10-05
 status: done
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A djot table with a caption gets a `content_span` that runs backwards
