@@ -1341,6 +1341,17 @@ test "runtime: a registered language is a row every consumer reaches" {
     const t = format.targetFor(fmt);
     try testing.expectEqual(diagnostics.Fidelity.faithful, diagnostics.fidelity(t, .{ .heading = .{ .level = 2 } }));
     try testing.expectEqual(diagnostics.fidelity(.djot, .{ .inline_mark = .superscript }), diagnostics.fidelity(t, .{ .inline_mark = .superscript }));
+    // A plain paragraph costs nothing: the kinds that ride along with their
+    // parent were measured too, not defaulted to a loss.
+    {
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        var plain = try Djot.parse(testing.allocator, "Just a paragraph.\n\n| a |\n|---|\n| 1 |\n\n^ cap\n\n- [x] done\n");
+        defer plain.deinit();
+        const warnings = try diagnostics.analyze(arena.allocator(), &plain.ast, plain.ast.root, t);
+        for (warnings) |w| std.debug.print("\nunexpected warning: {s} at {s}\n", .{ w.kind, w.path });
+        try testing.expectEqual(@as(usize, 0), warnings.len);
+    }
 
     // An editor opens over it, and has nothing to author with.
     var editor = try Editor.init(testing.allocator, src, &cfg, format.entryFor(fmt).parseToAst, format.entryFor(fmt).syntax);
