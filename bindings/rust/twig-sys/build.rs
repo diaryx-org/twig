@@ -159,8 +159,11 @@ fn repack_archive_for_apple_ld(orig: &Path, out_dir: &Path) -> PathBuf {
         return fallback();
     }
 
-    // Extract, then repack. Zig writes members with no permission bits, so the
-    // extracted objects must be made readable before `ar` can re-add them.
+    // Extract, then repack. Zig writes members with no permission bits, so
+    // every extracted file must be made readable: the objects before `ar` can
+    // re-add them, and the rest (GNU `ar` extracts Zig's `__.SYMDEF` as a plain
+    // file) because a file nobody can read breaks anything that later copies
+    // `target/`.
     if !run_ok(Command::new("ar").arg("x").arg(orig).current_dir(&work)) {
         return fallback();
     }
@@ -171,8 +174,8 @@ fn repack_archive_for_apple_ld(orig: &Path, out_dir: &Path) -> PathBuf {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        make_readable(&path);
         if path.extension().is_some_and(|e| e == "o") {
-            make_readable(&path);
             objects.push(path);
         }
     }
