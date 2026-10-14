@@ -12,6 +12,7 @@ contents:
 - '[Proposal: format-correct literal text insertion](literal-text-insertion.md)'
 - '[Proposal: runtime languages](runtime-languages.md)'
 - '[Proposal: the tree gestures a canvas over an SVG needs](tree-gestures-for-a-canvas.md)'
+- '[Proposal: fig in twig](/docs/proposals/fig-in-twig.md)'
 ---
 # Proposals
 
