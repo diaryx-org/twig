@@ -1,4 +1,4 @@
 .zig-cache/
 zig-out/
 result
-.DS_Store
+.DS_Storezig-pkg/

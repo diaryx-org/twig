@@ -177,6 +177,35 @@ pub fn build(b: *std.Build) void {
     const run_c_header_tests = b.addRunArtifact(c_header_tests);
 
     const test_step = b.step("test", "Run tests");
+
+    // `twig-meta` (src/meta/): the config inside a document, read and edited
+    // through fig. Built only with -Dfig, which fetches fig (a lazy
+    // dependency), so `twig` itself, its C ABI and the Rust crates' vendored
+    // build carry none of it. docs/proposals/fig-in-twig.md argues the split.
+    if (b.option(bool, "fig", "Build twig-meta, which edits a document's metadata through fig (fetches fig)") orelse false) {
+        if (b.lazyDependency("fig", .{
+            .target = target,
+            .optimize = optimize,
+            // fig's helper wire (JSON-RPC to out-of-process languages) is the
+            // CLI's and the wasm module's; twig-meta needs only the
+            // languages fig bundles, and fetches nothing more for them.
+            .@"helper-wire" = false,
+        })) |fig_dep| {
+            const meta_mod = b.addModule("twig-meta", .{
+                .root_source_file = b.path("src/meta/meta.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "twig", .module = mod },
+                    .{ .name = "fig", .module = fig_dep.module("fig") },
+                },
+            });
+            const run_meta_tests = b.addRunArtifact(b.addTest(.{ .root_module = meta_mod }));
+            test_step.dependOn(&run_meta_tests.step);
+            b.step("test-meta", "Run twig-meta's tests alone (needs -Dfig)").dependOn(&run_meta_tests.step);
+        }
+    }
+
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_c_lib_tests.step);

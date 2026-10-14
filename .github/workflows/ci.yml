@@ -53,6 +53,11 @@ jobs:
       - name: Build C ABI library + header
         run: zig build install-c-lib
 
+      # twig-meta fetches fig (a lazy dependency), so it is its own step:
+      # a failure here is fig's pin or twig-meta, never the core.
+      - name: Test twig-meta (-Dfig)
+        run: zig build test-meta -Dfig
+
   # Build and test the Rust binding. Its build.rs shells out to
   # `zig build install-c-lib`, so Zig must be on PATH alongside the Rust
   # toolchain.
