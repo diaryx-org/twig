@@ -218,10 +218,10 @@ impl<'a> Renderer<'a> {
         for cell in self.ast.child_ids(row) {
             let alignment = match self.ast.kind(cell) {
                 Kind::Cell(c) => c.alignment,
-                // Zig reads `.cell` unchecked, which in the release oracle
-                // is an untagged read of another payload (an HTML `<pre>`
-                // directly inside a `<tr>` lands here). The oracle prints the
-                // default delimiter for it; so do we.
+                // A row may hold a non-cell child — a forgiving HTML parse
+                // puts a stray `<pre>` straight into a `<tr>` — which every
+                // row writer still counts as a column; it carries no
+                // alignment.
                 _ => Alignment::Default,
             };
             let delim: &[u8] = match alignment {
