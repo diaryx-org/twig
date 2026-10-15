@@ -1,6 +1,8 @@
 //! The FFI binding's own tests for this module (bindings/rust/twig/src/language.rs),
 //! run unchanged against the pure-Rust crate as an outside consumer.
 
+mod common;
+
     use twig::*;
     
 
@@ -15,7 +17,7 @@
         out
     }
 
-    impl Language for Lines {
+    impl TableLanguage for Lines {
         fn describe(&self) -> Description {
             Description {
                 name: self.0.to_owned(),
@@ -68,18 +70,18 @@
 
     #[test]
     fn a_registered_language_is_a_format_like_any_other() {
-        let format = register(Lines("rust-lines")).expect("register");
-        assert!(matches!(format, Format::Runtime(_)));
+        let format = register_table(Lines("rust-lines")).expect("register");
+        assert!(format.is_runtime());
         assert_eq!(format.name(), "rust-lines");
         assert_eq!(Format::by_name("rust-lines"), Some(format));
-        assert_eq!(Format::by_name("gfm"), Some(Format::Gfm));
-        assert_eq!(Format::Gfm.name(), "gfm");
+        assert_eq!(Format::by_name("gfm"), Some(common::gfm()));
+        assert_eq!(common::gfm().name(), "gfm");
         assert_eq!(Target::from(format).as_format(), Some(format));
 
         let mut doc = Document::parse_str("alpha\nbeta\n", format).expect("parse");
         assert_eq!(doc.render_html().unwrap(), b"<p>alpha</p>\n<p>beta</p>\n");
         assert_eq!(
-            doc.serialize_to(Target::Markdown).unwrap(),
+            doc.serialize_to(common::markdown().target()).unwrap(),
             b"alpha\n\nbeta\n"
         );
         assert_eq!(
@@ -87,7 +89,7 @@
             b"alpha\nbeta\n"
         );
 
-        let mut md = Document::parse_str("# T\n\nx\n", Format::Markdown).expect("markdown");
+        let mut md = Document::parse_str("# T\n\nx\n", common::markdown()).expect("markdown");
         assert_eq!(md.serialize_to(Target::from(format)).unwrap(), b"T\nx\n");
 
         // It reads and writes, and does not author.
@@ -103,8 +105,10 @@
 
     #[test]
     fn a_refusal_says_why_and_registers_nothing() {
+        // Markdown's name is taken once Markdown is registered.
+        common::markdown();
         struct Taken;
-        impl Language for Taken {
+        impl TableLanguage for Taken {
             fn describe(&self) -> Description {
                 Description {
                     name: "markdown".into(),
@@ -116,7 +120,7 @@
                 Ok(br#"{"nodes":[{"kind":"doc","span":[0,1]}]}"#.to_vec())
             }
         }
-        let err = register(Taken).unwrap_err();
+        let err = register_table(Taken).unwrap_err();
         assert_eq!(err.error, Error::InvalidLanguage);
         assert!(
             err.message.contains("already a format's"),
@@ -125,7 +129,7 @@
         );
 
         struct Panics;
-        impl Language for Panics {
+        impl TableLanguage for Panics {
             fn describe(&self) -> Description {
                 Description {
                     name: "rust-panics".into(),
@@ -137,7 +141,7 @@
                 panic!("boom")
             }
         }
-        let err = register(Panics).unwrap_err();
+        let err = register_table(Panics).unwrap_err();
         assert!(
             err.message.contains("the language panicked"),
             "{}",
@@ -151,7 +155,7 @@
     /// spelled by a renderer: all a table needs to author with.
     struct CrlfLines;
 
-    impl Language for CrlfLines {
+    impl TableLanguage for CrlfLines {
         fn describe(&self) -> Description {
             Description {
                 name: "rust-crlf".into(),
@@ -209,14 +213,14 @@
 
     #[test]
     fn features_sets_and_renderers_reach_every_entry_point() {
-        let format = register(CrlfLines).expect("register");
+        let format = register_table(CrlfLines).expect("register");
         let set = Format::by_name("rust-crlf-crlf").expect("the set is a format");
         assert_ne!(set, format);
         assert_eq!(set.dialect_of(), Some(format));
         assert_eq!(format.dialect_of(), None);
         assert_eq!(format.feature_flags(&["crlf"]), Ok(1));
         assert_eq!(format.feature_flags(&["tabs"]), Err(Error::NotFound));
-        assert_eq!(Format::Djot.feature_flags(&["math"]), Err(Error::UnsupportedFormat));
+        assert_eq!(common::djot().feature_flags(&["math"]), Err(Error::UnsupportedFormat));
 
         let mut doc = Document::parse_with_features(b"a\nb\n", format, &["crlf"]).unwrap();
         assert_eq!(doc.serialize_to(Target::from(format)).unwrap(), b"a\r\nb\r\n");
@@ -248,7 +252,7 @@
         assert!(refused.starts_with(br#"{"ok":false"#));
 
         struct Unreadable;
-        impl Language for Unreadable {
+        impl TableLanguage for Unreadable {
             fn describe(&self) -> Description {
                 Description {
                     name: "rust-unreadable".into(),

@@ -6,7 +6,7 @@ name = "twig-doc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, XML, and AsciiDoc documents. Pure Rust."
+description = "Parse, query, edit, and losslessly round-trip documents, in whatever languages a program registers (twig-markdown, twig-djot, twig-html, twig-xml, twig-asciidoc). Pure Rust."
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
@@ -19,5 +19,15 @@ name = "twig"
 path = "src/lib.rs"
 
 [dependencies]
+twig-kit.workspace = true
 
+# The language crates, for the tests: the unit tests register each crate's
+# language value with this crate's registry (`src/test_languages.rs`), the
+# README its `format()`. By path, so `cargo publish` drops them: each is
+# published after this crate.
 [dev-dependencies]
+twig-djot = { path = "../twig-djot" }
+twig-markdown = { path = "../twig-markdown" }
+twig-html = { path = "../twig-html" }
+twig-xml = { path = "../twig-xml" }
+twig-asciidoc = { path = "../twig-asciidoc" }

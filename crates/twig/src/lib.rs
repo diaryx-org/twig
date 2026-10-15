@@ -6,9 +6,9 @@
 //! - [`ast`] — the shared node vocabulary and the tree-level operations
 //!   (selectors, the splicer, the editor).
 //! - [`document`] — a tree plus the source and byte positions tying them.
-//! - [`languages`] — one module per format: a parser, an HTML renderer and a
-//!   serializer.
 //! - [`format`] — the registry tying formats to their parsers and printers.
+//!   It starts empty: a program registers the language crates it uses
+//!   (`twig-markdown`, `twig-djot`, …).
 
 #[doc = include_str!("../README.md")]
 #[cfg(doctest)]
@@ -16,23 +16,22 @@ pub struct ReadmeDoctests;
 
 pub mod api;
 pub mod ast;
-pub mod attrs_writer;
 pub mod contract;
 pub mod diagnostics;
-pub mod document;
-pub mod error;
 pub mod format;
 pub mod helper;
 pub mod language;
-pub mod json;
-pub mod languages;
-pub mod parse_diagnostic;
 pub mod runtime;
-pub mod span;
-pub mod syntax;
-pub mod syntax_json;
 pub mod wire;
+
+#[cfg(test)]
+pub(crate) mod test_languages;
+
+pub use twig_kit as kit;
+pub use twig_kit::{attrs_writer, document, entities, error, html, json, parse_diagnostic, span, syntax, syntax_json};
 
 pub use api::*;
 pub use error::Error;
-pub use language::{register, serve, Call, Description, Feature, Language, RegisterError, Sample, Server, Set};
+pub use format::{register, Format, NativeRegisterError, Target};
+pub use language::{register_table, serve, Call, Description, Feature, RegisterError, Sample, Server, Set, TableLanguage};
+pub use twig_kit::Language;

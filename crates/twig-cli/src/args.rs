@@ -149,10 +149,10 @@ struct InputArgs {
 impl InputArgs {
     fn format(&self) -> Option<Format> {
         if self.commonmark {
-            return Some(Format::Commonmark);
+            return Format::by_name("commonmark");
         }
         if self.gfm {
-            return Some(Format::Gfm);
+            return Format::by_name("gfm");
         }
         self.input.or(self.lang)
     }
@@ -207,26 +207,6 @@ impl FeatureArgs {
     /// The parse configuration these flags ask of `input`. Only the Markdown
     /// rows read the Markdown flags; `--feature` is checked against the row.
     fn parse_config(&self, stderr: &mut dyn Write, input: Format) -> Result<ParseConfig, ArgError> {
-        let mut cfg = ParseConfig::default();
-        let m = &mut cfg.markdown;
-        let pairs = [
-            (&mut m.directives, self.directives, self.no_directives),
-            (&mut m.math, self.math, self.no_math),
-            (&mut m.html_elements, self.html_elements, self.no_html_elements),
-            (&mut m.highlight, self.highlight, self.no_highlight),
-            (&mut m.highlight_colors, self.highlight_colors, self.no_highlight_colors),
-        ];
-        for (field, on, off) in pairs {
-            if on {
-                *field = true;
-            } else if off {
-                *field = false;
-            }
-        }
-        if self.highlight_colors {
-            m.highlight = true;
-        }
-
         let mut mask = 0u32;
         for name in &self.features {
             match format::feature_bit(input, name) {
@@ -247,17 +227,24 @@ impl FeatureArgs {
                 }
             }
         }
-        if mask != 0 {
-            let more = ParseConfig::for_features(input, mask);
-            cfg.features |= more.features;
-            let (m, o) = (&mut cfg.markdown, more.markdown);
-            m.directives |= o.directives;
-            m.math |= o.math;
-            m.html_elements |= o.html_elements;
-            m.highlight |= o.highlight;
-            m.highlight_colors |= o.highlight_colors;
+        // The Markdown flags name Markdown's features; a row that declares
+        // none of them reads none of them.
+        let pairs = [
+            ("directives", self.directives, self.no_directives),
+            ("math", self.math, self.no_math),
+            ("html_elements", self.html_elements, self.no_html_elements),
+            ("highlight", self.highlight, self.no_highlight),
+            ("highlight_colors", self.highlight_colors, self.no_highlight_colors),
+        ];
+        for (name, on, off) in pairs {
+            let Some(bit) = format::feature_bit(input, name) else { continue };
+            if on {
+                mask |= bit;
+            } else if off {
+                mask &= !bit;
+            }
         }
-        Ok(cfg)
+        Ok(ParseConfig::for_features(input, mask))
     }
 }
 
@@ -633,9 +620,12 @@ impl Cli {
 mod tests {
     use clap::CommandFactory;
     use clap::error::ErrorKind;
-    use twig::format::Target;
-
     use super::*;
+
+    /// Markdown's extensions in a config's feature mask.
+    fn md(c: &ParseConfig) -> twig_markdown::Extensions {
+        twig_markdown::language::extensions_from_mask(c.features)
+    }
 
     fn parse(argv: &[&str]) -> (Result<CliActionOptions, ArgError>, String) {
         let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("clap rejected {argv:?}: {e}"));
@@ -672,24 +662,24 @@ mod tests {
     #[test]
     fn convert_infers_and_overrides() {
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "doc.dj"]) else { panic!() };
-        assert_eq!(c.input, Format::Djot);
+        assert_eq!(c.input, crate::test_formats::djot());
         assert_eq!(c.output, OutputMode::Html);
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "-i", "md", "-o", "ast", "weird.ext"]) else { panic!() };
-        assert_eq!(c.input, Format::Markdown);
+        assert_eq!(c.input, crate::test_formats::markdown());
         assert_eq!(c.output, OutputMode::Ast);
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "--output", "canonical", "--input", "xml", "f"]) else {
             panic!()
         };
-        assert_eq!(c.input, Format::Xml);
+        assert_eq!(c.input, crate::test_formats::xml());
         assert_eq!(c.output, OutputMode::Canonical);
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "-o", "gfm", "x.dj"]) else { panic!() };
         assert_eq!(c.output, OutputMode::Canonical);
-        assert_eq!(c.output_target, Some(Target::Markdown));
+        assert_eq!(c.output_target, Some(crate::test_formats::markdown().target()));
         // The input's spellings override one another; the last wins.
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "--gfm", "-i", "djot", "x.md"]) else { panic!() };
-        assert_eq!(c.input, Format::Djot);
+        assert_eq!(c.input, crate::test_formats::djot());
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "-i", "djot", "--commonmark", "x.md"]) else { panic!() };
-        assert_eq!(c.input, Format::Commonmark);
+        assert_eq!(c.input, crate::test_formats::commonmark());
     }
 
     #[test]
@@ -709,23 +699,23 @@ mod tests {
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "--math", "--directives", "--highlight", "x.md"]) else {
             panic!()
         };
-        let m = c.parse_config.markdown;
+        let m = md(&c.parse_config);
         assert!(m.math && m.directives && m.highlight);
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "x.md", "--feature", "html_elements"]) else { panic!() };
-        assert!(c.parse_config.markdown.html_elements);
+        assert!(md(&c.parse_config).html_elements);
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "--highlight-colors", "x.md"]) else { panic!() };
-        assert!(c.parse_config.markdown.highlight && c.parse_config.markdown.highlight_colors);
+        assert!(md(&c.parse_config).highlight && md(&c.parse_config).highlight_colors);
         let (r, e) = parse(&["twig", "convert", "--feature", "nope", "x.dj"]);
         assert_eq!(r.unwrap_err(), ArgError::UnknownFeature);
         assert_eq!(e, "error: 'djot' has no feature 'nope'; it declares none\n");
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "--gfm", "--math", "x.md"]) else { panic!() };
-        assert_eq!(c.input, Format::Gfm);
-        assert!(c.parse_config.markdown.math);
+        assert_eq!(c.input, crate::test_formats::gfm());
+        assert!(md(&c.parse_config).math);
         // The last of a pair wins.
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "--math", "--no-math", "x.md"]) else { panic!() };
-        assert!(!c.parse_config.markdown.math);
+        assert!(!md(&c.parse_config).math);
         let CliActionOptions::Convert(c) = ok(&["twig", "convert", "--no-math", "--math", "x.md"]) else { panic!() };
-        assert!(c.parse_config.markdown.math);
+        assert!(md(&c.parse_config).math);
     }
 
     #[test]
@@ -737,7 +727,7 @@ mod tests {
             panic!()
         };
         assert_eq!(c.name.as_deref(), Some("org"));
-        assert_eq!(c.against, Some(Format::Djot));
+        assert_eq!(c.against, Some(crate::test_formats::djot()));
         assert_eq!(c.files, ["a.org", "b.org"]);
         let CliActionOptions::Lang(LangOptions::Check(c)) =
             ok(&["twig", "lang", "check", "--against", "djot", "x.dj", "--", "twig-quickjs", "djot.mjs"])
@@ -751,7 +741,7 @@ mod tests {
         let CliActionOptions::Lang(LangOptions::Table(c)) = ok(&["twig", "lang", "table", "x.dj"]) else { panic!() };
         assert_eq!(c.output, OutputMode::Table);
         assert_eq!(clap_error(&["twig", "lang", "table", "-o", "ast", "x.dj"]), ErrorKind::UnknownArgument);
-        assert_eq!(ok(&["twig", "lang", "syntax", "md"]), CliActionOptions::Lang(LangOptions::Syntax(Format::Markdown)));
+        assert_eq!(ok(&["twig", "lang", "syntax", "md"]), CliActionOptions::Lang(LangOptions::Syntax(crate::test_formats::markdown())));
         assert_eq!(clap_error(&["twig", "lang", "frobnicate"]), ErrorKind::InvalidSubcommand);
     }
 

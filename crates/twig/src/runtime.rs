@@ -4,7 +4,7 @@
 //! `docs/proposals/runtime-languages.md` is the argument.
 //!
 //! ── What a registration becomes ────────────────────────────────────────────
-//! Rows like any other. [`register`] hands back a `Format::Runtime(code)`
+//! Rows like any other. [`register`] hands back a `Format`
 //! whose code is the language's C wire code, [`BASE`] and up, and from then on
 //! the format layer's dispatch (`format::parse`, `render_html`,
 //! `serialize_*`, `syntax_for_config`) reaches it through the functions here:
@@ -500,7 +500,7 @@ impl Slot {
     }
 
     fn format(&self) -> Format {
-        Format::Runtime(self.code)
+        Format::from_raw(self.code)
     }
 
     fn parse_document(&self, mask: u32, source: &[u8]) -> Result<Document, String> {
@@ -595,6 +595,12 @@ fn registry() -> std::sync::RwLockReadGuard<'static, Registry> {
     REGISTRY.read().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The lock every registration — native or runtime — holds, so two never
+/// claim the same name at once.
+pub(crate) fn register_lock() -> std::sync::MutexGuard<'static, ()> {
+    REGISTER_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn registry_mut() -> std::sync::RwLockWriteGuard<'static, Registry> {
     REGISTRY.write().unwrap_or_else(|e| e.into_inner())
 }
@@ -627,13 +633,13 @@ fn published() -> Vec<Arc<Slot>> {
 /// Whether `fmt` names a registered row — false for a compiled row, and for
 /// a code in the runtime range that no registration has been given.
 pub fn is_registered(fmt: Format) -> bool {
-    matches!(fmt, Format::Runtime(c) if slot_of(c).is_some())
+    fmt.is_runtime() && slot_of(fmt.code()).is_some()
 }
 
 /// The `Format` a wire code names, if a row holds it.
 pub fn format_from_code(code: i64) -> Option<Format> {
     let c = u16::try_from(code).ok()?;
-    slot_of(c).map(|_| Format::Runtime(c))
+    slot_of(c).map(|_| Format::from_raw(c))
 }
 
 /// The name a runtime code was registered under, or `"unregistered"` for a
@@ -643,7 +649,7 @@ pub fn name_of(code: u16) -> String {
 }
 
 pub fn dialect_of(code: u16) -> Option<Format> {
-    slot_or_loading(code)?.dialect_of.map(Format::Runtime)
+    slot_or_loading(code)?.dialect_of.map(Format::from_raw)
 }
 
 /// A runtime row's target has the row's own code.
@@ -652,7 +658,7 @@ pub fn target_code_of(code: u16) -> u16 {
 }
 
 pub fn reads_back_as(code: u16) -> Option<Format> {
-    slot_or_loading(code).map(|_| Format::Runtime(code))
+    slot_or_loading(code).map(|_| Format::from_raw(code))
 }
 
 /// The features `fmt`'s language declares, in bit order; empty for a
@@ -666,17 +672,20 @@ pub fn features_of(fmt: Format) -> Vec<format::Feature> {
 
 /// `features_of` with everything the description said about each.
 pub fn declared_features(fmt: Format) -> Vec<Feature> {
-    match fmt {
-        Format::Runtime(c) => slot_of(c).map(|s| s.lang.description.features.clone()).unwrap_or_default(),
-        _ => Vec::new(),
+    if !fmt.is_runtime() {
+        return Vec::new();
     }
+    slot_of(fmt.code()).map(|s| s.lang.description.features.clone()).unwrap_or_default()
 }
 
 /// The bit `ParseConfig::features` turns `name` on with for `fmt`'s
 /// language, or `None` when `fmt` is not a registered row or its language
 /// declares no such feature.
 pub fn feature_bit(fmt: Format, name: &str) -> Option<u32> {
-    let Format::Runtime(c) = fmt else { return None };
+    if !fmt.is_runtime() {
+        return None;
+    }
+    let c = fmt.code();
     let s = slot_of(c)?;
     s.lang.description.features.iter().position(|f| f.name == name).map(|i| 1u32 << i)
 }
@@ -702,7 +711,7 @@ pub fn prints(code: u16) -> bool {
 
 /// What a conversion into `t` keeps, as the load-time probe measured it.
 pub fn measured(target: Target) -> Option<Arc<Measured>> {
-    let Target::Runtime(c) = target else { return None };
+    let c = target.code();
     slot_of(c)?.measured.get().cloned()
 }
 
@@ -730,7 +739,7 @@ pub fn entries() -> Vec<RowInfo> {
             name: s.name.clone(),
             extensions: s.extensions.clone(),
             aliases: s.aliases.clone(),
-            dialect_of: s.dialect_of.map(Format::Runtime),
+            dialect_of: s.dialect_of.map(Format::from_raw),
             mask: s.mask,
             samples: s.samples.clone(),
             write: s.lang.description.write,
@@ -746,7 +755,7 @@ pub fn row(code: u16) -> Option<RowInfo> {
         name: s.name.clone(),
         extensions: s.extensions.clone(),
         aliases: s.aliases.clone(),
-        dialect_of: s.dialect_of.map(Format::Runtime),
+        dialect_of: s.dialect_of.map(Format::from_raw),
         mask: s.mask,
         samples: s.samples.clone(),
         write: s.lang.description.write,
@@ -772,7 +781,7 @@ pub fn render_html(code: u16, doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> 
     if slot_or_loading(code).is_none() {
         return Err(PrintFailure::UnsupportedFormat);
     }
-    crate::languages::html::serialize_alloc(&doc.doc.ast, Some(&doc.doc.labels)).map_err(|_| PrintFailure::UnsafeMetadata)
+    crate::html::serialize_alloc(&doc.doc.ast, Some(&doc.doc.labels)).map_err(|_| PrintFailure::UnsafeMetadata)
 }
 
 /// The parse's own table without its positions, with the spelling and
@@ -1084,7 +1093,7 @@ fn register_locked(first: usize, language: Language, description: Description, d
             let _ = s.measured.set(Arc::new(diagnostics::measure(&ser, &par)));
         }
     }
-    Ok(Format::Runtime(own_code))
+    Ok(Format::from_raw(own_code))
 }
 
 fn is_identifier(s: &str) -> bool {
@@ -1406,7 +1415,7 @@ fn refuse_under(diag: &mut String, row: &str, names: &[String], message: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::languages::{djot, markdown};
+    use {twig_djot as djot, twig_markdown as markdown};
 
     fn plain_samples(texts: &[&str]) -> Vec<Sample> {
         texts.iter().map(|t| Sample::plain(t.as_bytes())).collect()
@@ -1435,7 +1444,7 @@ mod tests {
                 Ok(djot::serialize_ast(&doc.ast))
             }
             Render::SpellsAutolink(angled) => {
-                let t = format::syntax_for(Format::Djot);
+                let t = format::syntax_for(crate::test_languages::djot());
                 Ok(if (t.spells_autolink.unwrap())(t, angled) { b"true".to_vec() } else { b"false".to_vec() })
             }
         }
@@ -1492,7 +1501,7 @@ mod tests {
         assert_eq!(format::serialize_canonical(&doc).unwrap(), src);
 
         // Into the runtime target from a compiled parse, and out of it.
-        let md = format::parse(Format::Markdown, &cfg, b"# T\n\n*x*\n").unwrap();
+        let md = format::parse(crate::test_languages::markdown(), &cfg, b"# T\n\n*x*\n").unwrap();
         assert_eq!(format::serialize_from_ast(format::target_for(fmt), &md.doc.ast).unwrap(), b"# T\n\n_x_\n");
 
         // The probe measured it, and it measures what djot's table declares.
@@ -1502,7 +1511,7 @@ mod tests {
             diagnostics::Fidelity::Faithful
         );
         let sup = crate::ast::Kind::InlineMark(crate::ast::InlineMark::Superscript);
-        assert_eq!(diagnostics::fidelity(Target::Djot, &sup), diagnostics::fidelity(t, &sup));
+        assert_eq!(diagnostics::fidelity(crate::test_languages::djot().target(), &sup), diagnostics::fidelity(t, &sup));
         // A plain paragraph costs nothing.
         let plain = djot::parse(b"Just a paragraph.\n\n| a |\n|---|\n| 1 |\n\n^ cap\n\n- [x] done\n");
         let warnings = diagnostics::analyze(&plain.ast, plain.ast.root, t).unwrap();
@@ -1527,20 +1536,20 @@ mod tests {
         );
         let cfg = ParseConfig::default();
         let twin = format::parse(fmt, &cfg, src.as_bytes()).unwrap();
-        let real = format::parse(Format::Djot, &cfg, src.as_bytes()).unwrap();
+        let real = format::parse(crate::test_languages::djot(), &cfg, src.as_bytes()).unwrap();
         let from_real = format::serialize_canonical(&real).unwrap();
-        let from_twin = format::serialize_converted(&twin, Target::Djot).unwrap();
+        let from_twin = format::serialize_converted(&twin, crate::test_languages::djot().target()).unwrap();
         assert_eq!(from_real, from_twin);
         assert_eq!(src.as_bytes(), &from_twin[..]);
 
         // A compiled row's document still crosses as a bare tree.
-        let md = format::parse(Format::Markdown, &cfg, b"+ a\n").unwrap();
-        assert_eq!(format::serialize_converted(&md, Target::Djot).unwrap(), b"- a\n");
+        let md = format::parse(crate::test_languages::markdown(), &cfg, b"+ a\n").unwrap();
+        assert_eq!(format::serialize_converted(&md, crate::test_languages::djot().target()).unwrap(), b"- a\n");
     }
 
     #[test]
     fn a_language_that_authors_is_given_djots_table() {
-        let syntax = syntax_json::encode_alloc(format::syntax_for(Format::Djot), syntax_json::Options { pretty: false });
+        let syntax = syntax_json::encode_alloc(format::syntax_for(crate::test_languages::djot()), syntax_json::Options { pretty: false });
         let fmt = register_ok(
             djot_twin().with_render(djot_render),
             Description {
@@ -1565,12 +1574,12 @@ mod tests {
             Gesture::ToggleInline(InlineKind::Strong),
             Gesture::ToggleBlockContainer(ContainerKind::BlockQuote),
         ] {
-            assert_eq!(supports(format::syntax_for(Format::Djot), g), supports(table, g));
+            assert_eq!(supports(format::syntax_for(crate::test_languages::djot()), g), supports(table, g));
         }
         // A gesture through the row edits as djot's does, renderers and all.
         let cfg = ParseConfig::default();
         let mut twin = editor_over(fmt, cfg, b"Hello world.\n");
-        let mut real = editor_over(Format::Djot, cfg, b"Hello world.\n");
+        let mut real = editor_over(crate::test_languages::djot(), cfg, b"Hello world.\n");
         for e in [&mut twin, &mut real] {
             e.toggle_inline(crate::span::Span::new(6, 11), InlineKind::Strong).unwrap();
             e.insert_literal(0, b"*a* ").unwrap();
@@ -1589,7 +1598,7 @@ mod tests {
 
     #[test]
     fn a_language_that_names_render_block_and_has_no_render_prints_its_fragments() {
-        let mut table = *format::syntax_for(Format::Djot);
+        let mut table = *format::syntax_for(crate::test_languages::djot());
         table.spells_autolink = None;
         let fmt = register_ok(
             djot_twin(),
@@ -1614,7 +1623,7 @@ mod tests {
         // A formula goes in through `render_block`, here the twin's print.
         let cfg = ParseConfig::default();
         let mut twin = editor_over(fmt, cfg, b"Cost.\n");
-        let mut real = editor_over(Format::Djot, cfg, b"Cost.\n");
+        let mut real = editor_over(crate::test_languages::djot(), cfg, b"Cost.\n");
         twin.insert_inline_math(4, b"x`y").unwrap();
         real.insert_inline_math(4, b"x`y").unwrap();
         assert_eq!(real.source_bytes(), twin.source_bytes());
@@ -1666,7 +1675,7 @@ mod tests {
     /// Markdown's default table as the base, and as each feature's patch
     /// exactly the members Markdown's own table for that option moves.
     fn markdown_features_description(name: &str) -> Description {
-        let b = crate::syntax::markdown::table();
+        let b = twig_markdown::syntax_table::table();
         let math = format!(
             "{{\"text_leaf_delims\":{{\"inline_math\":{{\"open\":\"$\",\"close\":\"$\"}},\"display_math\":{{\"open\":\"$$\",\"close\":\"$$\"}}}},\n \"text_escapes\":{},\"link_text_escapes\":{}}}",
             json_str(&[b.text_escapes.unwrap(), b"$"].concat()),
@@ -1718,7 +1727,7 @@ mod tests {
             let opts = markdown::ParseOptions { math, highlight, ..Default::default() };
             let cfg = ParseConfig { features: mask, ..Default::default() };
             assert_eq!(
-                String::from_utf8(spelling(crate::syntax::markdown::for_options(&opts))).unwrap(),
+                String::from_utf8(spelling(twig_markdown::syntax_table::for_options(&opts))).unwrap(),
                 String::from_utf8(spelling(format::syntax_for_config(fmt, &cfg))).unwrap(),
             );
         }
@@ -1738,7 +1747,7 @@ mod tests {
         assert_eq!(set.dialect_of(), Some(fmt));
         assert_eq!(set.name(), "mdf-math");
         let opts = markdown::ParseOptions { math: true, ..Default::default() };
-        assert_eq!(spelling(crate::syntax::markdown::for_options(&opts)), spelling(format::syntax_for(set)));
+        assert_eq!(spelling(twig_markdown::syntax_table::for_options(&opts)), spelling(format::syntax_for(set)));
         let through_set = format::parse(set, &plain, src).unwrap();
         assert!(with.doc.ast.eql(&through_set.doc.ast));
         // An editor over the row with math laid on may insert a formula, and

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/twig", "crates/twig-cli", "crates/twig-capi", "crates/twig-meta"]
-default-members = ["crates/twig", "crates/twig-cli"]
+members = ["crates/twig-kit", "crates/twig", "crates/twig-djot", "crates/twig-markdown", "crates/twig-html", "crates/twig-xml", "crates/twig-asciidoc", "crates/twig-rst", "crates/twig-cli", "crates/twig-capi", "crates/twig-meta"]
+default-members = ["crates/twig-kit", "crates/twig", "crates/twig-djot", "crates/twig-markdown", "crates/twig-html", "crates/twig-xml", "crates/twig-asciidoc", "crates/twig-rst", "crates/twig-cli"]
 
 [workspace.package]
 version = "5.0.0"
@@ -12,7 +12,14 @@ repository = "https://github.com/diaryx-org/twig"
 homepage = "https://github.com/diaryx-org/twig"
 
 [workspace.dependencies]
-twig-doc = { path = "crates/twig", version = "5.0.0" }
+twig-doc = { path = "crates/twig", version = "5.0.0", default-features = false }
+twig-kit = { path = "crates/twig-kit", version = "5.0.0" }
+twig-djot = { path = "crates/twig-djot", version = "5.0.0", default-features = false }
+twig-markdown = { path = "crates/twig-markdown", version = "5.0.0", default-features = false }
+twig-html = { path = "crates/twig-html", version = "5.0.0", default-features = false }
+twig-xml = { path = "crates/twig-xml", version = "5.0.0", default-features = false }
+twig-asciidoc = { path = "crates/twig-asciidoc", version = "5.0.0", default-features = false }
+twig-rst = { path = "crates/twig-rst", version = "5.0.0", default-features = false }
 
 [profile.release]
 debug = 1

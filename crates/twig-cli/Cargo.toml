@@ -19,4 +19,10 @@ path = "src/main.rs"
 
 [dependencies]
 twig-doc.workspace = true
+# Every language twig ships, registered at startup.
+twig-djot = { workspace = true, default-features = true }
+twig-markdown = { workspace = true, default-features = true }
+twig-xml = { workspace = true, default-features = true }
+twig-html = { workspace = true, default-features = true }
+twig-asciidoc = { workspace = true, default-features = true }
 clap = { version = "4.6", features = ["derive"] }

@@ -1,0 +1,27 @@
+[package]
+name = "twig-markdown"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Markdown for twig: CommonMark 0.31.2, GFM and twig's default flavour, with its parser, renderers, serializer and editing tables, on twig's kit."
+repository.workspace = true
+homepage.workspace = true
+keywords = ["markdown", "twig", "parser", "document"]
+categories = ["parser-implementations", "text-processing"]
+rust-version.workspace = true
+
+[dependencies]
+# The language itself is written on twig's kit alone.
+twig-kit.workspace = true
+twig-doc = { workspace = true, optional = true }
+twig-html.workspace = true
+
+[dev-dependencies]
+twig-djot = { path = "../twig-djot", default-features = false }
+
+[features]
+# `register()` and `format()`: the language through `twig-doc`'s registry.
+# Off (`default-features = false`), the crate is the language alone, on
+# `twig-kit`, for a program that registers it with `twig::register` itself.
+default = ["twig"]
+twig = ["dep:twig-doc"]

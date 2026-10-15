@@ -135,7 +135,6 @@ where
     // On refusal the registry kept nothing, and dropping the last handle
     // stops the process.
     wire::register(helper, &mut diag)
-        .map(crate::api::Format::from_engine)
         .map_err(|_| RegisterError { error: Error::InvalidLanguage, message: diag })
 }
 
@@ -164,11 +163,11 @@ esac"#
 
     #[test]
     fn a_spawned_helper_is_a_format() {
-        let fmt = spawn(["sh", "-c", &script("rust-shx", false)]).expect("spawn").to_engine();
+        let fmt = spawn(["sh", "-c", &script("rust-shx", false)]).expect("spawn");
         assert_eq!(fmt.name(), "rust-shx");
         let doc = format::parse(fmt, &ParseConfig::default(), b"x").expect("parse");
         assert_eq!(format::render_html(&doc).unwrap(), b"<p>x</p>\n");
-        assert_eq!(format::serialize_converted(&doc, Target::Markdown).unwrap(), b"x\n");
+        assert_eq!(format::serialize_converted(&doc, crate::test_languages::markdown().target()).unwrap(), b"x\n");
         assert_eq!(format::serialize_converted(&doc, Target::from(fmt)), Err(PrintFailure::UnsupportedFormat));
     }
 
@@ -176,7 +175,7 @@ esac"#
     fn a_helper_that_exits_is_started_again() {
         // Every process answers one line: describe, the load check's parse,
         // and this test's parse are each a new one.
-        let fmt = spawn(["sh", "-c", &script("rust-shx-once", true)]).expect("spawn").to_engine();
+        let fmt = spawn(["sh", "-c", &script("rust-shx-once", true)]).expect("spawn");
         let doc = format::parse(fmt, &ParseConfig::default(), b"x").expect("parse after a restart");
         assert_eq!(format::render_html(&doc).unwrap(), b"<p>x</p>\n");
     }

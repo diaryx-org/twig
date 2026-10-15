@@ -8,21 +8,26 @@ rust-version = "1.88"
 description = "The config a document carries — its frontmatter or endmatter — read and edited in place through fig, with comments and fences kept."
 repository.workspace = true
 homepage.workspace = true
-# fig's Rust port (fig-core and the language crates on it) is not on
-# crates.io yet: the `fig` 6.0.0 there is the Zig-backed binding, whose
-# language crates have no `fig` feature. Until it is, fig comes from git,
-# pinned to a commit, and this crate is not published. docs/proposals/fig-in-twig.md.
-publish = false
 
 [dependencies]
 twig-doc.workspace = true
+# fig 7 is fig's Rust port, on crates.io: `fig` is its binding, and each
+# language is a crate of its own on fig's kit.
 # fig, and the four languages a document's metadata is written in most:
 # YAML (`---`), TOML (`+++`), JSON and figl (`---json`, `---figl`). Each
 # without serde, through its `fig` feature: `format()` registers it the
 # first time it is asked for. A program that registers more of fig's
 # languages has them read too, by the fence's tag.
-fig = { git = "https://github.com/diaryx-org/fig", rev = "9ef66d0f6efc17424fed084aa13ea5bcf775618a" }
-fig-yaml = { git = "https://github.com/diaryx-org/fig", rev = "9ef66d0f6efc17424fed084aa13ea5bcf775618a", default-features = false, features = ["fig"] }
-fig-toml = { git = "https://github.com/diaryx-org/fig", rev = "9ef66d0f6efc17424fed084aa13ea5bcf775618a", default-features = false, features = ["fig"] }
-fig-json = { git = "https://github.com/diaryx-org/fig", rev = "9ef66d0f6efc17424fed084aa13ea5bcf775618a", default-features = false, features = ["fig"] }
-fig-figl = { git = "https://github.com/diaryx-org/fig", rev = "9ef66d0f6efc17424fed084aa13ea5bcf775618a", default-features = false, features = ["fig"] }
+fig = "7"
+fig-yaml = { version = "7", default-features = false, features = ["fig"] }
+fig-toml = { version = "7", default-features = false, features = ["fig"] }
+fig-json = { version = "7", default-features = false, features = ["fig"] }
+fig-figl = { version = "7", default-features = false, features = ["fig"] }
+
+# The document languages the tests read metadata out of. By path, so `cargo
+# publish` drops them.
+[dev-dependencies]
+twig-markdown = { path = "../twig-markdown" }
+twig-djot = { path = "../twig-djot" }
+twig-html = { path = "../twig-html" }
+twig-asciidoc = { path = "../twig-asciidoc" }

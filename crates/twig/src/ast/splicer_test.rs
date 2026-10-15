@@ -3,7 +3,7 @@
 //! rollback path. Markdown and djot cover the line-shaped formats.
 
 use super::*;
-use crate::languages::{djot, markdown, xml};
+use {twig_djot as djot, twig_markdown as markdown, twig_xml as xml};
 
 fn parse_xml() -> ParseFn {
     Box::new(|s: &[u8]| xml::parse(s).map_err(|e| ParseError::new(e.name())))

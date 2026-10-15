@@ -51,7 +51,9 @@ jobs:
             exit 1
           fi
 
-      # Ordered publish: twig-doc -> twig-doc-cli. A re-run after a partial
+      # Ordered publish, each crate after the ones it depends on: the kit, the
+      # core, the languages (Markdown after HTML, whose parser it reads raw HTML
+      # with), twig-meta, then the CLI. A re-run after a partial
       # publish must not choke on the crate that DID land, so an "already
       # uploaded/exists" response is treated as success and the job is safe to
       # re-run. crates.io throttles new-crate creation, so a rate-limit
@@ -82,15 +84,24 @@ jobs:
             done
             echo "::error::failed to publish $crate after retries"; return 1
           }
+          publish twig-kit
           publish twig-doc
+          publish twig-html
+          publish twig-markdown
+          publish twig-djot
+          publish twig-xml
+          publish twig-asciidoc
+          publish twig-meta
           publish twig-doc-cli
 
-      # Manual (workflow_dispatch) dry run: twig-doc packages and verify-builds
-      # standalone. twig-doc-cli can only be packaged once its twig-doc version
-      # is on the index, so the test step above covers it instead.
-      - name: Package twig-doc (dry run)
+      # Manual (workflow_dispatch) dry run: every published crate packages and
+      # verify-builds together, each against the others' packages rather than
+      # the index, so a version not yet published still checks.
+      - name: Package (dry run)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: cargo package -p twig-doc
+        run: |
+          cargo package -p twig-kit -p twig-doc -p twig-html -p twig-markdown \
+            -p twig-djot -p twig-xml -p twig-asciidoc -p twig-meta -p twig-doc-cli
 
       # Release notes from the same .config/cliff.toml that writes CHANGELOG.md's
       # Unreleased region, so the two group commits identically. This replaces

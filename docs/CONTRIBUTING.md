@@ -92,5 +92,5 @@ Span changes are the ones worth being careful with, and the way to check one is
 to **slice the source with the resulting span and assert on the bytes** —
 `assert_eq!(&src[sp.start..sp.end], "> a\n>\n> ")`. A span bug is usually
 invisible in the HTML, so a rendering assertion will not catch it.
-`crates/twig/src/languages/markdown/block_tests.rs`'s span tests are the
+`crates/twig-markdown/src/block_tests.rs`'s span tests are the
 pattern.

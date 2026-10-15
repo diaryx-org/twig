@@ -16,3 +16,10 @@ doctest = false
 
 [dependencies]
 twig-doc.workspace = true
+# The bundle: every language twig ships, registered under its TWIG_FORMAT_*
+# code before the first entry point answers.
+twig-djot = { workspace = true, default-features = true }
+twig-markdown = { workspace = true, default-features = true }
+twig-xml = { workspace = true, default-features = true }
+twig-html = { workspace = true, default-features = true }
+twig-asciidoc = { workspace = true, default-features = true }

@@ -100,24 +100,27 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "fig"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1912585cea7b84fd1cbacdd0ee85c57b12f54cc46a917145d97a62b95c3eafab"
 dependencies = [
  "fig-core",
 ]
 
 [[package]]
 name = "fig-core"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "310da8e88299b38abe3aadfa1aecce5c46a93dc767ee38900f23e9f630e05290"
 dependencies = [
  "fig-kit",
 ]
 
 [[package]]
 name = "fig-figl"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "408de7cd00cce13acf2174086a66f4e8438559462711f13a0032b8e9198d58df"
 dependencies = [
  "fig",
  "fig-kit",
@@ -125,8 +128,9 @@ dependencies = [
 
 [[package]]
 name = "fig-json"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a4baefafc7c88ebacda7d1d2423eba469828d490199462f032bfbf3db6637b7"
 dependencies = [
  "fig",
  "fig-kit",
@@ -134,13 +138,15 @@ dependencies = [
 
 [[package]]
 name = "fig-kit"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0005cbc0579d07474d9a452c76f23cbf55ba6c82dd84c7e7ed5c38ace903a7a"
 
 [[package]]
 name = "fig-toml"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47f4110cda967917a1447fbc44082620ba71ff202ab7a34b61b7abfd19a3de54"
 dependencies = [
  "fig",
  "fig-kit",
@@ -148,8 +154,9 @@ dependencies = [
 
 [[package]]
 name = "fig-yaml"
-version = "6.0.0"
-source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62e8dca9c7c5083277a28c48a0b16a6fabc110a7fea8e2c53d197afc129f07e3"
 dependencies = [
  "fig",
  "fig-kit",
@@ -209,22 +216,88 @@ dependencies = [
 ]
 
 [[package]]
-name = "twig-capi"
+name = "twig-asciidoc"
 version = "5.0.0"
 dependencies = [
  "twig-doc",
+ "twig-html",
+ "twig-kit",
+ "twig-markdown",
+]
+
+[[package]]
+name = "twig-capi"
+version = "5.0.0"
+dependencies = [
+ "twig-asciidoc",
+ "twig-djot",
+ "twig-doc",
+ "twig-html",
+ "twig-markdown",
+ "twig-xml",
+]
+
+[[package]]
+name = "twig-djot"
+version = "5.0.0"
+dependencies = [
+ "twig-doc",
+ "twig-kit",
 ]
 
 [[package]]
 name = "twig-doc"
 version = "5.0.0"
+dependencies = [
+ "twig-asciidoc",
+ "twig-djot",
+ "twig-html",
+ "twig-kit",
+ "twig-markdown",
+ "twig-xml",
+]
 
 [[package]]
 name = "twig-doc-cli"
 version = "5.0.0"
 dependencies = [
  "clap",
+ "twig-asciidoc",
+ "twig-djot",
  "twig-doc",
+ "twig-html",
+ "twig-markdown",
+ "twig-xml",
+]
+
+[[package]]
+name = "twig-html"
+version = "5.0.0"
+dependencies = [
+ "twig-doc",
+ "twig-kit",
+ "twig-markdown",
+]
+
+[[package]]
+name = "twig-kit"
+version = "5.0.0"
+dependencies = [
+ "twig-asciidoc",
+ "twig-djot",
+ "twig-html",
+ "twig-markdown",
+ "twig-xml",
+]
+
+[[package]]
+name = "twig-markdown"
+version = "5.0.0"
+dependencies = [
+ "twig-djot",
+ "twig-doc",
+ "twig-html",
+ "twig-kit",
 ]
 
 [[package]]
@@ -236,7 +309,26 @@ dependencies = [
  "fig-json",
  "fig-toml",
  "fig-yaml",
+ "twig-asciidoc",
+ "twig-djot",
  "twig-doc",
+ "twig-html",
+ "twig-markdown",
+]
+
+[[package]]
+name = "twig-rst"
+version = "5.0.0"
+dependencies = [
+ "twig-kit",
+]
+
+[[package]]
+name = "twig-xml"
+version = "5.0.0"
+dependencies = [
+ "twig-doc",
+ "twig-kit",
 ]
 
 [[package]]

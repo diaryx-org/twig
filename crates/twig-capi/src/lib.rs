@@ -212,7 +212,22 @@ const _: () = {
 
 /// Run `body`, turning a panic into `TWIG_STATUS_INTERNAL_ERROR`.
 pub(crate) fn guard(body: impl FnOnce() -> TwigStatus) -> TwigStatus {
+    register_bundle();
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(TWIG_STATUS_INTERNAL_ERROR)
+}
+
+/// The languages twig ships, each under its `TWIG_FORMAT_*` code, registered
+/// before the first entry point answers. The core's registry starts empty;
+/// this library is the bundle, as fig's C library is.
+pub(crate) fn register_bundle() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        twig_djot::register();
+        twig_markdown::register();
+        twig_xml::register();
+        twig_html::register();
+        twig_asciidoc::register();
+    });
 }
 
 /// `sliceOf`: a caller's `(ptr, len)` as bytes. NULL with a zero length is
@@ -267,20 +282,8 @@ pub(crate) fn kind_cstr(name: &'static str) -> *const c_char {
 /// `intToFormat`: a wire code to the engine row, or `None` for a code this
 /// build does not know (and a runtime code no registration holds).
 pub(crate) fn int_to_format(format: c_int) -> Option<reg::Format> {
-    if format >= TWIG_FORMAT_RUNTIME_BASE {
-        return runtime::format_from_code(format as i64);
-    }
-    Some(match format {
-        TWIG_FORMAT_DJOT => reg::Format::Djot,
-        TWIG_FORMAT_MARKDOWN => reg::Format::Markdown,
-        TWIG_FORMAT_XML => reg::Format::Xml,
-        TWIG_FORMAT_HTML => reg::Format::Html,
-        TWIG_FORMAT_ASCIIDOC => reg::Format::Asciidoc,
-        TWIG_FORMAT_COMMONMARK => reg::Format::Commonmark,
-        TWIG_FORMAT_GFM => reg::Format::Gfm,
-        TWIG_FORMAT_SVG => reg::Format::Svg,
-        _ => return None,
-    })
+    register_bundle();
+    reg::Format::from_code(format as i64)
 }
 
 /// `intToTarget`: a dialect code writes as its language's target.
@@ -290,17 +293,7 @@ pub(crate) fn int_to_target(format: c_int) -> Option<reg::Target> {
 
 /// `formatToInt`: `intToFormat` read backward.
 pub(crate) fn format_to_int(fmt: reg::Format) -> c_int {
-    match fmt {
-        reg::Format::Djot => TWIG_FORMAT_DJOT,
-        reg::Format::Markdown => TWIG_FORMAT_MARKDOWN,
-        reg::Format::Xml => TWIG_FORMAT_XML,
-        reg::Format::Html => TWIG_FORMAT_HTML,
-        reg::Format::Asciidoc => TWIG_FORMAT_ASCIIDOC,
-        reg::Format::Commonmark => TWIG_FORMAT_COMMONMARK,
-        reg::Format::Gfm => TWIG_FORMAT_GFM,
-        reg::Format::Svg => TWIG_FORMAT_SVG,
-        reg::Format::Runtime(c) => c as c_int,
-    }
+    fmt.code() as c_int
 }
 
 /// `configFromFlags`: the flags are the row's features in order.
@@ -358,17 +351,9 @@ pub unsafe extern "C" fn twig_format_by_name(name_ptr: *const u8, name_len: usiz
     })
 }
 
-/// A runtime row's name, leaked once so it lives for the process.
+/// A row's name, for the life of the process.
 fn interned_name(fmt: reg::Format) -> &'static str {
-    match fmt {
-        reg::Format::Runtime(code) => {
-            static NAMES: OnceLock<Mutex<HashMap<(u16, String), &'static str>>> = OnceLock::new();
-            let name = runtime::name_of(code);
-            let mut map = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-            map.entry((code, name.clone())).or_insert_with(|| Box::leak(name.into_boxed_str()))
-        }
-        f => f.static_name(),
-    }
+    fmt.name()
 }
 
 /// The name a format code answers to — the library's bytes, not

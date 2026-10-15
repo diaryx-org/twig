@@ -4,6 +4,9 @@
 //! out as a node table and read back, so the difference between the two rows
 //! is what the runtime contract costs.
 
+#[path = "../tests/common/mod.rs"]
+mod common;
+
 use std::time::{Duration, Instant};
 
 use twig::ast::splicer::{ParseError, Splicer};
@@ -73,7 +76,7 @@ fn main() {
     let source = std::fs::read(&file).expect("read the file");
 
     let lang = runtime::Language::new(|_call, source| {
-        let doc = twig::languages::djot::parse(source);
+        let doc = twig_djot::parse(source);
         Ok(table::encode(&doc, table::Options { pretty: false, positions: true }))
     });
     let description = runtime::Description {
@@ -92,7 +95,7 @@ fn main() {
 
     println!("file      : {file}\nsource    : {} bytes\nkeystrokes: {keys}\n", source.len());
     println!("{:<10} {:>12} {:>12} {:>12}", "row", "parse", "key p50", "key p95");
-    let compiled = measure(Format::Djot, &source, keys);
+    let compiled = measure(common::djot(), &source, keys);
     println!("{:<10} {:>10.3}ms {:>10.3}ms {:>10.3}ms", "compiled", ms(compiled.parse), ms(compiled.p50), ms(compiled.p95));
     let r = measure(twin, &source, keys);
     println!("{:<10} {:>10.3}ms {:>10.3}ms {:>10.3}ms", "runtime", ms(r.parse), ms(r.p50), ms(r.p95));
@@ -108,7 +111,7 @@ fn main() {
     let mut table_len = usize::MAX;
     for _ in 0..5 {
         let t0 = Instant::now();
-        let doc = twig::languages::djot::parse(&source);
+        let doc = twig_djot::parse(&source);
         let t1 = Instant::now();
         let text = table::encode(&doc, table::Options { pretty: false, positions: true });
         let t2 = Instant::now();

@@ -13,7 +13,8 @@ concurrency:
 
 jobs:
   # The workspace's own test suite: the engine (twig-doc), the CLI
-  # (twig-doc-cli), the C ABI (twig-capi) and twig-meta (fig, from git),
+  # (twig-doc-cli), the C ABI (twig-capi), the kit and the language crates,
+  # and twig-meta (fig 7, from crates.io),
   # across Linux and macOS.
   test:
     name: test (${{ matrix.os }})

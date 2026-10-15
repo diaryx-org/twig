@@ -15,7 +15,7 @@ use crate::span::Span;
 
 use super::builder::key_vals;
 use super::document::{self as read, Alignment, Document, DocumentView, FlatNode, QueryMatch};
-use super::format::{config_from_flags, BlockContainerKind, BlockKind, Format, InlineKind, MarkColor, MarkdownExtensions};
+use super::format::{config_from_flags, BlockContainerKind, BlockKind, Format, InlineKind, MarkColor};
 use super::NodeId;
 
 /// The byte-level effect of an [`Editor`] edit: `old` is the range of the
@@ -103,14 +103,15 @@ impl Editor {
         Self::new(input.as_bytes(), format)
     }
 
-    /// Like [`Editor::new`], plus Markdown `extensions` to enable — for the
-    /// reparse after every edit and for what the gestures may write.
-    pub fn new_ext(input: &[u8], format: Format, extensions: MarkdownExtensions) -> Result<Self, Error> {
-        Self::create(input, format, extensions.to_flags())
+    /// Like [`Editor::new`], with the features `flags` names laid over the
+    /// row's own — for the reparse after every edit and for what the
+    /// gestures may write. Bit `i` is the language's `i`th feature
+    /// ([`Format::feature_flags`]).
+    pub fn new_with_flags(input: &[u8], format: Format, flags: u32) -> Result<Self, Error> {
+        Self::create(input, format, flags)
     }
 
-    /// Like [`Editor::new`] over a runtime row, with `features` laid over
-    /// the row's own.
+    /// Like [`Editor::new`], with `features` laid over the row's own.
     pub fn new_with_features(input: &[u8], format: Format, features: &[&str]) -> Result<Self, Error> {
         let flags = format.feature_flags(features)?;
         Self::create(input, format, flags)

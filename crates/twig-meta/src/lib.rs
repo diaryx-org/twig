@@ -16,7 +16,7 @@
 //! use twig_meta::{Embed, Where};
 //!
 //! let host = b"---\ntitle: Hi # kept\n---\n# Body\n";
-//! let parsed = twig_meta::parse_host(host, twig::Format::Markdown).unwrap();
+//! let parsed = twig_meta::parse_host(host, twig_markdown::format()).unwrap();
 //! let block = twig_meta::find(&parsed.doc, Where::Front).unwrap();
 //! let mut e = Embed::open(host, &block).unwrap();
 //! e.editor_mut().set_value(&["title".into()], "Hello").unwrap();
@@ -190,10 +190,6 @@ pub fn dialect_for(lang: &str) -> Option<fig::Format> {
     fig::Format::by_name(name)
 }
 
-/// The engine row a public format names.
-fn engine_format(format: twig::Format) -> Result<reg::Format, Error> {
-    reg::parse_format_name(format.name()).ok_or(Error::Twig(twig::Error::UnsupportedFormat))
-}
 
 /// Parse `host` as `format` with its default extensions (frontmatter is
 /// always read).
@@ -208,7 +204,10 @@ pub fn parse_host_with(
     features: &[&str],
 ) -> Result<ParsedDoc, Error> {
     let flags = format.feature_flags(features)?;
-    let fmt = engine_format(format)?;
+    if !format.is_registered() {
+        return Err(Error::Twig(twig::Error::UnsupportedFormat));
+    }
+    let fmt = format;
     let cfg = reg::ParseConfig::for_features(fmt, flags);
     reg::parse(fmt, &cfg, host).map_err(|_| Error::Twig(twig::Error::ParseError))
 }
@@ -384,18 +383,6 @@ impl Resolved {
         &self.settings.ignored
     }
 
-    /// [`features`](Resolved::features) as Markdown's extensions (all off
-    /// for any other row).
-    pub fn markdown_extensions(&self) -> twig::MarkdownExtensions {
-        let on = |name: &str| self.features.iter().any(|f| f == name);
-        twig::MarkdownExtensions {
-            directives: on("directives"),
-            math: on("math"),
-            html_elements: on("html_elements"),
-            highlight: on("highlight"),
-            highlight_colors: on("highlight_colors"),
-        }
-    }
 
     /// Parse `host` as it asks to be read.
     pub fn parse(&self, host: &[u8]) -> Result<twig::Document, Error> {

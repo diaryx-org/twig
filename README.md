@@ -45,19 +45,34 @@ The following languages are implemented:
 
 # Crates
 
-Twig is written in Rust, with no `-sys` crate and no native toolchain:
+Twig is written in Rust, with no `-sys` crate and no native toolchain, and is
+laid out as [fig](https://github.com/diaryx-org/fig) is: a kit, a core that
+names no language, and one crate per language
+([proposal](docs/proposals/language-crates.md)).
 
+- [`crates/twig-kit`](crates/twig-kit) is `twig-kit`: what languages share
+  (the tree, spans, the spelling table, the generic HTML printer and the
+  `Language` trait). It depends on nothing.
 - [`crates/twig`](crates/twig) is [`twig-doc`](crates/twig/README.md), the
-  engine (library `twig`).
+  core (library `twig`): the editor, the registry, conversion and
+  diagnostics. Its registry starts empty, and it has no language features.
+- One crate per language, each on the kit alone, with a default `twig`
+  feature that adds `register()` and `format()`:
+  [`twig-markdown`](crates/twig-markdown) (`markdown`, `commonmark`, `gfm`),
+  [`twig-djot`](crates/twig-djot), [`twig-html`](crates/twig-html),
+  [`twig-xml`](crates/twig-xml) (`xml`, `svg`) and
+  [`twig-asciidoc`](crates/twig-asciidoc). [`twig-rst`](crates/twig-rst) is a
+  parser and its conformance harness, not yet a registered format.
 - [`crates/twig-cli`](crates/twig-cli) is [`twig-doc-cli`](crates/twig-cli/README.md),
-  the `twig` command-line tool (`cargo install twig-doc-cli`).
+  the `twig` command-line tool (`cargo install twig-doc-cli`), with every
+  language registered.
 - [`crates/twig-capi`](crates/twig-capi) builds the C ABI declared in
-  [`bindings/c/include/twig.h`](bindings/c/include/twig.h).
+  [`bindings/c/include/twig.h`](bindings/c/include/twig.h), with every
+  language registered under its `TWIG_FORMAT_*` code.
 - [`crates/twig-meta`](crates/twig-meta) reads and edits a document's
-  frontmatter and endmatter through [fig](https://github.com/diaryx-org/fig),
-  in place, with comments and fences kept, and reads the render settings a
-  document names under its `twig` key. Not published yet: it takes fig's
-  Rust port from git ([proposal](docs/proposals/fig-in-twig.md)).
+  frontmatter and endmatter through [fig](https://github.com/diaryx-org/fig)
+  7, in place, with comments and fences kept, and reads the render settings a
+  document names under its `twig` key ([proposal](docs/proposals/fig-in-twig.md)).
 
 ```
 cargo build --release        # target/release/twig

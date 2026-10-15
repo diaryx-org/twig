@@ -5,7 +5,7 @@ fn s(bytes: &[u8]) -> &str {
 }
 
 fn edited(host: &str, edit: impl FnOnce(&mut fig::Editor)) -> String {
-    let mut e = Embed::open_in(host.as_bytes(), twig::Format::Markdown, Where::Front).unwrap();
+    let mut e = Embed::open_in(host.as_bytes(), twig_markdown::format(), Where::Front).unwrap();
     edit(e.editor_mut());
     String::from_utf8(e.render().unwrap()).unwrap()
 }
@@ -13,7 +13,7 @@ fn edited(host: &str, edit: impl FnOnce(&mut fig::Editor)) -> String {
 #[test]
 fn find_frontmatters_fences_body_and_language() {
     let host = b"---\ntitle: Hi # kept\n---\n# Body\n";
-    let parsed = parse_host(host, twig::Format::Markdown).unwrap();
+    let parsed = parse_host(host, twig_markdown::format()).unwrap();
     let block = find(&parsed.doc, Where::Front).unwrap();
     assert_eq!("yaml", block.lang);
     assert_eq!("title: Hi # kept\n", s(&host[block.body.clone()]));
@@ -24,7 +24,7 @@ fn find_frontmatters_fences_body_and_language() {
 #[test]
 fn find_endmatter_is_the_trailing_block_and_not_frontmatter() {
     let host = b"# Body\n\ntext\n\n---toml\nx = 1\n---\n";
-    let parsed = parse_host(host, twig::Format::Markdown).unwrap();
+    let parsed = parse_host(host, twig_markdown::format()).unwrap();
     assert!(find(&parsed.doc, Where::Front).is_none());
     let block = find(&parsed.doc, Where::End).unwrap();
     assert_eq!("toml", block.lang);
@@ -33,7 +33,7 @@ fn find_endmatter_is_the_trailing_block_and_not_frontmatter() {
 
 #[test]
 fn find_a_document_with_no_metadata_has_none() {
-    let parsed = parse_host(b"# Body\n", twig::Format::Markdown).unwrap();
+    let parsed = parse_host(b"# Body\n", twig_markdown::format()).unwrap();
     assert!(find(&parsed.doc, Where::Front).is_none());
     assert!(find(&parsed.doc, Where::End).is_none());
 }
@@ -73,7 +73,7 @@ fn embed_fig_is_read_as_figl() {
 #[test]
 fn embed_json_endmatter_is_edited_as_json() {
     let host = b"# Body\n\n---json\n{\"n\": 1}\n---\n";
-    let mut e = Embed::open_in(host, twig::Format::Markdown, Where::End).unwrap();
+    let mut e = Embed::open_in(host, twig_markdown::format(), Where::End).unwrap();
     e.editor_mut().set_value(&["n".into()], 2i64).unwrap();
     assert_eq!(
         "# Body\n\n---json\n{\"n\": 2}\n---\n",
@@ -84,7 +84,7 @@ fn embed_json_endmatter_is_edited_as_json() {
 #[test]
 fn embed_a_block_in_a_language_fig_does_not_know_is_refused() {
     let host = b"---edn\n{:title \"Hi\"}\n---\nbody\n";
-    let parsed = parse_host(host, twig::Format::Markdown).unwrap();
+    let parsed = parse_host(host, twig_markdown::format()).unwrap();
     let block = find(&parsed.doc, Where::Front).unwrap();
     assert!(matches!(Embed::open(host, &block), Err(Error::UnsupportedLanguage(l)) if l == "edn"));
 }
@@ -92,21 +92,21 @@ fn embed_a_block_in_a_language_fig_does_not_know_is_refused() {
 #[test]
 fn embed_open_in_a_host_with_no_block_there_is_no_metadata() {
     assert!(matches!(
-        Embed::open_in(b"# Body\n", twig::Format::Markdown, Where::Front),
+        Embed::open_in(b"# Body\n", twig_markdown::format(), Where::Front),
         Err(Error::NoMetadata)
     ));
 }
 
 #[test]
 fn open_or_init_a_host_with_no_frontmatter_gains_a_block_above_its_first_line() {
-    let mut e = Embed::open_or_init(b"# Body\n", twig::Format::Markdown, "yaml").unwrap();
+    let mut e = Embed::open_or_init(b"# Body\n", twig_markdown::format(), "yaml").unwrap();
     e.editor_mut().set_value(&["title".into()], "Hi").unwrap();
     assert_eq!("---\ntitle: Hi\n---\n# Body\n", s(&e.render().unwrap()));
 }
 
 #[test]
 fn open_or_init_a_toml_block_is_fenced_with_plus() {
-    let mut e = Embed::open_or_init(b"# Body\n", twig::Format::Markdown, "toml").unwrap();
+    let mut e = Embed::open_or_init(b"# Body\n", twig_markdown::format(), "toml").unwrap();
     e.editor_mut().set_value(&["title".into()], "Hi").unwrap();
     assert_eq!(
         "+++\ntitle = \"Hi\"\n+++\n# Body\n",
@@ -117,7 +117,7 @@ fn open_or_init_a_toml_block_is_fenced_with_plus() {
 #[test]
 fn open_or_init_a_host_with_frontmatter_opens_it_whatever_language_was_asked() {
     let mut e =
-        Embed::open_or_init(b"+++\nx = 1\n+++\nbody\n", twig::Format::Markdown, "yaml").unwrap();
+        Embed::open_or_init(b"+++\nx = 1\n+++\nbody\n", twig_markdown::format(), "yaml").unwrap();
     assert_eq!("toml", e.lang());
     e.editor_mut().set_value(&["x".into()], 2i64).unwrap();
     assert_eq!("+++\nx = 2\n+++\nbody\n", s(&e.render().unwrap()));
@@ -126,7 +126,7 @@ fn open_or_init_a_host_with_frontmatter_opens_it_whatever_language_was_asked() {
 #[test]
 fn read_gives_the_block_as_a_fig_document() {
     let host = b"---\ntitle: Hi\ntags: [a, b]\n---\nbody\n";
-    let parsed = parse_host(host, twig::Format::Markdown).unwrap();
+    let parsed = parse_host(host, twig_markdown::format()).unwrap();
     let meta = twig_meta::read(&parsed.doc, Where::Front)
         .unwrap()
         .unwrap()
@@ -140,12 +140,11 @@ fn read_gives_the_block_as_a_fig_document() {
 #[test]
 fn resolve_frontmatters_twig_settings_turn_on_features_and_pick_the_dialect() {
     let host = b"---\ntitle: Notes\ntwig:\n  dialect: gfm\n  features: [math, highlight]\n---\n$x$ and ==marked==\n";
-    let r = resolve(host, twig::Format::Markdown, &[]).unwrap();
-    assert_eq!(twig::Format::Gfm, r.format);
-    let ext = r.markdown_extensions();
-    assert!(ext.math);
-    assert!(ext.highlight);
-    assert!(!ext.directives);
+    let r = resolve(host, twig_markdown::format(), &[]).unwrap();
+    assert_eq!(twig_markdown::gfm(), r.format);
+        assert!(r.features.iter().any(|f| f == "math"));
+    assert!(r.features.iter().any(|f| f == "highlight"));
+    assert!(!r.features.iter().any(|f| f == "directives"));
     assert!(r.ignored().is_empty());
 
     // And the document reads as it asked: `$x$` is math, `==…==` a mark.
@@ -158,36 +157,35 @@ fn resolve_frontmatters_twig_settings_turn_on_features_and_pick_the_dialect() {
 #[test]
 fn resolve_the_callers_features_stay_under_the_documents_settings() {
     let host = b"---\ntwig:\n  features: math\n---\nbody\n";
-    let r = resolve(host, twig::Format::Markdown, &["directives"]).unwrap();
-    assert_eq!(twig::Format::Markdown, r.format);
-    let ext = r.markdown_extensions();
-    assert!(ext.math);
-    assert!(ext.directives);
+    let r = resolve(host, twig_markdown::format(), &["directives"]).unwrap();
+    assert_eq!(twig_markdown::format(), r.format);
+        assert!(r.features.iter().any(|f| f == "math"));
+    assert!(r.features.iter().any(|f| f == "directives"));
 }
 
 #[test]
 fn resolve_unknown_names_are_reported_not_refused() {
     let host =
         b"---\ntwig:\n  dialect: djot\n  features: [math, sparkles]\n  colour: red\n---\nbody\n";
-    let r = resolve(host, twig::Format::Markdown, &[]).unwrap();
-    assert_eq!(twig::Format::Markdown, r.format);
-    assert!(r.markdown_extensions().math);
+    let r = resolve(host, twig_markdown::format(), &[]).unwrap();
+    assert_eq!(twig_markdown::format(), r.format);
+    assert!(r.features.iter().any(|f| f == "math"));
     assert_eq!(["dialect", "colour", "sparkles"], r.ignored());
 }
 
 #[test]
 fn resolve_no_frontmatter_or_frontmatter_that_does_not_parse_reads_as_asked() {
     for host in [&b"# Body\n"[..], b"---\ntwig: [unclosed\n---\nbody\n"] {
-        let r = resolve(host, twig::Format::Markdown, &[]).unwrap();
-        assert_eq!(twig::Format::Markdown, r.format);
-        assert!(!r.markdown_extensions().math);
+        let r = resolve(host, twig_markdown::format(), &[]).unwrap();
+        assert_eq!(twig_markdown::format(), r.format);
+        assert!(!r.features.iter().any(|f| f == "math"));
     }
 }
 
 #[test]
 fn resolve_a_callers_feature_the_row_does_not_declare_is_an_error() {
     assert!(matches!(
-        resolve(b"body\n", twig::Format::Markdown, &["sparkles"]),
+        resolve(b"body\n", twig_markdown::format(), &["sparkles"]),
         Err(Error::Twig(twig::Error::NotFound))
     ));
 }

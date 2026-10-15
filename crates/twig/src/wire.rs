@@ -390,7 +390,7 @@ mod tests {
     use super::*;
     use crate::ast::table as node_table;
     use crate::format::{self, ParseConfig};
-    use crate::languages::markdown;
+    use twig_markdown as markdown;
     use std::sync::Mutex;
 
     /// A transport that answers in-process through a `Server` — both ends of
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn a_language_that_authors_with_a_feature_crosses_the_wire() {
-        let md = crate::syntax::markdown::table();
+        let md = twig_markdown::syntax_table::table();
         let esc = |a: &[u8]| {
             let mut v = Vec::new();
             json::write_string(&mut v, &[a, b"$"].concat());

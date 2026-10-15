@@ -12,7 +12,7 @@ use crate::document::{self as edoc, Document as EngineDoc};
 use crate::error::Error;
 use crate::format as reg;
 
-use super::format::{config_from_flags, Format, MarkdownExtensions, Target};
+use super::format::{config_from_flags, Format, Target};
 use super::kind::Kind;
 use super::{Editor, NodeId};
 
@@ -191,29 +191,24 @@ pub struct Document {
 
 impl Document {
     pub fn parse(input: &[u8], format: Format) -> Result<Self, Error> {
-        Self::parse_with(input, format, MarkdownExtensions::default())
+        parse_flags(input, format, 0)
     }
 
     pub fn parse_str(input: &str, format: Format) -> Result<Self, Error> {
         Self::parse(input.as_bytes(), format)
     }
 
-    /// Like [`Document::parse`], plus Markdown `extensions` to enable
-    /// (ignored for other formats).
-    pub fn parse_with(input: &[u8], format: Format, extensions: MarkdownExtensions) -> Result<Self, Error> {
-        parse_flags(input, format, extensions.to_flags())
-    }
-
-    /// Like [`Document::parse`] over a runtime row, with `features` laid over
-    /// the row's own.
-    pub fn parse_with_features(input: &[u8], format: Format, features: &[&str]) -> Result<Self, Error> {
-        let flags = format.feature_flags(features)?;
+    /// Like [`Document::parse`], with the features `flags` names laid over
+    /// the row's own — bit `i` the language's `i`th feature
+    /// ([`Format::feature_flags`]).
+    pub fn parse_with_flags(input: &[u8], format: Format, flags: u32) -> Result<Self, Error> {
         parse_flags(input, format, flags)
     }
 
-    /// [`Document::parse_with`] for a `&str`.
-    pub fn parse_str_with(input: &str, format: Format, extensions: MarkdownExtensions) -> Result<Self, Error> {
-        Self::parse_with(input.as_bytes(), format, extensions)
+    /// Like [`Document::parse`], with `features` laid over the row's own.
+    pub fn parse_with_features(input: &[u8], format: Format, features: &[&str]) -> Result<Self, Error> {
+        let flags = format.feature_flags(features)?;
+        parse_flags(input, format, flags)
     }
 
     pub(crate) fn borrowed(doc: EngineDoc) -> Document {

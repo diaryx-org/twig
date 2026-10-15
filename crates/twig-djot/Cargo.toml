@@ -1,0 +1,23 @@
+[package]
+name = "twig-djot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Djot for twig: the parser, HTML renderer, serializer and editing table, on twig's kit. Register it with twig-doc to parse, edit and convert Djot."
+repository.workspace = true
+homepage.workspace = true
+keywords = ["djot", "twig", "parser", "document"]
+categories = ["parser-implementations", "text-processing"]
+rust-version.workspace = true
+
+[dependencies]
+# The language itself is written on twig's kit alone.
+twig-kit.workspace = true
+twig-doc = { workspace = true, optional = true }
+
+[features]
+# `register()` and `format()`: the language through `twig-doc`'s registry.
+# Off (`default-features = false`), the crate is the language alone, on
+# `twig-kit`, for a program that registers it with `twig::register` itself.
+default = ["twig"]
+twig = ["dep:twig-doc"]

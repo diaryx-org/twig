@@ -448,7 +448,7 @@ pub fn is_blank_line(body: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::languages::{djot, markdown, xml};
+    use {twig_djot as djot, twig_markdown as markdown, twig_xml as xml};
 
     fn find(hay: &[u8], needle: &[u8]) -> usize {
         hay.windows(needle.len()).position(|w| w == needle).unwrap()

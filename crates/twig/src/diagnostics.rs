@@ -2,44 +2,18 @@
 //! survives a round trip through a target format. Port of
 //! `src/diagnostics.zig` — see its header for the argument.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::ast::{
     Ast, Attrs, Builder, Cell, Container, Form, InlineMark, Kind, KindRef, KeyVal, Link, ListNumbering, MarkupLeafKind,
     NodeId, SmartPunctuationKind, Tag, TextLeafKind,
 };
 use crate::document::Document;
-use crate::format::Target;
+use crate::format::{self, Format, Target};
 use crate::runtime;
 
-/// How much of a node survives a round trip through a target format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Fidelity {
-    /// The target spells the kind, and reparses that spelling back to it.
-    Faithful,
-    /// Something is emitted, but it reads back as a DIFFERENT kind.
-    Degraded,
-    /// Nothing is emitted at all.
-    Dropped,
-}
-
-impl Fidelity {
-    pub fn is_lossy(self) -> bool {
-        self != Fidelity::Faithful
-    }
-    pub fn name(self) -> &'static str {
-        match self {
-            Fidelity::Faithful => "faithful",
-            Fidelity::Degraded => "degraded",
-            Fidelity::Dropped => "dropped",
-        }
-    }
-}
-
-/// The more severe of two answers.
-fn worst(a: Fidelity, b: Fidelity) -> Fidelity {
-    a.max(b)
-}
+pub use twig_kit::fidelity::{section_heading, worst, AttrsFidelity, Fidelity};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subject {
@@ -161,402 +135,71 @@ fn note_attrs(ast: &Ast, target: Target, id: NodeId, path: &str, node: Fidelity,
 }
 
 // ── the capability table ────────────────────────────────────────────────────
+//
+// A language states its table (`Language::fidelity` and its siblings); one
+// that states none — a native language without a table, and every runtime
+// one — is measured with the probes below, once.
+
+/// What the probes measured for a target that states no table.
+fn measured(target: Target) -> Option<Arc<Measured>> {
+    if let Some(m) = runtime::measured(target) {
+        return Some(m);
+    }
+    let lang = format::native_language(target)?;
+    static CACHE: OnceLock<Mutex<HashMap<u16, Arc<Measured>>>> = OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let m = cache.entry(target.code()).or_insert_with(|| {
+        let ser = |ast: &Ast| lang.serialize_ast(ast).map_err(|_| ());
+        let par = |src: &[u8]| format::parse_to_ast(Format::from_raw(target.code()), &Default::default(), src).map_err(|_| ());
+        Arc::new(measure(&ser, &par))
+    });
+    Some(m.clone())
+}
 
 /// How `kind` survives a conversion to `target` — the kind-level answer.
 pub fn fidelity(target: Target, kind: &Kind) -> Fidelity {
-    match target {
-        Target::Xml => Fidelity::Dropped,
-        Target::Djot => djot_fidelity(kind),
-        Target::Markdown => markdown_fidelity(kind),
-        Target::Html => html_fidelity(kind),
-        Target::Asciidoc => asciidoc_fidelity(kind),
-        Target::Runtime(_) => match runtime::measured(target) {
-            Some(m) => m.for_kind(kind),
-            None => Fidelity::Dropped,
-        },
+    if let Some(f) = format::native_language(target).and_then(|l| l.fidelity(kind)) {
+        return f;
+    }
+    match measured(target) {
+        Some(m) => m.for_kind(kind),
+        None => Fidelity::Dropped,
     }
 }
 
 /// `fidelity` for one NODE — the kind's answer, downgraded by whatever only
 /// the node's own contents can say.
 pub fn node_fidelity(target: Target, ast: &Ast, id: NodeId) -> Fidelity {
-    if let Some(m) = runtime::measured(target) {
-        return m.for_node(ast, id);
+    if let Some(f) = format::native_language(target).and_then(|l| l.node_fidelity(ast, id)) {
+        return f;
     }
-    let kind = &ast.nodes[id as usize].kind;
-    let base = fidelity(target, kind);
-    match kind {
-        Kind::Table => worst(base, table_fidelity(target, ast, id)),
-        Kind::Container(_) => worst(base, container_fidelity(target, ast, id)),
-        Kind::Section => worst(base, section_fidelity(target, ast, id)),
-        Kind::Metadata { .. } => worst(base, metadata_fidelity(target, ast, id)),
-        _ => base,
-    }
-}
-
-fn metadata_fidelity(target: Target, ast: &Ast, id: NodeId) -> Fidelity {
-    if target != Target::Asciidoc {
-        return Fidelity::Faithful;
-    }
-    if ast.nodes[ast.root as usize].first_child == Some(id) { Fidelity::Faithful } else { Fidelity::Degraded }
-}
-
-fn section_fidelity(target: Target, ast: &Ast, id: NodeId) -> Fidelity {
-    match target {
-        Target::Djot | Target::Asciidoc => {}
-        _ => return Fidelity::Faithful,
-    }
-    let Some(level) = section_heading(ast, id) else { return Fidelity::Degraded };
-    if target == Target::Asciidoc && level == 1 {
-        return Fidelity::Degraded;
-    }
-    Fidelity::Faithful
-}
-
-/// The level of the heading a section opens with, if it opens with one.
-fn section_heading(ast: &Ast, id: NodeId) -> Option<u32> {
-    let first = ast.nodes[id as usize].first_child?;
-    match ast.nodes[first as usize].kind {
-        Kind::Heading { level } => Some(level),
-        _ => None,
-    }
-}
-
-fn table_fidelity(target: Target, ast: &Ast, id: NodeId) -> Fidelity {
-    if target != Target::Markdown {
-        return Fidelity::Faithful;
-    }
-    match ast.table_rows(id).next() {
-        None => Fidelity::Faithful,
-        Some(r) => {
-            if r.head {
-                Fidelity::Faithful
-            } else {
-                Fidelity::Degraded
-            }
-        }
-    }
-}
-
-fn container_fidelity(target: Target, ast: &Ast, id: NodeId) -> Fidelity {
-    let Kind::Container(c) = &ast.nodes[id as usize].kind else { return Fidelity::Faithful };
-    if target != Target::Djot {
-        return Fidelity::Faithful;
-    }
-    if c.form != Some(Form::InlineText) || !c.name.is_empty() {
-        return Fidelity::Faithful;
-    }
-    if ast.attrs_of(id).is_empty() { Fidelity::Dropped } else { Fidelity::Faithful }
-}
-
-use Fidelity::{Degraded as D, Dropped as X, Faithful as F};
-
-fn djot_fidelity(kind: &Kind) -> Fidelity {
-    match kind {
-        Kind::MarkupLeaf { .. } | Kind::ProcessingInstruction { .. } => X,
-        Kind::Substitution { .. } => X,
-        Kind::Column => X,
-        Kind::Metadata { .. } => D,
-        Kind::DefinitionList => D,
-        Kind::LineBlock | Kind::Line { .. } => F,
-        Kind::Citation { .. } => D,
-        Kind::Container(c) => {
-            if c.name.is_empty() {
-                F
-            } else {
-                D
-            }
-        }
-        Kind::TextLeaf { kind, .. } => match kind {
-            TextLeafKind::CitationReference | TextLeafKind::SubstitutionReference => D,
-            _ => F,
-        },
-        _ => F,
-    }
-}
-
-fn markdown_fidelity(kind: &Kind) -> Fidelity {
-    match kind {
-        Kind::Section => D,
-        Kind::RawBlock { .. } => D,
-        Kind::Container(_) => D,
-        Kind::MarkupLeaf { .. } | Kind::ProcessingInstruction { .. } | Kind::RawInline { .. } => D,
-        Kind::SmartPunctuation(_) => D,
-        Kind::NonBreakingSpace => D,
-        Kind::InlineMark(m) => match m {
-            InlineMark::Strong | InlineMark::Emph | InlineMark::Delete => F,
-            _ => D,
-        },
-        Kind::Citation { .. } => D,
-        Kind::Substitution { .. } => X,
-        Kind::LineBlock | Kind::Line { .. } => D,
-        Kind::Column => X,
-        Kind::TextLeaf { kind, .. } => match kind {
-            TextLeafKind::Verbatim | TextLeafKind::Url | TextLeafKind::Email | TextLeafKind::FootnoteReference => F,
-            _ => D,
-        },
-        _ => F,
-    }
-}
-
-fn asciidoc_fidelity(kind: &Kind) -> Fidelity {
-    match kind {
-        Kind::MarkupLeaf { kind, .. } => match kind {
-            MarkupLeafKind::Comment | MarkupLeafKind::Doctype => X,
-            MarkupLeafKind::Cdata => D,
-        },
-        Kind::ProcessingInstruction { .. } => X,
-        Kind::Substitution { .. } => F,
-        Kind::Column => X,
-        Kind::Metadata { .. } => F,
-        Kind::Citation { .. } => D,
-        Kind::Container(c) => {
-            if is_native_container(&c.name) {
-                F
-            } else {
-                D
-            }
-        }
-        Kind::InlineMark(m) => match m {
-            InlineMark::Insert | InlineMark::Delete => D,
-            _ => F,
-        },
-        Kind::TextLeaf { kind, .. } => match kind {
-            TextLeafKind::DisplayMath | TextLeafKind::Symb | TextLeafKind::CitationReference => D,
-            _ => F,
-        },
-        Kind::Reference { .. } => D,
-        _ => F,
-    }
-}
-
-fn is_native_container(name: &[u8]) -> bool {
-    const NATIVE: [&[u8]; 12] = [
-        b"note",
-        b"tip",
-        b"important",
-        b"warning",
-        b"caution",
-        b"example",
-        b"sidebar",
-        b"open",
-        b"page-break",
-        b"kbd",
-        b"abstract",
-        b"partintro",
-    ];
-    NATIVE.contains(&name)
-}
-
-fn html_fidelity(kind: &Kind) -> Fidelity {
-    match kind {
-        Kind::ProcessingInstruction { .. } => F,
-        Kind::MarkupLeaf { kind, .. } => match kind {
-            MarkupLeafKind::Comment | MarkupLeafKind::Doctype => F,
-            MarkupLeafKind::Cdata => D,
-        },
-        Kind::RawBlock { .. } | Kind::RawInline { .. } => D,
-        Kind::Metadata { .. } => D,
-        Kind::TaskList { .. } | Kind::TaskListItem { .. } => D,
-        Kind::DefinitionList | Kind::DefinitionListItem | Kind::Term | Kind::Definition => D,
-        Kind::LineBlock | Kind::Line { .. } => D,
-        Kind::Footnote { .. } | Kind::Reference { .. } => D,
-        Kind::Citation { .. } => D,
-        Kind::Substitution { .. } => X,
-        Kind::Column => X,
-        Kind::Container(c) => {
-            if c.name.is_empty() {
-                D
-            } else {
-                F
-            }
-        }
-        Kind::SmartPunctuation(_) | Kind::NonBreakingSpace => D,
-        Kind::InlineMark(m) => match m {
-            InlineMark::DoubleQuoted | InlineMark::SingleQuoted => D,
-            _ => F,
-        },
-        Kind::TextLeaf { kind, .. } => match kind {
-            TextLeafKind::Verbatim => F,
-            _ => D,
-        },
-        _ => F,
-    }
-}
-
-// ── attributes ──────────────────────────────────────────────────────────────
-
-/// How a node's attributes survive, by key class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AttrsFidelity {
-    pub id: Fidelity,
-    pub class: Fidelity,
-    pub other: Fidelity,
-    /// `title`, where it differs from `other`.
-    pub title: Option<Fidelity>,
-}
-
-impl AttrsFidelity {
-    pub const fn all(f: Fidelity) -> AttrsFidelity {
-        AttrsFidelity { id: f, class: f, other: f, title: None }
-    }
-
-    const fn icot(id: Fidelity, class: Fidelity, other: Fidelity) -> AttrsFidelity {
-        AttrsFidelity { id, class, other, title: None }
-    }
-
-    pub fn under(self, node: Fidelity) -> AttrsFidelity {
-        if node == F {
-            return self;
-        }
-        AttrsFidelity {
-            id: worst(self.id, node),
-            class: worst(self.class, node),
-            other: worst(self.other, node),
-            title: self.title.map(|t| worst(t, node)),
-        }
-    }
-
-    pub fn for_key(&self, key: &[u8]) -> Fidelity {
-        match key {
-            b"id" => self.id,
-            b"class" => self.class,
-            b"title" => self.title.unwrap_or(self.other),
-            _ => self.other,
-        }
+    match measured(target) {
+        Some(m) => m.for_node(ast, id),
+        None => Fidelity::Dropped,
     }
 }
 
 pub fn attrs_fidelity(target: Target, kind: &Kind) -> AttrsFidelity {
-    match target {
-        Target::Xml => AttrsFidelity::all(X),
-        Target::Djot => djot_attrs_fidelity(kind),
-        Target::Markdown => markdown_attrs_fidelity(kind),
-        Target::Html => html_attrs_fidelity(kind),
-        Target::Asciidoc => asciidoc_attrs_fidelity(kind),
-        Target::Runtime(_) => match runtime::measured(target) {
-            Some(m) => m.attrs_for_kind(kind),
-            None => AttrsFidelity::all(X),
-        },
+    if let Some(f) = format::native_language(target).and_then(|l| l.attrs_fidelity(kind)) {
+        return f;
+    }
+    match measured(target) {
+        Some(m) => m.attrs_for_kind(kind),
+        None => AttrsFidelity::all(X),
     }
 }
 
 pub fn node_attrs_fidelity(target: Target, ast: &Ast, id: NodeId, node: Fidelity) -> AttrsFidelity {
-    if let Some(m) = runtime::measured(target) {
-        return m.attrs_for_node(ast, id).under(node);
+    if let Some(f) = format::native_language(target).and_then(|l| l.node_attrs_fidelity(ast, id)) {
+        return f.under(node);
     }
-    let kind = &ast.nodes[id as usize].kind;
-    let table = match kind {
-        Kind::Section if target == Target::Djot && section_heading(ast, id).is_none() => AttrsFidelity::all(X),
-        _ => attrs_fidelity(target, kind),
-    };
-    table.under(node)
-}
-
-fn djot_attrs_fidelity(kind: &Kind) -> AttrsFidelity {
-    match kind {
-        Kind::Para | Kind::Container(_) | Kind::Reference { .. } | Kind::Section => AttrsFidelity::all(F),
-        Kind::Heading { .. } => AttrsFidelity::all(D),
-        Kind::LineBlock => AttrsFidelity::all(F),
-        _ => AttrsFidelity::all(X),
+    match measured(target) {
+        Some(m) => m.attrs_for_node(ast, id).under(node),
+        None => AttrsFidelity::all(X).under(node),
     }
 }
 
-fn markdown_attrs_fidelity(kind: &Kind) -> AttrsFidelity {
-    match kind {
-        Kind::Para
-        | Kind::Heading { .. }
-        | Kind::ThematicBreak
-        | Kind::Section
-        | Kind::CodeBlock { .. }
-        | Kind::RawBlock { .. }
-        | Kind::BlockQuote
-        | Kind::BulletList { .. }
-        | Kind::OrderedList { .. }
-        | Kind::TaskList { .. }
-        | Kind::DefinitionList
-        | Kind::LineBlock
-        | Kind::Table => AttrsFidelity::all(D),
-        Kind::Reference { .. } => AttrsFidelity { id: X, class: X, other: X, title: Some(F) },
-        Kind::Container(_) => AttrsFidelity::all(D),
-        _ => AttrsFidelity::all(X),
-    }
-}
-
-fn html_attrs_fidelity(kind: &Kind) -> AttrsFidelity {
-    match kind {
-        Kind::Para
-        | Kind::Heading { .. }
-        | Kind::ThematicBreak
-        | Kind::Section
-        | Kind::CodeBlock { .. }
-        | Kind::BlockQuote
-        | Kind::BulletList { .. }
-        | Kind::OrderedList { .. }
-        | Kind::Table
-        | Kind::ListItem
-        | Kind::Row { .. }
-        | Kind::Cell(_)
-        | Kind::Caption
-        | Kind::Link(_)
-        | Kind::Image(_)
-        | Kind::Container(_) => AttrsFidelity::all(F),
-        Kind::InlineMark(m) => match m {
-            InlineMark::DoubleQuoted | InlineMark::SingleQuoted => AttrsFidelity::all(X),
-            _ => AttrsFidelity::all(F),
-        },
-        Kind::TextLeaf { kind, .. } => match kind {
-            TextLeafKind::Verbatim
-            | TextLeafKind::InlineMath
-            | TextLeafKind::DisplayMath
-            | TextLeafKind::Url
-            | TextLeafKind::Email
-            | TextLeafKind::CitationReference => AttrsFidelity::all(F),
-            TextLeafKind::FootnoteReference => AttrsFidelity::icot(X, F, F),
-            TextLeafKind::Symb | TextLeafKind::SubstitutionReference => AttrsFidelity::all(X),
-        },
-        Kind::TaskList { .. } | Kind::DefinitionList | Kind::LineBlock => AttrsFidelity::all(D),
-        Kind::HardBreak => AttrsFidelity::all(X),
-        _ => AttrsFidelity::all(X),
-    }
-}
-
-fn asciidoc_attrs_fidelity(kind: &Kind) -> AttrsFidelity {
-    match kind {
-        Kind::Para
-        | Kind::ThematicBreak
-        | Kind::CodeBlock { .. }
-        | Kind::RawBlock { .. }
-        | Kind::BlockQuote
-        | Kind::BulletList { .. }
-        | Kind::OrderedList { .. }
-        | Kind::TaskList { .. }
-        | Kind::DefinitionList
-        | Kind::LineBlock => AttrsFidelity::all(F),
-        Kind::Container(c) => {
-            if c.form == Some(Form::InlineText) {
-                AttrsFidelity::icot(D, D, X)
-            } else {
-                AttrsFidelity::all(F)
-            }
-        }
-        Kind::Table => AttrsFidelity { id: F, class: F, other: F, title: Some(D) },
-        Kind::Heading { .. } => AttrsFidelity::all(D),
-        Kind::Image(_) => AttrsFidelity::all(D),
-        Kind::InlineMark(m) => match m {
-            InlineMark::Emph | InlineMark::Strong | InlineMark::Superscript | InlineMark::Subscript => {
-                AttrsFidelity::icot(F, F, X)
-            }
-            _ => AttrsFidelity::icot(D, D, X),
-        },
-        Kind::TextLeaf { kind, .. } => match kind {
-            TextLeafKind::Verbatim => AttrsFidelity::icot(F, F, X),
-            _ => AttrsFidelity::all(X),
-        },
-        Kind::Link(_) => AttrsFidelity::icot(X, F, X),
-        _ => AttrsFidelity::all(X),
-    }
-}
+use Fidelity::{Degraded as D, Dropped as X, Faithful as F};
 
 // ── probes ──────────────────────────────────────────────────────────────────
 
@@ -1080,7 +723,7 @@ mod tests {
         let mut b = Builder::new();
         let r = build_plain_para(&mut b);
         let ast = b.finish(r);
-        assert_eq!(analyze(&ast, ast.root, Target::Xml), Err(AnalyzeError::UnsupportedFormat));
+        assert_eq!(analyze(&ast, ast.root, crate::test_languages::xml().target()), Err(AnalyzeError::UnsupportedFormat));
     }
 
     #[test]
@@ -1092,7 +735,7 @@ mod tests {
             let mut b = Builder::new();
             let root = (p.build)(&mut b);
             let ast = b.finish(root);
-            let w = analyze(&ast, ast.root, Target::Markdown).unwrap();
+            let w = analyze(&ast, ast.root, crate::test_languages::markdown().target()).unwrap();
             let tables: Vec<_> = w.iter().filter(|w| w.kind == "table").collect();
             assert_eq!(tables.len(), (p.label == "table(header-less)") as usize);
         }
@@ -1101,8 +744,8 @@ mod tests {
     #[test]
     fn warning_renders() {
         let w = Warning { fidelity: D, path: "1/0".into(), kind: "superscript", subject: Subject::Node, attrs: vec![] };
-        assert_eq!(w.render(Target::Markdown), "`superscript` at `1/0` is not spelled by markdown and will reparse as something else");
+        assert_eq!(w.render(crate::test_languages::markdown().target()), "`superscript` at `1/0` is not spelled by markdown and will reparse as something else");
         let w = Warning { fidelity: X, path: String::new(), kind: "para", subject: Subject::Attrs, attrs: vec![b"class".to_vec(), b"id".to_vec()] };
-        assert_eq!(w.render(Target::Markdown), "`para` at the document root carries attributes (class, id) that markdown cannot write; they are dropped");
+        assert_eq!(w.render(crate::test_languages::markdown().target()), "`para` at the document root carries attributes (class, id) that markdown cannot write; they are dropped");
     }
 }

@@ -3,7 +3,8 @@
 The `twig` command-line tool: parse, query, edit, and losslessly round-trip
 Djot, Markdown (CommonMark, GFM and Twig's default flavour), HTML, XML/SVG and
 AsciiDoc documents. It is a thin layer over the
-[`twig-doc`](https://crates.io/crates/twig-doc) engine.
+[`twig-doc`](https://crates.io/crates/twig-doc) core, with every language
+crate twig ships registered.
 
     cargo install twig-doc-cli
 

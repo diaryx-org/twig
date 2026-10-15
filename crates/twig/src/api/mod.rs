@@ -20,7 +20,7 @@ pub use document::{
 pub use editor::{Change, Editor};
 pub use format::{
     abi_version, version, version_string, BlockContainerKind, BlockKind, Format, Gesture, InlineKind, MarkColor,
-    MarkdownExtensions, RuntimeId, Target, Version, ABI_VERSION,
+    Target, Version, ABI_VERSION, FORMAT_RUNTIME_BASE,
 };
 pub use kind::Kind;
 

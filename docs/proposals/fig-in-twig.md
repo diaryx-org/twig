@@ -97,6 +97,12 @@ org's rule) and can be published, or folded into `twig-doc` behind a `fig`
 feature. Either is a small move: the crate uses only `twig-doc`'s public
 modules.
 
+**Update, 2026-10-15.** fig 7, the Rust port, is on crates.io, and
+`twig-meta` now takes `fig` and its four language crates by version and is
+published. It stays a crate: [one crate per language](language-crates.md)
+leaves `twig-doc` with no features but, at most, a `fig` one, and whether
+`twig-meta` becomes that feature is still open.
+
 ### The API
 
 ```rust
@@ -174,9 +180,8 @@ reads to know a document's dialect without being told.
    `twig` CLI. Whether the release CLI depends on `twig-meta` is an open
    question below, and waits on fig being on crates.io, since `twig-doc-cli`
    is published.
-5. **fig by version.** Once fig's Rust port is on crates.io, `twig-meta`
-   depends on it by version and is published (or becomes `twig-doc`'s `fig`
-   feature). Then prov moves `MetaEditor` from `fig::Embed` to it.
+5. **fig by version.** Done: `twig-meta` depends on fig 7 by version and is
+   published. Next, prov moves `MetaEditor` from `fig::Embed` to it.
 6. **The hoisted record**, and the HTML printer and editor reading it.
 
 ## Open questions
