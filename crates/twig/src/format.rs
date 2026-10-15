@@ -462,7 +462,7 @@ pub fn serialize_canonical(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
 /// Write a bare tree as `target` (a cross-format conversion).
 pub fn serialize_from_ast(target: Target, ast: &crate::ast::Ast) -> Result<Vec<u8>, PrintFailure> {
     match target {
-        Target::Djot => djot_serialize_ast(ast),
+        Target::Djot => Ok(languages::djot::serialize_ast(ast)),
         Target::Markdown => Ok(languages::markdown::serializer::serialize_ast(ast)),
         Target::Xml => Err(PrintFailure::UnsupportedFormat),
         Target::Html => languages::html::serialize_alloc(ast, None).map_err(|_| PrintFailure::UnsafeMetadata),
@@ -475,7 +475,7 @@ pub fn serialize_from_ast(target: Target, ast: &crate::ast::Ast) -> Result<Vec<u
 /// (spelling, labels). `None` where the target has no such printer.
 pub fn serialize_from_document(target: Target, doc: &Document) -> Result<Vec<u8>, PrintFailure> {
     match target {
-        Target::Djot => djot_serialize(doc),
+        Target::Djot => Ok(languages::djot::serialize(doc)),
         Target::Markdown => Ok(languages::markdown::serializer::serialize(doc)),
         Target::Asciidoc => Ok(languages::asciidoc::serialize(doc)),
         Target::Runtime(c) => runtime::serialize_from_document(c, doc),
@@ -496,16 +496,6 @@ pub fn serialize_converted(doc: &ParsedDoc, target: Target) -> Result<Vec<u8>, P
         }
     }
     serialize_from_ast(target, &doc.doc.ast)
-}
-
-// TODO(port): the djot serializer is still being ported; these route to it
-// once it lands.
-fn djot_serialize_ast(_ast: &crate::ast::Ast) -> Result<Vec<u8>, PrintFailure> {
-    Err(PrintFailure::UnsupportedFormat)
-}
-
-fn djot_serialize(_doc: &Document) -> Result<Vec<u8>, PrintFailure> {
-    Err(PrintFailure::UnsupportedFormat)
 }
 
 /// The spelling table a row's editor gestures write, under default options.
