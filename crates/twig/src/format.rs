@@ -343,6 +343,191 @@ pub fn detect_from_extension(file_path: &str) -> Option<Format> {
     runtime::by_extension(ext)
 }
 
+// ── The registry ────────────────────────────────────────────────────────────
+
+use crate::document::Document;
+use crate::languages;
+use crate::syntax::Syntax;
+
+/// A parse plus the row and config that produced it — what the CLI and the
+/// public API hold, since rendering depends on the dialect (GFM's HTML) and
+/// a runtime row's features.
+#[derive(Clone, Debug)]
+pub struct ParsedDoc {
+    pub format: Format,
+    pub config: ParseConfig,
+    pub doc: Document,
+}
+
+/// Why a parse failed, for a message. Compiled parsers fail only on strict
+/// XML; a runtime language fails with its own reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ParseFailure {
+    Xml(languages::xml::Error),
+    Language(String),
+}
+
+impl ParseFailure {
+    /// The Zig error name a message prints.
+    pub fn name(&self) -> String {
+        match self {
+            ParseFailure::Xml(e) => e.name().to_string(),
+            ParseFailure::Language(why) => why.clone(),
+        }
+    }
+}
+
+/// Why printing failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PrintFailure {
+    /// The row has no printer for this direction.
+    UnsupportedFormat,
+    /// The HTML printer refused a metadata block containing `</script`.
+    UnsafeMetadata,
+    /// A runtime language refused, with its reason.
+    Language(String),
+}
+
+impl PrintFailure {
+    pub fn name(&self) -> String {
+        match self {
+            PrintFailure::UnsupportedFormat => "UnsupportedFormat".into(),
+            PrintFailure::UnsafeMetadata => "UnsafeMetadata".into(),
+            PrintFailure::Language(why) => why.clone(),
+        }
+    }
+}
+
+fn markdown_options(fmt: Format, cfg: &ParseConfig) -> languages::markdown::ParseOptions {
+    use languages::markdown::ParseOptions;
+    let preset = match fmt {
+        Format::Commonmark => ParseOptions::COMMONMARK,
+        Format::Gfm => ParseOptions::GFM,
+        _ => ParseOptions::default(),
+    };
+    preset.with_extensions(cfg.markdown)
+}
+
+/// Parse `source` as `fmt` into a bare `Document` — the splicer's reparse.
+pub fn parse_to_ast(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<Document, ParseFailure> {
+    Ok(match fmt {
+        Format::Djot => languages::djot::parse(source),
+        Format::Markdown | Format::Commonmark | Format::Gfm => {
+            languages::markdown::parse(source, markdown_options(fmt, cfg))
+        }
+        Format::Xml | Format::Svg => languages::xml::parse(source).map_err(ParseFailure::Xml)?,
+        Format::Html => languages::html::parse(source),
+        Format::Asciidoc => languages::asciidoc::parse(source),
+        Format::Runtime(c) => runtime::parse(c, cfg, source).map_err(ParseFailure::Language)?,
+    })
+}
+
+/// Parse `source` as `fmt`, remembering the row and config.
+pub fn parse(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<ParsedDoc, ParseFailure> {
+    Ok(ParsedDoc { format: fmt, config: *cfg, doc: parse_to_ast(fmt, cfg, source)? })
+}
+
+/// Render a parse to HTML with its row's renderer.
+pub fn render_html(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
+    use languages::html::RenderError;
+    let map = |e: RenderError| match e {
+        RenderError::UnsafeMetadata => PrintFailure::UnsafeMetadata,
+    };
+    match doc.format {
+        Format::Djot => languages::djot::html::render(&doc.doc, &Default::default()).map_err(map),
+        Format::Markdown | Format::Commonmark | Format::Gfm => {
+            let dialect = markdown_options(doc.format, &doc.config).dialect;
+            let opts = languages::markdown::html::RenderOptions { dialect, ..Default::default() };
+            languages::markdown::html::render_alloc(&doc.doc, opts).map_err(map)
+        }
+        Format::Runtime(c) => runtime::render_html(c, doc),
+        _ => languages::html::serialize_alloc(&doc.doc.ast, None).map_err(map),
+    }
+}
+
+/// Serialize a parse back to its own format (`-o canonical`).
+pub fn serialize_canonical(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
+    match doc.format {
+        Format::Djot => serialize_from_document(Target::Djot, &doc.doc),
+        Format::Markdown | Format::Commonmark | Format::Gfm => {
+            Ok(languages::markdown::serializer::serialize(&doc.doc))
+        }
+        Format::Xml | Format::Svg => Ok(languages::xml::serialize(&doc.doc)),
+        Format::Html => serialize_from_ast(Target::Html, &doc.doc.ast),
+        Format::Asciidoc => serialize_from_document(Target::Asciidoc, &doc.doc),
+        Format::Runtime(c) => runtime::serialize_canonical(c, doc),
+    }
+}
+
+/// Write a bare tree as `target` (a cross-format conversion).
+pub fn serialize_from_ast(target: Target, ast: &crate::ast::Ast) -> Result<Vec<u8>, PrintFailure> {
+    match target {
+        Target::Djot => djot_serialize_ast(ast),
+        Target::Markdown => Ok(languages::markdown::serializer::serialize_ast(ast)),
+        Target::Xml => Err(PrintFailure::UnsupportedFormat),
+        Target::Html => languages::html::serialize_alloc(ast, None).map_err(|_| PrintFailure::UnsafeMetadata),
+        Target::Asciidoc => Ok(languages::asciidoc::serialize_ast(ast)),
+        Target::Runtime(c) => runtime::serialize_from_ast(c, ast),
+    }
+}
+
+/// Write a `Document` as `target`, keeping what only the document carries
+/// (spelling, labels). `None` where the target has no such printer.
+pub fn serialize_from_document(target: Target, doc: &Document) -> Result<Vec<u8>, PrintFailure> {
+    match target {
+        Target::Djot => djot_serialize(doc),
+        Target::Markdown => Ok(languages::markdown::serializer::serialize(doc)),
+        Target::Asciidoc => Ok(languages::asciidoc::serialize(doc)),
+        Target::Runtime(c) => runtime::serialize_from_document(c, doc),
+        _ => Err(PrintFailure::UnsupportedFormat),
+    }
+}
+
+/// Convert a parse into `target`: the bare tree, except that a runtime row's
+/// parse keeps its labels and spelling when the target can take them.
+pub fn serialize_converted(doc: &ParsedDoc, target: Target) -> Result<Vec<u8>, PrintFailure> {
+    if !target_serializes_from_ast(target) {
+        return Err(PrintFailure::UnsupportedFormat);
+    }
+    if runtime::is_registered(doc.format) {
+        match serialize_from_document(target, &doc.doc) {
+            Err(PrintFailure::UnsupportedFormat) => {}
+            other => return other,
+        }
+    }
+    serialize_from_ast(target, &doc.doc.ast)
+}
+
+// TODO(port): the djot serializer is still being ported; these route to it
+// once it lands.
+fn djot_serialize_ast(_ast: &crate::ast::Ast) -> Result<Vec<u8>, PrintFailure> {
+    Err(PrintFailure::UnsupportedFormat)
+}
+
+fn djot_serialize(_doc: &Document) -> Result<Vec<u8>, PrintFailure> {
+    Err(PrintFailure::UnsupportedFormat)
+}
+
+/// The spelling table a row's editor gestures write, under default options.
+pub fn syntax_for(fmt: Format) -> &'static Syntax {
+    syntax_for_config(fmt, &ParseConfig::default())
+}
+
+/// The spelling table for a row under a parse config — Markdown's depends on
+/// which extensions are on.
+pub fn syntax_for_config(fmt: Format, cfg: &ParseConfig) -> &'static Syntax {
+    match fmt {
+        Format::Djot => crate::syntax::djot::table(),
+        Format::Markdown | Format::Commonmark | Format::Gfm => {
+            crate::syntax::markdown::for_options(&markdown_options(fmt, cfg))
+        }
+        Format::Xml | Format::Svg => crate::syntax::xml::table(),
+        Format::Html => crate::syntax::html::table(),
+        Format::Asciidoc => crate::syntax::asciidoc::table(),
+        Format::Runtime(c) => runtime::syntax_for(c, cfg),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

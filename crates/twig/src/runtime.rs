@@ -58,3 +58,27 @@ pub fn prints(_code: u16) -> bool {
 pub fn measured(_target: crate::format::Target) -> Option<std::sync::Arc<crate::diagnostics::Measured>> {
     None
 }
+
+pub fn parse(_code: u16, _cfg: &crate::format::ParseConfig, _source: &[u8]) -> Result<crate::document::Document, String> {
+    Err("no such runtime language".into())
+}
+
+pub fn render_html(_code: u16, _doc: &crate::format::ParsedDoc) -> Result<Vec<u8>, crate::format::PrintFailure> {
+    Err(crate::format::PrintFailure::UnsupportedFormat)
+}
+
+pub fn serialize_canonical(_code: u16, _doc: &crate::format::ParsedDoc) -> Result<Vec<u8>, crate::format::PrintFailure> {
+    Err(crate::format::PrintFailure::UnsupportedFormat)
+}
+
+pub fn serialize_from_ast(_code: u16, _ast: &crate::ast::Ast) -> Result<Vec<u8>, crate::format::PrintFailure> {
+    Err(crate::format::PrintFailure::UnsupportedFormat)
+}
+
+pub fn serialize_from_document(_code: u16, _doc: &crate::document::Document) -> Result<Vec<u8>, crate::format::PrintFailure> {
+    Err(crate::format::PrintFailure::UnsupportedFormat)
+}
+
+pub fn syntax_for(_code: u16, _cfg: &crate::format::ParseConfig) -> &'static crate::syntax::Syntax {
+    crate::syntax::none()
+}

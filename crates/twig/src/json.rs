@@ -103,7 +103,18 @@ impl<'a> Stringify<'a> {
         self.after_field = true;
     }
 
+    /// A byte string. Valid UTF-8 is written as a JSON string; anything else
+    /// as an array of byte values, which is what Zig's `Stringify.write` does
+    /// with a `[]const u8` that does not validate.
     pub fn str(&mut self, s: &[u8]) {
+        if std::str::from_utf8(s).is_err() {
+            self.begin_array();
+            for &b in s {
+                self.int(b);
+            }
+            self.end_array();
+            return;
+        }
         self.value_start();
         write_string(self.out, s);
     }
@@ -517,6 +528,14 @@ mod tests {
         w.null();
         w.end_object();
         assert_eq!(out, b"{\"a\":\"x\\\"\\n\\u0001\xc3\xa9\",\"b\":null}");
+    }
+
+    #[test]
+    fn invalid_utf8_is_an_array() {
+        let mut out = Vec::new();
+        let mut w = Stringify::compact(&mut out);
+        w.str(b"a\xff");
+        assert_eq!(out, b"[97,255]");
     }
 
     #[test]
