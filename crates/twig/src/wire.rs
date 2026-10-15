@@ -6,21 +6,25 @@
 //! ── The wire ───────────────────────────────────────────────────────────────
 //! Requests:
 //!
-//!     {"op":"describe"}
-//!     {"op":"parse","dialect":"org","features":["math"],"input":"…"}
-//!     {"op":"print","dialect":"org","features":[],"table":{…}}
-//!     {"op":"render","which":"render_text","dialect":"org","features":[],
-//!      "text":"…","position":"inline_text"}
-//!     {"op":"render","which":"render_block",…,"table":{…}}
-//!     {"op":"render","which":"spells_autolink",…,"text":"<…>"}
+//! ```text
+//! {"op":"describe"}
+//! {"op":"parse","dialect":"org","features":["math"],"input":"…"}
+//! {"op":"print","dialect":"org","features":[],"table":{…}}
+//! {"op":"render","which":"render_text","dialect":"org","features":[],
+//!  "text":"…","position":"inline_text"}
+//! {"op":"render","which":"render_block",…,"table":{…}}
+//! {"op":"render","which":"spells_autolink",…,"text":"<…>"}
+//! ```
 //!
 //! Responses:
 //!
-//!     {"ok":true,"description":{…}}
-//!     {"ok":true,"table":{…}}
-//!     {"ok":true,"output":"…"}           print, render_text, render_block
-//!     {"ok":true,"output":true}          spells_autolink
-//!     {"ok":false,"message":"…"}
+//! ```text
+//! {"ok":true,"description":{…}}
+//! {"ok":true,"table":{…}}
+//! {"ok":true,"output":"…"}           print, render_text, render_block
+//! {"ok":true,"output":true}          spells_autolink
+//! {"ok":false,"message":"…"}
+//! ```
 //!
 //! `dialect` is the row the call is through and `features` the features in
 //! force, by name. Every string is UTF-8: a document to parse crosses as a

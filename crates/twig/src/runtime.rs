@@ -551,7 +551,7 @@ impl Slot {
     }
 
     /// The row as the contract checks it.
-    fn contract_entry(self: &Arc<Slot>, syntax: &'static Syntax, samples: Vec<Vec<u8>>, syntax_for: bool) -> contract::Entry<'static> {
+    fn contract_entry(self: &Arc<Slot>, syntax: &'static Syntax, samples: Vec<Vec<u8>>, syntax_for: bool) -> contract::Entry {
         let fmt = self.format();
         let write = self.lang.description.write;
         let (a, b, c, d, e) = (self.clone(), self.clone(), self.clone(), self.clone(), self.clone());
@@ -559,22 +559,22 @@ impl Slot {
             id: fmt,
             samples,
             syntax,
-            parse: Box::new(move |cfg, src| {
+            parse: Arc::new(move |cfg, src| {
                 a.parse_document(a.effective(cfg.features), src).map(|doc| ParsedDoc { format: fmt, config: *cfg, doc })
             }),
-            parse_to_ast: Box::new(move |cfg, src| b.parse_document(b.effective(cfg.features), src)),
+            parse_to_ast: Arc::new(move |cfg, src| b.parse_document(b.effective(cfg.features), src)),
             serialize_canonical: if write {
-                Some(Box::new(move |doc| c.serialize_canonical(doc).map_err(|f| f.name())))
+                Some(Arc::new(move |doc| c.serialize_canonical(doc).map_err(|f| f.name())))
             } else {
                 None
             },
             serialize_from_ast: if write {
-                Some(Box::new(move |ast| d.serialize_from_ast(ast).map_err(|f| f.name())))
+                Some(Arc::new(move |ast| d.serialize_from_ast(ast).map_err(|f| f.name())))
             } else {
                 None
             },
             syntax_for: if syntax_for {
-                Some(Box::new(move |cfg| e.syntax_for(e.effective(cfg.features))))
+                Some(Arc::new(move |cfg| e.syntax_for(e.effective(cfg.features))))
             } else {
                 None
             },
@@ -807,7 +807,7 @@ pub fn samples_of(code: u16) -> Vec<Vec<u8>> {
 }
 
 /// The contract's view of a registered row.
-pub fn contract_entry(code: u16) -> Option<contract::Entry<'static>> {
+pub fn contract_entry(code: u16) -> Option<contract::Entry> {
     let s = slot_or_loading(code)?;
     let syntax = s.syntax.get().copied().unwrap_or(syntax::none());
     let author = s.lang.description.author;

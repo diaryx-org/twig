@@ -10,9 +10,11 @@
 //! whitespace. A `#` that begins a word comments out the rest of the line; a
 //! leading `~` in any argument is `$HOME`. There is no quoting.
 //!
-//!     # name   extensions   command…
-//!     org      org          twig-quickjs ~/.config/twig/org.mjs
-//!     wiki     wiki,mw      /usr/local/bin/wiki-helper --strict
+//! ```text
+//! # name   extensions   command…
+//! org      org          twig-quickjs ~/.config/twig/org.mjs
+//! wiki     wiki,mw      /usr/local/bin/wiki-helper --strict
+//! ```
 //!
 //! Found in this order, the earlier file winning a name: `$TWIG_LANGUAGES`;
 //! `.twig/languages` in the working directory and each ancestor;
