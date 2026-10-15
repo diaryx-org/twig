@@ -4,7 +4,7 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 status: draft
 author: adammharris
 created: 2026-10-14
-updated: 2026-10-14
+updated: 2026-10-15
 ---
 
 # fig in twig
@@ -156,7 +156,7 @@ reads to know a document's dialect without being told.
 4. **The C ABI and the CLI.** `twig meta get|set|…`, the verbs `fig
    --embed` had, in a `twig` built with `-Dfig`. Whether the release CLI is
    built that way is an open question below.
-5. **`twig-doc`'s `fig` feature**, once fig 6.0 is published. Then prov
+5. **`twig-doc`'s `fig` feature**, once fig 6.0 is on crates.io. Then prov
    moves `MetaEditor` from `fig::Embed` to it.
 6. **The hoisted record**, and the HTML printer and editor reading it.
 
@@ -172,6 +172,3 @@ reads to know a document's dialect without being told.
 - **Is `twig` the right key?** It is short and says whose it is. A
   workspace-wide default belongs to prov's config, not to each document,
   and is out of scope here.
-- **fig's pin.** `build.zig.zon` pins fig by commit, as fig pins zigjr. It
-  moves to a release tarball when 6.0 is tagged, and from then on it moves
-  with fig's releases.

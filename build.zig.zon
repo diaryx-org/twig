@@ -7,10 +7,11 @@
         // fig, for `twig-meta` (src/meta/): the config inside a document,
         // read and edited through fig's Editor. Lazy, and only asked for with
         // -Dfig, so the core library, the C ABI and the Rust crates' vendored
-        // build fetch nothing.
+        // build fetch nothing. Pinned to a release tag; it moves with fig's
+        // releases.
         .fig = .{
-            .url = "https://github.com/diaryx-org/fig/archive/f9d8469c2074c3bb6c0b9ee22fde6f7c94edf6d7.tar.gz",
-            .hash = "fig-6.0.0-dHuf4thOOADcWFX4M9vok1ThCwTvanfBLffwn3o2AwDr",
+            .url = "https://github.com/diaryx-org/fig/archive/refs/tags/v6.0.0.tar.gz",
+            .hash = "fig-6.0.0-dHuf4gVlOwANAfo_0NOZXHGjkdyPP1kLKR86xsjDqrk6",
             .lazy = true,
         },
     },
