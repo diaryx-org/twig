@@ -248,9 +248,11 @@ fn every_binding_item_exists_with_its_signature() {
         | Gesture::ToggleLineBlock => (),
         _ => (),
     };
-    for t in [InlineKind::Strong] {
-        assert_copy_val(t);
-    }
+    assert_copy::<InlineKind>();
+    assert_copy::<BlockKind>();
+    assert_copy::<BlockContainerKind>();
+    assert_copy::<MarkColor>();
+    assert_copy::<Gesture>();
     let _ = MarkdownExtensions {
         directives: false,
         math: false,
@@ -487,4 +489,3 @@ fn every_binding_item_exists_with_its_signature() {
     let _ = |e: Error| -> Box<dyn std::error::Error> { Box::new(e) };
 }
 
-fn assert_copy_val<T: Copy>(_: T) {}
