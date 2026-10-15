@@ -18,9 +18,9 @@ contents:
 
 Work that is committed to and deferred, one file each. A task has a done
 state; a bug is a task with a repro. What is open is a view
-(`prov views open-tasks`, `dx tasks`); the `contents` above lists what is
+(`prov views open-tasks`, `org tasks`); the `contents` above lists what is
 live, and a closed task moves to [Closed tasks](/docs/tasks/closed/closed.md)
-(`dx shelve`), which is part of this index, so every task is still reached
+(`org shelve`), which is part of this index, so every task is still reached
 from here.
 
 `status` is `open`, `in-progress`, `done`, or `dropped`
