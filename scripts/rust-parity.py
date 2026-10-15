@@ -128,7 +128,9 @@ VARIANTS = {
 def run(binary, args):
     try:
         p = subprocess.run([binary] + args, capture_output=True, timeout=30)
-        return p.returncode, p.stdout, p.stderr
+        # The usage lines echo argv[0]; the two binaries live at different paths.
+        b = binary.encode()
+        return p.returncode, p.stdout.replace(b, b"twig"), p.stderr.replace(b, b"twig")
     except subprocess.TimeoutExpired:
         return "timeout", b"", b""
     except FileNotFoundError:
@@ -143,6 +145,71 @@ def job(zig, rust, fmt, variant, output, path):
     return fmt, " ".join(variant[2:]) or "-", output, str(path), same, z, r
 
 
+SELECTORS = [
+    "heading", "para", "str", "link", "emph", "list_item", "code_block", "table",
+    "heading[level=2]", "link[dest^=\"http\"]", "para > str", "item[2]", ":nth(1)",
+    "container", "heading(\"a\")", "*", "cell", "[", "footnote", "image",
+]
+
+EDITS = [
+    ["--replace", "0", "X\n"],
+    ["--replace-content", "0", "Y"],
+    ["--insert-before", "0", "Z\n\n"],
+    ["--insert-after", "0", "\n\nW\n"],
+    ["--insert-child", "0", "0", "V"],
+    ["--delete", "0"],
+    ["--unwrap", "0"],
+    ["--delete", "0.0"],
+    ["--replace", "heading", "# H\n"],
+    ["--delete", "para"],
+    ["--replace-content", "0.0", "q"],
+    ["--unwrap", "emph"],
+]
+
+FILTERS = [
+    ["--drop", "heading"],
+    ["--drop", "para", "--keep", "para:nth(1)"],
+    ["--drop", "emph", "--unwrap"],
+    ["--drop", "container", "--keep", "container[name=note]", "--unwrap"],
+]
+
+
+def cmd_job(zig, rust, label, args):
+    z = run(zig, args)
+    r = run(rust, args)
+    same = z[0] == r[0] and z[1] == r[1] and z[2] == r[2]
+    return label[0], label[1], label[2], " ".join(args), same, z, r
+
+
+def command_jobs(corpus):
+    """Every non-convert verb, over a sample of the corpus. Compares stderr
+    too: these verbs report through it."""
+    out = []
+    by_fmt = {}
+    for fmt, path in corpus:
+        by_fmt.setdefault(fmt, []).append(path)
+    for fmt, paths in by_fmt.items():
+        sample = paths[:: max(1, len(paths) // 60)]
+        flag = VARIANTS[fmt][0]
+        for path in sample:
+            for sel in SELECTORS:
+                out.append(((fmt, "query", sel), ["query"] + flag + [str(path), sel]))
+            for e in EDITS:
+                out.append(((fmt, "edit", e[0]), ["edit"] + flag + ["--dry-run", str(path)] + e))
+            for f in FILTERS:
+                out.append(((fmt, "filter", f[1]), ["filter"] + flag + ["--dry-run", str(path)] + f))
+            out.append(((fmt, "identify", "-"), ["identify", str(path)]))
+    for f in ["djot", "markdown", "commonmark", "gfm", "xml", "svg", "html", "asciidoc", "dj", "nope"]:
+        out.append((("lang", "syntax", f), ["lang", "syntax", f]))
+    for bad in [[], ["convert"], ["convert", "x.unknown"], ["convert", "-"], ["convert", "-i", "nope", "x"],
+                ["convert", "-o", "nope", "x.dj"], ["convert", "/nonexistent.dj"], ["query", "x.md"],
+                ["edit", "x.dj"], ["filter", "x.md"], ["lang"], ["lang", "frob"], ["lang", "check"],
+                ["convert", "--feature", "nope", "x.dj"], ["convert", "--lang", "djot", "x.dj"],
+                ["edit", "x.dj", "--insert-child", "0", "-1", "t"], ["help"], ["frobnicate"]]:
+        out.append((("errors", "argv", " ".join(bad) or "(none)"), bad))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--zig", default=str(ROOT / "zig-out" / "bin" / "twig"))
@@ -151,6 +218,7 @@ def main():
     ap.add_argument("--outputs", default=",".join(OUTPUTS))
     ap.add_argument("--mismatches", default="")
     ap.add_argument("-j", type=int, default=os.cpu_count() or 4)
+    ap.add_argument("--no-commands", action="store_true", help="only the convert matrix")
     a = ap.parse_args()
     only = set(filter(None, a.only.split(",")))
     outputs = a.outputs.split(",")
@@ -177,6 +245,20 @@ def main():
                     t[0] += 1
                 else:
                     bad.append((key, path, z, r))
+
+        if not a.no_commands:
+            cjobs = command_jobs(corpus)
+            with cf.ThreadPoolExecutor(max_workers=a.j) as ex:
+                futs = [ex.submit(cmd_job, a.zig, a.rust, label, args) for label, args in cjobs]
+                for f in cf.as_completed(futs):
+                    fmt, verb, what, argv, same, z, r = f.result()
+                    key = (fmt, verb, "")
+                    t = tally.setdefault(key, [0, 0])
+                    t[1] += 1
+                    if same:
+                        t[0] += 1
+                    else:
+                        bad.append((key, argv, z, r))
 
     total_ok = sum(v[0] for v in tally.values())
     total = sum(v[1] for v in tally.values())
