@@ -4,7 +4,16 @@
 //! covers the full semantic vocabulary (it is what the djot and Markdown HTML
 //! renderers drive).
 
+pub mod parser;
 pub mod serializer;
+
+#[cfg(test)]
+mod conformance;
+#[cfg(test)]
+mod oracle_tests;
+
+use crate::document::Document;
+pub use parser::Parser;
 
 pub use serializer::{
     is_void_element, serialize, serialize_alloc, serialize_alloc_opts, serialize_node, serialize_node_opts,
@@ -41,6 +50,14 @@ pub const GFM_RENDER_OPTIONS: RenderOptions = RenderOptions {
     tagfilter: true,
     ..COMMONMARK_RENDER_OPTIONS
 };
+
+/// Parse forgiving HTML into the shared generic-markup AST. A
+/// document-oriented parser rather than a browser DOM implementation: it never
+/// fails, recognizes normal HTML token forms and common optional end tags, and
+/// preserves unknown markup in the generic AST vocabulary.
+pub fn parse(source: &[u8]) -> Document {
+    Parser::new(source).parse()
+}
 
 /// Small documents exercising the shared engine contract; not a conformance corpus.
 pub const SAMPLES: &[&[u8]] = &[
