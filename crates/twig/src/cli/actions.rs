@@ -139,9 +139,9 @@ pub fn run_lang(stdout: &mut dyn Write, stderr: &mut dyn Write, opts: &LangOptio
             out.push(b'\n');
             stdout.write_all(&out).map_err(|_| ActionFailed)
         }
-        LangOptions::List => pending::list(stdout).map_err(|_| ActionFailed),
+        LangOptions::List => crate::cli::languages::list(stdout).map_err(|_| ActionFailed),
         LangOptions::Check(c) => {
-            pending::check(stdout, stderr, c.name.as_deref(), &c.command, c.against, &c.files).map_err(|_| ActionFailed)
+            crate::cli::languages::check(stdout, stderr, c.name.as_deref(), &c.command, c.against, &c.files).map_err(|_| ActionFailed)
         }
     }
 }
@@ -505,30 +505,6 @@ pub fn read_source(path: &str, stderr: &mut dyn Write) -> Result<Vec<u8>, Action
         return Err(ActionFailed);
     }
     Ok(out)
-}
-
-/// TODO(port): the configured-language commands route here until
-/// `cli::languages` is ported.
-mod pending {
-    use std::io::Write;
-
-    use crate::format::Format;
-
-    pub fn list(out: &mut dyn Write) -> std::io::Result<()> {
-        out.write_all(b"compiled:\n")
-    }
-
-    pub fn check(
-        _out: &mut dyn Write,
-        err: &mut dyn Write,
-        _name: Option<&str>,
-        _command: &[String],
-        _against: Option<Format>,
-        _files: &[String],
-    ) -> Result<(), ()> {
-        let _ = writeln!(err, "error: lang check is not ported yet");
-        Err(())
-    }
 }
 
 #[cfg(test)]

@@ -21,6 +21,8 @@ pub fn run(argv: Vec<String>) -> i32 {
     let mut stdout = std::io::BufWriter::new(stdout.lock());
     let mut stderr = std::io::stderr().lock();
 
+    languages::init(&mut stderr);
+
     let mut it = args::Args::new(argv);
     let config = match args::parse_config(&mut it, &mut stderr) {
         Ok(c) => c,
