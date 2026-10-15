@@ -202,6 +202,16 @@ pub fn writes_own_syntax(fmt: Format, target: Target) -> bool {
     target_for(fmt) == target
 }
 
+/// Whether `target` can be written from a bare tree (its `serializeFromAst`
+/// slot). XML's printer needs the `Document` it parsed, so it cannot.
+pub fn target_serializes_from_ast(target: Target) -> bool {
+    match target {
+        Target::Xml => false,
+        Target::Runtime(c) => runtime::prints(c),
+        _ => true,
+    }
+}
+
 // ── Features ────────────────────────────────────────────────────────────────
 
 /// A named switch a row's parser reads. Markdown's are its extensions.

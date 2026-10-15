@@ -48,3 +48,13 @@ pub fn by_name(_name: &str) -> Option<Format> {
 pub fn by_extension(_ext: &str) -> Option<Format> {
     None
 }
+
+/// Whether a runtime target prints.
+pub fn prints(_code: u16) -> bool {
+    false
+}
+
+/// What the fidelity probe measured for a runtime target.
+pub fn measured(_target: crate::format::Target) -> Option<std::sync::Arc<crate::diagnostics::Measured>> {
+    None
+}
