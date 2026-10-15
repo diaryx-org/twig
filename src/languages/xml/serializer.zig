@@ -65,7 +65,12 @@ fn writeAttrs(ast: *const AST, id: Node.Id, writer: *Writer) Writer.Error!void {
 }
 
 /// Write `id` (and its descendants) as XML text to `writer`.
-pub fn serializeNode(doc: *const Document, id: Node.Id, writer: *Writer) Writer.Error!void {
+/// `UnsupportedNode`: the tree holds a kind XML has no spelling for — a
+/// semantic one (`heading`, `link`, ...) that only a built or converted tree,
+/// never this parser's, can contain.
+pub const SerializeError = Writer.Error || error{UnsupportedNode};
+
+pub fn serializeNode(doc: *const Document, id: Node.Id, writer: *Writer) SerializeError!void {
     const node = doc.ast.nodes[id];
     switch (node.kind) {
         .doc => {
@@ -123,24 +128,26 @@ pub fn serializeNode(doc: *const Document, id: Node.Id, writer: *Writer) Writer.
             try writer.writeAll("?>");
         },
         // `parser.zig` (and any well-behaved XML parser) never produces
-        // anything outside these generic-markup kinds.
-        else => unreachable,
+        // anything outside these generic-markup kinds; a built or converted
+        // tree can, and XML has no spelling for it.
+        else => return error.UnsupportedNode,
     }
 }
 
 /// Serialize the whole tree (from `ast.root`) to `writer`.
-pub fn serialize(doc: *const Document, writer: *Writer) Writer.Error!void {
+pub fn serialize(doc: *const Document, writer: *Writer) SerializeError!void {
     try serializeNode(doc, doc.ast.root, writer);
 }
 
 /// Convenience wrapper: serialize to an owned string.
-pub fn serializeAlloc(allocator: Allocator, doc: *const Document) Allocator.Error![]u8 {
+pub fn serializeAlloc(allocator: Allocator, doc: *const Document) (Allocator.Error || error{UnsupportedNode})![]u8 {
     var out: Writer.Allocating = .init(allocator);
     defer out.deinit();
     // `Writer.Allocating` only fails via `error.WriteFailed` when its own
     // backing allocation fails (mirrors `html.zig`'s `renderAlloc`).
     serialize(doc, &out.writer) catch |err| switch (err) {
         error.WriteFailed => return error.OutOfMemory,
+        error.UnsupportedNode => return error.UnsupportedNode,
     };
     return out.toOwnedSlice();
 }
@@ -168,6 +175,15 @@ test "serializes an explicit open/close pair even when empty" {
     const out = try serializeAlloc(testing.allocator, &ast);
     defer testing.allocator.free(out);
     try testing.expectEqualStrings("<a></a>", out);
+}
+
+test "a kind XML cannot spell is refused, not reached" {
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const h = try b.addContainer(.{ .heading = .{ .level = 1 } }, &.{try b.addLeaf(.{ .str = "x" })});
+    var doc = try b.finishDocument("", try b.addContainer(.doc, &.{h}));
+    defer doc.deinit();
+    try testing.expectError(error.UnsupportedNode, serializeAlloc(testing.allocator, &doc));
 }
 
 test "escapes text and attribute values" {

@@ -324,7 +324,7 @@ pub unsafe extern "C" fn twig_document_render_html(
             Ok(r) => r,
             Err(reg::PrintFailure::UnsafeMetadata) => return TWIG_STATUS_UNSAFE_METADATA,
             Err(reg::PrintFailure::UnsupportedFormat) => return TWIG_STATUS_UNSUPPORTED_FORMAT,
-            Err(reg::PrintFailure::Language(_)) => return TWIG_STATUS_INTERNAL_ERROR,
+            Err(reg::PrintFailure::Language(_) | reg::PrintFailure::UnsupportedNode) => return TWIG_STATUS_INTERNAL_ERROR,
         };
         unsafe { emit(&h.rendered, out_ptr, out_len) };
         TWIG_STATUS_OK
@@ -354,7 +354,7 @@ pub unsafe extern "C" fn twig_document_serialize(
             Ok(s) => s,
             Err(reg::PrintFailure::UnsupportedFormat) => return TWIG_STATUS_UNSUPPORTED_FORMAT,
             Err(reg::PrintFailure::UnsafeMetadata) => return TWIG_STATUS_UNSAFE_METADATA,
-            Err(reg::PrintFailure::Language(_)) => return TWIG_STATUS_INTERNAL_ERROR,
+            Err(reg::PrintFailure::Language(_) | reg::PrintFailure::UnsupportedNode) => return TWIG_STATUS_INTERNAL_ERROR,
         };
         unsafe { emit(&h.serialized, out_ptr, out_len) };
         TWIG_STATUS_OK

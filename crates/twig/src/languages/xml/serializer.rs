@@ -48,12 +48,26 @@ fn write_attrs(attrs: &Attrs, out: &mut Vec<u8>) {
     }
 }
 
+/// The tree holds a kind XML has no spelling for — a semantic one (`heading`,
+/// `link`, ...) that only a built or converted tree, never this parser's, can
+/// contain. Zig's `error.UnsupportedNode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnsupportedNode;
+
+impl std::fmt::Display for UnsupportedNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UnsupportedNode")
+    }
+}
+
+impl std::error::Error for UnsupportedNode {}
+
 /// Write `id` (and its descendants) as XML text to `out`.
-pub fn serialize_node(doc: &Document, id: NodeId, out: &mut Vec<u8>) {
+pub fn serialize_node(doc: &Document, id: NodeId, out: &mut Vec<u8>) -> Result<(), UnsupportedNode> {
     match doc.ast.kind(id) {
         Kind::Doc => {
             for child in doc.children(id) {
-                serialize_node(doc, child.id, out);
+                serialize_node(doc, child.id, out)?;
             }
         }
         Kind::Container(e) => {
@@ -62,7 +76,7 @@ pub fn serialize_node(doc: &Document, id: NodeId, out: &mut Vec<u8>) {
             write_attrs(doc.ast.attrs_of(id), out);
             if doc.content_span(id).is_none() {
                 out.extend_from_slice(b"/>");
-                return;
+                return Ok(());
             }
             out.push(b'>');
             // XML has no raw-text elements, so a text body that came from
@@ -71,7 +85,7 @@ pub fn serialize_node(doc: &Document, id: NodeId, out: &mut Vec<u8>) {
                 write_escaped_text(out, text);
             } else {
                 for child in doc.children(id) {
-                    serialize_node(doc, child.id, out);
+                    serialize_node(doc, child.id, out)?;
                 }
             }
             out.extend_from_slice(b"</");
@@ -105,21 +119,23 @@ pub fn serialize_node(doc: &Document, id: NodeId, out: &mut Vec<u8>) {
             }
             out.extend_from_slice(b"?>");
         }
-        // The XML parser never produces anything outside generic markup.
-        other => unreachable!("xml serializer: unexpected kind {}", other.kind_name()),
+        // The XML parser never produces anything outside generic markup; a
+        // built or converted tree can, and XML has no spelling for it.
+        _ => return Err(UnsupportedNode),
     }
+    Ok(())
 }
 
 /// Serialize the whole tree (from the root) to `out`.
-pub fn serialize_into(doc: &Document, out: &mut Vec<u8>) {
-    serialize_node(doc, doc.ast.root, out);
+pub fn serialize_into(doc: &Document, out: &mut Vec<u8>) -> Result<(), UnsupportedNode> {
+    serialize_node(doc, doc.ast.root, out)
 }
 
 /// Serialize the whole tree to an owned buffer (Zig's `serializeAlloc`).
-pub fn serialize(doc: &Document) -> Vec<u8> {
+pub fn serialize(doc: &Document) -> Result<Vec<u8>, UnsupportedNode> {
     let mut out = Vec::new();
-    serialize_into(doc, &mut out);
-    out
+    serialize_into(doc, &mut out)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -132,13 +148,23 @@ mod tests {
     #[test]
     fn serializes_a_self_closing_element_with_attributes() {
         let doc = Parser::new(b"<a x=\"1\" y=\"2\"/>").parse().unwrap();
-        assert_eq!(serialize(&doc), b"<a x=\"1\" y=\"2\"/>");
+        assert_eq!(serialize(&doc).unwrap(), b"<a x=\"1\" y=\"2\"/>");
     }
 
     #[test]
     fn serializes_an_explicit_open_close_pair_even_when_empty() {
         let doc = Parser::new(b"<a></a>").parse().unwrap();
-        assert_eq!(serialize(&doc), b"<a></a>");
+        assert_eq!(serialize(&doc).unwrap(), b"<a></a>");
+    }
+
+    #[test]
+    fn a_kind_xml_cannot_spell_is_refused_not_reached() {
+        let mut b = Builder::new();
+        let x = b.add_leaf(Kind::Str(b"x".to_vec()));
+        let h = b.add_container(Kind::Heading { level: 1 }, &[x]);
+        let root = b.add_container(Kind::Doc, &[h]);
+        let doc = b.finish_document(b"", root);
+        assert_eq!(serialize(&doc), Err(UnsupportedNode));
     }
 
     #[test]
@@ -151,7 +177,7 @@ mod tests {
         let doc_id = b.add_container(Kind::Doc, &[el]);
         let doc = b.finish_document(b"", doc_id);
         assert_eq!(
-            String::from_utf8(serialize(&doc)).unwrap(),
+            String::from_utf8(serialize(&doc).unwrap()).unwrap(),
             "<p title=\"x &quot;y&quot; &amp; z\">a &lt; b &amp; c &gt; d</p>"
         );
     }

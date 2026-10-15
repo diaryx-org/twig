@@ -261,7 +261,7 @@ impl Document {
         result.map_err(|e| match e {
             reg::PrintFailure::UnsupportedFormat => Error::UnsupportedFormat,
             reg::PrintFailure::UnsafeMetadata => Error::UnsafeMetadata,
-            reg::PrintFailure::Language(_) => Error::Internal,
+            reg::PrintFailure::Language(_) | reg::PrintFailure::UnsupportedNode => Error::Internal,
         })
     }
 

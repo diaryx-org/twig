@@ -384,6 +384,8 @@ pub enum PrintFailure {
     UnsupportedFormat,
     /// The HTML printer refused a metadata block containing `</script`.
     UnsafeMetadata,
+    /// The XML printer met a kind it has no spelling for.
+    UnsupportedNode,
     /// A runtime language refused, with its reason.
     Language(String),
 }
@@ -393,6 +395,7 @@ impl PrintFailure {
         match self {
             PrintFailure::UnsupportedFormat => "UnsupportedFormat".into(),
             PrintFailure::UnsafeMetadata => "UnsafeMetadata".into(),
+            PrintFailure::UnsupportedNode => "UnsupportedNode".into(),
             PrintFailure::Language(why) => why.clone(),
         }
     }
@@ -452,7 +455,7 @@ pub fn serialize_canonical(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
         Format::Markdown | Format::Commonmark | Format::Gfm => {
             Ok(languages::markdown::serializer::serialize(&doc.doc))
         }
-        Format::Xml | Format::Svg => Ok(languages::xml::serialize(&doc.doc)),
+        Format::Xml | Format::Svg => languages::xml::serialize(&doc.doc).map_err(|_| PrintFailure::UnsupportedNode),
         Format::Html => serialize_from_ast(Target::Html, &doc.doc.ast),
         Format::Asciidoc => serialize_from_document(Target::Asciidoc, &doc.doc),
         Format::Runtime(c) => runtime::serialize_canonical(c, doc),

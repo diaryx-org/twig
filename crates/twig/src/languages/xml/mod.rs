@@ -237,7 +237,7 @@ mod tests {
         ];
         for src in cases {
             let a1 = parse(src.as_bytes()).unwrap();
-            let out = serialize(&a1);
+            let out = serialize(&a1).unwrap();
             let a2 = parse(&out).unwrap();
             assert!(trees_equal(&a1, a1.ast.root, &a2, a2.ast.root), "{src}");
         }
@@ -255,7 +255,7 @@ mod tests {
         ];
         for src in cases {
             let ast = parse(src.as_bytes()).unwrap();
-            assert_eq!(String::from_utf8(serialize(&ast)).unwrap(), src);
+            assert_eq!(String::from_utf8(serialize(&ast).unwrap()).unwrap(), src);
         }
     }
 
@@ -263,7 +263,7 @@ mod tests {
     fn samples_parse_and_round_trip() {
         for src in SAMPLES.iter().chain(SVG_SAMPLES) {
             let ast = parse(src.as_bytes()).unwrap();
-            let again = parse(&serialize(&ast)).unwrap();
+            let again = parse(&serialize(&ast).unwrap()).unwrap();
             assert!(trees_equal(&ast, ast.ast.root, &again, again.ast.root));
         }
     }

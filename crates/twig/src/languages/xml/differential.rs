@@ -147,7 +147,7 @@ fn check(fmt: &str, src: &[u8]) -> Vec<String> {
                 ));
             }
             let want_canon = oracle(&["convert", "-i", fmt, "-o", "canonical"], src).unwrap();
-            if super::serialize(&doc) != want_canon {
+            if super::serialize(&doc).unwrap() != want_canon {
                 problems.push(format!("{fmt} canonical differs for {:?}", String::from_utf8_lossy(src)));
             }
         }

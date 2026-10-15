@@ -577,17 +577,6 @@ fn view_document(h: &BuilderHandle, root: u32) -> Document {
     h.builder.clone().finish_document(b"", root)
 }
 
-/// The kinds XML's serializer prints.
-fn xml_prints(kind: &engine::Kind) -> bool {
-    matches!(
-        kind,
-        engine::Kind::Doc
-            | engine::Kind::Str(_)
-            | engine::Kind::Container(_)
-            | engine::Kind::MarkupLeaf { .. }
-            | engine::Kind::ProcessingInstruction { .. }
-    )
-}
 
 /// `serializeBuiltAst`: always from the bare tree, carrying the builder's
 /// spelling table where the target reads one.
@@ -597,15 +586,10 @@ fn serialize_built_ast(doc: &Document, target: reg::Target) -> Result<Vec<u8>, T
         reg::Target::Djot => languages::djot::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
         reg::Target::Markdown => languages::markdown::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
         reg::Target::Html => languages::html::serialize_alloc(ast, None).map_err(|_| TWIG_STATUS_UNSAFE_METADATA)?,
-        reg::Target::Xml => {
-            // Zig's XML serializer reaches `unreachable` on a semantic kind
-            // (a panic in a safe build); the header promises
-            // UNSUPPORTED_FORMAT, which is what this answers.
-            if !ast.subtree_ids(ast.root).iter().all(|&id| xml_prints(&ast.nodes[id as usize].kind)) {
-                return Err(TWIG_STATUS_UNSUPPORTED_FORMAT);
-            }
-            languages::xml::serialize(doc)
-        }
+        // XML's printer spells only the generic-markup kinds its own parser
+        // produces, so a built tree holding a semantic kind is refused —
+        // the unsupported-format the C ABI promises.
+        reg::Target::Xml => languages::xml::serialize(doc).map_err(|_| TWIG_STATUS_UNSUPPORTED_FORMAT)?,
         reg::Target::Asciidoc => languages::asciidoc::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
         reg::Target::Runtime(_) => reg::serialize_from_ast(target, ast).map_err(|e| match e {
             reg::PrintFailure::UnsafeMetadata => TWIG_STATUS_UNSAFE_METADATA,
