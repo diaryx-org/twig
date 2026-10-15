@@ -6,8 +6,6 @@ pub mod conformance;
 pub mod parser;
 pub mod serializer;
 
-#[cfg(test)]
-mod differential;
 
 pub use parser::{parse, parse_inline_list};
 pub use serializer::{serialize, serialize_ast, serialize_ast_spelled};

@@ -9,8 +9,6 @@ pub mod serializer;
 
 #[cfg(test)]
 mod conformance;
-#[cfg(test)]
-mod oracle_tests;
 
 use crate::document::Document;
 pub use parser::Parser;

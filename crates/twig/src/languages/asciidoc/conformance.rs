@@ -26,11 +26,11 @@ use crate::json::{self, Stringify, Value};
 /// The vendored AsciiDoc TCK — a third party's expectations, the normative
 /// ratchet.
 pub const TCK_CORPUS_JSON: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/languages/asciidoc/testdata/asciidoc-tck-corpus.json"));
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/asciidoc/asciidoc-tck-corpus.json"));
 
 /// Twig's own authored cases — a weaker authority, a much wider net.
 pub const TWIG_CORPUS_JSON: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/languages/asciidoc/testdata/asciidoc-twig-corpus.json"));
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/asciidoc/asciidoc-twig-corpus.json"));
 
 /// Ratchet floor: `Coverage::semantic` summed across all 13 TCK cases.
 pub const SEMANTIC_BASELINE: u32 = 50;

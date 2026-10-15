@@ -23,13 +23,14 @@ assert_eq!(ed.source_str()?, "## Hello\n");
 ```
 
 The crate root is API-compatible with `twig-doc` 4.x (the FFI binding over
-the Zig library): `Document`, `Editor`, `Builder`, `Format`, `Gesture`,
+the earlier Zig library): `Document`, `Editor`, `Builder`, `Format`, `Gesture`,
 `Kind`, `FlatNode`, runtime languages (`Language`, `register`, `serve`,
 `helper::spawn`) and the rest keep their names and signatures. The engine
 underneath is public too: `twig::ast`, `twig::document`, `twig::languages`,
 `twig::format`.
 
-The crate also builds the `twig` command-line tool (`cargo install twig-doc`),
-byte-for-byte compatible with the Zig one.
+The `twig` command-line tool is its own crate,
+[`twig-doc-cli`](https://crates.io/crates/twig-doc-cli):
+`cargo install twig-doc-cli`.
 
 Licensed under either of Apache-2.0 or MIT, at your option.

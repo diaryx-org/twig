@@ -13,7 +13,7 @@ id: wxmq0ww
     <div class="pj-title" style="margin-top: 1rem">
       <h1>twig</h1>
       <span class="pj-tags">
-        <span class="tag-chip">Zig</span>
+        <span class="tag-chip">Rust</span>
         <span class="tag-chip">MIT / Apache-2.0</span>
       </span>
     </div>
@@ -55,7 +55,7 @@ for anyone who needs to treat markup as data.
 <div class="cmd">cargo add twig-doc <small>Rust</small></div>
 </div>
 <div class="facts">
-<div class="row"><span class="k">Language</span><span class="v">Zig (Rust bindings)</span></div>
+<div class="row"><span class="k">Language</span><span class="v">Rust</span></div>
 <div class="row"><span class="k">Used by</span><span class="v"><a href="../prov/index.md">prov</a> · <a href="../leaf/index.md">leaf</a> · <a href="../index.html">Diaryx</a></span></div>
 <div class="row"><span class="k">Source</span><span class="v"><a href="https://github.com/diaryx-org/twig">github.com/diaryx-org/twig</a></span></div>
 <div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/twig-doc">crates.io/crates/twig-doc</a> · <a href="https://docs.rs/twig-doc">docs.rs/twig-doc</a></span></div>

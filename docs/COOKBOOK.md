@@ -18,7 +18,7 @@ Every `edit`/`filter` writes back in place; add `--dry-run` to print instead.
 Read from stdin with `-` (requires an explicit `-i`, since there's no extension
 to sniff). All examples below were run against the real binary.
 
-> Examples use `twig`; if you haven't installed it, use `./zig-out/bin/twig`.
+> Examples use `twig`; if you haven't installed it, use `cargo run --release --`.
 
 ---
 

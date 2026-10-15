@@ -1,14 +1,18 @@
-# The pure-Rust Twig. `bindings/rust` is the older FFI binding over the Zig
-# library and keeps its own workspace; it is excluded here.
 [workspace]
 resolver = "3"
-members = ["crates/twig", "crates/twig-capi"]
-exclude = ["bindings"]
+members = ["crates/twig", "crates/twig-cli", "crates/twig-capi"]
+default-members = ["crates/twig", "crates/twig-cli"]
 
 [workspace.package]
 version = "5.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+repository = "https://github.com/diaryx-org/twig"
+homepage = "https://github.com/diaryx-org/twig"
+
+[workspace.dependencies]
+twig-doc = { path = "crates/twig", version = "5.0.0" }
 
 [profile.release]
 debug = 1

@@ -31,7 +31,7 @@ honest:
     variant, a form, or a required field it forgot to fill in — a case that
     isn't a legal ASG never reaches the corpus.
   * **The format is the TCK's.** Cases are emitted in exactly the shape
-    `asciidoc-tck-corpus.json` has, so `conformance.zig` runs both corpora
+    `asciidoc-tck-corpus.json` has, so `conformance.rs` runs both corpora
     through one code path, and so any case here can be exported as an
     `-input.adoc`/`-output.json` pair and offered upstream. `--export-tck DIR`
     does exactly that.
@@ -74,7 +74,7 @@ import re
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
-TESTDATA = HERE.parent / "src" / "languages" / "asciidoc" / "testdata"
+TESTDATA = HERE.parent / "crates" / "twig" / "testdata" / "asciidoc"
 CORPUS = TESTDATA / "asciidoc-twig-corpus.json"
 SCHEMA = TESTDATA / "asg-schema.json"
 

@@ -43,18 +43,21 @@ The following languages are implemented:
 - XML (generic-markup parser + serializer, strict; every element's attribute region is recorded, so an element's attributes can be rewritten in place by node id — the one gesture a tree-shaped editor needs, and the one XML supports), with `svg` as a named dialect so a `.svg` file is recognised on sight
 - AsciiDoc — every block and inline shape the official ASG schema (draft-01) enumerates, plus tables, footnotes, superscript and the other constructs the schema does not model yet; the vendored AsciiDoc TCK passes 13/13 and twig's own schema-validated corpus 137/137. Parses, renders, serializes (`-o asciidoc`) and authors.
 
-# Rust
+# Crates
 
-Twig is written in Rust: [`crates/twig`](crates/twig) is the
-[`twig-doc`](crates/twig/README.md) crate (library `twig`, plus the `twig`
-CLI), with no `-sys` crate and no native toolchain; [`crates/twig-capi`](crates/twig-capi)
-builds the C ABI declared in [`bindings/c/include/twig.h`](bindings/c/include/twig.h).
-The original Zig implementation in `src/` remains as the reference the port is
-held to: `scripts/rust-parity.py` runs both CLIs over the repository's corpora
-and requires byte-identical output.
+Twig is written in Rust, with no `-sys` crate and no native toolchain:
 
-    cargo build --release        # target/release/twig
-    cargo test --workspace
+- [`crates/twig`](crates/twig) is [`twig-doc`](crates/twig/README.md), the
+  engine (library `twig`).
+- [`crates/twig-cli`](crates/twig-cli) is [`twig-doc-cli`](crates/twig-cli/README.md),
+  the `twig` command-line tool (`cargo install twig-doc-cli`).
+- [`crates/twig-capi`](crates/twig-capi) builds the C ABI declared in
+  [`bindings/c/include/twig.h`](bindings/c/include/twig.h).
+
+```
+cargo build --release        # target/release/twig
+cargo test --workspace
+```
 
 # License
 
