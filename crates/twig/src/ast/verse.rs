@@ -273,7 +273,7 @@ mod tests {
     use crate::languages::markdown::{self, ParseOptions};
 
     /// Each line's source text, from its first child to its last.
-    fn line_texts<'d>(doc: &'d Document, block: NodeId) -> Vec<&'d [u8]> {
+    fn line_texts(doc: &Document, block: NodeId) -> Vec<&[u8]> {
         doc.ast
             .children(block)
             .map(|line| {
@@ -290,22 +290,8 @@ mod tests {
         ParseOptions { html_elements: true, ..ParseOptions::default() }
     }
 
-    /// TODO(port): the Markdown block parser is still a stub in places; these
-    /// tests run once it parses a paragraph.
-    fn markdown_ready() -> bool {
-        let doc = markdown::parse(b"a\n", ParseOptions::default());
-        let ready = doc.ast.node(doc.ast.root).first_child.is_some();
-        if !ready {
-            eprintln!("markdown parser not ported yet; skipping");
-        }
-        ready
-    }
-
     #[test]
     fn markdown_every_line_break_is_a_line_and_a_blank_line_a_stanza() {
-        if !markdown_ready() {
-            return;
-        }
         let src = b"<div class=\"verse\">\n\nOne line\nsoft-broken\\\nhard-broken\n\nstanza two\n\n</div>\n";
         let doc = markdown::parse(src, html_elements());
         let block = doc.ast.node(doc.ast.root).first_child.unwrap();
@@ -321,9 +307,6 @@ mod tests {
 
     #[test]
     fn markdown_em_spaces_are_the_indent_raw_or_as_an_entity() {
-        if !markdown_ready() {
-            return;
-        }
         let src = "<div class=\"verse center\">\n\nzero\n\u{2003}one\n&emsp;&#8195;two\n\n</div>\n";
         let s = src.as_bytes();
         let doc = markdown::parse(s, html_elements());
@@ -345,9 +328,6 @@ mod tests {
 
     #[test]
     fn markdown_a_div_holding_more_than_paragraphs_or_without_html_elements_is_not_a_verse() {
-        if !markdown_ready() {
-            return;
-        }
         let mixed = b"<div class=\"verse\">\n\n# A heading\n\nA line\n\n</div>\n";
         let doc = markdown::parse(mixed, html_elements());
         let block = doc.ast.node(doc.ast.root).first_child.unwrap();
@@ -372,9 +352,6 @@ mod tests {
 
     #[test]
     fn the_rewrite_leaves_nothing_behind_for_compaction_to_miss() {
-        if !markdown_ready() {
-            return;
-        }
         let doc = markdown::parse(b"<div class=\"verse\">\n\na\nb\n\nc\n\n</div>\n", html_elements());
         let mut seen = vec![false; doc.ast.nodes.len()];
         let mut stack = vec![doc.ast.root];

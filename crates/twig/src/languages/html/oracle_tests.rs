@@ -355,3 +355,59 @@ fn renderer_matches_oracle_for_markdown_extensions() {
     });
     report("markdown extensions render", inputs.len(), &failures);
 }
+
+// ── randomized ──────────────────────────────────────────────────────────────
+
+/// Documents stitched together from HTML-ish fragments by a fixed-seed PRNG:
+/// malformed nesting, stray closers, odd attributes and references.
+fn random_inputs(n: usize) -> Vec<Vec<u8>> {
+    const FRAGS: &[&str] = &[
+        "<p>", "</p>", "<div>", "</div>", "<ul>", "</ul>", "<ol start=2>", "</ol>", "<li>", "</li>", "<table>",
+        "</table>", "<tr>", "</tr>", "<td>", "<th align=center>", "</td>", "<thead>", "<tbody>", "</tbody>",
+        "<em>", "</em>", "<b>", "</b>", "<a href='/x'>", "<a>", "</a>", "<img src=i alt=a>", "<br>", "<hr/>",
+        "<pre>", "</pre>", "<code>", "</code>", "<script>", "</script>", "<title>", "</title>", "<textarea>",
+        "<!-- c -->", "<!x>", "<?p d?>", "<!DOCTYPE html>", "<span class=\"a b\">", "</span>", "<dl><dt>",
+        "<dd>", "<blockquote>", "</blockquote>", "<h2>", "</h2>", "<section>", "<svg><g/></svg>", "<x-y z>",
+        "text", " ", "\n", "\n\n", "  ", "&amp;", "&lt;", "&#65;", "&#x1F642;", "&bogus;", "&", ";", "<", ">",
+        "/", "\"", "'", "=", "<td colspan=2>", "<p id=x disabled>", "<input checked>", "</", "<3", "\u{e9}",
+        "<caption>", "<tfoot>", "<option>", "<rt>", "<i>", "<u>", "<sup>", "<s>",
+    ];
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    (0..n)
+        .map(|_| {
+            let len = (next() % 24) as usize;
+            let mut doc = Vec::new();
+            for _ in 0..len {
+                doc.extend_from_slice(FRAGS[(next() % FRAGS.len() as u64) as usize].as_bytes());
+            }
+            doc
+        })
+        .collect()
+}
+
+#[test]
+fn html_parser_matches_the_oracle_on_random_documents() {
+    let Some(bin) = oracle() else { return };
+    let inputs = random_inputs(1500);
+    let failures = par_check(&inputs, |input| {
+        let doc = super::parse(input);
+        let got_table = table::encode(&doc, Default::default());
+        let got_html = serialize_alloc(&doc.ast, None).unwrap();
+        let want_table = run(&bin, &["convert", "-i", "html", "-o", "table", "-"], input);
+        if want_table.as_deref() != Some(&got_table[..]) {
+            return Some(diff("table", input, &want_table.unwrap_or_default(), &got_table));
+        }
+        let want_html = run(&bin, &["convert", "-i", "html", "-"], input);
+        if want_html.as_deref() != Some(&got_html[..]) {
+            return Some(diff("html", input, &want_html.unwrap_or_default(), &got_html));
+        }
+        None
+    });
+    report("html parser (random)", inputs.len(), &failures);
+}
