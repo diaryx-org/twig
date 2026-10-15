@@ -339,9 +339,10 @@ fn renderer_matches_oracle_for_markdown_extensions() {
         targs.extend(&extra);
         targs.push("-");
         let Some(tab) = run(&bin, &targs, input) else { return Some(format!("oracle table failed: {:?}", lossy(input))) };
-        // The node table's decoder (Zig's too) refuses a few documents its
-        // encoder writes — a highlight-colour `mark`'s marker span; skip those.
-        let Ok(doc) = table::decode(input, &tab) else { return None };
+        let doc = match table::decode(input, &tab) {
+            Ok(d) => d,
+            Err(p) => return Some(format!("table refused ({p}): {:?}", lossy(input))),
+        };
         let mut hargs: Vec<&str> = vec!["convert", "-i", "markdown"];
         hargs.extend(&extra);
         hargs.push("-");

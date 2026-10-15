@@ -505,10 +505,14 @@ pub fn check_columns(doc: &Document) -> Result<(), Problem> {
     for (i, s) in doc.node_marker_spans.iter().enumerate() {
         let Some(s) = s else { continue };
         check_span(i, "marker_span", *s, len)?;
+        // A leading marker: a list or task item's, a heading's `#`s, a quote's
+        // `>`, an AsciiDoc admonition's label, a coloured Markdown highlight's
+        // emoji (`==🔴 x==` — spelling a rich view hides).
         let allowed = match &doc.ast.nodes[i].kind {
             Kind::ListItem | Kind::TaskListItem { .. } | Kind::DefinitionListItem | Kind::Heading { .. } | Kind::BlockQuote => {
                 true
             }
+            Kind::InlineMark(m) => *m == crate::ast::InlineMark::Mark,
             Kind::Container(c) => {
                 c.form == Some(crate::ast::Form::BlockFenced)
                     && doc.container_origin(i as NodeId) == Some(crate::document::ContainerOrigin::Directive)
@@ -595,6 +599,14 @@ mod tests {
         let doc_id = b.add_container(Kind::Doc, &[list]);
         b.set_span(doc_id, Span::new(0, 7));
         let doc = compact::run(b.finish_document(src, doc_id));
+        expect_identity(&doc);
+    }
+
+    #[test]
+    fn a_coloured_highlights_marker_crosses_and_comes_back() {
+        let opts = crate::languages::markdown::ParseOptions { highlight: true, highlight_colors: true, ..Default::default() };
+        let doc = crate::languages::markdown::parse("==\u{1F534} red== text\n".as_bytes(), opts);
+        assert!(doc.node_marker_spans.iter().any(Option::is_some));
         expect_identity(&doc);
     }
 

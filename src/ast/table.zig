@@ -537,9 +537,12 @@ pub fn checkColumns(doc: *const Document, problem: ?*Problem) error{InvalidTable
         const s = maybe orelse continue;
         try checkSpan(p, i, "marker_span", s, len);
         // A leading marker: a list or task item's, a heading's `#`s, a
-        // quote's `>`, an AsciiDoc admonition's label.
+        // quote's `>`, an AsciiDoc admonition's label, a coloured Markdown
+        // highlight's emoji (`==🔴 x==` — spelling a rich view hides, which the
+        // Markdown parser records and this check used to refuse).
         const allowed = switch (doc.ast.nodes[i].kind) {
             .list_item, .task_list_item, .definition_list_item, .heading, .block_quote => true,
+            .inline_mark => |m| m == .mark,
             .container => |c| c.form == .block_fenced and doc.containerOrigin(@intCast(i)) == .directive,
             else => false,
         };
@@ -665,6 +668,13 @@ fn expectRefused(src: []const u8, text: []const u8, row: ?usize, field: []const 
     try testing.expectError(error.InvalidTable, decode(testing.allocator, src, text, &problem));
     try testing.expectEqual(row, problem.row);
     try testing.expectEqualStrings(field, problem.field);
+}
+
+test "table: a coloured highlight's marker crosses and comes back" {
+    const Markdown = @import("../languages/markdown/markdown.zig");
+    var doc = try Markdown.parse(testing.allocator, "==\u{1F534} red== text\n", .{ .highlight = true, .highlight_colors = true });
+    defer doc.deinit();
+    try expectIdentity(testing.allocator, &doc);
 }
 
 test "table: decode names what it refuses" {
