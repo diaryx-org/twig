@@ -458,4 +458,62 @@ mod differential {
         }
         report(problems);
     }
+
+    /// Documents reaching the extension paths (directives, math, coloured
+    /// highlights, `html_elements`' divs/spans/underline/verse, footnotes,
+    /// definition lists, frontmatter, task lists) that the spec corpora never
+    /// exercise.
+    const EXTENSION_CORPUS: &[&str] = &[
+        ":::note{#n .box}\nHello ==\u{1F534} red== and ==\u{1F7E2}green== $x$ $$y$$ <u>u</u>\n:::\n",
+        "::youtube[A caption]{#v title=\"a b\"}\n\nSee :abbr[HTML]{title=HyperText} ok. :here\n",
+        ":::div{.c}\nx\n:::\n\na :span[x]{.l} b\n",
+        "<div class=\"verse center\">\n\nRoses are red,\n\n\u{2003}violets are blue.\\\n1\\. not a list\n\n</div>\n",
+        "<div class=\"c\" id=\"d\">\n\npara\n\n- a\n- b\n\n</div>\n\nx <span class=\"s\">y</span> <u>z</u>\n",
+        "---\ntitle: x\n---\n\n# Head\n\nTerm\n: Def\n\nOther\n: p1\n\n  p2\n",
+        "text[^a] and[^b]\n\n[^a]: the note\n[^b]: two\n\n    paras\n",
+        "- [x] done\n- [ ] todo\n\n* star\n* list\n\n3) paren\n4) list\n",
+        "| a | b |\n|:-|-:|\n| 1<br>2 | `|` |\n",
+        "> quote\n>\n> - nested\n>   list\n\n1. one\n\n   two\n2. three\n",
+        "[link](/u \"t\") ![img](/i) [ref][r] <https://x.dev> <a@b.dev> ~~del~~\n\n[r]: /dest \"title\"\n",
+    ];
+
+    #[test]
+    fn extension_paths_match_the_oracle() {
+        if !oracle_available() {
+            return;
+        }
+        let flags = ["--directives", "--math", "--highlight", "--highlight-colors", "--feature", "html_elements"];
+        let opts = ParseOptions {
+            directives: true,
+            math: true,
+            highlight: true,
+            highlight_colors: true,
+            html_elements: true,
+            ..ParseOptions::markdown()
+        };
+        let mut problems = Vec::new();
+        for src in EXTENSION_CORPUS {
+            let src = src.as_bytes();
+            let doc = parse(src, opts);
+            let canon = serializer::serialize(&doc);
+            let html = html::render_alloc(&doc, html::RenderOptions::default()).unwrap();
+            for (what, got) in [("canonical", canon), ("html", html)] {
+                let mut args = vec!["convert", "-i", "markdown"];
+                args.extend(flags);
+                if what != "html" {
+                    args.extend(["-o", what]);
+                }
+                let want = oracle(&args, src).unwrap_or_else(|e| panic!("oracle failed: {}", String::from_utf8_lossy(&e)));
+                if got != want {
+                    problems.push(format!(
+                        "extensions {what}: {:?}\n  ours: {:?}\n  want: {:?}",
+                        String::from_utf8_lossy(src),
+                        String::from_utf8_lossy(&got),
+                        String::from_utf8_lossy(&want)
+                    ));
+                }
+            }
+        }
+        report(problems);
+    }
 }

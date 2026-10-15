@@ -1332,8 +1332,67 @@ mod tests {
         assert_eq!(serialize_with("a :span[x]{.l} b\n", directives_on()), "a :span[x]{.l} b\n");
     }
 
-    // TODO(port): the djot/HTML → Markdown tests ("an attributed paragraph is
-    // written inside a div…", "djot's anonymous div is a <div>…", …) need the
-    // djot and HTML parsers; they are covered by the cross-format
-    // differential test in `markdown::html`'s test module once those land.
+    // ── attributes: the div and the span ───────────────────────────────
+
+    fn djot_to_markdown(src: &str) -> String {
+        s(serialize_ast(&crate::languages::djot::parse(src.as_bytes()).ast))
+    }
+
+    fn html_to_markdown(src: &str) -> String {
+        s(serialize_ast(&crate::languages::html::parse(src.as_bytes()).ast))
+    }
+
+    #[test]
+    fn an_attributed_paragraph_is_written_inside_a_div_that_carries_the_attributes() {
+        assert_eq!(
+            djot_to_markdown("{.center data-size=\"large\"}\nhello\n"),
+            "<div class=\"center\" data-size=\"large\">\n\nhello\n\n</div>\n"
+        );
+    }
+
+    #[test]
+    fn every_natively_spelled_block_wraps_the_same_way() {
+        assert_eq!(
+            djot_to_markdown("{.note}\n```\nx\n```\n\n{.steps}\n- one\n- two\n"),
+            "<div class=\"note\">\n\n```\nx\n```\n\n</div>\n\n<div class=\"steps\">\n\n- one\n- two\n\n</div>\n"
+        );
+        // djot gives a heading's attribute block to the SECTION it opens.
+        let sec = djot_to_markdown("{#top}\n## Title\n\n{.steps}\n- one\n");
+        assert!(sec.starts_with("<div id=\"top\">\n\n## Title\n\n<div class=\"steps\">\n\n- one\n\n</div>\n\n</div>\n"));
+    }
+
+    #[test]
+    fn the_wrap_carries_a_quotes_prefix_on_every_line() {
+        assert_eq!(djot_to_markdown("> {.c}\n> hello\n"), "> <div class=\"c\">\n>\n> hello\n>\n> </div>\n");
+    }
+
+    #[test]
+    fn a_block_with_no_attributes_is_not_wrapped() {
+        assert_eq!(djot_to_markdown("hello\n"), "hello\n");
+    }
+
+    #[test]
+    fn djots_anonymous_div_is_a_div_carrying_its_class() {
+        assert_eq!(djot_to_markdown("::: center\ninside\n:::\n"), "<div class=\"center\">\n\ninside\n\n</div>\n");
+    }
+
+    #[test]
+    fn an_html_div_is_a_div_in_markdown() {
+        assert_eq!(html_to_markdown("<div class=\"c\"><p>x</p><p>y</p></div>"), "<div class=\"c\">\n\nx\n\ny\n\n</div>\n");
+    }
+
+    #[test]
+    fn djots_bracketed_span_and_htmls_span_are_both_a_span() {
+        assert_eq!(djot_to_markdown("a [big _text_]{.large} b\n"), "a <span class=\"large\">big *text*</span> b\n");
+        assert_eq!(
+            html_to_markdown("<p>a <span class=\"large\">big</span> b</p>"),
+            "a <span class=\"large\">big</span> b\n"
+        );
+    }
+
+    #[test]
+    fn every_other_name_keeps_its_spelling() {
+        assert_eq!(djot_to_markdown("::: note\ninside\n:::\n"), "<div class=\"note\">\n\ninside\n\n</div>\n");
+        assert_eq!(html_to_markdown("<aside class=\"n\"><p>x</p></aside>"), "<aside class=\"n\">x\n</aside>\n");
+    }
 }
