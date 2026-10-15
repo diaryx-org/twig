@@ -136,3 +136,29 @@ jobs:
         with:
           name: parity-mismatches
           path: parity-mismatches.txt
+
+  # The C ABI built from Rust: the header's behavioural test linked against
+  # the Rust static library, and the wasm module JS consumers load.
+  rust-capi:
+    name: rust C ABI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Header test against libtwig.a
+        run: |
+          cargo build --release -p twig-capi
+          cc -std=c99 -Wall -I bindings/c/include bindings/c/test/header_test.c \
+             target/release/libtwig.a -lpthread -ldl -lm -o header_test
+          ./header_test
+
+      - name: Build the wasm module
+        run: cargo build --release -p twig-capi --target wasm32-unknown-unknown
