@@ -26,6 +26,7 @@ use std::io::{BufRead, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
+#[cfg(test)]
 use crate::format::Format;
 use crate::runtime::{self, Render};
 use crate::{wire, Error};
@@ -348,13 +349,13 @@ fn runtime_language<L: Language>(language: Arc<L>, write: bool) -> runtime::Lang
 /// process; each of its sets is a format too, found with
 /// `format::parse_format_name`. On refusal nothing is registered and the
 /// language is dropped.
-pub fn register<L: Language>(language: L) -> Result<Format, RegisterError> {
+pub fn register<L: Language>(language: L) -> Result<crate::api::Format, RegisterError> {
     let description = language.describe();
     let json = description.to_json();
     let mut diag = String::new();
     let parsed = runtime::Description::parse(json.as_bytes(), &mut diag).map_err(|_| refused(diag.clone()))?;
     let lang = runtime_language(Arc::new(language), description.write);
-    runtime::register(lang, parsed, &mut diag).map_err(|_| refused(diag))
+    runtime::register(lang, parsed, &mut diag).map(crate::api::Format::from_engine).map_err(|_| refused(diag))
 }
 
 /// A language answering the helper wire — one request line to one response
@@ -479,7 +480,7 @@ mod tests {
 
     #[test]
     fn a_registered_language_is_a_format_like_any_other() {
-        let format = register(Lines("rust-lines")).expect("register");
+        let format = register(Lines("rust-lines")).expect("register").to_engine();
         assert!(matches!(format, Format::Runtime(_)));
         assert_eq!(format.name(), "rust-lines");
         assert_eq!(format::parse_format_name("rust-lines"), Some(format));
@@ -579,7 +580,7 @@ mod tests {
 
     #[test]
     fn features_sets_and_renderers_reach_every_entry_point() {
-        let format = register(CrlfLines).expect("register");
+        let format = register(CrlfLines).expect("register").to_engine();
         let set = format::parse_format_name("rust-crlf-crlf").expect("the set is a format");
         assert_ne!(set, format);
         assert_eq!(set.dialect_of(), Some(format));

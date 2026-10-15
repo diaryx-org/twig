@@ -28,7 +28,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use crate::format::Format;
 use crate::language::RegisterError;
 use crate::{wire, Error};
 
@@ -125,7 +124,7 @@ impl wire::Transport for Helper {
 /// describe itself, and register what it describes. The helper runs for as
 /// long as this process uses it; on refusal it is stopped and nothing is
 /// registered.
-pub fn spawn<I, S>(command: I) -> Result<Format, RegisterError>
+pub fn spawn<I, S>(command: I) -> Result<crate::api::Format, RegisterError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -135,7 +134,9 @@ where
     let mut diag = String::new();
     // On refusal the registry kept nothing, and dropping the last handle
     // stops the process.
-    wire::register(helper, &mut diag).map_err(|_| RegisterError { error: Error::InvalidLanguage, message: diag })
+    wire::register(helper, &mut diag)
+        .map(crate::api::Format::from_engine)
+        .map_err(|_| RegisterError { error: Error::InvalidLanguage, message: diag })
 }
 
 #[cfg(all(test, unix))]
@@ -163,7 +164,7 @@ esac"#
 
     #[test]
     fn a_spawned_helper_is_a_format() {
-        let fmt = spawn(["sh", "-c", &script("rust-shx", false)]).expect("spawn");
+        let fmt = spawn(["sh", "-c", &script("rust-shx", false)]).expect("spawn").to_engine();
         assert_eq!(fmt.name(), "rust-shx");
         let doc = format::parse(fmt, &ParseConfig::default(), b"x").expect("parse");
         assert_eq!(format::render_html(&doc).unwrap(), b"<p>x</p>\n");
@@ -175,7 +176,7 @@ esac"#
     fn a_helper_that_exits_is_started_again() {
         // Every process answers one line: describe, the load check's parse,
         // and this test's parse are each a new one.
-        let fmt = spawn(["sh", "-c", &script("rust-shx-once", true)]).expect("spawn");
+        let fmt = spawn(["sh", "-c", &script("rust-shx-once", true)]).expect("spawn").to_engine();
         let doc = format::parse(fmt, &ParseConfig::default(), b"x").expect("parse after a restart");
         assert_eq!(format::render_html(&doc).unwrap(), b"<p>x</p>\n");
     }
