@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/twig", "crates/twig-cli", "crates/twig-capi"]
+members = ["crates/twig", "crates/twig-cli", "crates/twig-capi", "crates/twig-meta"]
 default-members = ["crates/twig", "crates/twig-cli"]
 
 [workspace.package]

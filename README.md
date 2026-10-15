@@ -53,6 +53,11 @@ Twig is written in Rust, with no `-sys` crate and no native toolchain:
   the `twig` command-line tool (`cargo install twig-doc-cli`).
 - [`crates/twig-capi`](crates/twig-capi) builds the C ABI declared in
   [`bindings/c/include/twig.h`](bindings/c/include/twig.h).
+- [`crates/twig-meta`](crates/twig-meta) reads and edits a document's
+  frontmatter and endmatter through [fig](https://github.com/diaryx-org/fig),
+  in place, with comments and fences kept, and reads the render settings a
+  document names under its `twig` key. Not published yet: it takes fig's
+  Rust port from git ([proposal](docs/proposals/fig-in-twig.md)).
 
 ```
 cargo build --release        # target/release/twig

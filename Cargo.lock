@@ -99,6 +99,63 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "fig"
+version = "6.0.0"
+source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+dependencies = [
+ "fig-core",
+]
+
+[[package]]
+name = "fig-core"
+version = "6.0.0"
+source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+dependencies = [
+ "fig-kit",
+]
+
+[[package]]
+name = "fig-figl"
+version = "6.0.0"
+source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+dependencies = [
+ "fig",
+ "fig-kit",
+]
+
+[[package]]
+name = "fig-json"
+version = "6.0.0"
+source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+dependencies = [
+ "fig",
+ "fig-kit",
+]
+
+[[package]]
+name = "fig-kit"
+version = "6.0.0"
+source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+
+[[package]]
+name = "fig-toml"
+version = "6.0.0"
+source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+dependencies = [
+ "fig",
+ "fig-kit",
+]
+
+[[package]]
+name = "fig-yaml"
+version = "6.0.0"
+source = "git+https://github.com/diaryx-org/fig?rev=9ef66d0f6efc17424fed084aa13ea5bcf775618a#9ef66d0f6efc17424fed084aa13ea5bcf775618a"
+dependencies = [
+ "fig",
+ "fig-kit",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -167,6 +224,18 @@ name = "twig-doc-cli"
 version = "5.0.0"
 dependencies = [
  "clap",
+ "twig-doc",
+]
+
+[[package]]
+name = "twig-meta"
+version = "5.0.0"
+dependencies = [
+ "fig",
+ "fig-figl",
+ "fig-json",
+ "fig-toml",
+ "fig-yaml",
  "twig-doc",
 ]
 
