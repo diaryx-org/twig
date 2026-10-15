@@ -10,6 +10,9 @@ publish = false
 [lib]
 name = "twig"
 crate-type = ["staticlib", "cdylib", "rlib"]
+# The lib shares its name with the engine it depends on, which rustdoc's
+# doctest harness cannot tell apart; the tests are unit tests in src/tests.rs.
+doctest = false
 
 [dependencies]
 twig-doc = { path = "../twig" }
