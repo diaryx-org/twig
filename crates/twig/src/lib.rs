@@ -17,6 +17,8 @@ pub mod diagnostics;
 pub mod document;
 pub mod error;
 pub mod format;
+pub mod helper;
+pub mod language;
 pub mod json;
 pub mod languages;
 pub mod parse_diagnostic;
