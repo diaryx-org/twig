@@ -1,0 +1,73 @@
+# What ship needs to know about twig: its release, and its CI.
+#
+# twig is a plain Cargo workspace: the version is `[workspace.package] version`
+# in the root Cargo.toml, which every crate inherits, and the
+# `[workspace.dependencies]` pin on twig-doc follows it.
+name = twig
+url = https://github.com/diaryx-org/twig
+release_branch = main
+manifest = Cargo.toml
+version_prefix = 'version = "'
+cargo_workspace = true
+
+# How a released section heads itself. The Cargo workspaces in this org write
+# `## v3.2.1 — 2026-08-26`; twig has always written the bare number, and its
+# historical sections are not worth rewriting to agree. Reading accepts both
+# either way — only writing follows this.
+section_prefix = ''
+section_date = false
+
+# Where the changelog begins. twig's oldest section is 2.7.0 and it says nothing
+# about the thirteen releases before that — a decision rather than a gap, so the
+# backfill stops there.
+changelog_since = v2.7.0
+
+# What to run before cutting: the whole workspace's suite, run after the bump
+# so it checks the version being released, Cargo.lock included. A failure
+# after the bump restores the tree. Named here rather than left to the `job`
+# list below, which also builds for wasm targets a release does not need.
+verify = cargo test --workspace --release
+verify_after_bump = true
+
+# What pushing the tag sets off, most consequential first. The warning printed
+# before the push is handed back to you is composed from these.
+tag_starts
+> *
+> > workflow = release.yml
+> > does = uploads twig-doc and twig-doc-cli to crates.io and cuts the GitHub release
+> *
+> > workflow = homebrew.yml
+> > does = builds the CLI binaries and the wasm32-wasip1 build, and writes the tap
+
+# CI, for running here: `ship ci` runs these in this order and stops at the
+# first that fails; `ship ci <id>` runs one. Each is `id`, `name` and `run`
+# (run by `bash -eo pipefail -c` at the repository root).
+#
+# `.github/workflows/ci.yml` does not read this list: it runs the same three
+# commands as its own jobs, `test` on Linux and macOS as `test (<os>)`, which a
+# job list of one runner per job cannot name without running the suite twice
+# here. A change to what CI runs is an edit there and here.
+job
+> *
+> > # The engine (twig-doc), the CLI (twig-doc-cli), the C ABI (twig-capi)
+> > # and twig-meta.
+> > id = test
+> > name = test
+> > run = cargo test --workspace --release
+> *
+> > # The CLI also ships as a wasm32-wasip1 download (homebrew.yml).
+> > id = cli-wasi
+> > name = CLI on wasm32-wasip1
+> > run = cargo build --release -p twig-doc-cli --target wasm32-wasip1
+> *
+> > # The header's behavioural test linked against the static library, and
+> > # the wasm module JS consumers load.
+> > id = capi
+> > name = C ABI
+> > run = '''
+cargo build --release -p twig-capi
+cc -std=c99 -Wall -I bindings/c/include bindings/c/test/header_test.c \
+   target/release/libtwig.a -lpthread -ldl -lm -o target/header_test
+./target/header_test
+cargo build --release -p twig-capi --target wasm32-unknown-unknown
+'''

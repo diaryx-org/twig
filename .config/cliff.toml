@@ -1,11 +1,11 @@
 # git-cliff, for every diaryx-org repository.
 #
-# One file, one style. It lives beside the release tooling that reads it — the
-# repos carry `.config/release.toml`, this carries the behaviour — and the three
+# One file, one style. It is carried inside ship, which reads it — the repos
+# carry `.config/ship.figl`, this carries the behaviour — and the three
 # repositories whose own tooling cannot reach it (`diaryx`, `twig`, `fig`) keep a
 # copy at `.config/cliff.toml` that differs only where its own comment says so.
 #
-# The consumer is a program rather than a person: a repo's release tooling
+# The consumer is a program rather than a person: ship
 # regenerates the region between the `git-cliff:begin`/`git-cliff:end` markers
 # inside its changelog's `## Unreleased` section, renders that region once more
 # under the version being cut, and moves it down; where a workflow writes the

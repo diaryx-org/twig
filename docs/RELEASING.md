@@ -6,25 +6,25 @@ part_of: '[Twig](/README.md)'
 One command:
 
 ```
-release release <version|major|minor|patch|as-is> [--push] [--no-verify]
+ship <version|major|minor|patch|as-is> [--push] [--no-verify]
 ```
 
-`release` is the shared tooling in [diaryx-org/devtools][devtools], which twig,
+`ship` is the org's release tool, [diaryx-org/ship][ship], which twig,
 prov, leaf, flower, and the historica repos all cut releases with. What makes
-twig twig is [`.config/release.toml`](../.config/release.toml) and nothing else:
+twig twig is [`.config/ship.figl`](../.config/ship.figl) and nothing else:
 that the changelog heads its sections `## 3.2.1` rather than
 `## v3.2.1 — date` and begins at 2.7.0, and that the verify step runs after the
 bump. The version itself is an ordinary Cargo workspace's:
 `[workspace.package] version` in the root `Cargo.toml`, which every crate
 inherits.
 
-[devtools]: https://github.com/diaryx-org/devtools
+[ship]: https://github.com/diaryx-org/ship
 
 It stops at the tag. **Nothing has left the machine until you push**, and it
 ends by printing the two commands it did not run.
 
 ```
-$ release release minor
+$ ship minor
 
 ━━ preflight ━━
   clean tree, on main, up to date with origin, git-cliff present
@@ -85,7 +85,7 @@ the commit and the tag; the tool says so and leaves it for a human.
 
 ## `as-is`
 
-`release release as-is` releases the version the tree already holds,
+`ship as-is` releases the version the tree already holds,
 bumping nothing. It is for the case where a bump landed in an earlier commit and
 was never released: the number is already right, and what is missing is the tag,
 the changelog cut, and the publish. Bumping again would spend a version number
@@ -115,11 +115,12 @@ you want:
 | command | what it does |
 |---|---|
 | `cargo test --workspace --release` | the pre-release gate |
-| `release changelog` | print the `## Unreleased` region |
-| `release changelog --write` | splice it into `docs/CHANGELOG.md` |
-| `release changelog --check` | fail if that region is stale |
-| `release bump <spec>` | move the workspace version, and stop there |
-| `release version` | the canonical version |
+| `ship ci` | what CI runs: the gate, the wasm32-wasip1 CLI build and the C ABI checks |
+| `ship changelog` | print the `## Unreleased` region |
+| `ship changelog --write` | splice it into `docs/CHANGELOG.md` |
+| `ship changelog --check` | fail if that region is stale |
+| `ship bump <spec>` | move the workspace version, and stop there |
+| `ship version` | the canonical version |
 
 The workspace's `[workspace.package] version` is the single source of truth:
 every crate inherits it, the CLI prints it as `twig --version`, and the C ABI
