@@ -1,5 +1,5 @@
 //! Differential tests against the Zig oracle (`zig-out/bin/twig`): the node
-//! table, the AST JSON and the canonical round trip must be byte-identical,
+//! table, the AST JSON, the generic HTML render and the canonical round trip must be byte-identical,
 //! and malformed input must fail on both sides with the same error. Skipped
 //! (with a note) when the oracle binary is absent.
 
@@ -125,6 +125,17 @@ fn check(fmt: &str, src: &[u8]) -> Vec<String> {
             let want_ast = oracle(&["convert", "-i", fmt, "-o", "ast"], src).unwrap();
             if utf8 && json::encode(&doc) != want_ast {
                 problems.push(format!("{fmt} ast differs for {:?}", String::from_utf8_lossy(src)));
+            }
+            let want_html = oracle(&["convert", "-i", fmt], src).unwrap();
+            let mut html = Vec::new();
+            crate::languages::html::serializer::serialize(&doc.ast, &mut html, None).unwrap();
+            if html != want_html {
+                problems.push(format!(
+                    "{fmt} html differs for {:?}:\n ours {:?}\n want {:?}",
+                    String::from_utf8_lossy(src),
+                    String::from_utf8_lossy(&html),
+                    String::from_utf8_lossy(&want_html)
+                ));
             }
             let want_canon = oracle(&["convert", "-i", fmt, "-o", "canonical"], src).unwrap();
             if super::serialize(&doc) != want_canon {
