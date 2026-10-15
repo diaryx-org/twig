@@ -22,111 +22,13 @@ use crate::Error;
 /// Defers to the parser's own autolink scanner: Markdown wants an absolute URI
 /// or a CommonMark email and silently reads anything else as RAW HTML.
 fn spells_autolink(_: &Syntax, angled: &[u8]) -> bool {
-    if angled.len() < 2 || angled[0] != b'<' {
-        return false;
-    }
-    if scan_autolink_uri(angled, 0) == Some(angled.len()) {
-        return true;
-    }
-    if scan_autolink_email(angled, 0) == Some(angled.len()) {
-        return true;
-    }
-    false
-}
-
-// TODO(port): defer to `crate::languages::markdown::inline`'s
-// `scan_autolink_uri`/`scan_autolink_email` once they land; these are faithful
-// private copies of `markdown/inline.zig`'s scanners.
-fn scan_autolink_uri(text: &[u8], at: usize) -> Option<usize> {
-    let mut i = at + 1;
-    if i >= text.len() || !text[i].is_ascii_alphabetic() {
-        return None;
-    }
-    let scheme_start = i;
-    i += 1;
-    while i < text.len()
-        && (i - scheme_start) < 32
-        && (text[i].is_ascii_alphanumeric() || text[i] == b'+' || text[i] == b'-' || text[i] == b'.')
-    {
-        i += 1;
-    }
-    if i - scheme_start < 2 {
-        return None;
-    }
-    if i >= text.len() || text[i] != b':' {
-        return None;
-    }
-    i += 1;
-    while i < text.len() && text[i] != b'>' && text[i] != b'<' && text[i] != b' ' && !is_control(text[i]) {
-        i += 1;
-    }
-    if i >= text.len() || text[i] != b'>' {
-        return None;
-    }
-    Some(i + 1)
-}
-
-fn is_control(c: u8) -> bool {
-    c <= 0x1f || c == 0x7f
-}
-
-fn is_email_local_char(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || b".!#$%&'*+/=?^_`{|}~-".contains(&c)
-}
-
-fn scan_email_domain_label(text: &[u8], i: &mut usize) -> bool {
-    let start = *i;
-    if start >= text.len() || !text[start].is_ascii_alphanumeric() {
-        return false;
-    }
-    let mut j = start + 1;
-    let mut end = j;
-    while j < text.len() && (j - start) < 63 && (text[j].is_ascii_alphanumeric() || text[j] == b'-') {
-        if text[j].is_ascii_alphanumeric() {
-            end = j + 1;
-        }
-        j += 1;
-    }
-    *i = end;
-    true
-}
-
-fn scan_autolink_email(text: &[u8], at: usize) -> Option<usize> {
-    let mut i = at + 1;
-    let local_start = i;
-    while i < text.len() && is_email_local_char(text[i]) {
-        i += 1;
-    }
-    if i == local_start {
-        return None;
-    }
-    if i >= text.len() || text[i] != b'@' {
-        return None;
-    }
-    i += 1;
-    if !scan_email_domain_label(text, &mut i) {
-        return None;
-    }
-    while i < text.len() && text[i] == b'.' {
-        let save = i;
-        i += 1;
-        if !scan_email_domain_label(text, &mut i) {
-            i = save;
-            break;
-        }
-    }
-    if i >= text.len() || text[i] != b'>' {
-        return None;
-    }
-    Some(i + 1)
+    crate::languages::markdown::spells_autolink(angled)
 }
 
 /// The serializer over a fragment.
 fn render_block(_: &Syntax, ast: &Ast, root: NodeId, out: &mut Vec<u8>) -> Result<(), Error> {
-    // TODO(port): `crate::languages::markdown::serializer`'s `serialize_ast`
-    // over `super::fragment(ast, root)` once it lands.
-    let _ = (ast, root, out);
-    Err(Error::Internal)
+    out.extend_from_slice(&crate::languages::markdown::serializer::serialize_ast(&super::fragment(ast, root)));
+    Ok(())
 }
 
 /// Every spelling Markdown has, independent of the parse config: what the

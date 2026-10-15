@@ -9,30 +9,13 @@ use super::{
 use crate::ast::{Ast, NodeId};
 use crate::Error;
 
-/// Djot classifies an autolink on content alone. `angled` arrives with its
-/// brackets.
+/// Djot classifies an autolink on content alone, so this defers to the
+/// parser's own scanner. `angled` arrives with its brackets.
 fn spells_autolink(_: &Syntax, angled: &[u8]) -> bool {
     if angled.len() < 2 {
         return false;
     }
-    autolink_kind_of(&angled[1..angled.len() - 1])
-}
-
-/// TODO(port): defer to `crate::languages::djot::inline`'s own
-/// `autolink_kind_of` once it lands; this is a faithful private copy of
-/// `InlineParser.autolinkKindOf` (true = `.email` or `.url`).
-fn autolink_kind_of(content: &[u8]) -> bool {
-    if content.is_empty() {
-        return false;
-    }
-    if content.iter().any(|&c| c == b'<' || c == b'>' || matches!(c, b' ' | b'\t' | b'\r' | b'\n')) {
-        return false;
-    }
-    let non_colon_at = content.iter().enumerate().any(|(i, &c)| c == b'@' && i > 0 && content[i - 1] != b':');
-    if non_colon_at {
-        return true;
-    }
-    content.len() >= 2 && (0..content.len() - 1).any(|i| content[i].is_ascii_alphabetic() && content[i + 1] == b':')
+    crate::languages::djot::inline::autolink_kind_of(&angled[1..angled.len() - 1]).is_some()
 }
 
 /// The serializer over a fragment.
