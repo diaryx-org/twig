@@ -13,20 +13,65 @@
 
 use crate::ast::{Attrs, KeyVal};
 
-// TODO(port): `AttrSpelling`/`Quoting` belong to `crate::syntax` (port of
-// `src/syntax.zig`, another agent's module). Defined here until it lands;
-// switch to a `pub use crate::syntax::{AttrSpelling, Quoting};` then.
+pub use crate::syntax::Quoting;
 
-/// Whether a value needs `"` around it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum Quoting {
-    #[default]
-    Never,
-    Always,
-    WhenNeeded,
+/// The spelling table this algorithm reads: implemented by
+/// `crate::syntax::AttrSpelling` (the real one, a format's
+/// `Syntax.attr_spelling`) and by this module's transitional
+/// [`AttrSpelling`].
+pub trait Spelling {
+    fn view(&self) -> View<'_>;
 }
 
-/// How a format spells an attribute block. See `syntax.zig`'s `AttrSpelling`.
+/// The fields of an attribute spelling, as bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct View<'a> {
+    pub open: &'a [u8],
+    pub close: &'a [u8],
+    pub between: &'a [u8],
+    pub key_prefix: &'a [u8],
+    pub key_value: &'a [u8],
+    pub quoting: Quoting,
+    pub quote_escapes: &'a [u8],
+    pub id_sigil: Option<&'a [u8]>,
+    pub class_sigil: Option<&'a [u8]>,
+}
+
+impl Spelling for crate::syntax::AttrSpelling {
+    fn view(&self) -> View<'_> {
+        View {
+            open: self.open,
+            close: self.close,
+            between: self.between,
+            key_prefix: self.key_prefix,
+            key_value: self.key_value,
+            quoting: self.quoting,
+            quote_escapes: self.quote_escapes,
+            id_sigil: self.id_sigil,
+            class_sigil: self.class_sigil,
+        }
+    }
+}
+
+impl Spelling for AttrSpelling {
+    fn view(&self) -> View<'_> {
+        View {
+            open: self.open.as_bytes(),
+            close: self.close.as_bytes(),
+            between: self.between.as_bytes(),
+            key_prefix: self.key_prefix.as_bytes(),
+            key_value: self.key_value.as_bytes(),
+            quoting: self.quoting,
+            quote_escapes: self.quote_escapes.as_bytes(),
+            id_sigil: self.id_sigil.map(str::as_bytes),
+            class_sigil: self.class_sigil.map(str::as_bytes),
+        }
+    }
+}
+
+/// TRANSITIONAL: a `&str`-field copy of `crate::syntax::AttrSpelling`, kept
+/// so callers written before the syntax tables landed still compile. New code
+/// passes `&syntax_table.attr_spelling` to [`write`] directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AttrSpelling {
     /// Opens and closes the whole block (`{`/`}`), both empty for field lines.
@@ -72,7 +117,8 @@ impl Default for AttrSpelling {
 /// `indent` is written after every `between` — the continuation prefix a
 /// line-per-entry form needs. It is a property of the POSITION being written
 /// into, not of the format.
-pub fn write(w: &mut Vec<u8>, attrs: &Attrs, sp: &AttrSpelling, indent: &[u8]) {
+pub fn write(w: &mut Vec<u8>, attrs: &Attrs, sp: &impl Spelling, indent: &[u8]) {
+    let sp = &sp.view();
     if attrs.is_empty() {
         return;
     }
@@ -84,16 +130,16 @@ pub fn write(w: &mut Vec<u8>, attrs: &Attrs, sp: &AttrSpelling, indent: &[u8]) {
             continue;
         }
         if !wrote_any {
-            w.extend_from_slice(sp.open.as_bytes());
+            w.extend_from_slice(sp.open);
         } else {
-            w.extend_from_slice(sp.between.as_bytes());
+            w.extend_from_slice(sp.between);
             w.extend_from_slice(indent);
         }
         wrote_any = true;
         write_entry(w, kv, sp, indent);
     }
     if wrote_any {
-        w.extend_from_slice(sp.close.as_bytes());
+        w.extend_from_slice(sp.close);
     }
 }
 
@@ -127,7 +173,7 @@ fn class_tokens(v: &[u8]) -> impl Iterator<Item = &[u8]> {
 /// Whether `kv` spells anything under `sp`: an `id` with no value and a
 /// `class` holding no classes would emit a dangling sigil, so they spell
 /// nothing (unreachable from a parser; a hand-built tree can produce them).
-fn will_write(kv: &KeyVal, sp: &AttrSpelling) -> bool {
+fn will_write(kv: &KeyVal, sp: &View<'_>) -> bool {
     if sp.id_sigil.is_some() && kv.key == b"id" {
         return matches!(&kv.value, Some(v) if !v.is_empty());
     }
@@ -140,10 +186,10 @@ fn will_write(kv: &KeyVal, sp: &AttrSpelling) -> bool {
     true
 }
 
-fn write_entry(w: &mut Vec<u8>, kv: &KeyVal, sp: &AttrSpelling, indent: &[u8]) {
+fn write_entry(w: &mut Vec<u8>, kv: &KeyVal, sp: &View<'_>, indent: &[u8]) {
     if let Some(sigil) = sp.id_sigil {
         if kv.key == b"id" {
-            w.extend_from_slice(sigil.as_bytes());
+            w.extend_from_slice(sigil);
             w.extend_from_slice(kv.value.as_ref().unwrap());
             return;
         }
@@ -155,26 +201,26 @@ fn write_entry(w: &mut Vec<u8>, kv: &KeyVal, sp: &AttrSpelling, indent: &[u8]) {
             let mut first = true;
             for cls in class_tokens(kv.value.as_ref().unwrap()) {
                 if !first {
-                    w.extend_from_slice(sp.between.as_bytes());
+                    w.extend_from_slice(sp.between);
                     w.extend_from_slice(indent);
                 }
                 first = false;
-                w.extend_from_slice(sigil.as_bytes());
+                w.extend_from_slice(sigil);
                 w.extend_from_slice(cls);
             }
             return;
         }
     }
 
-    w.extend_from_slice(sp.key_prefix.as_bytes());
+    w.extend_from_slice(sp.key_prefix);
     w.extend_from_slice(&kv.key);
     // A bare attribute is the key alone — HTML's `disabled`.
     let Some(value) = &kv.value else { return };
-    w.extend_from_slice(sp.key_value.as_bytes());
+    w.extend_from_slice(sp.key_value);
     if quotes(sp.quoting, value) {
         w.push(b'"');
         for &c in value {
-            if sp.quote_escapes.as_bytes().contains(&c) {
+            if sp.quote_escapes.contains(&c) {
                 w.push(b'\\');
             }
             w.push(c);
@@ -206,7 +252,7 @@ fn needs_quoting(v: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    fn spell(sp: &AttrSpelling, entries: &[(&str, Option<&str>)], indent: &str) -> String {
+    fn spell(sp: &impl Spelling, entries: &[(&str, Option<&str>)], indent: &str) -> String {
         let attrs = Attrs {
             entries: entries.iter().map(|(k, v)| KeyVal::new(k.as_bytes(), v.map(|v| v.as_bytes()))).collect(),
         };
@@ -273,6 +319,19 @@ mod tests {
     fn nothing_is_written_for_an_empty_or_degenerate_set() {
         assert_eq!(spell(&DJOT, &[], ""), "");
         assert_eq!(spell(&DJOT, &[("id", None), ("class", Some(""))], ""), "");
+    }
+
+    #[test]
+    fn the_syntax_tables_spelling_is_accepted() {
+        let sp = crate::syntax::AttrSpelling {
+            open: b"{",
+            close: b"}",
+            quoting: Quoting::Always,
+            id_sigil: Some(b"#"),
+            class_sigil: Some(b"."),
+            ..crate::syntax::AttrSpelling::DEFAULT
+        };
+        assert_eq!(spell(&sp, &[("id", Some("i")), ("k", Some("v"))], ""), "{#i k=\"v\"}");
     }
 
     #[test]
