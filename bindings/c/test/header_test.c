@@ -2,8 +2,8 @@
 //
 // This file exists mostly to be *compiled*: twig.h is hand-written and shipped
 // verbatim to C consumers, so without a C translation unit that includes it,
-// nothing in `zig build test` ever runs the C preprocessor or parser over it.
-// A header that only Zig and Rust ever read can be broken C for months. It was:
+// nothing in `cargo test` ever runs the C preprocessor or parser over it.
+// A header that only Rust ever reads can be broken C for months. It was:
 // TWIG_ALIGN_DEFAULT/LEFT/RIGHT/CENTER were once #defines *and* TwigAlignment
 // enumerators, so the preprocessor rewrote `TWIG_ALIGN_DEFAULT = 0,` into
 // `0 = 0,` and every C build died at the enum.
@@ -18,8 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Deliberately not <assert.h>: this test runs under `-Doptimize=ReleaseFast`
-// too, where Zig defines NDEBUG and assert() expands to nothing — the checks
+// Deliberately not <assert.h>: this test may be built with `-DNDEBUG`, where
+// assert() expands to nothing — the checks
 // would silently evaporate in exactly the build a C consumer ships. CHECK is
 // always live.
 static int failures = 0;
@@ -700,7 +700,7 @@ static void test_task_items_report_their_checkbox_state(void) {
 }
 
 // The capability queries a toolbar grays out on. The point of testing them from
-// C is not the answers — Zig pins those against every gesture's real refusal —
+// C is not the answers — the Rust tests pin those against every gesture's real refusal —
 // but that the header's prototypes link, its TWIG_GESTURE_* codes are the ones
 // the library decodes, and the answer agrees with what the gesture then does.
 static void test_format_capability_matches_the_gestures(void) {

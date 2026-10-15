@@ -72,8 +72,8 @@ extern "C" {
 // gestures report TWIG_STATUS_UNSUPPORTED_FORMAT over an AsciiDoc document
 // (their AsciiDoc spellings have a shape the gesture algorithms cannot write;
 // twig_format_supports says which); every other gesture works. What the parser
-// leaves unmodelled survives as literal source text. See src/format.zig's
-// `.asciidoc` registry row.
+// leaves unmodelled survives as literal source text. See the `Asciidoc`
+// registry row in crates/twig/src/format.rs.
 #define TWIG_FORMAT_ASCIIDOC 5
 // Two DIALECTS of Markdown, each a code of its own so a caller can name it in
 // one word (the way json/jsonc/json5 are three codes over one language in fig):
@@ -1038,7 +1038,7 @@ typedef enum TwigBlockContainerKind {
 //
 // twig_format_supports is that same answer, asked earlier. It is a pure function
 // of the format code — no handle, no document, no allocation — so ask once at
-// startup and cache. A Zig test pins it against every gesture's real refusal in
+// startup and cache. A test pins it against every gesture's real refusal in
 // every format, so it cannot drift into claiming a button works when the call
 // would refuse.
 

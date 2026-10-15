@@ -1,17 +1,13 @@
 //! Acceptance test: the vendored djot.js conformance corpus, rendered through
 //! THIS module's generic `serialize` with the parsed document's own labels as
 //! the `Context`. Port of `src/languages/html/conformance.zig`.
-//!
-//! A second run takes its documents from the Zig oracle's node table
-//! (`convert -i djot -o table`, read back with `ast::table::decode`), holding
-//! the renderer alone to the same byte-exact expectations.
 
 use std::path::PathBuf;
 
 use super::serializer::serialize_alloc;
 use crate::document::Document;
 
-/// The fixtures, read from `src/languages/djot/testdata/`.
+/// The fixtures, read from `testdata/djot/`.
 pub const DJOT_TESTFILES: [&str; 25] = [
     "attributes.test",
     "block_quote.test",
@@ -108,34 +104,7 @@ pub fn parse_tests(content: &[u8]) -> Vec<TestCase> {
 }
 
 fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-/// The oracle's parse of `input`, via its node table.
-fn parse_djot(input: &[u8]) -> Option<Document> {
-    let bin = repo().join("zig-out/bin/twig");
-    let out = std::process::Command::new(bin)
-        .args(["convert", "-i", "djot", "-o", "table", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()
-        .and_then(|mut child| {
-            use std::io::Write;
-            let mut stdin = child.stdin.take().unwrap();
-            let data = input.to_vec();
-            let t = std::thread::spawn(move || {
-                let _ = stdin.write_all(&data);
-            });
-            let o = child.wait_with_output().ok();
-            t.join().unwrap();
-            o
-        })?;
-    if !out.status.success() {
-        return None;
-    }
-    crate::ast::table::decode(input, &out.stdout).ok()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Run every fixture through `parse` and the shared printer.
@@ -144,7 +113,7 @@ fn run_corpus(parse: impl Fn(&[u8]) -> Option<Document>) {
     let mut skipped = 0;
     let mut failures: Vec<String> = Vec::new();
     for name in DJOT_TESTFILES {
-        let content = std::fs::read(repo().join("src/languages/djot/testdata").join(name)).unwrap();
+        let content = std::fs::read(repo().join("testdata/djot").join(name)).unwrap();
         for c in parse_tests(&content) {
             total += 1;
             if c.options.contains(&b'a') {
@@ -182,15 +151,4 @@ fn run_corpus(parse: impl Fn(&[u8]) -> Option<Document>) {
 #[test]
 fn shared_html_printer_matches_djot_js_conformance_corpus() {
     run_corpus(|input| Some(crate::languages::djot::parse(input)));
-}
-
-/// The same corpus over the Zig oracle's parse (read back from its node
-/// table), so a renderer regression can't hide behind a djot parser one.
-#[test]
-fn shared_html_printer_matches_djot_js_corpus_over_oracle_parse() {
-    if !repo().join("zig-out/bin/twig").exists() {
-        eprintln!("oracle not built; skipping");
-        return;
-    }
-    run_corpus(parse_djot);
 }

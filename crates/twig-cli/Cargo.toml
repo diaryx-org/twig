@@ -1,0 +1,22 @@
+[package]
+# Published as `twig-doc-cli`, after the `twig-doc` engine it wraps; the plain
+# `twig-cli` crate name is taken. The binary is still `twig`.
+name = "twig-doc-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The `twig` command-line tool: parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, XML, and AsciiDoc documents."
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["djot", "markdown", "cli", "document", "converter"]
+categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "twig"
+path = "src/main.rs"
+
+[dependencies]
+twig-doc.workspace = true
+clap = { version = "4.6", features = ["derive"] }

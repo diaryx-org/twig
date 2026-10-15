@@ -11,83 +11,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  ZIG_VERSION: "0.17.0"
-
 jobs:
-  # Cheap guard (no toolchain): the Rust workspace version must track
-  # build.zig.zon, the single source of truth. Catches a one-sided version bump
-  # on every push/PR instead of only at release-tag time.
-  version-sync:
-    name: version sync
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - run: bash scripts/sync-version.sh --check
-
-  # Build the Zig library + CLI, run the test suite, and build the C ABI
-  # static library and header across Linux and macOS. macOS is included
-  # deliberately: the Rust binding's build.rs repacks the archive for
-  # Apple's `ld`, so the toolchain is exercised on the platform that needs it.
-  zig:
-    name: zig (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Zig ${{ env.ZIG_VERSION }}
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Build
-        run: zig build
-
-      - name: Test
-        run: zig build test
-
-      - name: Build C ABI library + header
-        run: zig build install-c-lib
-
-  # Build and test the Rust binding. Its build.rs shells out to
-  # `zig build install-c-lib`, so Zig must be on PATH alongside the Rust
-  # toolchain.
-  rust:
-    name: rust binding
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Zig ${{ env.ZIG_VERSION }}
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: bindings/rust
-
-      - name: Build
-        working-directory: bindings/rust
-        run: cargo build --workspace --all-targets
-
-      - name: Test
-        working-directory: bindings/rust
-        run: cargo test --workspace
-
-  # The pure-Rust port (crates/): its own test suite, then a byte-for-byte
-  # parity check of the Rust CLI against the Zig one over the repository's
-  # corpora. Zig is needed only as the oracle — the Rust crates build without it.
-  rust-port:
-    name: rust port (${{ matrix.os }})
+  # The workspace's own test suite: the engine (twig-doc), the CLI
+  # (twig-doc-cli) and the C ABI (twig-capi), across Linux and macOS.
+  test:
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -105,42 +33,29 @@ jobs:
       - name: Test
         run: cargo test --workspace --release
 
-  rust-parity:
-    name: rust port parity with zig
+  # The CLI also ships as a wasm32-wasip1 download (homebrew.yml), so keep it
+  # building for that target.
+  cli-wasi:
+    name: CLI on wasm32-wasip1
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Zig ${{ env.ZIG_VERSION }}
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build both CLIs
-        run: |
-          zig build -Doptimize=ReleaseFast
-          cargo build --release -p twig-doc
+      - name: Build
+        run: cargo build --release -p twig-doc-cli --target wasm32-wasip1
 
-      - name: Compare
-        run: python3 scripts/rust-parity.py --mismatches parity-mismatches.txt
-
-      - name: Upload mismatches
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: parity-mismatches
-          path: parity-mismatches.txt
-
-  # The C ABI built from Rust: the header's behavioural test linked against
-  # the Rust static library, and the wasm module JS consumers load.
-  rust-capi:
-    name: rust C ABI
+  # The C ABI: the header's behavioural test linked against the static
+  # library, and the wasm module JS consumers load.
+  capi:
+    name: C ABI
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

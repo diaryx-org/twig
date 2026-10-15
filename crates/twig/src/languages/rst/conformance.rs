@@ -23,7 +23,7 @@ use crate::ast::{Ast, Kind, NodeId};
 
 /// Where the shared corpus lives.
 pub fn corpus_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/languages/rst/testdata/docutils-rst-corpus.json")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/rst/docutils-rst-corpus.json")
 }
 
 /// Ratchet floor: element instances across the corpus that decode to a twig

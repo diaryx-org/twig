@@ -56,7 +56,7 @@ pub struct TestCase {
 }
 
 pub fn testdata_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/languages/djot/testdata")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/djot")
 }
 
 /// Read one fixture file from the shared testdata directory.

@@ -20,8 +20,6 @@
 pub mod parser;
 pub mod serializer;
 
-#[cfg(test)]
-pub(crate) mod differential;
 
 pub use parser::{Diagnostic, Error, ParseError, Parser};
 pub use serializer::{serialize, serialize_into, serialize_node};

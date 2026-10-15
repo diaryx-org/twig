@@ -825,27 +825,4 @@ mod tests {
             assert_eq!(p.path, path, "case {}", String::from_utf8_lossy(text));
         }
     }
-
-    /// The compiled tables' pretty JSON, byte-identical to `twig lang syntax`.
-    #[test]
-    fn pretty_encoding_matches_the_oracle() {
-        let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/../../zig-out/bin/twig");
-        if !std::path::Path::new(bin).exists() {
-            return;
-        }
-        for (fmt, t) in [
-            ("djot", syntax::djot::table()),
-            ("markdown", syntax::markdown::table()),
-            ("commonmark", syntax::markdown::for_options(&crate::languages::markdown::ParseOptions::COMMONMARK)),
-            ("gfm", syntax::markdown::for_options(&crate::languages::markdown::ParseOptions::GFM)),
-            ("html", syntax::html::table()),
-            ("xml", syntax::xml::table()),
-            ("asciidoc", syntax::asciidoc::table()),
-        ] {
-            let out = std::process::Command::new(bin).args(["lang", "syntax", fmt]).output().unwrap();
-            let mut ours = encode_alloc(t, Options::default());
-            ours.push(b'\n');
-            assert_eq!(String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&ours), "{fmt}");
-        }
-    }
 }

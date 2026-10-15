@@ -77,19 +77,19 @@ changelog entirely. Anything the parser does not recognise lands in a visible
 
 ## Tests
 
-`zig build test` runs everything: the module, exe, C-ABI and bench test
-artifacts, plus — on any non-wasm target — a C header test that compiles
-`bindings/c/include/twig.h` against the built library.
+`cargo test --workspace` runs everything: the engine (`crates/twig`, including
+the vendored conformance corpora under `crates/twig/testdata/`), the CLI
+(`crates/twig-cli`) and the C ABI (`crates/twig-capi`). CI also compiles
+`bindings/c/test/header_test.c` against the C ABI's static library, so a change
+to `bindings/c/include/twig.h` is checked as C:
+
+    cargo build --release -p twig-capi
+    cc -std=c99 -Wall -I bindings/c/include bindings/c/test/header_test.c \
+       target/release/libtwig.a -lpthread -ldl -lm -o header_test && ./header_test
 
 Span changes are the ones worth being careful with, and the way to check one is
 to **slice the source with the resulting span and assert on the bytes** —
-`try testing.expectEqualStrings("> a\n>\n> ", src[sp.start..sp.end])`. A span
-bug is usually invisible in the HTML, so a rendering assertion will not catch
-it. `src/languages/markdown/block.zig`'s `span:`-prefixed tests are the pattern.
-
-For the Rust bindings, `cargo test` links a prebuilt `libtwig.a` unless
-`TWIG_SYS_FORCE_SOURCE=1` is set. Without it you are testing the published Zig,
-not your working tree — so any change to `src/` needs that variable, or it will
-pass for the wrong reason. `zig build check` runs both suites the way CI does,
-with that variable set, and is the gate `release release` runs after the bump
-and before it commits anything.
+`assert_eq!(&src[sp.start..sp.end], "> a\n>\n> ")`. A span bug is usually
+invisible in the HTML, so a rendering assertion will not catch it.
+`crates/twig/src/languages/markdown/block_tests.rs`'s span tests are the
+pattern.

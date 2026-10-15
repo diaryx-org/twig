@@ -30,7 +30,7 @@ A case is skipped when either half is not statically knowable — an f-string
 interpolating `__file__`, a `PYGMENTS_2_14_OR_HIGHER` conditional, a `%`-format
 over a computed path. These are overwhelmingly `include` directive tests whose
 expectations embed the absolute path of the test file itself; they are not
-portable to a Zig harness under any extraction scheme. Every skip is counted and
+portable to a test harness under any extraction scheme. Every skip is counted and
 itemized in the output's `provenance.skipped` so the tally is auditable and
 nothing is dropped silently.
 
@@ -138,7 +138,7 @@ def extract(rst_test_dir):
                         # docutils reports recoverable syntax errors *into the
                         # doctree* as <system_message>/<problematic> nodes, so a
                         # third of the suite is really error-recovery assertion.
-                        # Flagged so the Zig harness can ratchet on the clean
+                        # Flagged so the harness can ratchet on the clean
                         # subset before Twig has anywhere to put diagnostics.
                         "asserts_error": "<system_message" in expected or "<problematic" in expected,
                     }
@@ -152,7 +152,7 @@ def validate(cases):
     `document.pformat()` always opens with `<document source="test data">`, so a
     case whose expectation doesn't is a test module asserting something else
     entirely (see `NOT_DOCTREE_TESTS`). Rather than silently shipping it as a
-    case a Zig harness would then fail forever, stop and make the human add the
+    case the harness would then fail forever, stop and make the human add the
     module to the exclusion set.
     """
     strays = [c for c in cases if not c["doctree"].lstrip().startswith("<document")]

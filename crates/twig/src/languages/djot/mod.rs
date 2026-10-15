@@ -19,8 +19,6 @@ pub mod inline;
 pub mod parser;
 pub mod serializer;
 
-#[cfg(test)]
-mod differential;
 
 use crate::ast::{Kind, Level};
 use crate::document::Document;

@@ -3,11 +3,11 @@ part_of: '[Twig](/README.md)'
 ---
 # Twig — the AST kind vocabulary
 
-This document is the home for the *rationale* behind `src/ast/ast.zig`'s
+This document is the home for the *rationale* behind `crates/twig/src/ast/mod.rs`'s
 `Node.Kind`: why the vocabulary has the shape it has, why a given kind exists
 rather than a cheaper alternative, and which arguments were tried and rejected.
 
-The source comments in `ast.zig` say what each kind **is**. This file says why
+The source comments in `ast/mod.rs` say what each kind **is**. This file says why
 it is that and not something else. If a comment there points at a section
 heading below, this is where the argument lives.
 
@@ -48,8 +48,8 @@ encodes at most one classification, and there are at least three worth having.
 **The grouping test fails.** The three families that *are* nested
 (§ [When a family gets nested](/#when-a-family-gets-nested)) share one
 property: every generic consumer treats their members identically, and only
-the printers tell them apart. Blocks are the opposite — `html/serializer.zig`
-switches 35 kinds apart in a single switch, `rst/doctree.zig` 46. Consumers
+the printers tell them apart. Blocks are the opposite — `html/serializer.rs`
+switches 35 kinds apart in a single switch, `rst/doctree.rs` 46. Consumers
 switch on the member, not on the group.
 
 **It reopens a hole that has already cost three bugs.** With
@@ -61,7 +61,7 @@ times.
 
 The cost would also be real: ~360 construction sites, ~130 switches, and
 `std.meta.Tag(Node.Kind)` is used as flat node identity by `KindRef`,
-`ast/splicer.zig`, `rst/doctree.zig`, and the editor tests. Nesting turns that
+`ast/splicer.rs`, `rst/doctree.rs`, and the editor tests. Nesting turns that
 tag into `.block` and destroys the identity, so a synthetic flat tag enum
 would have to be maintained alongside the nesting.
 
@@ -75,7 +75,7 @@ replaced never had.
 
 | Classifier | Answers | Replaced |
 |---|---|---|
-| `level` | block / inline / neither | `djot.zig`'s `block_tags`/`inline_tags`, `ast/locate.zig`'s `isBlockParent`, `html/parser.zig`'s `isBlockKind` |
+| `level` | block / inline / neither | `languages/djot`'s `block_tags`/`inline_tags`, `ast/locate.rs`'s `isBlockParent`, `html/parser.rs`'s `isBlockKind` |
 | `contentModel` | blocks / inlines / text / empty | `holdsOpaqueText`'s hand-written set |
 | `structuralChildren` | the closed child vocabulary, or `null` | prose on `line_block`, `table`, `definition_list_item`, … |
 
@@ -106,8 +106,9 @@ node's `content_span` addresses **opaque bytes**, not a child region, so
 
 `structuralChildren` is the newest of the three and the one with the most
 direct evidence: its sets are what six parsers and every vendored corpus
-actually produce, checked by `ast/containment_test.zig` over ~7000 documents.
-Writing it turned up a real bug — `html/parser.zig` mapped
+actually produce, checked by the Zig implementation's `ast/containment_test.zig` over ~7000
+documents.
+Writing it turned up a real bug — `html/parser.rs` mapped
 `<pre><code>x</code></pre>` onto a `code_block` while leaving the absorbed
 `<code>` node attached, so the same bytes hung off the tree three times under
 two nodes documented as childless.
@@ -132,7 +133,7 @@ what the prose used to claim:
 
 ### Which side a fact lands on: `Kind` or `Document`
 
-`ast.zig` holds MEANING; `document.zig` holds POSITION. Byte offsets
+`ast/mod.rs` holds MEANING; `document.rs` holds POSITION. Byte offsets
 (`span`/`content_span`) live in `Document`'s id-indexed side-tables alongside
 the `source` they address — following `fig`, whose `Node` is likewise
 `{id, kind, next_sibling}` with positions in a sibling `Document`.
@@ -157,7 +158,7 @@ so for `[a][r]` the destination lives only on that unattached `reference`
 node: two djot documents whose definitions differ (`[r]: /XXX` versus
 `[r]: /YYY`) have identical reachable trees and render to different HTML, and
 a tree walk calls them equal. Comparing the arena catches it, because
-`ast/compact.zig` keeps those definitions (it sweeps from `Document.labels` as
+`ast/compact.rs` keeps those definitions (it sweeps from `Document.labels` as
 well as the root) and orders them deterministically. That compaction pass is also what makes
 slot-by-slot comparison legal at all: Twig's inline grammars are not decidable
 left to right, so the parsers speculate and abandon nodes, and without
@@ -177,12 +178,12 @@ switches stay closed; only the printers gain a case.*
 **The test for nesting a family: every generic consumer treats the members
 identically, and only the printers tell them apart.** The nine `InlineMark`s
 were nine arms, and `level` and `contentModel` listed all nine twice over,
-`ast/json.zig` lumped them into one payload-free arm, and `ast/select.zig`
+`ast/json.rs` lumped them into one payload-free arm, and `ast/select.rs`
 never distinguished them. Only the three serializers cared, and only because
-each mark has its own delimiters — which is `syntax.zig`'s `Delims` table's
+each mark has its own delimiters — which is `syntax/mod.rs`'s `Delims` table's
 job, not `Kind`'s. `TextLeafKind` and `MarkupLeafKind` are the same story:
-seven byte-identical `{"text": …}` arms in `ast/json.zig`, seven identical
-dupes in `ast/builder.zig`.
+seven byte-identical `{"text": …}` arms in `ast/json.rs`, seven identical
+dupes in `ast/builder.rs`.
 
 This is **not** string matching and **not** a loss of exhaustiveness: a
 serializer still switches over `InlineMark` exhaustively, so a tenth mark
@@ -223,7 +224,7 @@ arm there, which fails every `matches` caller until handled.
 `Kind.kindName` projects **three** namespaces into **one** flat published
 vocabulary: the `Kind` tags (minus `inline_mark`/`text_leaf`/`markup_leaf`,
 whose names are internal), plus every `InlineMark`, `TextLeafKind`, and
-`MarkupLeafKind` member. `ast/json.zig`'s `"kind"` field and `c_abi.zig`'s
+`MarkupLeafKind` member. `ast/json.rs`'s `"kind"` field and `twig-capi`'s
 `twig_node_kind_name` share that namespace, and `twig query` selectors match
 against it.
 
@@ -234,7 +235,7 @@ it.
 
 A future family member colliding with a `Kind` tag would silently alias two
 different node kinds under one published name, so a comptime test in
-`ast.zig` makes the collision a compile error naming the duplicate.
+`ast/mod.rs` makes the collision a compile error naming the duplicate.
 
 ---
 
@@ -246,10 +247,10 @@ different node kinds under one published name, so a comptime test in
 four spellings of **one** concept — a named-or-classed container with
 attributes and children — split by which format's parser produced them.
 
-That split put surface syntax in `Kind`, which is exactly what `syntax.zig`
+That split put surface syntax in `Kind`, which is exactly what `syntax/mod.rs`
 exists to keep out of the shared vocabulary. It meant a djot `:::` and an HTML
 `<div>` were different nodes despite being the same construct; every consumer
-(`ast/select.zig`, `ast/json.zig`, `c_abi.zig`, four serializers) grew four
+(`ast/select.rs`, `ast/json.rs`, `twig-capi`, four serializers) grew four
 near-identical arms; and a fifth format could only be added by growing a fifth
 kind.
 
@@ -268,7 +269,7 @@ table cannot hold, because it varies per **node** rather than per format: one
 Markdown document may contain both a `::name` leaf and a `:::name` fence, so
 the choice has to travel with the node. Everything else about spelling a
 container back — the colon, the angle brackets, the `.. ` prefix — is
-format-uniform and belongs in `syntax.zig`. `Form` also carries the
+format-uniform and belongs in `syntax/mod.rs`. `Form` also carries the
 block/inline classification that `div` and `span` used to encode by being
 separate kinds, and its `null` means UNCLASSIFIED, which is the honest answer
 for HTML/XML.
@@ -309,13 +310,13 @@ margin.
 So the nesting is an *encoding of a per-line number*, not a grouping anything
 reads as a unit, and Twig stores the number. The two forms are mutually
 recoverable — a depth sequence rebuilds docutils' tree by opening and closing
-blocks on demand — so `doctree.zig` still round-trips the corpus exactly,
+blocks on demand — so `doctree.rs` still round-trips the corpus exactly,
 including its 0→2 jumps.
 
 An empty line (no children) is content, not a separator: it is the stanza
 break, and 7 of the corpus's 47 lines are one.
 
-Markdown and djot have no verse construct, so `ast/verse.zig` gives them one
+Markdown and djot have no verse construct, so `ast/verse.rs` gives them one
 out of what they already have: a fenced div classed `verse` — Markdown's
 `<div class="verse">` under `html_elements`, djot's `::: verse` — whose
 children are all paragraphs is read as a line block. Each paragraph is a
@@ -391,7 +392,7 @@ incoherent. Both split.
 `label` is the name resolution uses, exactly as `footnote.label` is; rST
 spells it the `names` attribute. docutils normalizes that (`.. [TARGET]`
 resolves as `target`) and keeps the written form in a `<label>` child, which
-stays a generic node — see `doctree.zig`'s `definitionName`.
+stays a generic node — see `doctree.rs`'s `definitionName`.
 
 ### `substitution` — a named definition whose body is inline
 
@@ -408,7 +409,7 @@ the model.
 
 Only reStructuredText has this, and that is not disqualifying — `task_list` is
 GFM's alone and `processing_instruction` is XML's. What a format-specific kind
-costs is one honest answer per target in `diagnostics.zig`'s `fidelity`, which
+costs is one honest answer per target in `diagnostics.rs`'s `fidelity`, which
 is the gate it has to pass.
 
 It is named `substitution` and not `substitution_definition` to match
@@ -477,7 +478,7 @@ cannot.
 
 ### Why there is no `Node.eql`
 
-A node's identity in `ast.zig` is its `id`/`first_child`/`next_sibling` —
+A node's identity in `ast/mod.rs` is its `id`/`first_child`/`next_sibling` —
 arena slots, which are a parsing artifact and not part of the document. A
 node-level equality that compared them would be a trap; one that ignored them
 would just be `kind.eql`. Compare kinds, or compare trees.

@@ -33,8 +33,6 @@ pub mod syntax;
 pub mod syntax_json;
 pub mod wire;
 
-pub mod cli;
-
 pub use api::*;
 pub use error::Error;
 pub use language::{register, serve, Call, Description, Feature, Language, RegisterError, Sample, Server, Set};

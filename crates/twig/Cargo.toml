@@ -7,20 +7,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, XML, and AsciiDoc documents. Pure Rust."
-repository = "https://github.com/diaryx-org/twig"
-homepage = "https://github.com/diaryx-org/twig"
+repository.workspace = true
+homepage.workspace = true
 readme = "README.md"
 keywords = ["djot", "markdown", "parser", "ast", "document"]
 categories = ["parser-implementations", "text-processing"]
-rust-version = "1.85"
+rust-version.workspace = true
 
 [lib]
 name = "twig"
 path = "src/lib.rs"
-
-[[bin]]
-name = "twig"
-path = "src/bin/twig.rs"
 
 [dependencies]
 

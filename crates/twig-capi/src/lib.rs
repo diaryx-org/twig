@@ -173,7 +173,7 @@ pub struct TwigWarning {
     pub kind: *const c_char,
 }
 
-// The canonical 64-bit layout, as `c_abi.zig` and `twig-sys` assert it.
+// The canonical 64-bit layout, as the header assumes it.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     use std::mem::{offset_of, size_of};

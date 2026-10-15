@@ -3,12 +3,11 @@ name: Homebrew
 # shared with fig and moid and live in diaryx-org/.github; only what makes twig
 # different is below.
 #
-# twig's build.zig exposes just the standard target/optimize options — there is
-# no `-Dstrip` flag (fig has one), so `zig-flags` is left at its default.
+# The CLI is the `twig-doc-cli` crate of the workspace, whose binary is `twig`.
 #
-# `wasi: true` attaches a wasm32-wasi build to the same Release. It is not part
-# of the Homebrew formula (brew doesn't run wasm) — just a portable download for
-# any WASI runtime (wasmtime, wasmer, ...).
+# `wasi: true` attaches a wasm32-wasip1 build to the same Release. It is not
+# part of the Homebrew formula (brew doesn't run wasm) — just a portable
+# download for any WASI runtime (wasmtime, wasmer, ...).
 #
 # Runs on the same `v*.*.*` tag as release.yml (the crates.io publish); both use
 # softprops/action-gh-release, which upserts the same Release, so attaching
@@ -28,9 +27,8 @@ jobs:
     with:
       name: twig
       desc: "Parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, and XML documents"
-      language: zig
-      # The reusable workflow's default trails build.zig.zon's minimum_zig_version.
-      zig-version: "0.17.0"
+      language: rust
+      cargo-package: twig-doc-cli
       wasi: true
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}

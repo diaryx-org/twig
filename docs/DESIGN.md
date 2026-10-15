@@ -5,7 +5,7 @@ part_of: '[Twig](/README.md)'
 
 This document is the home for the design rationale, scope roadmap, and
 vocabulary that Twig's source comments refer to. If you are reading a comment in
-`src/` that mentions a *principle*, a *phase*, or a *priority tier*, this is
+`crates/` that mentions a *principle*, a *phase*, or a *priority tier*, this is
 where those terms are defined.
 
 Twig is published independently ([crates.io](https://crates.io/crates/twig-doc),
@@ -16,7 +16,7 @@ One topic has its own file. The rationale behind the shared AST's kind
 vocabulary — why it is one flat union rather than a nesting, what the three
 classifiers (`level`, `contentModel`, `structuralChildren`) are for, and why
 each kind exists rather than a cheaper alternative — lives in
-[AST-KINDS.md](/docs/AST-KINDS.md). `src/ast/ast.zig`'s comments say what a kind
+[AST-KINDS.md](/docs/AST-KINDS.md). `crates/twig/src/ast/mod.rs`'s comments say what a kind
 *is* and point there for why.
 
 ---
@@ -28,20 +28,25 @@ Twig is a sister project to [`fig`](https://github.com/diaryx-org/fig).
 place; Twig applies the same architecture to **document** files (Djot,
 Markdown, HTML, XML). Twig was built by carrying `fig`'s module layout and
 conventions over to documents, so many source comments note where a Twig
-module mirrors its `fig` counterpart (e.g. `cli/args.zig`, `ast/reader.zig`,
-`span.zig`).
+module mirrors its `fig` counterpart (e.g. the CLI's `args.rs`, `ast/reader.rs`,
+`span.rs`).
 
 Those "mirrors `fig`'s …" notes are lineage/rationale, not required reading:
 `fig` is a public repository, and the comparison is there for anyone curious
 why a module is shaped the way it is. Shared conventions worth naming once:
 
-- **Per-language modules.** Each format lives under `src/languages/<name>/`
-  with the same internal shape (a scanner/parser, a serializer, an
-  `<name>.zig` entry point that aggregates every sibling file's `test {}`
-  blocks). Comments call this "the fig/djot/xml convention."
-- **Thin CLI.** `main.zig` turns argv into a config and dispatches; the verb
-  implementations live in `cli/`. Diagnostics are printed at the site that
-  detects the problem, then a sentinel error unwinds to `main`.
+- **Crates.** `crates/twig` is the engine (`twig-doc`, library `twig`),
+  with no dependencies; `crates/twig-cli` is the `twig` binary
+  (`twig-doc-cli`); `crates/twig-capi` builds the C ABI declared in
+  `bindings/c/include/twig.h`. Both wrappers use only the engine's public API.
+- **Per-language modules.** Each format lives under
+  `crates/twig/src/languages/<name>/` with the same internal shape (a
+  scanner/parser, a serializer, and a `mod.rs` that declares them and their
+  test modules). Comments call this "the fig/djot/xml convention."
+- **Thin CLI.** `args.rs` declares the command line with clap and resolves it
+  into the options each verb takes; the verbs live in `actions.rs`.
+  Diagnostics are printed at the site that detects the problem, then a
+  sentinel error unwinds to `main`.
 - **Byte-span AST.** Every node carries a `Span` into the original source, and
   edits are byte-span splices, never re-serialization of the whole tree.
 
@@ -54,32 +59,33 @@ refers to are:
 
 - **Lossless by default.** An edit rewrites only the bytes inside the target
   span; everything outside it is copied verbatim and never reflows. Twig
-  never reformats what it didn't edit. (See `ast/splicer.zig`.)
+  never reformats what it didn't edit. (See `ast/splicer.rs`.)
 - **Modest, clean CLI.** The CLI is plain `stdout`/`stderr` writers — no
-  `std.log`, no terminal-color / `NO_COLOR` machinery. Keep it small.
-  (See `main.zig`.)
+  logging framework, no terminal-color / `NO_COLOR` machinery. Keep it small.
+  (See `crates/twig-cli/src/main.rs`.)
 - **`convert` is the workhorse.** `twig convert file.dj` with no other
-  arguments renders HTML; HTML is the default output mode. (See `cli/args.zig`.)
+  arguments renders HTML; HTML is the default output mode. (See `crates/twig-cli/src/args.rs`.)
 - **Extensions off by default.** Non-CommonMark / non-GFM features (math,
   and other `ParseOptions` toggles) are opt-in; with everything off, output
-  matches strict CommonMark. (See `languages/markdown/options.zig`.)
+  matches strict CommonMark. (See `languages/markdown/options.rs`.)
 - **A dialect is a `Format`.** Strict CommonMark and GFM are registry rows
   of their own (`-i commonmark`, `-i gfm`, `TWIG_FORMAT_GFM`) over the one
   Markdown parser, the way fig's `json`/`jsonc`/`json5` are three rows over
   one language; the extension flags lay over whichever row was named. (See
-  `format.zig`'s `Entry.dialect_of`, and the two-axes section below.)
+  `format.rs`'s `Format::dialect_of`, and the two-axes section below.)
 - **The correctness bar is the real source.** Span tests slice the *original*
   source with a resolved node's span and check the bytes — parsing must
   produce spans that address the true input, not a re-emitted approximation.
-  (See `languages/markdown/block.zig`'s span tests.)
+  (See `languages/markdown/block_tests.rs`'s span tests.)
 
 ---
 
 ## Markdown scope: the three phases
 
 Twig's Markdown support targets CommonMark 0.31.2 and was built in three
-phases. This roadmap is documented in full in
-`src/languages/markdown/markdown.zig`'s module doc comment; the short version:
+phases. This roadmap was documented in full in the Zig implementation's
+`markdown.zig` module doc comment (in the git history before the Zig tree was
+removed); the short version:
 
 - **Phase 1** — block structure (headings, lists, block quotes, code blocks,
   HTML blocks, thematic breaks, link reference definitions) plus a minimal
@@ -91,13 +97,13 @@ phases. This roadmap is documented in full in
   `==highlight==`) plus GFM's extended autolinks.
 
 Comments across `languages/markdown/` reference these phase numbers; they are
-all anchored by the `markdown.zig` doc comment above.
+all anchored by this section.
 
 ---
 
 ## The two format axes: `Format` and `Target`
 
-Twig has two format vocabularies, not one, and `src/format.zig` holds a table
+Twig has two format vocabularies, not one, and `crates/twig/src/format.rs` holds a table
 for each:
 
 | Axis | Type | Table | Question it answers |
@@ -138,7 +144,7 @@ Two consequences worth knowing before adding a target:
   XML's interior spans — where the output row's serializer is handed a bare
   `AST` and rebuilds what it can.
 - **`Fidelity` is defined by a round-trip**, so it cannot describe an
-  export-only target. `diagnostics.zig`'s probe derives the targets it measures
+  export-only target. `diagnostics.rs`'s probe derives the targets it measures
   from the `targets` table (`serializeFromAst != null` and `reads_back_as !=
   null`), so such a target drops out by construction rather than by a stale
   hardcoded list — and `fidelity`'s exhaustive switch will still demand an
@@ -148,7 +154,7 @@ Two consequences worth knowing before adding a target:
 
 The split was latent before it was made. `diagnostics.fidelity(target, kind)`
 had always indexed its capability table on an output axis while spelling the
-parameter `Format`, and `cli/format.zig` had already named its `-i` re-export
+parameter `Format`, and the CLI's `format` module had already named its `-i` re-export
 `InputFormat` to distinguish it from what `-o` accepts.
 
 ---
@@ -157,7 +163,7 @@ parameter `Format`, and `cli/format.zig` had already named its `-i` re-export
 
 The C-ABI `twig_editor_*` functions expose an **embeddable rich-text editor**
 where a caret speaks byte offsets rather than selector strings. The tiers
-(P-numbers in `c_abi.zig`) order the build-out of that surface by priority:
+(P-numbers in the C ABI, `crates/twig-capi`) order the build-out of that surface by priority:
 
 | Tier | Capability        | C-ABI entry points                          |
 |------|-------------------|---------------------------------------------|
@@ -169,7 +175,7 @@ where a caret speaks byte offsets rather than selector strings. The tiers
 
 Intermediate/edit-history capabilities (undo, redo, coalescing, caret
 persistence) fill in around these — see the individual `twig_editor_*` doc
-comments in `c_abi.zig`. The tier numbers are only a priority label; they
+comments in `bindings/c/include/twig.h`. The tier numbers are only a priority label; they
 don't imply anything beyond "what got built in what order."
 
 **A toolbar needs the answer before the call.** Twig's formats are ragged —
@@ -192,8 +198,8 @@ may only mint bytes the editor's own reparse reads back the same way, and a
 Markdown extension moves that line in both directions: `==x==` is literal text
 until `ParseOptions.highlight` is turned on, and `~~x~~` is a `delete` until
 `strikethrough` is turned off. Markdown's spelling is therefore not one table
-but one per parse config — `languages/markdown/syntax.zig` derives the set from
-a single literal and `forOptions` indexes it, selected by `format.zig`'s
+but one per parse config — `syntax/markdown.rs` derives the set from
+a single literal and `forOptions` indexes it, selected by `format.rs`'s
 `syntaxForConfig` from the very `ParseConfig` the editor reparses with, so the
 two can never disagree. Every other format leaves `Entry.syntaxFor` null and
 answers the same either way. `twig_format_supports_ext(format, md_flags, …)` is
@@ -217,7 +223,7 @@ directions:
 |----------|----------------|----------------|
 | May an editor gesture *mint* this spelling? | `Syntax`'s per-gesture fields, read by `Editor.supports` — for the table this document's parse config selects | Toolbar enable/disable |
 | Is there any door into this format at all? | `Syntax.authorable()` | Open read-only, hide the toolbar |
-| What survives a *conversion* to this target? | `diagnostics.zig`'s measured `fidelity` table | Save-as / convert warnings |
+| What survives a *conversion* to this target? | `diagnostics.rs`'s measured `fidelity` table | Save-as / convert warnings |
 
 The first two are asserted from the spelling tables; the third is **measured** —
 a test builds a document around every kind, serializes it, and reparses with the

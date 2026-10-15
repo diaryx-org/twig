@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "The C ABI of Twig (bindings/c/include/twig.h), implemented in Rust over the twig-doc crate."
-repository = "https://github.com/diaryx-org/twig"
+repository.workspace = true
 publish = false
 
 [lib]
@@ -15,4 +15,4 @@ crate-type = ["staticlib", "cdylib"]
 doctest = false
 
 [dependencies]
-twig-doc = { path = "../twig" }
+twig-doc.workspace = true
