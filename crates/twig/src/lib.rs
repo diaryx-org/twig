@@ -10,6 +10,10 @@
 //!   serializer.
 //! - [`format`] — the registry tying formats to their parsers and printers.
 
+#[doc = include_str!("../README.md")]
+#[cfg(doctest)]
+pub struct ReadmeDoctests;
+
 pub mod api;
 pub mod ast;
 pub mod attrs_writer;
