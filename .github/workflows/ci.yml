@@ -82,3 +82,83 @@ jobs:
       - name: Test
         working-directory: bindings/rust
         run: cargo test --workspace
+
+  # The pure-Rust port (crates/): its own test suite, then a byte-for-byte
+  # parity check of the Rust CLI against the Zig one over the repository's
+  # corpora. Zig is needed only as the oracle — the Rust crates build without it.
+  rust-port:
+    name: rust port (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace --release
+
+  rust-parity:
+    name: rust port parity with zig
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build both CLIs
+        run: |
+          zig build -Doptimize=ReleaseFast
+          cargo build --release -p twig-doc
+
+      - name: Compare
+        run: python3 scripts/rust-parity.py --mismatches parity-mismatches.txt
+
+      - name: Upload mismatches
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-mismatches
+          path: parity-mismatches.txt
+
+  # The C ABI built from Rust: the header's behavioural test linked against
+  # the Rust static library, and the wasm module JS consumers load.
+  rust-capi:
+    name: rust C ABI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Header test against libtwig.a
+        run: |
+          cargo build --release -p twig-capi
+          cc -std=c99 -Wall -I bindings/c/include bindings/c/test/header_test.c \
+             target/release/libtwig.a -lpthread -ldl -lm -o header_test
+          ./header_test
+
+      - name: Build the wasm module
+        run: cargo build --release -p twig-capi --target wasm32-unknown-unknown

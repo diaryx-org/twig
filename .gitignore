@@ -2,3 +2,4 @@
 zig-out/
 result
 .DS_Store
+/target

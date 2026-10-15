@@ -131,7 +131,8 @@ node_spelling: []const ?Spelling = &.{},
 /// `ast/locate.zig`'s `linePrefixSpan` is the walk that assembles it.
 ///
 /// `null` = this node has no leading marker, or no parser recorded one: every
-/// inline, a paragraph, a SETEXT heading (whose `---` sits under the block, not
+/// inline but a coloured Markdown highlight (whose `🔴 ` emoji after the `==`
+/// is its marker), a paragraph, a SETEXT heading (whose `---` sits under the block, not
 /// before it), a synthesized node. Like `node_spelling` and unlike `node_spans`
 /// this table may be SHORTER than `ast.nodes`, including empty; read it through
 /// `markerSpan()`, which treats a missing slot as `null`.

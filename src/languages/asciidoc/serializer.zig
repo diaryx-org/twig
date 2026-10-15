@@ -491,6 +491,11 @@ const Renderer = struct {
             const a = self.attrs(id);
             if (std.mem.eql(u8, name, "video")) {
                 try self.emitPositional(&.{ a.get("poster"), a.get("width"), a.get("height") });
+            } else {
+                // The parser keeps a first positional these macros give no
+                // name as `$1`; only the macro's own brackets can spell it,
+                // a block list's first slot being its style.
+                try self.emitPositional(&.{a.get("$1")});
             }
             try self.emit("]\n");
             return;
@@ -1220,6 +1225,12 @@ test "a document with a title, entries, sections and paragraphs is stable" {
     const again = try roundTrip(out);
     defer testing.allocator.free(again);
     try testing.expectEqualStrings(out, again);
+}
+
+test "a macro's unnamed first positional round-trips inside its brackets" {
+    const out = try roundTrip("toc::[foo]\n\naudio::a.mp3[bar]\n");
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("toc::[foo]\n\naudio::a.mp3[bar]\n", out);
 }
 
 test "spans are constrained on word boundaries and unconstrained inside a word" {

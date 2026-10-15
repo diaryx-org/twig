@@ -172,7 +172,14 @@ const Renderer = struct {
         try self.writer.writeByte('|');
         var it = self.ast.children(row);
         while (it.next()) |cell| {
-            const delim: []const u8 = switch (self.ast.nodes[cell.id].kind.cell.alignment) {
+            // A row may hold a non-cell child — a forgiving HTML parse puts a
+            // stray `<pre>` straight into a `<tr>` — which every row writer
+            // still counts as a column; it carries no alignment.
+            const alignment: AST.Alignment = switch (cell.kind) {
+                .cell => |c| c.alignment,
+                else => .default,
+            };
+            const delim: []const u8 = switch (alignment) {
                 .left => ":---",
                 .right => "---:",
                 .center => ":---:",
@@ -1448,6 +1455,21 @@ test "djot's bracketed span and HTML's span are both a <span> carrying the attri
     const h = try htmlToMarkdown("<p>a <span class=\"large\">big</span> b</p>");
     defer testing.allocator.free(h);
     try testing.expectEqualStrings("a <span class=\"large\">big</span> b\n", h);
+}
+
+test "a row's non-cell child is a column with no alignment, not a cell read blind" {
+    // What a forgiving HTML parse makes of `<tr><pre>x</pre><td>a</td></tr>`.
+    var b = AST.Builder.init(testing.allocator);
+    defer b.deinit();
+    const code = try b.addLeaf(.{ .code_block = .{ .lang = null, .text = "x" } });
+    const a = try b.addContainer(.{ .cell = .{ .head = true, .alignment = .right } }, &.{try b.addLeaf(.{ .str = "a" })});
+    const row = try b.addContainer(.{ .row = .{ .head = true } }, &.{ code, a });
+    const table = try b.addContainer(.table, &.{row});
+    var ast = try b.finish(try b.addContainer(.doc, &.{table}));
+    defer ast.deinit();
+    const out = try serializeAstAlloc(testing.allocator, &ast);
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "| --- | ---: |\n") != null);
 }
 
 test "an anonymous span with nothing to say still yields its text" {

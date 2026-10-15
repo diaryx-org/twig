@@ -1,0 +1,27 @@
+[package]
+# Published as `twig-doc` because the plain `twig` crate name is taken. The
+# library itself is still Twig: `[lib] name` stays `twig`, so consumers write
+# `use twig::…`.
+name = "twig-doc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, XML, and AsciiDoc documents. Pure Rust."
+repository = "https://github.com/diaryx-org/twig"
+homepage = "https://github.com/diaryx-org/twig"
+readme = "README.md"
+keywords = ["djot", "markdown", "parser", "ast", "document"]
+categories = ["parser-implementations", "text-processing"]
+rust-version = "1.85"
+
+[lib]
+name = "twig"
+path = "src/lib.rs"
+
+[[bin]]
+name = "twig"
+path = "src/bin/twig.rs"
+
+[dependencies]
+
+[dev-dependencies]

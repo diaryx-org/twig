@@ -5056,22 +5056,12 @@ pub export fn twig_builder_set_attrs(
 /// source syntax, always from a bare AST — a built tree has no parsed label
 /// tables.
 ///
-/// NOT routed through `twig.format.serializeFromAstAlloc`, and the reason is a
-/// live bug rather than a design choice. The `targets` table says XML has NO
-/// `serializeFromAst`, because `xml/serializer.zig` handles only the
-/// generic-markup kinds its own parser produces and `else => unreachable`s on
-/// everything else. This function calls `Xml.serializeAlloc` directly anyway, so
-/// `twig_builder_serialize(.., TWIG_FORMAT_XML)` over a tree holding any
-/// semantic kind (a `heading`, a `link`) PANICS in a safe build rather than
-/// returning the `unsupported_format` its caller's doc comment promises — the
-/// `else =>` arm there can never fire, because `unreachable` is not an error.
-/// `twig_document_serialize` refuses the same conversion correctly, which is how
-/// the two copies of this dispatch came to disagree.
-///
-/// Switching to the registry would fix the panic but would also stop serializing
-/// a purely generic-markup built tree (`element`/`comment`/...) into XML, which
-/// works today and which nothing tests. That's a behaviour call, not a mechanical
-/// one, so it is left exactly as it was — see the note in the refactor summary.
+/// NOT routed through `twig.format.serializeFromAstAlloc`: the `targets` table
+/// gives XML no `serializeFromAst`, because its serializer spells only the
+/// generic-markup kinds its own parser produces. Calling it directly keeps a
+/// purely generic-markup built tree (`element`/`comment`/...) serializable to
+/// XML, while a tree holding a semantic kind comes back `UnsupportedNode` —
+/// the `unsupported_format` `twig_builder_serialize` promises.
 fn serializeBuiltAst(allocator: Allocator, doc: *const twig.Document, target: twig.format.Target) anyerror![]u8 {
     const ast = &doc.ast;
     return switch (target) {
