@@ -96,20 +96,41 @@ pub const EDGE_CASES: &[&[u8]] = &[
     b"``code with ` backtick``\n",
     b"`unterminated verbatim\n",
     b"| a |\n\n^ only caption\n\nafter\n",
+    b"raw \xff\xfe bytes and *\xc3 strong*\n",
+    b"text{.a\n.b} after\n",
+    b"broken{.a )} attr\n",
+    b"[^ spaced  label ]\n\n[^spaced label]: def\n",
+    b"[a [nested] link](/u) [b](/u (paren) x)\n",
+    b"![img *alt*](src.png \"t\")\n",
+    b"- a\n\n\n- b\n\n  - c\n\n      code-ish\n",
+    b"1. a\n1) b\n(1) c\n",
+    b"> {.q}\n> para\n>\n> ```\n> code\n> ```\n",
+    b"{#dup}\n# Dup\n\n# Dup\n\n# Dup\n\n# 1 -- 2\n\n#\n",
+    b"::: a\n:::: b\ninner\n::::\n:::\n",
+    b"```\n::: not a div\n```\n",
+    b"x\\\ny\n",
+    b"*a _b* c_\n",
+    b"{=x=} {+ y +} {-z-} {~s~} {^t^} {_u_} {*v*}\n",
+    b"\"double 'single' double\" ''' \"\"\"\n",
+    b"term\n: not a def\n\n: def\n\n  more\n",
+    b"|a|b|\n|-|-|\n|c|\n|d|e|f|\n",
+    b"| `|` | x |\n",
+    b"[link]\n\n[link]: http://a b\n",
+    b"\t- tab list\n\t  continued\n",
+    b"<not an autolink> <a:b> <@x>\n",
 ];
 
 fn check(src: &[u8]) -> Vec<String> {
     let mut problems = Vec::new();
     let show = || String::from_utf8_lossy(src).into_owned();
     let doc = super::parse(src);
-    let utf8 = std::str::from_utf8(src).is_ok();
 
     let want = oracle(&["convert", "-i", "djot", "-o", "table"], src).unwrap();
-    if utf8 && table::encode(&doc, Default::default()) != want {
+    if table::encode(&doc, Default::default()) != want {
         problems.push(format!("table differs for {:?}", show()));
     }
     let want = oracle(&["convert", "-i", "djot", "-o", "ast"], src).unwrap();
-    if utf8 && json::encode(&doc) != want {
+    if json::encode(&doc) != want {
         problems.push(format!("ast differs for {:?}", show()));
     }
     let want = oracle(&["convert", "-i", "djot"], src).unwrap();
@@ -174,7 +195,11 @@ fn differential_against_the_zig_oracle() {
         return;
     }
     let mut problems = Vec::new();
-    for src in inputs() {
+    let all = inputs();
+    // The whole djot.js corpus (271 cases) plus the edge cases and samples.
+    assert!(all.len() > 330, "corpus shrank: {}", all.len());
+    eprintln!("djot differential: {} inputs", all.len());
+    for src in all {
         problems.extend(check(&src));
         // A djot tree through the cross-format path, as markdown input would
         // reach it: compared against the oracle's own djot -> ast -> djot.
