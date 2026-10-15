@@ -31,52 +31,21 @@ use crate::document::{Bullet, Document, Spelling};
 
 use super::parser::{admonition_name, is_space_byte, is_word_byte, trim, upper_label};
 
-/// An open/close delimiter pair from AsciiDoc's syntax table.
-#[derive(Clone, Copy)]
-struct Delims {
-    open: &'static [u8],
-    close: &'static [u8],
+use crate::languages::html::write_element_text;
+use crate::syntax::Delims;
+
+/// AsciiDoc's syntax table — the serializer reads its delimiters from it so
+/// the serializer and the editor's gestures cannot drift apart.
+fn table() -> &'static crate::syntax::Syntax {
+    crate::syntax::asciidoc::table()
 }
 
-// TODO(port): read these from `crate::syntax::asciidoc`'s table once the
-// syntax tables land (`src/languages/asciidoc/syntax.zig`); until then the
-// three rows this file consults are transcribed here.
 fn mark_delims(m: InlineMark) -> Delims {
-    let (open, close): (&'static [u8], &'static [u8]) = match m {
-        InlineMark::Strong => (b"**", b"**"),
-        InlineMark::Emph => (b"__", b"__"),
-        InlineMark::Mark => (b"##", b"##"),
-        InlineMark::Superscript => (b"^", b"^"),
-        InlineMark::Subscript => (b"~", b"~"),
-        InlineMark::Insert => (b"[.underline]#", b"#"),
-        InlineMark::Delete => (b"[.line-through]#", b"#"),
-        InlineMark::DoubleQuoted => (b"\"`", b"`\""),
-        InlineMark::SingleQuoted => (b"'`", b"`'"),
-    };
-    Delims { open, close }
+    *table().inline_delim(m).expect("asciidoc spells every mark")
 }
 
-const VERBATIM_DELIMS: Delims = Delims { open: b"``", close: b"``" };
-const THEMATIC_BREAK: &[u8] = b"'''";
-
-/// HTML's raw-text elements, whose text body has no escaping mechanism.
-// TODO(port): use `crate::languages::html`'s `write_element_text` once the
-// HTML serializer lands.
-const RAW_TEXT_ELEMENTS: [&[u8]; 7] = [b"script", b"style", b"xmp", b"iframe", b"noembed", b"noframes", b"plaintext"];
-
-fn write_element_text(out: &mut Vec<u8>, name: &[u8], text: &[u8]) {
-    if RAW_TEXT_ELEMENTS.contains(&name) {
-        out.extend_from_slice(text);
-        return;
-    }
-    for &c in text {
-        match c {
-            b'&' => out.extend_from_slice(b"&amp;"),
-            b'<' => out.extend_from_slice(b"&lt;"),
-            b'>' => out.extend_from_slice(b"&gt;"),
-            _ => out.push(c),
-        }
-    }
+fn verbatim_delims() -> Delims {
+    *table().text_leaf_delim(TextLeafKind::Verbatim).expect("asciidoc spells verbatim")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -495,7 +464,7 @@ impl<'d> Renderer<'d> {
             }
             Kind::ThematicBreak => {
                 self.write_block_attrs(id, None, &[], &[]);
-                self.emit(THEMATIC_BREAK);
+                self.emit(table().thematic_break.expect("asciidoc spells a thematic break"));
                 self.emit_byte(b'\n');
             }
             Kind::BlockQuote => {
@@ -1151,7 +1120,7 @@ impl<'d> Renderer<'d> {
                         return;
                     }
                     self.write_inline_attrs(id);
-                    let d = VERBATIM_DELIMS;
+                    let d = verbatim_delims();
                     let prev_ok = !is_word_byte(self.last);
                     let next = self.next_byte(id);
                     let next_ok = next.is_none_or(|n| !is_word_byte(n));
@@ -1332,7 +1301,7 @@ impl<'d> Renderer<'d> {
             // A fragment: a cross reference.
             self.emit(b"<<");
             self.emit(&dest[1..]);
-            if !same && !t.is_empty() && t != &dest[1..] {
+            if !same && !t.is_empty() && t[..] != dest[1..] {
                 self.emit_byte(b',');
                 self.emit(&t);
             }
@@ -1346,7 +1315,7 @@ impl<'d> Renderer<'d> {
             self.emit(dest);
         }
         self.emit_byte(b'[');
-        if !same && !(dest.starts_with(b"mailto:") && t == &dest[7..]) {
+        if !same && !(dest.starts_with(b"mailto:") && t[..] == dest[7..]) {
             self.emit(&t);
         }
         let mut any = !same;
@@ -1503,9 +1472,29 @@ mod tests {
         assert_eq!("text\n", s(&serialize_ast(&b.finish(root))));
     }
 
-    // TODO(port): "a Markdown tree converts: headings, marks, a fenced code
-    // block, a task list, a table" and "a table's `title` attribute is its
-    // `.Title` line, unless a caption already is" need the Markdown and HTML
-    // parsers (other agents); see `cross_format_tests` below, which run once
-    // those modules expose `parse`.
+    #[test]
+    fn a_markdown_tree_converts_headings_marks_a_fenced_code_block_a_task_list_a_table() {
+        let md = crate::languages::markdown::parse(
+            b"# T\n\nsome **bold** `code` [link](https://x.org)\n\n```py\nx\n```\n\n- [x] a\n\n| h |\n|---|\n| c |\n",
+            Default::default(),
+        );
+        let out = serialize_ast(&md.ast);
+        assert_eq!(
+            "= T\n\nsome *bold* `code` https://x.org[link]\n\n[source,py]\n----\nx\n----\n\n* [x] a\n\n[%header,cols=1]\n|===\n|h\n\n|c\n|===\n",
+            s(&out)
+        );
+    }
+
+    #[test]
+    fn a_tables_title_attribute_is_its_title_line_unless_a_caption_already_is() {
+        // The parser reads the line back as a caption, the way it reads every
+        // `.Title` on a table.
+        let doc = crate::languages::html::parse(
+            b"<table title=\"Figures\"><tr><td>a</td></tr></table><table title=\"Lost\"><caption>Cap</caption><tr><td>b</td></tr></table>",
+        );
+        let out = serialize_ast(&doc.ast);
+        assert_eq!(".Figures\n[cols=1]\n|===\n|a\n|===\n\n.Cap\n[cols=1]\n|===\n|b\n|===\n", s(&out));
+        let back = parser::parse(&out);
+        assert_eq!(back.ast.nodes.iter().filter(|n| n.kind == Kind::Caption).count(), 2);
+    }
 }

@@ -212,12 +212,19 @@ fn show(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-fn check(target: &str, port: impl Fn(&[u8]) -> Vec<u8>) {
+/// `target` is the `-o` value, or `None` for the default (HTML render).
+fn check(target: Option<&str>, port: impl Fn(&[u8]) -> Vec<u8>) {
     let Some(bin) = oracle() else { return };
+    let mut args = vec!["convert", "-i", "asciidoc"];
+    if let Some(t) = target {
+        args.extend(["-o", t]);
+    }
+    args.push("-");
+    let target = target.unwrap_or("html (render)");
     let mut failures = Vec::new();
     let mut compared = 0;
     for (id, src) in all_inputs() {
-        let Some(want) = run_oracle(&bin, &["convert", "-i", "asciidoc", "-o", target, "-"], &src) else {
+        let Some(want) = run_oracle(&bin, &args, &src) else {
             continue;
         };
         compared += 1;
@@ -236,15 +243,141 @@ fn check(target: &str, port: impl Fn(&[u8]) -> Vec<u8>) {
 
 #[test]
 fn table_matches_oracle() {
-    check("table", |src| crate::ast::table::encode(&super::parse(src), Default::default()));
+    check(Some("table"), |src| crate::ast::table::encode(&super::parse(src), Default::default()));
 }
 
 #[test]
 fn canonical_matches_oracle() {
-    check("canonical", |src| super::serialize(&super::parse(src)));
+    check(Some("canonical"), |src| super::serialize(&super::parse(src)));
+}
+
+/// AsciiDoc renders through the generic, label-free HTML printer (the
+/// registry's `renderHtmlGeneric`).
+fn render_html(src: &[u8]) -> Vec<u8> {
+    let doc = super::parse(src);
+    let mut out = Vec::new();
+    crate::languages::html::serialize(&doc.ast, &mut out, None).expect("render");
+    out
+}
+
+#[test]
+fn html_matches_oracle() {
+    check(None, render_html);
 }
 
 #[test]
 fn ast_matches_oracle() {
-    check("ast", |src| crate::ast::json::encode(&super::parse(src)));
+    check(Some("ast"), |src| crate::ast::json::encode(&super::parse(src)));
+}
+
+// ── cross-format: another language's tree -> `-o asciidoc` ──────────────────
+//
+// `serialize_ast` is the cross-format printer. These feed other formats'
+// inputs through the oracle's `-i <fmt> -o asciidoc` and through the port's
+// parser for that format plus `serialize_ast`. Only inputs whose `-o table`
+// already agrees are compared, so a divergence in ANOTHER module's parser is
+// not reported as this serializer's.
+
+fn commonmark_inputs() -> Vec<Vec<u8>> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src/languages/markdown/testdata/commonmark-spec-0.31.2.json");
+    let Ok(text) = std::fs::read(&path) else { return Vec::new() };
+    let Ok(v) = json::parse(&text) else { return Vec::new() };
+    v.as_array()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|c| c.get("markdown").and_then(|m| m.as_str()).map(|m| m.to_vec()))
+        .collect()
+}
+
+fn djot_inputs() -> Vec<Vec<u8>> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src/languages/djot/testdata");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> =
+        entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "test")).collect();
+    files.sort();
+    let mut out = Vec::new();
+    for f in files {
+        let Ok(text) = std::fs::read(&f) else { continue };
+        let mut lines = text.split(|&c| c == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            if line.len() < 3 || !line.iter().all(|&c| c == b'`') {
+                continue;
+            }
+            let mut input = Vec::new();
+            for l in lines.by_ref() {
+                if l == b"." {
+                    break;
+                }
+                input.extend_from_slice(l);
+                input.push(b'\n');
+            }
+            // Skip the expected output up to the closing fence.
+            for l in lines.by_ref() {
+                if l == line {
+                    break;
+                }
+            }
+            out.push(input);
+        }
+    }
+    out
+}
+
+fn html_inputs() -> Vec<Vec<u8>> {
+    [
+        &b"<h1>T</h1><p>some <strong>bold</strong> <code>code</code> <a href=\"https://x.org\">link</a></p>"[..],
+        b"<table title=\"Figures\"><tr><td>a</td></tr></table><table title=\"Lost\"><caption>Cap</caption><tr><td>b</td></tr></table>",
+        b"<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul><ol start=\"3\"><li>x</li></ol>",
+        b"<blockquote><p>q</p></blockquote><pre><code>x\n----\n</code></pre><hr>",
+        b"<dl><dt>t</dt><dd>d</dd></dl><p>a<br>b <em>e</em> <mark>m</mark> <sup>s</sup> <sub>b</sub> <ins>i</ins> <del>d</del></p>",
+        b"<div class=\"note\"><p>n</p></div><script>if (a < b) {}</script><textarea>a & b</textarea>",
+        b"<!-- comment --><p>x<span id=\"y\">z</span><img src=\"i.png\" alt=\"A\" width=\"5\"></p>",
+        b"<table><thead><tr><th>h</th><th align=\"right\">r</th></tr></thead><tbody><tr><td colspan=\"2\">w</td></tr></tbody></table>",
+        b"<p><kbd>K</kbd> <b class=\"button\">OK</b> <a href=\"#frag\">F</a> <a href=\"mailto:a@b.org\">a@b.org</a></p>",
+    ]
+    .iter()
+    .map(|s| s.to_vec())
+    .collect()
+}
+
+fn check_cross(format: &str, inputs: Vec<Vec<u8>>, parse: impl Fn(&[u8]) -> crate::document::Document) {
+    let Some(bin) = oracle() else { return };
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    let mut skipped = 0;
+    for src in inputs {
+        let Some(want_table) = run_oracle(&bin, &["convert", "-i", format, "-o", "table", "-"], &src) else { continue };
+        let doc = parse(&src);
+        if crate::ast::table::encode(&doc, Default::default()) != want_table {
+            skipped += 1;
+            continue;
+        }
+        let Some(want) = run_oracle(&bin, &["convert", "-i", format, "-o", "asciidoc", "-"], &src) else { continue };
+        compared += 1;
+        let got = super::serialize_ast(&doc.ast);
+        if got != want {
+            failures.push(format!("{:?}\n--- oracle\n{}\n--- port\n{}", show(&src), show(&want), show(&got)));
+        }
+    }
+    eprintln!("asciidoc cross-format from {}: {} compared, {} skipped (source tree differs)", format, compared, skipped);
+    if !failures.is_empty() {
+        let n = failures.len();
+        failures.truncate(5);
+        panic!("{} of {} {} inputs differ on -o asciidoc:\n{}", n, compared, format, failures.join("\n\n"));
+    }
+}
+
+#[test]
+fn markdown_to_asciidoc_matches_oracle() {
+    check_cross("markdown", commonmark_inputs(), |s| crate::languages::markdown::parse(s, Default::default()));
+}
+
+#[test]
+fn djot_to_asciidoc_matches_oracle() {
+    check_cross("djot", djot_inputs(), crate::languages::djot::parse);
+}
+
+#[test]
+fn html_to_asciidoc_matches_oracle() {
+    check_cross("html", html_inputs(), crate::languages::html::parse);
 }

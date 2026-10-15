@@ -1090,7 +1090,7 @@ impl<'a> Pending<'a> {
     }
 
     fn has_option(&self, name: &[u8]) -> bool {
-        self.options.iter().any(|o| *o == name)
+        self.options.contains(&name)
     }
 
     fn get(&self, key: &[u8]) -> Option<&[u8]> {
@@ -2860,7 +2860,7 @@ impl<'a> Parser<'a> {
                 if nk == list_key {
                     break;
                 }
-                if self.list_stack.iter().any(|k| *k == nk) {
+                if self.list_stack.contains(&nk) {
                     break;
                 }
                 let r = self.parse_list(q, hi, nm);
@@ -4004,7 +4004,7 @@ impl<'c, 'b, 't> Scanner<'c, 'b, 't> {
             k -= 1;
         }
         let Some(ld) = last_dot else { return false };
-        if ld <= dom_start || ld + 2 >= k + 1 {
+        if ld <= dom_start || ld + 2 > k {
             return false;
         }
         if k - ld - 1 < 2 {
