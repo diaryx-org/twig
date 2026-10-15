@@ -232,9 +232,11 @@ impl<'a> Renderer<'a> {
         for cell in self.ast.child_ids(row) {
             let alignment = match self.ast.kind(cell) {
                 Kind::Cell(c) => c.alignment,
-                // Zig reads `.cell` unchecked; a non-cell row child would
-                // panic there.
-                other => unreachable!("table row child is {}", other.kind_name()),
+                // Zig reads `.cell` unchecked, which in the release oracle
+                // is an untagged read of another payload (an HTML `<pre>`
+                // directly inside a `<tr>` lands here). The oracle prints the
+                // default delimiter for it; so do we.
+                _ => Alignment::Default,
             };
             let delim: &[u8] = match alignment {
                 Alignment::Left => b":---",

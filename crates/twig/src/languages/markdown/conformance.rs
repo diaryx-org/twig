@@ -333,6 +333,31 @@ mod differential {
         report(problems);
     }
 
+    struct Html {
+        html: Vec<u8>,
+    }
+
+    /// Hand-written HTML reaching the printer's attribute, container and
+    /// verse paths, which the spec outputs never do.
+    const EXTRA_HTML: &[&str] = &[
+        "<div class=\"c\"><p>x</p><p>y</p></div>",
+        "<div class=\"verse\"><p>Roses are red,<br>violets<br>1. not a list</p><p># two</p></div>",
+        "<p class=\"lead\" id=\"p1\">attributed</p><h2 id=\"t\">Title</h2>",
+        "<blockquote><p class=\"q\">in a quote</p><ul><li>a</li><li><p>b</p><p>c</p></li></ul></blockquote>",
+        "<p>a <span class=\"large\">big</span> b <span>plain</span> <u>under</u> <mark>hi</mark> <del>x</del> <sup>2</sup><sub>i</sub></p>",
+        "<aside class=\"n\"><p>x</p></aside><video controls src=\"a.mp4\"></video>",
+        "<p>x <my-widget data-x=\"1\">y</my-widget> <script>if (a < b) {}</script></p>",
+        "<table><caption>cap</caption><thead><tr><th style=\"text-align: right\">h</th><th>i</th></tr></thead><tbody><tr><td>1<br>2</td><td>3</td></tr></tbody></table>",
+        "<table><tr><td>a</td><td>b</td></tr><tr><th>h</th></tr></table>",
+        "<dl><dt>term</dt><dd>def</dd><dt>t2</dt><dd><p>p1</p><p>p2</p></dd></dl>",
+        "<ol start=\"3\"><li>three</li><li>four</li></ol><ol type=\"a\"><li>x</li></ol>",
+        "<pre><code class=\"language-zig\">const x = ```;\n</code></pre><hr><p>after</p>",
+        "<!-- c --><?pi data?><p>&nbsp;x&amp;y</p>",
+        "<ul><li><input type=\"checkbox\" checked> done</li><li><input type=\"checkbox\"> todo</li></ul>",
+        "<p><img src=\"a.png\" alt=\"alt\" title=\"t\"> <a href=\"/u\" title=\"x\">link <code>c`d</code></a></p>",
+        "<title>T &amp; t</title><style>p { color: red }</style>",
+    ];
+
     #[test]
     fn bare_tree_markdown_matches_the_oracle_cross_format() {
         // `convert -i html -o markdown` is a cross-format conversion, so it
@@ -343,8 +368,13 @@ mod differential {
             return;
         }
         let mut problems = Vec::new();
+        let mut corpus: Vec<Vec<u8>> = EXTRA_HTML.iter().map(|s| s.as_bytes().to_vec()).collect();
         for name in ["commonmark-spec-0.31.2.json", "gfm-spec-0.29-extensions.json"] {
-            for ex in load_spec(name) {
+            corpus.extend(load_spec(name).into_iter().map(|e| e.html));
+        }
+        {
+            for html in corpus {
+                let ex = Html { html };
                 let want = match oracle(&["convert", "-i", "html", "-o", "markdown"], &ex.html) {
                     Ok(w) => w,
                     Err(e) => panic!("oracle failed: {}", String::from_utf8_lossy(&e)),
