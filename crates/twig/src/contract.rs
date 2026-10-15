@@ -16,8 +16,6 @@
 use crate::ast::{select, table as node_table, Ast, Attrs, Builder, Form, Kind, KeyVal, ListNumbering, Link, NodeId, Tag};
 use crate::document::Document;
 use crate::format::{self, Format, ParseConfig, ParsedDoc};
-use crate::languages;
-use crate::languages::markdown::options::Extensions;
 use crate::runtime;
 use crate::syntax::{BlockAttrs, Syntax};
 use crate::ast::editor::{self, BlockKind, ContainerKind, Editor, Gesture, InlineKind};
@@ -59,22 +57,12 @@ impl Entry {
     /// A compiled row, as the format registry has it — or a registered
     /// runtime row.
     pub fn of(fmt: Format) -> Entry {
-        if let Format::Runtime(c) = fmt {
-            if let Some(e) = runtime::contract_entry(c) {
+        if fmt.is_runtime() {
+            if let Some(e) = runtime::contract_entry(fmt.code()) {
                 return e;
             }
         }
-        let samples: Vec<Vec<u8>> = match fmt {
-            Format::Djot => languages::djot::SAMPLES.iter().map(|s| s.to_vec()).collect(),
-            Format::Markdown => languages::markdown::SAMPLES.iter().map(|s| s.to_vec()).collect(),
-            Format::Commonmark => languages::markdown::COMMONMARK_SAMPLES.iter().map(|s| s.to_vec()).collect(),
-            Format::Gfm => languages::markdown::GFM_SAMPLES.iter().map(|s| s.to_vec()).collect(),
-            Format::Xml => languages::xml::SAMPLES.iter().map(|s| s.as_bytes().to_vec()).collect(),
-            Format::Svg => languages::xml::SVG_SAMPLES.iter().map(|s| s.as_bytes().to_vec()).collect(),
-            Format::Html => languages::html::SAMPLES.iter().map(|s| s.to_vec()).collect(),
-            Format::Asciidoc => languages::asciidoc::SAMPLES.iter().map(|s| s.to_vec()).collect(),
-            Format::Runtime(_) => Vec::new(),
-        };
+        let samples = format::samples_of(fmt);
         let target = format::target_for(fmt);
         Entry {
             id: fmt,
@@ -246,16 +234,16 @@ fn columns(doc: &Document, r: &mut Report, name: &str, what: &str, index: usize)
 // ── Renderers and claims ────────────────────────────────────────────────────
 
 /// The parse configs a per-table claim can be made under. A claim is a claim
-/// about a TABLE, and Markdown has one table per option combination, so every
-/// table the row can produce for these is asked, and parsed with the very
-/// config it came from. Every other row answers the same table for all four,
-/// and is checked once.
-fn claim_configs() -> [ParseConfig; 4] {
-    let ext = |directives, html_elements| ParseConfig {
-        markdown: Extensions { directives, html_elements, ..Default::default() },
-        features: 0,
-    };
-    [ext(false, false), ext(true, false), ext(false, true), ext(true, true)]
+/// about a TABLE, and a row with features has one table per combination
+/// (Markdown's), so the table under no features, under each feature alone
+/// and under every feature is asked, and parsed with the very config it came
+/// from. A row with no features answers one table, and is checked once.
+fn claim_configs(fmt: Format) -> Vec<ParseConfig> {
+    let n = if fmt.is_runtime() { 0 } else { format::features(fmt).len().min(31) };
+    let mut masks = vec![0u32];
+    masks.extend((0..n).map(|i| 1u32 << i));
+    masks.push((1u32 << n) - 1);
+    masks.into_iter().map(|m| ParseConfig::for_features(fmt, m)).collect()
 }
 
 /// Every renderer `entry` declares keeps the engine's promise, and every
@@ -269,7 +257,7 @@ pub fn renderers(entry: &Entry, r: &mut Report) -> CheckResult {
     }
     // Per table rather than per row — and each table only once.
     let mut seen: Vec<*const Syntax> = Vec::new();
-    for cfg in claim_configs() {
+    for cfg in claim_configs(entry.id) {
         let t = table_for(entry, &cfg);
         if seen.contains(&(t as *const Syntax)) {
             continue;
@@ -1402,7 +1390,7 @@ type ER = Result<(), editor::Error>;
 
 impl Trial<'_> {
     fn name(&self) -> String {
-        self.entry.id.name()
+        self.entry.id.name().to_string()
     }
 
     /// One probe's outcome: a broken promise is the check's answer, unless
@@ -2193,7 +2181,7 @@ mod tests {
 
     #[test]
     fn every_compiled_row_keeps_the_non_editor_promises() {
-        for fmt in Format::COMPILED {
+        for fmt in crate::test_languages::all() {
             let entry = Entry::of(fmt);
             let mut r = Report::default();
             samples(&entry, &mut r).unwrap_or_else(|_| panic!("{}", r.message()));
@@ -2203,7 +2191,7 @@ mod tests {
 
     #[test]
     fn every_compiled_row_moves_a_block_as_typed() {
-        for fmt in Format::COMPILED {
+        for fmt in crate::test_languages::all() {
             let entry = Entry::of(fmt);
             let mut r = Report::default();
             move_block(&entry, &mut r).unwrap_or_else(|_| panic!("{}", r.message()));
@@ -2221,7 +2209,7 @@ mod tests {
     #[test]
     fn every_gesture_everywhere_over_every_authorable_format() {
         let mut log = Vec::new();
-        for fmt in Format::COMPILED {
+        for fmt in crate::test_languages::all() {
             let entry = Entry::of(fmt);
             let mut report = Report::logging();
             let _ = gestures(&entry, &mut report);
@@ -2252,9 +2240,9 @@ mod tests {
         // same nodes a pipe table produces, so a table edit splices pipes
         // over the elements — which reparse as a paragraph.
         {
-            let mut table = *format::syntax_for(Format::Html);
-            table.table_spelling = format::syntax_for(Format::Markdown).table_spelling;
-            let mut entry = Entry::of(Format::Html);
+            let mut table = *format::syntax_for(crate::test_languages::html());
+            table.table_spelling = format::syntax_for(crate::test_languages::markdown()).table_spelling;
+            let mut entry = Entry::of(crate::test_languages::html());
             entry.syntax = Box::leak(Box::new(table));
             entry.syntax_for = None;
             let mut report = Report::logging();
@@ -2265,9 +2253,9 @@ mod tests {
         }
         // A rule spelled in bytes the parser does not read back as one.
         {
-            let mut table = *format::syntax_for(Format::Djot);
+            let mut table = *format::syntax_for(crate::test_languages::djot());
             table.thematic_break = Some(b"~ ~ ~");
-            let mut entry = Entry::of(Format::Djot);
+            let mut entry = Entry::of(crate::test_languages::djot());
             entry.syntax = Box::leak(Box::new(table));
             let mut report = Report::default();
             assert_eq!(gestures(&entry, &mut report), Err(Broken));
@@ -2280,10 +2268,10 @@ mod tests {
         fn nothing(_: &Syntax, _: &Ast, _: NodeId, _: &mut Vec<u8>) -> Result<(), crate::Error> {
             Ok(())
         }
-        let mut table = *format::syntax_for(Format::Djot);
+        let mut table = *format::syntax_for(crate::test_languages::djot());
         table.render_block = Some(nothing);
         let leaked: &'static Syntax = Box::leak(Box::new(table));
-        let mut entry = Entry::of(Format::Djot);
+        let mut entry = Entry::of(crate::test_languages::djot());
         entry.syntax = leaked;
         let mut r = Report::default();
         assert_eq!(render_block(&entry, &mut r), Err(Broken));

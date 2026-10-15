@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn resolve_accepts_both_a_path_and_a_selector_and_reports_why_it_failed() {
-        let doc = crate::languages::xml::parse(b"<r><a>one</a><a>two</a></r>").unwrap();
+        let doc = twig_xml::parse(b"<r><a>one</a><a>two</a></r>").unwrap();
         assert_eq!(resolve(&doc, b""), Ok(doc.ast.root));
         assert!(resolve(&doc, b"element[name=r]").is_ok());
         assert_eq!(resolve(&doc, b"element[name=a]"), Err(Error::Ambiguous));

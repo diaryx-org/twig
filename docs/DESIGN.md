@@ -35,16 +35,26 @@ Those "mirrors `fig`'s …" notes are lineage/rationale, not required reading:
 `fig` is a public repository, and the comparison is there for anyone curious
 why a module is shaped the way it is. Shared conventions worth naming once:
 
-- **Crates.** `crates/twig` is the engine (`twig-doc`, library `twig`),
-  with no dependencies; `crates/twig-cli` is the `twig` binary
-  (`twig-doc-cli`); `crates/twig-capi` builds the C ABI declared in
-  `bindings/c/include/twig.h`; `crates/twig-meta` edits a document's
-  metadata through fig (`docs/proposals/fig-in-twig.md`). All three use only
-  the engine's public API.
-- **Per-language modules.** Each format lives under
-  `crates/twig/src/languages/<name>/` with the same internal shape (a
-  scanner/parser, a serializer, and a `mod.rs` that declares them and their
-  test modules). Comments call this "the fig/djot/xml convention."
+- **Crates.** Fig's shape (`fig-kit`, `fig-core`, one crate per language):
+  `crates/twig-kit` is what languages share — the tree, spans, the
+  spelling table, the generic HTML printer and the `Language` trait — and
+  depends on nothing; `crates/twig` is the core (`twig-doc`, library
+  `twig`): the editor, the registry, conversion and diagnostics, on the kit
+  alone, **naming no language**; each language is a crate on the kit
+  (`twig-markdown`, `twig-djot`, `twig-html`, `twig-xml`, `twig-asciidoc`;
+  `twig-rst` is a parser not yet registered), with a default `twig`
+  feature that adds its `register()`/`format()`. `crates/twig-cli` is the
+  `twig` binary (`twig-doc-cli`) and `crates/twig-capi` the C ABI declared
+  in `bindings/c/include/twig.h`; both register every shipped language at
+  startup. `twig-doc`'s one feature, `fig` (on by default), reads and edits
+  a document's metadata through fig (`twig::meta`) and has every parse
+  honour the document's `twig` settings (`docs/proposals/fig-in-twig.md`). `docs/proposals/language-crates.md`
+  is the argument.
+- **Per-language crates.** Each format lives in `crates/twig-<name>/` with
+  the same internal shape (a scanner/parser, a serializer, `syntax_table.rs`
+  for the spelling its gestures write, `fidelity.rs` for what a conversion
+  into it keeps, and `language.rs`, its registry rows). Comments call this
+  "the fig/djot/xml convention."
 - **Thin CLI.** `args.rs` declares the command line with clap and resolves it
   into the options each verb takes; the verbs live in `actions.rs`.
   Diagnostics are printed at the site that detects the problem, then a
@@ -69,7 +79,7 @@ refers to are:
   arguments renders HTML; HTML is the default output mode. (See `crates/twig-cli/src/args.rs`.)
 - **Extensions off by default.** Non-CommonMark / non-GFM features (math,
   and other `ParseOptions` toggles) are opt-in; with everything off, output
-  matches strict CommonMark. (See `languages/markdown/options.rs`.)
+  matches strict CommonMark. (See `crates/twig-markdown/src/options.rs`.)
 - **A dialect is a `Format`.** Strict CommonMark and GFM are registry rows
   of their own (`-i commonmark`, `-i gfm`, `TWIG_FORMAT_GFM`) over the one
   Markdown parser, the way fig's `json`/`jsonc`/`json5` are three rows over

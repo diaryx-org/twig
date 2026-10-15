@@ -5,7 +5,6 @@ use crate::ast::{self as engine, Attrs, Builder as EngineBuilder, Cell, Containe
 use crate::document::{self as edoc, Document as EngineDoc, Spelling};
 use crate::error::Error;
 use crate::format as reg;
-use crate::languages;
 
 use super::document::{query_matches, Alignment, DirectiveForm, QueryMatch};
 use super::format::{Format, Target};
@@ -398,7 +397,7 @@ impl Builder {
     pub fn render_html(&mut self, root: NodeId) -> Result<Vec<u8>, Error> {
         self.check(root.0)?;
         let ast = self.builder.view(root.0);
-        languages::html::serialize_alloc(&ast, None).map_err(|_| Error::UnsafeMetadata)
+        crate::html::serialize_alloc(&ast, None).map_err(|_| Error::UnsafeMetadata)
     }
 
     /// Serialize the subtree rooted at `root` to `target`'s syntax.
@@ -443,20 +442,9 @@ pub(crate) fn key_vals(attrs: &[(&str, Option<&str>)]) -> Vec<KeyVal> {
 /// `serializeBuiltAst`: always from the bare tree, carrying the builder's
 /// spelling table where the target reads one.
 fn serialize_built_ast(doc: &EngineDoc, target: reg::Target) -> Result<Vec<u8>, Error> {
-    let ast = &doc.ast;
-    Ok(match target {
-        reg::Target::Djot => languages::djot::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
-        reg::Target::Markdown => languages::markdown::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
-        reg::Target::Html => languages::html::serialize_alloc(ast, None).map_err(|_| Error::UnsafeMetadata)?,
-        // XML's printer spells only the generic-markup kinds its own parser
-        // produces, so a built tree holding a semantic kind is refused —
-        // the unsupported-format the C ABI promises.
-        reg::Target::Xml => languages::xml::serialize(doc).map_err(|_| Error::UnsupportedFormat)?,
-        reg::Target::Asciidoc => languages::asciidoc::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
-        reg::Target::Runtime(_) => reg::serialize_from_ast(target, ast).map_err(|e| match e {
-            reg::PrintFailure::UnsafeMetadata => Error::UnsafeMetadata,
-            _ => Error::UnsupportedFormat,
-        })?,
+    reg::serialize_built(target, doc).map_err(|e| match e {
+        reg::PrintFailure::UnsafeMetadata => Error::UnsafeMetadata,
+        _ => Error::UnsupportedFormat,
     })
 }
 

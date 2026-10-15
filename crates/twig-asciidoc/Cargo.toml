@@ -1,0 +1,27 @@
+[package]
+name = "twig-asciidoc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AsciiDoc for twig: the parser, serializer and editing table, held to the AsciiDoc TCK, on twig's kit."
+repository.workspace = true
+homepage.workspace = true
+keywords = ["asciidoc", "twig", "parser", "document"]
+categories = ["parser-implementations", "text-processing"]
+rust-version.workspace = true
+
+[dependencies]
+# The language itself is written on twig's kit alone.
+twig-kit.workspace = true
+twig-doc = { workspace = true, optional = true }
+
+[dev-dependencies]
+twig-markdown = { path = "../twig-markdown", default-features = false }
+twig-html = { path = "../twig-html", default-features = false }
+
+[features]
+# `register()` and `format()`: the language through `twig-doc`'s registry.
+# Off (`default-features = false`), the crate is the language alone, on
+# `twig-kit`, for a program that registers it with `twig::register` itself.
+default = ["twig"]
+twig = ["dep:twig-doc"]

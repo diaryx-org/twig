@@ -1,0 +1,17 @@
+[package]
+name = "twig-rst"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "reStructuredText for twig: the docutils-scoped parser and its conformance harness, on twig's kit. Not yet a registered format."
+repository.workspace = true
+homepage.workspace = true
+keywords = ["rst", "twig", "parser", "document"]
+categories = ["parser-implementations", "text-processing"]
+rust-version.workspace = true
+# reStructuredText is a parser and its conformance harness, not yet a
+# registered format (it implements no `Language`), so it is not published.
+publish = false
+
+[dependencies]
+twig-kit.workspace = true

@@ -116,7 +116,7 @@ fn first_not_in(candidates: &[Match], set: &[Match]) -> Option<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::languages::markdown::{self, ParseOptions};
+    use twig_markdown::{self as markdown, ParseOptions};
 
     fn run_filter(src: &str, drop: &str, keep: Option<&str>, unwrap_kept: bool) -> String {
         let parse: splicer::ParseFn =

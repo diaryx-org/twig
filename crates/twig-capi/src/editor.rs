@@ -115,7 +115,7 @@ pub unsafe extern "C" fn twig_editor_create_ext(
         unsafe { put(out_editor, std::ptr::null_mut()) };
         let Some(source) = (unsafe { slice_of(input_ptr, input_len) }) else { return TWIG_STATUS_INVALID_ARGUMENT };
         let Some(fmt) = int_to_format(format) else { return TWIG_STATUS_UNSUPPORTED_FORMAT };
-        let cfg = config_from_flags(fmt, md_flags);
+        let (fmt, cfg) = reg::resolve_as_asked(fmt, &config_from_flags(fmt, md_flags), source);
         // The parser and the spelling come from the same registry row under
         // the same config, so a gesture writes exactly what the editor's own
         // reparse reads back.

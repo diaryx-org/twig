@@ -7,7 +7,6 @@ use std::ffi::c_int;
 use twig::ast::{self as engine, Attrs, Builder as EngineBuilder, Cell, Container, Link, MarkupLeafKind, TextLeafKind};
 use twig::document::{self as edoc, Document, Spelling};
 use twig::format as reg;
-use twig::languages;
 
 use crate::document::build_query_matches;
 use crate::editor::{alignment_of, key_vals};
@@ -581,20 +580,9 @@ fn view_document(h: &BuilderHandle, root: u32) -> Document {
 /// `serializeBuiltAst`: always from the bare tree, carrying the builder's
 /// spelling table where the target reads one.
 fn serialize_built_ast(doc: &Document, target: reg::Target) -> Result<Vec<u8>, TwigStatus> {
-    let ast = &doc.ast;
-    Ok(match target {
-        reg::Target::Djot => languages::djot::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
-        reg::Target::Markdown => languages::markdown::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
-        reg::Target::Html => languages::html::serialize_alloc(ast, None).map_err(|_| TWIG_STATUS_UNSAFE_METADATA)?,
-        // XML's printer spells only the generic-markup kinds its own parser
-        // produces, so a built tree holding a semantic kind is refused —
-        // the unsupported-format the C ABI promises.
-        reg::Target::Xml => languages::xml::serialize(doc).map_err(|_| TWIG_STATUS_UNSUPPORTED_FORMAT)?,
-        reg::Target::Asciidoc => languages::asciidoc::serializer::serialize_ast_spelled(ast, &doc.node_spelling),
-        reg::Target::Runtime(_) => reg::serialize_from_ast(target, ast).map_err(|e| match e {
-            reg::PrintFailure::UnsafeMetadata => TWIG_STATUS_UNSAFE_METADATA,
-            _ => TWIG_STATUS_UNSUPPORTED_FORMAT,
-        })?,
+    reg::serialize_built(target, doc).map_err(|e| match e {
+        reg::PrintFailure::UnsafeMetadata => TWIG_STATUS_UNSAFE_METADATA,
+        _ => TWIG_STATUS_UNSUPPORTED_FORMAT,
     })
 }
 
@@ -643,7 +631,7 @@ pub unsafe extern "C" fn twig_builder_render_html(
             out_len,
             |h| {
                 let ast = h.builder.view(root);
-                h.rendered = languages::html::serialize_alloc(&ast, None).map_err(|_| TWIG_STATUS_UNSAFE_METADATA)?;
+                h.rendered = twig::html::serialize_alloc(&ast, None).map_err(|_| TWIG_STATUS_UNSAFE_METADATA)?;
                 Ok(())
             },
             |h| &h.rendered,

@@ -408,10 +408,7 @@ fn expand_argv(command: &[String], home: Option<&str>) -> Vec<String> {
 // ── `twig lang` ─────────────────────────────────────────────────────────────
 
 fn caps_word(fmt: Format) -> &'static str {
-    let writes = match fmt {
-        Format::Runtime(c) => runtime::row(c).is_some_and(|r| r.write),
-        _ => true,
-    };
+    let writes = if fmt.is_runtime() { runtime::row(fmt.code()).is_some_and(|r| r.write) } else { true };
     let authors = format::syntax_for(fmt).authorable();
     match (writes, authors) {
         (true, true) => "read write author",
@@ -461,9 +458,9 @@ pub fn list(out: &mut dyn Write) -> std::io::Result<()> {
     let mut s = state();
     s.author_tier = true;
     out.write_all(b"compiled:\n")?;
-    for f in Format::COMPILED {
+    for f in crate::format::compiled() {
         write!(out, "  {:<12} {:<18}", f.name(), caps_word(f))?;
-        let exts: Vec<String> = f.extensions().iter().map(|e| e.to_string()).collect();
+        let exts = f.extensions();
         write_extensions(out, &exts)?;
         if let Some(lang) = f.dialect_of() {
             write!(out, "  (a {} dialect)", lang.name())?;
@@ -483,10 +480,7 @@ pub fn list(out: &mut dyn Write) -> std::io::Result<()> {
             Some(f) => {
                 let c = &s.configured[i];
                 write!(out, "  {:<12} {:<18}", c.name, caps_word(f))?;
-                let exts = match f {
-                    Format::Runtime(code) => runtime::row(code).map(|r| r.extensions).unwrap_or_default(),
-                    _ => Vec::new(),
-                };
+                let exts = f.extensions();
                 write_extensions(out, &exts)?;
                 writeln!(out, "  ({})", c.source)?;
                 write_features(out, f, FEATURE_INDENT)?;
@@ -573,8 +567,10 @@ pub fn check(
             }
         }
     };
-    let Format::Runtime(code) = fmt else { return Err(CheckError::CheckFailed) };
-    let row = runtime::row(code).expect("a registered row");
+    if !fmt.is_runtime() {
+        return Err(CheckError::CheckFailed);
+    }
+    let row = runtime::row(fmt.code()).expect("a registered row");
     write!(out, "{}: registered ({}); every sample parsed", fmt.name(), caps_word(fmt))?;
     if row.write {
         out.write_all(b", printed and reparsed to the same tree")?;
@@ -812,7 +808,7 @@ done"#
         let script = sh(sh_helper("shz", r#"{"read":true}"#, ""));
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let result = check(&mut out, &mut err, None, &script, Some(Format::Djot), &[]);
+        let result = check(&mut out, &mut err, None, &script, Some(crate::test_formats::djot()), &[]);
         let out = String::from_utf8(out).unwrap();
         // As the Zig CLI prints it: djot records the doc's content span, and
         // the helper's table does not.

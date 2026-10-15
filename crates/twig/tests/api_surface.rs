@@ -1,6 +1,5 @@
-//! Compile-only proof that every public item of the FFI binding crate
-//! `twig-doc` 4.x (`bindings/rust/twig/src/lib.rs`) exists at this crate's
-//! root with the SAME signature: each method is coerced to the exact
+//! Compile-only proof that every public item of the crate's surface exists
+//! at its root with the SAME signature: each method is coerced to the exact
 //! function-pointer type the binding declared, so a changed parameter or
 //! return type is a compile error here. The runtime-language items
 //! (`Language`, `register`, `serve`, `helper`, …) belong to the runtime layer
@@ -9,13 +8,12 @@
 #![allow(clippy::type_complexity)]
 
 use std::ops::Range;
-use std::os::raw::c_int;
 
 use twig::{
     abi_version, version, version_string, Alignment, Builder, BlockContainerKind, BlockKind, BulletStyle, Change,
     ContainerOrigin, DirectiveForm, Document, DocumentView, Editor, Error, Fidelity, FlatNode, Format, Gesture,
-    InlineKind, Kind, LinePrefix, MarkColor, MarkdownExtensions, NodeId, OrderedDelim, OrderedNumbering, QueryMatch,
-    RuntimeId, SmartPunctuation, Span, Target, TextKind, Version, VoidKind, Warning, ABI_VERSION,
+    InlineKind, Kind, LinePrefix, MarkColor, NodeId, OrderedDelim, OrderedNumbering, QueryMatch,
+    SmartPunctuation, Span, Target, TextKind, Version, VoidKind, Warning, ABI_VERSION,
 };
 
 type R<T> = Result<T, Error>;
@@ -27,43 +25,30 @@ fn assert_debug<T: std::fmt::Debug>() {}
 
 #[test]
 fn every_binding_item_exists_with_its_signature() {
-    // ── Format / RuntimeId / Target ──────────────────────────────────────
-    let _: fn(RuntimeId) -> c_int = RuntimeId::code;
-    let _: fn(Format) -> c_int = Format::code;
+    // ── Format / Target: handles to registry rows ──────────────────────
+    let _: fn(Format) -> u16 = Format::code;
+    let _: fn(i64) -> Option<Format> = Format::from_code;
     let _: fn(&str) -> Option<Format> = Format::by_name;
     let _: fn(Format, &[&str]) -> R<u32> = Format::feature_flags;
     let _: fn(Format, &[&str], Gesture) -> bool = Format::supports_with_features;
+    let _: fn(Format, u32, Gesture) -> bool = Format::supports_flags;
     let _: fn(Format) -> &'static str = Format::name;
     let _: fn(Format) -> Option<Format> = Format::dialect_of;
+    let _: fn(Format) -> bool = Format::is_runtime;
+    let _: fn(Format) -> bool = Format::is_registered;
+    let _: fn(Format) -> Target = Format::target;
     let _: fn(Format, Gesture) -> bool = Format::supports;
-    let _: fn(Format, MarkdownExtensions, Gesture) -> bool = Format::supports_with;
     let _: fn(Format) -> bool = Format::is_authorable;
     let _: fn(Target) -> Option<Format> = Target::as_format;
-    let _: fn(Target) -> c_int = Target::code;
+    let _: fn(Target) -> u16 = Target::code;
     let _: fn(Target) -> &'static str = Target::name;
     let _: fn(Format) -> Target = Target::from;
-    let _ = |f: Format| match f {
-        Format::Djot
-        | Format::Markdown
-        | Format::Xml
-        | Format::Html
-        | Format::Asciidoc
-        | Format::Commonmark
-        | Format::Gfm
-        | Format::Svg
-        | Format::Runtime(_) => (),
-        _ => (),
-    };
-    let _ = |t: Target| match t {
-        Target::Djot | Target::Markdown | Target::Xml | Target::Html | Target::Asciidoc | Target::Runtime(_) => (),
-        _ => (),
-    };
+    let _: fn(twig_markdown::Markdown) -> Result<Format, twig::NativeRegisterError> = twig::register;
     assert_copy::<Format>();
     assert_copy::<Target>();
-    assert_copy::<RuntimeId>();
     assert_traits::<Format>();
     assert_traits::<Target>();
-    let _ = |r: RuntimeId| std::collections::HashSet::from([r]);
+    let _ = |f: Format| std::collections::HashSet::from([f]);
 
     // ── Kind ─────────────────────────────────────────────────────────────
     let _: for<'a> fn(&'a Kind) -> &'a str = Kind::as_str;
@@ -253,15 +238,6 @@ fn every_binding_item_exists_with_its_signature() {
     assert_copy::<BlockContainerKind>();
     assert_copy::<MarkColor>();
     assert_copy::<Gesture>();
-    let _ = MarkdownExtensions {
-        directives: false,
-        math: false,
-        html_elements: false,
-        highlight: false,
-        highlight_colors: false,
-    };
-    assert_copy::<MarkdownExtensions>();
-    let _ = MarkdownExtensions::default();
 
     // ── Version ──────────────────────────────────────────────────────────
     let _: fn() -> Version = version;
@@ -274,9 +250,8 @@ fn every_binding_item_exists_with_its_signature() {
     assert_debug::<Document>();
     let _: fn(&[u8], Format) -> R<Document> = Document::parse;
     let _: fn(&str, Format) -> R<Document> = Document::parse_str;
-    let _: fn(&[u8], Format, MarkdownExtensions) -> R<Document> = Document::parse_with;
+    let _: fn(&[u8], Format, u32) -> R<Document> = Document::parse_with_flags;
     let _: fn(&[u8], Format, &[&str]) -> R<Document> = Document::parse_with_features;
-    let _: fn(&str, Format, MarkdownExtensions) -> R<Document> = Document::parse_str_with;
     let _: fn(&mut Document) -> R<Vec<u8>> = Document::render_html;
     let _: fn(&mut Document, Target) -> R<Vec<u8>> = Document::serialize_to;
     let _: fn(&mut Document, Format) -> R<Vec<u8>> = Document::serialize;
@@ -306,7 +281,7 @@ fn every_binding_item_exists_with_its_signature() {
     assert_debug::<Editor>();
     let _: fn(&[u8], Format) -> R<Editor> = Editor::new;
     let _: fn(&str, Format) -> R<Editor> = Editor::new_str;
-    let _: fn(&[u8], Format, MarkdownExtensions) -> R<Editor> = Editor::new_ext;
+    let _: fn(&[u8], Format, u32) -> R<Editor> = Editor::new_with_flags;
     let _: fn(&[u8], Format, &[&str]) -> R<Editor> = Editor::new_with_features;
     let _: fn(&mut Editor, &str, &str) -> R<()> = Editor::replace;
     let _: fn(&mut Editor, &str, &str) -> R<()> = Editor::replace_content;

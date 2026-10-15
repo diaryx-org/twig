@@ -6,23 +6,25 @@
 //! `to_flags`, `to_c`); those assertions are restated over the public API,
 //! each marked `// ported:` with what changed.
 
+mod common;
+
 use twig::*;
 
 #[test]
 fn markdown_extensions_are_the_markdown_rows_features() {
-    let typed = MarkdownExtensions { math: true, highlight_colors: true, ..Default::default() };
-    for row in [Format::Markdown, Format::Gfm, Format::Commonmark] {
+    let typed = twig_markdown::Extensions { math: true, highlight_colors: true, ..Default::default() };
+    for row in [common::markdown(), common::gfm(), common::commonmark()] {
         // ported: `to_flags` is private; its bits are `TWIG_MD_MATH | TWIG_MD_HIGHLIGHT_COLORS`.
         let _ = typed;
         assert_eq!(row.feature_flags(&["math", "highlight_colors"]), Ok((1 << 1) | (1 << 4)));
     }
-    assert_eq!(Format::Markdown.feature_flags(&["tables"]), Err(Error::NotFound));
+    assert_eq!(common::markdown().feature_flags(&["tables"]), Err(Error::NotFound));
 
     // Colours bring the highlight they colour, by either spelling.
     let source = "a ==\u{1F534} b== c\n";
-    let mut doc = Document::parse_with_features(source.as_bytes(), Format::Markdown, &["highlight_colors"]).unwrap();
+    let mut doc = Document::parse_with_features(source.as_bytes(), common::markdown(), &["highlight_colors"]).unwrap();
     assert_eq!(doc.query("mark[data-color=red]").unwrap().len(), 1);
-    assert!(Format::Markdown.supports_with_features(&["highlight_colors"], Gesture::SetMarkColor));
+    assert!(common::markdown().supports_with_features(&["highlight_colors"], Gesture::SetMarkColor));
 }
 
 #[test]
@@ -33,35 +35,35 @@ fn abi_version_matches() {
 
 #[test]
 fn parses_and_renders_markdown_html() {
-    let mut doc = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
+    let mut doc = Document::parse_str("# hi\n", common::markdown()).expect("parse markdown");
     let html = doc.render_html().expect("render html");
     assert_eq!(String::from_utf8_lossy(&html), "<h1>hi</h1>\n");
 }
 
 #[test]
 fn parses_html_input() {
-    let mut doc = Document::parse_str("<p>hi</p>", Format::Html).expect("parse html");
+    let mut doc = Document::parse_str("<p>hi</p>", common::html()).expect("parse html");
     let html = doc.render_html().expect("render html");
     assert!(String::from_utf8_lossy(&html).contains("hi"));
 }
 
 #[test]
 fn parses_renders_and_writes_asciidoc() {
-    let mut doc = Document::parse_str("= Title\n\nsome *bold* text\n", Format::Asciidoc)
+    let mut doc = Document::parse_str("= Title\n\nsome *bold* text\n", common::asciidoc())
         .expect("parse asciidoc");
     let html = String::from_utf8_lossy(&doc.render_html().expect("render html")).into_owned();
     assert!(html.contains("<h1>Title</h1>"), "got {html:?}");
     assert!(html.contains("<strong>bold</strong>"), "got {html:?}");
 
     // Round-trip, and a cross-format conversion from Markdown.
-    let back = doc.serialize_to(Target::Asciidoc).expect("serialize asciidoc");
+    let back = doc.serialize_to(common::asciidoc().target()).expect("serialize asciidoc");
     assert_eq!(String::from_utf8_lossy(&back), "= Title\n\nsome *bold* text\n");
-    let mut md = Document::parse_str("# Title\n\nsome **bold** text\n", Format::Markdown)
+    let mut md = Document::parse_str("# Title\n\nsome **bold** text\n", common::markdown())
         .expect("parse markdown");
-    let converted = md.serialize_to(Target::Asciidoc).expect("convert to asciidoc");
+    let converted = md.serialize_to(common::asciidoc().target()).expect("convert to asciidoc");
     assert_eq!(String::from_utf8_lossy(&converted), "= Title\n\nsome *bold* text\n");
-    assert_eq!(Target::from(Format::Asciidoc), Target::Asciidoc);
-    assert_eq!(Target::Asciidoc.as_format(), Some(Format::Asciidoc));
+    assert_eq!(Target::from(common::asciidoc()), common::asciidoc().target());
+    assert_eq!(common::asciidoc().target().as_format(), Some(common::asciidoc()));
 }
 
 #[test]
@@ -72,12 +74,12 @@ fn markdown_dialects_are_formats_over_one_parser() {
     let src = "a ~~b~~ c\n\n| x |\n| - |\n| $m$ |\n";
     let count = |doc: &mut Document, sel: &str| doc.query(sel).expect("query").len();
     for (format, ext, delete, table, math) in [
-        (Format::Commonmark, MarkdownExtensions::default(), 0, 0, 0),
-        (Format::Markdown, MarkdownExtensions::default(), 1, 1, 0),
-        (Format::Gfm, MarkdownExtensions::default(), 1, 1, 0),
-        (Format::Gfm, MarkdownExtensions { math: true, ..Default::default() }, 1, 1, 1),
+        (common::commonmark(), twig_markdown::Extensions::default(), 0, 0, 0),
+        (common::markdown(), twig_markdown::Extensions::default(), 1, 1, 0),
+        (common::gfm(), twig_markdown::Extensions::default(), 1, 1, 0),
+        (common::gfm(), twig_markdown::Extensions { math: true, ..Default::default() }, 1, 1, 1),
     ] {
-        let mut doc = Document::parse_str_with(src, format, ext).expect("parse");
+        let mut doc = common::parse_str_with(src, format, ext).expect("parse");
         assert_eq!(count(&mut doc, "delete"), delete, "{format:?} {ext:?}");
         assert_eq!(count(&mut doc, "table"), table, "{format:?} {ext:?}");
         assert_eq!(count(&mut doc, "inline_math"), math, "{format:?} {ext:?}");
@@ -85,74 +87,74 @@ fn markdown_dialects_are_formats_over_one_parser() {
 
     // A dialect writes as its language, and a GFM document serialized as
     // Markdown is a round trip, spelling intact.
-    assert_eq!(Format::Gfm.dialect_of(), Some(Format::Markdown));
-    assert_eq!(Format::Commonmark.dialect_of(), Some(Format::Markdown));
-    assert_eq!(Format::Markdown.dialect_of(), None);
+    assert_eq!(common::gfm().dialect_of(), Some(common::markdown()));
+    assert_eq!(common::commonmark().dialect_of(), Some(common::markdown()));
+    assert_eq!(common::markdown().dialect_of(), None);
     // And xml's one dialect, which writes as xml and takes xml's gesture.
-    assert_eq!(Format::Svg.dialect_of(), Some(Format::Xml));
-    assert_eq!(Target::from(Format::Svg), Target::Xml);
+    assert_eq!(common::svg().dialect_of(), Some(common::xml()));
+    assert_eq!(Target::from(common::svg()), common::xml().target());
     let mut svg =
-        Document::parse_str("<svg><rect x=\"1\"/></svg>", Format::Svg).expect("parse svg");
+        Document::parse_str("<svg><rect x=\"1\"/></svg>", common::svg()).expect("parse svg");
     assert_eq!(
-        String::from_utf8_lossy(&svg.serialize(Format::Xml).expect("serialize")),
+        String::from_utf8_lossy(&svg.serialize(common::xml()).expect("serialize")),
         "<svg><rect x=\"1\"/></svg>"
     );
-    assert!(Format::Svg.supports(Gesture::SetNodeAttrs));
-    assert!(!Format::Svg.is_authorable());
-    assert_eq!(Target::from(Format::Gfm), Target::Markdown);
-    let mut gfm = Document::parse_str("* a ~~b~~\n", Format::Gfm).expect("parse gfm");
-    let back = gfm.serialize(Format::Gfm).expect("serialize");
+    assert!(common::svg().supports(Gesture::SetNodeAttrs));
+    assert!(!common::svg().is_authorable());
+    assert_eq!(Target::from(common::gfm()), common::markdown().target());
+    let mut gfm = Document::parse_str("* a ~~b~~\n", common::gfm()).expect("parse gfm");
+    let back = gfm.serialize(common::gfm()).expect("serialize");
     assert_eq!(String::from_utf8_lossy(&back), "* a ~~b~~\n");
 
     // The render follows the row: GFM spells alignment as an attribute.
-    let mut table = Document::parse_str("| a |\n| :-: |\n| 1 |\n", Format::Gfm).expect("parse");
+    let mut table = Document::parse_str("| a |\n| :-: |\n| 1 |\n", common::gfm()).expect("parse");
     let html = String::from_utf8_lossy(&table.render_html().expect("render")).into_owned();
     assert!(html.contains("align=\"center\""), "got {html:?}");
 
     // And the capability query answers per dialect.
-    assert!(!Format::Commonmark.supports(Gesture::ToggleInline(InlineKind::Delete)));
-    assert!(Format::Gfm.supports(Gesture::ToggleInline(InlineKind::Delete)));
+    assert!(!common::commonmark().supports(Gesture::ToggleInline(InlineKind::Delete)));
+    assert!(common::gfm().supports(Gesture::ToggleInline(InlineKind::Delete)));
 }
 
 #[test]
 fn serialize_round_trips_and_cross_converts() {
-    let mut doc = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
+    let mut doc = Document::parse_str("# hi\n", common::markdown()).expect("parse markdown");
 
-    let canonical = doc.serialize(Format::Markdown).expect("serialize markdown");
+    let canonical = doc.serialize(common::markdown()).expect("serialize markdown");
     assert!(String::from_utf8_lossy(&canonical).contains("# hi"));
 
     // Cross-format Markdown -> XML has no serializer.
-    assert_eq!(doc.serialize(Format::Xml), Err(Error::UnsupportedFormat));
+    assert_eq!(doc.serialize(common::xml()), Err(Error::UnsupportedFormat));
 }
 
 #[test]
 fn serialize_markdown_to_djot() {
     let mut doc =
-        Document::parse_str("This is *markdown*.\n", Format::Markdown).expect("parse markdown");
-    let djot = doc.serialize(Format::Djot).expect("serialize djot");
+        Document::parse_str("This is *markdown*.\n", common::markdown()).expect("parse markdown");
+    let djot = doc.serialize(common::djot()).expect("serialize djot");
     assert!(String::from_utf8_lossy(&djot).contains("_markdown_"));
 }
 
 #[test]
 fn serialize_to_takes_the_output_axis() {
     let mut doc =
-        Document::parse_str("This is *markdown*.\n", Format::Markdown).expect("parse markdown");
+        Document::parse_str("This is *markdown*.\n", common::markdown()).expect("parse markdown");
 
-    let djot = doc.serialize_to(Target::Djot).expect("serialize djot");
+    let djot = doc.serialize_to(common::djot().target()).expect("serialize djot");
     assert!(String::from_utf8_lossy(&djot).contains("_markdown_"));
 
     // The capability answer is the target's, not the input's: converting
     // INTO XML has no serializer regardless of what parsed the document.
-    assert_eq!(doc.serialize_to(Target::Xml), Err(Error::UnsupportedFormat));
+    assert_eq!(doc.serialize_to(common::xml().target()), Err(Error::UnsupportedFormat));
 }
 
 #[test]
 fn serialize_and_serialize_to_agree() {
     // `serialize` is defined in terms of `serialize_to`, so the older
     // spelling stays exact rather than merely similar.
-    let mut a = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
-    let mut b = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
-    for format in [Format::Markdown, Format::Djot, Format::Html] {
+    let mut a = Document::parse_str("# hi\n", common::markdown()).expect("parse markdown");
+    let mut b = Document::parse_str("# hi\n", common::markdown()).expect("parse markdown");
+    for format in [common::markdown(), common::djot(), common::html()] {
         assert_eq!(a.serialize(format), b.serialize_to(Target::from(format)));
     }
 }
@@ -161,14 +163,14 @@ fn serialize_and_serialize_to_agree() {
 fn every_format_is_a_target_that_names_it_back() {
     // The subset invariant the Zig `targets` table enforces, restated at
     // this layer: `Target::from` is total, and `as_format` round-trips it.
-    for format in [Format::Djot, Format::Markdown, Format::Xml, Format::Html] {
+    for format in [common::djot(), common::markdown(), common::xml(), common::html()] {
         assert_eq!(Target::from(format).as_format(), Some(format));
     }
 }
 
 #[test]
 fn ast_json_dumps_the_tree() {
-    let mut doc = Document::parse_str("hello\n", Format::Djot).expect("parse djot");
+    let mut doc = Document::parse_str("hello\n", common::djot()).expect("parse djot");
     let json = doc.ast_json().expect("ast json");
     assert!(String::from_utf8_lossy(&json).contains("\"kind\": \"doc\""));
 }
@@ -176,7 +178,7 @@ fn ast_json_dumps_the_tree() {
 #[test]
 fn query_finds_nodes_by_selector() {
     let source = "# One\n\n## Two\n";
-    let mut doc = Document::parse_str(source, Format::Markdown).expect("parse markdown");
+    let mut doc = Document::parse_str(source, common::markdown()).expect("parse markdown");
     let matches = doc.query("heading").expect("query");
 
     assert_eq!(matches.len(), 2);
@@ -189,7 +191,7 @@ fn query_finds_nodes_by_selector() {
 #[test]
 fn query_recovers_code_spans() {
     let source = "prose `code` more prose\n";
-    let mut doc = Document::parse_str(source, Format::Markdown).expect("parse markdown");
+    let mut doc = Document::parse_str(source, common::markdown()).expect("parse markdown");
     let matches = doc.query("verbatim").expect("query");
 
     assert_eq!(matches.len(), 1);
@@ -199,7 +201,7 @@ fn query_recovers_code_spans() {
 #[test]
 fn document_span_accessors_read_by_node_id() {
     let source = "# hi\n\ntext\n";
-    let mut doc = Document::parse_str(source, Format::Markdown).expect("parse markdown");
+    let mut doc = Document::parse_str(source, common::markdown()).expect("parse markdown");
     let heading = doc.query("heading").expect("query").pop().expect("heading");
 
     assert_eq!(
@@ -217,7 +219,7 @@ fn document_span_accessors_read_by_node_id() {
 #[test]
 fn document_walks_its_tree_without_an_editor() {
     let source = "# hi\n\ntext\n";
-    let mut doc = Document::parse_str(source, Format::Markdown).expect("parse markdown");
+    let mut doc = Document::parse_str(source, common::markdown()).expect("parse markdown");
 
     let nodes = doc.nodes().expect("nodes");
     assert!(nodes.len() >= 3);
@@ -244,7 +246,7 @@ fn document_walks_its_tree_without_an_editor() {
 
 #[test]
 fn editor_document_view_reads_the_live_tree() {
-    let mut ed = Editor::new_str("# one\n\ntwo\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("# one\n\ntwo\n", common::markdown()).expect("editor");
 
     {
         let mut view = ed.document().expect("view");
@@ -255,7 +257,7 @@ fn editor_document_view_reads_the_live_tree() {
         // The two the view can't serve.
         assert_eq!(view.render_html(), Err(Error::UnsupportedFormat));
         assert_eq!(
-            view.serialize(Format::Markdown),
+            view.serialize(common::markdown()),
             Err(Error::UnsupportedFormat)
         );
     }
@@ -268,13 +270,13 @@ fn editor_document_view_reads_the_live_tree() {
 
 #[test]
 fn query_rejects_a_malformed_selector() {
-    let mut doc = Document::parse_str("hi\n", Format::Markdown).expect("parse markdown");
+    let mut doc = Document::parse_str("hi\n", common::markdown()).expect("parse markdown");
     assert_eq!(doc.query("list >"), Err(Error::InvalidArgument));
 }
 
 #[test]
 fn editor_edits_by_index_path() {
-    let mut ed = Editor::new_str("<a><b>hi</b></a>", Format::Xml).expect("editor");
+    let mut ed = Editor::new_str("<a><b>hi</b></a>", common::xml()).expect("editor");
     ed.replace_content("0.0", "bye").expect("replace_content");
     assert_eq!(ed.source_str().expect("source"), "<a><b>bye</b></a>");
 }
@@ -285,10 +287,10 @@ fn flat_nodes_expose_element_name_and_attrs() {
     // lives only in the `<source>`'s attributes, which the snapshot now
     // surfaces (both `<picture>` and `<source>` report `kind == "container"`).
     let src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\"><img src=\"l.svg\" alt=\"x\"></picture>\n";
-    let mut ed = Editor::new_ext(
+    let mut ed = common::new_ext(
         src.as_bytes(),
-        Format::Markdown,
-        MarkdownExtensions {
+        common::markdown(),
+        twig_markdown::Extensions {
             html_elements: true,
             ..Default::default()
         },
@@ -334,7 +336,7 @@ fn definitions_finds_what_a_walk_from_the_root_cannot() {
     // nothing else.
     let mut doc = Document::parse_str(
         "text[^1] [x][a]\n\n[^1]: note\n\n[a]: /u\n",
-        Format::Markdown,
+        common::markdown(),
     )
     .expect("parse markdown");
 
@@ -382,7 +384,7 @@ fn definitions_finds_what_a_walk_from_the_root_cannot() {
     }
 
     // A document that defines nothing gets an empty vec, not an error.
-    let mut plain = Document::parse_str("just text\n", Format::Markdown).expect("parse");
+    let mut plain = Document::parse_str("just text\n", common::markdown()).expect("parse");
     assert_eq!(plain.definitions().expect("definitions"), Vec::new());
 }
 
@@ -423,11 +425,11 @@ fn every_kind_the_library_publishes_has_a_variant() {
     // can reach from Rust and asserts nothing arrives as `Other`. If twig
     // adds a kind, or renames one, this fails — which is the whole reason
     // the enum is here instead of a `String`.
-    let cases: &[(&str, Format, MarkdownExtensions)] = &[
+    let cases: &[(&str, Format, twig_markdown::Extensions)] = &[
         (
             "# h\n\npara *emph* **strong** `code`\n\n- a\n- b\n\n1. c\n\n> q\n\n---\n\n```zig\nx\n```\n",
-            Format::Markdown,
-            MarkdownExtensions {
+            common::markdown(),
+            twig_markdown::Extensions {
                 directives: false,
                 math: false,
                 html_elements: false,
@@ -437,13 +439,13 @@ fn every_kind_the_library_publishes_has_a_variant() {
         ),
         (
             "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n- [ ] task\n- [x] done\n\nfoot[^1]\n\n[^1]: note\n\n[l]: /u\n\n[x][l]\n",
-            Format::Markdown,
-            MarkdownExtensions::default(),
+            common::markdown(),
+            twig_markdown::Extensions::default(),
         ),
         (
             ":::note\nbody\n:::\n\n:role[x]\n\n$a+b$ ==h== ==🔴 r==\n",
-            Format::Markdown,
-            MarkdownExtensions {
+            common::markdown(),
+            twig_markdown::Extensions {
                 directives: true,
                 math: true,
                 html_elements: false,
@@ -453,20 +455,20 @@ fn every_kind_the_library_publishes_has_a_variant() {
         ),
         (
             "a^b^ c~d~ {=e=} {+f+} {-g-} 'q' \"dq\"\n\n![i](/p)\n\n<https://e.com>\n",
-            Format::Djot,
-            MarkdownExtensions::default(),
+            common::djot(),
+            twig_markdown::Extensions::default(),
         ),
         (
             "<!-- c --><!DOCTYPE html><video controls><p>x</p></video>",
-            Format::Html,
-            MarkdownExtensions::default(),
+            common::html(),
+            twig_markdown::Extensions::default(),
         ),
     ];
 
     let mut unknown: Vec<String> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     for (src, format, ext) in cases {
-        let mut ed = Editor::new_ext(src.as_bytes(), *format, *ext).expect("editor");
+        let mut ed = common::new_ext(src.as_bytes(), *format, *ext).expect("editor");
         for n in ed.nodes().expect("nodes") {
             if n.kind.is_unknown() {
                 unknown.push(n.kind.as_str().to_string());
@@ -494,10 +496,10 @@ fn diagnostics_report_what_a_conversion_would_lose() {
     // A djot superscript has no Markdown spelling. The two answers below
     // are for the SAME document — fidelity is a property of the
     // (document, target) pair, which is why it is asked per target.
-    let mut doc = Document::parse_str("a^b^ c\n", Format::Djot).expect("parse djot");
+    let mut doc = Document::parse_str("a^b^ c\n", common::djot()).expect("parse djot");
 
     let to_md = doc
-        .diagnostics(Target::Markdown)
+        .diagnostics(common::markdown().target())
         .expect("markdown diagnostics");
     assert_eq!(
         to_md,
@@ -510,7 +512,7 @@ fn diagnostics_report_what_a_conversion_would_lose() {
 
     // Lossless to djot: an empty vec is a real answer, not a failure.
     assert_eq!(
-        doc.diagnostics(Target::Djot).expect("djot diagnostics"),
+        doc.diagnostics(common::djot().target()).expect("djot diagnostics"),
         Vec::new()
     );
 }
@@ -521,8 +523,8 @@ fn diagnostics_separate_a_droppable_node_from_a_degradable_one() {
     // different and worse answer than "comes back as something else", and
     // the distinction a consumer needs to decide whether to warn or refuse.
     let mut doc =
-        Document::parse_str("<p>hi</p><!-- secret -->", Format::Html).expect("parse html");
-    let warnings = doc.diagnostics(Target::Djot).expect("djot diagnostics");
+        Document::parse_str("<p>hi</p><!-- secret -->", common::html()).expect("parse html");
+    let warnings = doc.diagnostics(common::djot().target()).expect("djot diagnostics");
     let comment = warnings
         .iter()
         .find(|w| w.kind == Kind::Comment)
@@ -536,9 +538,9 @@ fn diagnostics_report_a_surviving_nodes_lost_attributes() {
     // around the paragraph, which Markdown's default parser reads as raw
     // HTML beside it: the node survives, the class is written where it is
     // not read back, and the warning says which of the two it is about.
-    let mut doc = Document::parse_str("{.center}\nhello\n", Format::Djot).expect("parse djot");
+    let mut doc = Document::parse_str("{.center}\nhello\n", common::djot()).expect("parse djot");
     assert_eq!(
-        doc.diagnostics(Target::Markdown).expect("markdown diagnostics"),
+        doc.diagnostics(common::markdown().target()).expect("markdown diagnostics"),
         vec![Warning {
             fidelity: Fidelity::AttrsDegraded,
             path: "0".to_string(),
@@ -546,9 +548,9 @@ fn diagnostics_report_a_surviving_nodes_lost_attributes() {
         }]
     );
     // An emphasis carrying one has nowhere to put it.
-    let mut em = Document::parse_str("_x_{.big}\n", Format::Djot).expect("parse djot");
+    let mut em = Document::parse_str("_x_{.big}\n", common::djot()).expect("parse djot");
     assert_eq!(
-        em.diagnostics(Target::Markdown).expect("markdown diagnostics"),
+        em.diagnostics(common::markdown().target()).expect("markdown diagnostics"),
         vec![Warning {
             fidelity: Fidelity::AttrsDropped,
             path: "0/0".to_string(),
@@ -556,8 +558,8 @@ fn diagnostics_report_a_surviving_nodes_lost_attributes() {
         }]
     );
     // HTML and AsciiDoc keep a paragraph's class: nothing to report.
-    assert_eq!(doc.diagnostics(Target::Html).expect("html"), Vec::new());
-    assert_eq!(doc.diagnostics(Target::Asciidoc).expect("asciidoc"), Vec::new());
+    assert_eq!(doc.diagnostics(common::html().target()).expect("html"), Vec::new());
+    assert_eq!(doc.diagnostics(common::asciidoc().target()).expect("asciidoc"), Vec::new());
 }
 
 #[test]
@@ -568,7 +570,7 @@ fn diagnostics_report_a_degraded_nodes_attributes_beside_it() {
     // that also carries the node's own.
     let mut doc = Document::parse_str(
         r#"<html xmlns:o="urn:x"><body lang="EN-US"><p class="MsoNormal">Word text</p></body></html>"#,
-        Format::Html,
+        common::html(),
     )
     .expect("parse html");
     let w = |fidelity, path: &str, kind| Warning {
@@ -577,7 +579,7 @@ fn diagnostics_report_a_degraded_nodes_attributes_beside_it() {
         kind,
     };
     assert_eq!(
-        doc.diagnostics(Target::Markdown).expect("markdown diagnostics"),
+        doc.diagnostics(common::markdown().target()).expect("markdown diagnostics"),
         vec![
             w(Fidelity::Degraded, "0", Kind::Section),
             w(Fidelity::AttrsDegraded, "0", Kind::Section),
@@ -593,9 +595,9 @@ fn diagnostics_say_nothing_of_what_a_link_or_image_already_spells() {
     // `href`, `src` and `alt` are the node's destination and alt text,
     // which Markdown writes in full.
     for html in [r#"<p>a <a href="https://x.dev">l</a></p>"#, r#"<p><img src="u" alt="p"></p>"#] {
-        let mut doc = Document::parse_str(html, Format::Html).expect("parse html");
-        assert_eq!(doc.diagnostics(Target::Markdown).expect("markdown"), Vec::new());
-        assert_eq!(doc.diagnostics(Target::Djot).expect("djot"), Vec::new());
+        let mut doc = Document::parse_str(html, common::html()).expect("parse html");
+        assert_eq!(doc.diagnostics(common::markdown().target()).expect("markdown"), Vec::new());
+        assert_eq!(doc.diagnostics(common::djot().target()).expect("djot"), Vec::new());
     }
 }
 
@@ -603,10 +605,10 @@ fn diagnostics_say_nothing_of_what_a_link_or_image_already_spells() {
 fn diagnostics_refuse_a_target_with_no_serializer() {
     // "This target cannot be written" is a capability answer, not a
     // per-node diagnosis of every node in the document.
-    let mut doc = Document::parse_str("# hi\n", Format::Markdown).expect("parse markdown");
-    assert_eq!(doc.diagnostics(Target::Xml), Err(Error::UnsupportedFormat));
+    let mut doc = Document::parse_str("# hi\n", common::markdown()).expect("parse markdown");
+    assert_eq!(doc.diagnostics(common::xml().target()), Err(Error::UnsupportedFormat));
     // AsciiDoc has a serializer now, so it gets a per-node answer instead.
-    assert!(doc.diagnostics(Target::Asciidoc).is_ok());
+    assert!(doc.diagnostics(common::asciidoc().target()).is_ok());
 }
 
 #[test]
@@ -617,21 +619,21 @@ fn diagnostics_flag_a_header_less_table_and_leave_a_headed_one_alone() {
     // the header-less table gets an empty header synthesized above it.
     let mut headed = Document::parse_str(
         "<table><tr><th>H</th></tr><tr><td>a</td></tr></table>",
-        Format::Html,
+        common::html(),
     )
     .expect("parse headed table");
     assert!(
         headed
-            .diagnostics(Target::Markdown)
+            .diagnostics(common::markdown().target())
             .expect("diagnostics")
             .iter()
             .all(|w| w.kind != Kind::Table)
     );
 
-    let mut headless = Document::parse_str("<table><tr><td>a</td></tr></table>", Format::Html)
+    let mut headless = Document::parse_str("<table><tr><td>a</td></tr></table>", common::html())
         .expect("parse header-less table");
     let table_warning = headless
-        .diagnostics(Target::Markdown)
+        .diagnostics(common::markdown().target())
         .expect("diagnostics")
         .into_iter()
         .find(|w| w.kind == Kind::Table)
@@ -646,11 +648,11 @@ fn container_origin_separates_a_div_from_a_div() {
     // `directive_form` — so a consumer holding one of them could not say
     // which syntax the author wrote without re-reading the source bytes.
     let mut html =
-        Editor::new("<div>hi</div>\n".as_bytes(), Format::Html).expect("html editor");
-    let mut md = Editor::new_ext(
+        Editor::new("<div>hi</div>\n".as_bytes(), common::html()).expect("html editor");
+    let mut md = common::new_ext(
         ":::div\nhi\n:::\n".as_bytes(),
-        Format::Markdown,
-        MarkdownExtensions {
+        common::markdown(),
+        twig_markdown::Extensions {
             directives: true,
             ..Default::default()
         },
@@ -688,7 +690,7 @@ fn a_container_whose_body_is_text_says_so_in_text() {
     // are no children to step into.
     let mut html = Editor::new(
         "<script>a < b</script><title>a &amp; b</title><span>a &amp; b</span>\n".as_bytes(),
-        Format::Html,
+        common::html(),
     )
     .expect("html editor");
     let nodes = html.nodes().expect("html nodes");
@@ -714,7 +716,7 @@ fn a_container_whose_body_is_text_says_so_in_text() {
 /// shape every test below wants, because the point of these two APIs is
 /// that a consumer cannot tell which parser produced the tree.
 fn for_both_formats(src: &str, check: impl Fn(&mut Document, Format)) {
-    for format in [Format::Markdown, Format::Djot] {
+    for format in [common::markdown(), common::djot()] {
         let mut doc = Document::parse(src.as_bytes(), format).expect("parse");
         check(&mut doc, format);
     }
@@ -761,7 +763,7 @@ fn attrs_span_locates_the_attribute_block_a_heuristic_had_to_guess_at() {
     // which strands the line as a published paragraph when the guess
     // misses — and the line names the audience.
     let src = "{.vis .family}\nheld back\n\nplain\n";
-    let mut doc = Document::parse(src.as_bytes(), Format::Djot).expect("parse");
+    let mut doc = Document::parse(src.as_bytes(), common::djot()).expect("parse");
     let nodes = doc.nodes().expect("nodes");
     let paras: Vec<&FlatNode> = nodes.iter().filter(|n| n.kind == Kind::Para).collect();
     assert_eq!(paras.len(), 2);
@@ -913,14 +915,14 @@ fn a_prefix_column_count_is_not_its_byte_length() {
     // A tab in a marker advances to a tab stop, so the two diverge — which
     // is why `columns` is carried rather than left to the caller to infer.
     let mut doc = Document::parse("-	x
-".as_bytes(), Format::Markdown).expect("parse");
+".as_bytes(), common::markdown()).expect("parse");
     let cont = doc.continuation_prefix(2).expect("continuation");
     assert_eq!(cont.columns, 4);
 }
 
 #[test]
 fn set_block_opens_a_heading_on_a_blank_line() {
-    for format in [Format::Markdown, Format::Djot] {
+    for format in [common::markdown(), common::djot()] {
         let mut ed = Editor::new("a\n\n".as_bytes(), format).expect("editor");
         ed.set_block(3, BlockKind::Heading(2)).expect("set_block");
         assert_eq!(ed.source().expect("source"), b"a\n\n## ", "{format:?}");
@@ -940,7 +942,7 @@ fn set_block_refuses_a_blank_line_inside_a_code_block() {
     // `innermostBlock` reports nothing here exactly as it does between
     // blocks; only the line's owner tells them apart. Writing `# ` in would
     // add no heading and corrupt the listing.
-    for format in [Format::Markdown, Format::Djot] {
+    for format in [common::markdown(), common::djot()] {
         let src = "```\nx\n\ny\n```\n";
         let mut ed = Editor::new(src.as_bytes(), format).expect("editor");
         let blank = src.find("\n\n").expect("a blank line") + 1;
@@ -987,7 +989,7 @@ fn an_editor_reaches_the_caret_reads_through_its_document_view() {
     // about a TREE, not about an editing session, so they live on the
     // document surface and an editor borrows it — no `twig_editor_*` alias
     // to keep in step. See DESIGN.md, "The reads are not editor-specific."
-    let mut ed = Editor::new("- a\n".as_bytes(), Format::Markdown).expect("editor");
+    let mut ed = Editor::new("- a\n".as_bytes(), common::markdown()).expect("editor");
     let mut view = ed.document().expect("document view");
 
     assert_eq!(view.line_prefix(3).expect("prefix"), Some(0..2));
@@ -999,7 +1001,7 @@ fn an_editor_reaches_the_caret_reads_through_its_document_view() {
 fn container_origin_is_none_for_non_containers() {
     // The field is a container's, so everything else reports `None` rather
     // than a default that would read as a real answer.
-    let mut ed = Editor::new("# hi\n\npara\n".as_bytes(), Format::Markdown).expect("editor");
+    let mut ed = Editor::new("# hi\n\npara\n".as_bytes(), common::markdown()).expect("editor");
     for n in ed.nodes().expect("nodes") {
         assert_eq!(n.origin, None, "{} should carry no origin", n.kind);
     }
@@ -1013,10 +1015,10 @@ fn flat_nodes_expose_directive_name_and_form() {
     // renderer can't tell an `::embed` from a `::toc`, nor an inline span
     // from a standalone block.
     let src = ":::note{.warning}\nBody\n:::\n\n::embed{src=\"demo.html\"}\n\nSee :abbr[HTML]{title=\"HyperText\"} inline.\n";
-    let mut ed = Editor::new_ext(
+    let mut ed = common::new_ext(
         src.as_bytes(),
-        Format::Markdown,
-        MarkdownExtensions {
+        common::markdown(),
+        twig_markdown::Extensions {
             directives: true,
             ..Default::default()
         },
@@ -1054,7 +1056,7 @@ fn flat_nodes_expose_directive_name_and_form() {
 
 #[test]
 fn editor_insert_child_and_delete() {
-    let mut ed = Editor::new_str("<r><a/><c/></r>", Format::Xml).expect("editor");
+    let mut ed = Editor::new_str("<r><a/><c/></r>", common::xml()).expect("editor");
     ed.insert_child("0", 1, "<b/>").expect("insert_child");
     assert_eq!(ed.source_str().expect("source"), "<r><a/><b/><c/></r>");
     ed.delete("0.1").expect("delete");
@@ -1063,7 +1065,7 @@ fn editor_insert_child_and_delete() {
 
 #[test]
 fn editor_edits_by_selector() {
-    let mut ed = Editor::new_str("# One\n\n## Two\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("# One\n\n## Two\n", common::markdown()).expect("editor");
     ed.replace("heading(\"Two\")", "## Renamed")
         .expect("replace");
     assert_eq!(ed.source_str().expect("source"), "# One\n\n## Renamed\n");
@@ -1071,7 +1073,7 @@ fn editor_edits_by_selector() {
 
 #[test]
 fn editor_locator_errors_are_distinct() {
-    let mut ed = Editor::new_str("<r><a/><a/></r>", Format::Xml).expect("editor");
+    let mut ed = Editor::new_str("<r><a/><a/></r>", common::xml()).expect("editor");
     assert_eq!(ed.replace("0.9", "x"), Err(Error::NotFound));
     assert_eq!(ed.replace("element", "x"), Err(Error::Ambiguous));
     assert_eq!(ed.replace("element(", "x"), Err(Error::InvalidArgument));
@@ -1081,20 +1083,20 @@ fn editor_locator_errors_are_distinct() {
 
 #[test]
 fn editor_reparse_break_rolls_back() {
-    let mut ed = Editor::new_str("<a>ok</a>", Format::Xml).expect("editor");
+    let mut ed = Editor::new_str("<a>ok</a>", common::xml()).expect("editor");
     assert_eq!(ed.replace_content("0", "<b>"), Err(Error::EditConflict));
     assert_eq!(ed.source_str().expect("source"), "<a>ok</a>");
 }
 
 #[test]
 fn editor_leaf_content_is_not_editable() {
-    let mut ed = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+    let mut ed = Editor::new_str("<a>hi</a>", common::xml()).expect("editor");
     assert_eq!(ed.replace_content("0.0", "x"), Err(Error::NotEditable));
 }
 
 #[test]
 fn editor_query_reflects_current_tree() {
-    let mut ed = Editor::new_str("<r><a/></r>", Format::Xml).expect("editor");
+    let mut ed = Editor::new_str("<r><a/></r>", common::xml()).expect("editor");
     ed.insert_child("0", 1, "<b/>").expect("insert_child");
     // Root <r> plus <a/> and <b/>.
     assert_eq!(ed.query("element").expect("query").len(), 3);
@@ -1106,7 +1108,7 @@ fn editor_query_reflects_current_tree() {
 
 #[test]
 fn editor_edit_range_types_backspaces_and_reports_change() {
-    let mut ed = Editor::new_str("ab\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("ab\n", common::markdown()).expect("editor");
 
     // Type "X" at offset 1 (a zero-width splice = an insertion).
     let c = ed.edit_range(1, 1, "X").expect("edit_range insert");
@@ -1125,7 +1127,7 @@ fn editor_edit_range_types_backspaces_and_reports_change() {
 
 #[test]
 fn editor_edit_range_rejects_bad_ranges() {
-    let mut ed = Editor::new_str("hi\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("hi\n", common::markdown()).expect("editor");
     assert_eq!(ed.edit_range(0, 99, "x"), Err(Error::InvalidArgument)); // end past len
     assert_eq!(ed.edit_range(2, 1, "x"), Err(Error::InvalidArgument)); // start > end
     assert_eq!(ed.source_str().unwrap(), "hi\n"); // untouched
@@ -1133,7 +1135,7 @@ fn editor_edit_range_rejects_bad_ranges() {
 
 #[test]
 fn editor_last_change_reports_locator_ops_too() {
-    let mut ed = Editor::new_str("# One\n\n## Two\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("# One\n\n## Two\n", common::markdown()).expect("editor");
     assert_eq!(ed.last_change(), None); // nothing edited yet
 
     ed.replace("heading(\"Two\")", "## Renamed")
@@ -1147,7 +1149,7 @@ fn editor_last_change_reports_locator_ops_too() {
 
 #[test]
 fn editor_nodes_is_a_walkable_flat_tree() {
-    let mut ed = Editor::new_str("# Hi\n\ntext\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("# Hi\n\ntext\n", common::markdown()).expect("editor");
     let nodes = ed.nodes().expect("nodes");
     assert!(!nodes.is_empty());
 
@@ -1196,7 +1198,7 @@ fn editor_nodes_is_a_walkable_flat_tree() {
 #[test]
 fn editor_child_spans_and_subtree_agree_with_nodes() {
     let src = "# Title\n\nHello **world** and more.\n\n- one\n- two\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str(src, common::markdown()).expect("editor");
     let all = ed.nodes().expect("nodes");
     let doc = all.iter().find(|n| n.kind == Kind::Doc).expect("doc");
 
@@ -1304,7 +1306,7 @@ fn flat_nodes_carry_table_head_and_alignment() {
     // no node of its own, so `alignment` on the cells is the only way a
     // consumer can recover the column alignment from a snapshot.
     let src = "| Name | Qty |\n|:-----|----:|\n| Pear | 3 |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str(src, common::markdown()).expect("editor");
     let nodes = ed.nodes().expect("nodes");
 
     let rows: Vec<_> = nodes.iter().filter(|n| n.kind == Kind::Row).collect();
@@ -1326,7 +1328,7 @@ fn flat_nodes_carry_table_head_and_alignment() {
     // A table with no alignment spelled out reports Default — a real value,
     // distinct from the None a non-cell reports.
     let mut plain =
-        Editor::new_str("| A |\n| --- |\n| b |\n", Format::Markdown).expect("editor");
+        Editor::new_str("| A |\n| --- |\n| b |\n", common::markdown()).expect("editor");
     let pnodes = plain.nodes().expect("nodes");
     let pcell = pnodes
         .iter()
@@ -1338,7 +1340,7 @@ fn flat_nodes_carry_table_head_and_alignment() {
 #[test]
 fn cell_extent_reports_merged_cells_and_nothing_else() {
     let src = "<table><tr><td colspan=\"2\" rowspan=\"3\">a</td><td>b</td></tr></table>";
-    let mut doc = Document::parse_str(src, Format::Html).expect("parse");
+    let mut doc = Document::parse_str(src, common::html()).expect("parse");
     let cells: Vec<NodeId> = doc
         .nodes()
         .expect("nodes")
@@ -1353,7 +1355,7 @@ fn cell_extent_reports_merged_cells_and_nothing_else() {
 
     // A pipe table cannot express a span at all, so every cell is (1, 1).
     let mut pipe =
-        Document::parse_str("| a |\n| --- |\n| b |\n", Format::Markdown).expect("parse");
+        Document::parse_str("| a |\n| --- |\n| b |\n", common::markdown()).expect("parse");
     let pipe_cell = pipe
         .nodes()
         .expect("nodes")
@@ -1401,7 +1403,7 @@ fn builder_add_cell_spanning_renders_colspan_and_rowspan() {
 
 #[test]
 fn editor_node_at_and_ancestors_hit_test_offsets() {
-    let mut ed = Editor::new_str("# Hi\n\ntext\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("# Hi\n\ntext\n", common::markdown()).expect("editor");
 
     // Offset 2 is the "H" of the heading "# Hi" [0,4).
     let m = ed
@@ -1424,7 +1426,7 @@ fn editor_node_at_and_ancestors_hit_test_offsets() {
 
 #[test]
 fn editor_wrap_and_toggle_inline_round_trip() {
-    let mut ed = Editor::new_str("a word b\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("a word b\n", common::markdown()).expect("editor");
 
     // Bold "word" [2,6); the Change reports the new "**word**" region.
     let c = ed.wrap_range(2, 6, InlineKind::Strong).expect("wrap");
@@ -1445,7 +1447,7 @@ fn editor_wrap_and_toggle_inline_round_trip() {
 fn editor_inline_marks_cut_at_block_boundaries() {
     // One pair per block, not one pair straddling the blank line — which
     // would reparse as four literal asterisks and no mark.
-    let mut ed = Editor::new_str("one two\n\nthree four\n", Format::Markdown)
+    let mut ed = Editor::new_str("one two\n\nthree four\n", common::markdown())
         .expect("editor");
     let c = ed.toggle_inline(0, 19, InlineKind::Strong).expect("toggle on");
     assert_eq!(
@@ -1466,7 +1468,7 @@ fn editor_inline_marks_cut_at_block_boundaries() {
     assert_eq!(ed.source_str().unwrap(), "one two\n\nthree four\n");
 
     // A range with nowhere in it to put a mark says so.
-    let mut fenced = Editor::new_str("```\nx y\n```\n", Format::Markdown).expect("editor");
+    let mut fenced = Editor::new_str("```\nx y\n```\n", common::markdown()).expect("editor");
     assert_eq!(
         fenced.toggle_inline(4, 7, InlineKind::Strong),
         Err(Error::NotEditable)
@@ -1476,14 +1478,14 @@ fn editor_inline_marks_cut_at_block_boundaries() {
 #[test]
 fn editor_inline_kind_support_is_format_specific() {
     // Markdown has no highlight/mark spelling.
-    let mut md = Editor::new_str("a word b\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("a word b\n", common::markdown()).expect("editor");
     assert_eq!(
         md.wrap_range(2, 6, InlineKind::Mark),
         Err(Error::UnsupportedFormat)
     );
 
     // Djot spells it {=…=}.
-    let mut dj = Editor::new_str("a word b\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("a word b\n", common::djot()).expect("editor");
     dj.wrap_range(2, 6, InlineKind::Mark).expect("djot mark");
     assert_eq!(dj.source_str().unwrap(), "a {=word=} b\n");
 }
@@ -1493,8 +1495,8 @@ fn editor_authors_gfm_strikethrough_out_of_the_box() {
     // The extension that defaults ON, so the default editor is the one
     // that can write it — the opposite direction from `highlight` below,
     // and no flag on this side turns it off.
-    assert!(Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Delete)));
-    let mut ed = Editor::new_str("a word b\n", Format::Markdown).expect("editor");
+    assert!(common::markdown().supports(Gesture::ToggleInline(InlineKind::Delete)));
+    let mut ed = Editor::new_str("a word b\n", common::markdown()).expect("editor");
     ed.toggle_inline(2, 6, InlineKind::Delete).expect("strike");
     assert_eq!(ed.source_str().unwrap(), "a ~~word~~ b\n");
     ed.toggle_inline(4, 8, InlineKind::Delete).expect("unstrike");
@@ -1503,18 +1505,18 @@ fn editor_authors_gfm_strikethrough_out_of_the_box() {
 
 #[test]
 fn editor_highlight_is_authorable_with_the_extension_on() {
-    let exts = MarkdownExtensions {
+    let exts = twig_markdown::Extensions {
         highlight: true,
         ..Default::default()
     };
     // The same format and the same gesture, answered two ways: `==x==` is
     // text under default options and a mark under `highlight`, so the
     // toggle refuses in one and reverses in the other.
-    assert!(!Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Mark)));
-    assert!(Format::Markdown.supports_with(exts, Gesture::ToggleInline(InlineKind::Mark)));
+    assert!(!common::markdown().supports(Gesture::ToggleInline(InlineKind::Mark)));
+    assert!(common::markdown().supports_flags(common::flags(exts), Gesture::ToggleInline(InlineKind::Mark)));
 
     let mut ed =
-        Editor::new_ext(b"a word b\n", Format::Markdown, exts).expect("editor");
+        common::new_ext(b"a word b\n", common::markdown(), exts).expect("editor");
     ed.toggle_inline(2, 6, InlineKind::Mark).expect("highlight");
     assert_eq!(ed.source_str().unwrap(), "a ==word== b\n");
     ed.toggle_inline(4, 8, InlineKind::Mark).expect("unhighlight");
@@ -1523,29 +1525,29 @@ fn editor_highlight_is_authorable_with_the_extension_on() {
 
 #[test]
 fn editor_set_mark_color_writes_reads_and_clears_the_colour() {
-    let exts = MarkdownExtensions {
+    let exts = twig_markdown::Extensions {
         highlight: true,
         highlight_colors: true,
         ..Default::default()
     };
-    assert!(Format::Markdown.supports_with(exts, Gesture::SetMarkColor));
+    assert!(common::markdown().supports_flags(common::flags(exts), Gesture::SetMarkColor));
     // The narrower gate: highlights alone do not buy a palette.
-    let hi_only = MarkdownExtensions {
+    let hi_only = twig_markdown::Extensions {
         highlight: true,
         ..Default::default()
     };
-    assert!(!Format::Markdown.supports_with(hi_only, Gesture::SetMarkColor));
-    assert!(!Format::Markdown.supports(Gesture::SetMarkColor));
-    assert!(!Format::Djot.supports_with(exts, Gesture::SetMarkColor));
+    assert!(!common::markdown().supports_flags(common::flags(hi_only), Gesture::SetMarkColor));
+    assert!(!common::markdown().supports(Gesture::SetMarkColor));
+    assert!(!common::djot().supports_flags(common::flags(exts), Gesture::SetMarkColor));
 
     let mut ed =
-        Editor::new_ext("a ==word== b\n".as_bytes(), Format::Markdown, exts).expect("editor");
+        common::new_ext("a ==word== b\n".as_bytes(), common::markdown(), exts).expect("editor");
     ed.set_mark_color(6, Some(MarkColor::Red)).expect("colour");
     assert_eq!(ed.source_str().unwrap(), "a ==\u{1F534} word== b\n");
 
     // And it is queryable as the attribute it is, not as text.
     let mut doc =
-        Document::parse_with(ed.source_str().unwrap().as_bytes(), Format::Markdown, exts)
+        common::parse_with(ed.source_str().unwrap().as_bytes(), common::markdown(), exts)
             .expect("parse");
     assert_eq!(doc.query("mark[data-color=red]").expect("query").len(), 1);
 
@@ -1578,7 +1580,7 @@ fn editor_set_mark_color_writes_reads_and_clears_the_colour() {
 
 #[test]
 fn editor_toggle_strips_verbatim_via_content_span() {
-    let mut ed = Editor::new_str("a `code` b\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("a `code` b\n", common::markdown()).expect("editor");
     // The verbatim node [2,8) reports content_span [3,7); toggle peels it.
     ed.toggle_inline(2, 8, InlineKind::Verbatim)
         .expect("toggle code off");
@@ -1586,7 +1588,7 @@ fn editor_toggle_strips_verbatim_via_content_span() {
 
     // A multi-backtick span peels BOTH runs via content_span, not by
     // stripping a single delimiter (which would corrupt it to "`x`").
-    let mut ed2 = Editor::new_str("a ``x`` b\n", Format::Markdown).expect("editor");
+    let mut ed2 = Editor::new_str("a ``x`` b\n", common::markdown()).expect("editor");
     ed2.toggle_inline(2, 7, InlineKind::Verbatim)
         .expect("toggle multi off");
     assert_eq!(ed2.source_str().unwrap(), "a x b\n");
@@ -1594,7 +1596,7 @@ fn editor_toggle_strips_verbatim_via_content_span() {
 
 #[test]
 fn editor_set_block_switches_para_and_heading_levels() {
-    let mut ed = Editor::new_str("Title\n\nbody text\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("Title\n\nbody text\n", common::markdown()).expect("editor");
 
     // Paragraph -> H2 (offset 0 is inside "Title").
     ed.set_block(0, BlockKind::Heading(2)).expect("to h2");
@@ -1611,13 +1613,13 @@ fn editor_set_block_switches_para_and_heading_levels() {
 
 #[test]
 fn editor_set_block_rejects_bad_level_and_format() {
-    let mut md = Editor::new_str("hi\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("hi\n", common::markdown()).expect("editor");
     assert_eq!(
         md.set_block(0, BlockKind::Heading(9)),
         Err(Error::InvalidArgument)
     );
 
-    let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<a>hi</a>", common::xml()).expect("editor");
     assert_eq!(
         xml.set_block(1, BlockKind::Heading(1)),
         Err(Error::UnsupportedFormat)
@@ -1626,7 +1628,7 @@ fn editor_set_block_rejects_bad_level_and_format() {
 
 #[test]
 fn editor_toggle_block_container_round_trips() {
-    let mut ed = Editor::new_str("a\n", Format::Djot).expect("editor");
+    let mut ed = Editor::new_str("a\n", common::djot()).expect("editor");
 
     let c = ed
         .toggle_block_container(0, 1, BlockContainerKind::BlockQuote)
@@ -1641,7 +1643,7 @@ fn editor_toggle_block_container_round_trips() {
 
 #[test]
 fn editor_toggle_block_container_nests_a_partial_selection() {
-    let mut ed = Editor::new_str("> a\n>\n> b\n", Format::Djot).expect("editor");
+    let mut ed = Editor::new_str("> a\n>\n> b\n", common::djot()).expect("editor");
 
     // Only the first paragraph is covered, so the quote is not fully
     // selected: nest rather than drag `b` out of the quote too.
@@ -1657,7 +1659,7 @@ fn editor_toggle_block_container_nests_a_partial_selection() {
 
 #[test]
 fn editor_toggle_block_container_numbers_and_converts_lists() {
-    let mut ed = Editor::new_str("a\n\nb\n", Format::Djot).expect("editor");
+    let mut ed = Editor::new_str("a\n\nb\n", common::djot()).expect("editor");
 
     // Each covered block becomes its own numbered item.
     ed.toggle_block_container(0, 4, BlockContainerKind::OrderedList)
@@ -1672,7 +1674,7 @@ fn editor_toggle_block_container_numbers_and_converts_lists() {
 
 #[test]
 fn editor_toggle_block_container_rejects_unspellable_format() {
-    let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<a>hi</a>", common::xml()).expect("editor");
     assert_eq!(
         xml.toggle_block_container(3, 5, BlockContainerKind::BlockQuote),
         Err(Error::UnsupportedFormat)
@@ -1681,7 +1683,7 @@ fn editor_toggle_block_container_rejects_unspellable_format() {
 
 #[test]
 fn editor_insert_link_wraps_and_repoints() {
-    let mut ed = Editor::new_str("a word b\n", Format::Djot).expect("editor");
+    let mut ed = Editor::new_str("a word b\n", common::djot()).expect("editor");
 
     ed.insert_link(2, 6, "http://x.dev").expect("link");
     assert_eq!(ed.source_str().unwrap(), "a [word](http://x.dev) b\n");
@@ -1697,7 +1699,7 @@ fn editor_insert_link_repoints_an_autolink() {
     // destination. Read as ordinary text, a caret inside it spliced a whole
     // new link into the middle of the old URL —
     // `see <https<https://y.dev>://x.dev> ok`.
-    for format in [Format::Markdown, Format::Djot] {
+    for format in [common::markdown(), common::djot()] {
         let mut ed = Editor::new_str("see <https://x.dev> ok\n", format).expect("editor");
         ed.insert_link(10, 10, "https://y.dev").expect("re-point");
         assert_eq!(ed.source_str().unwrap(), "see <https://y.dev> ok\n");
@@ -1717,18 +1719,18 @@ fn editor_insert_link_repoints_an_autolink() {
 fn editor_insert_link_escapes_the_destination() {
     // Unescaped, the `)` would close the link early and spill `b` into the
     // paragraph as literal text.
-    let mut dj = Editor::new_str("w\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("w\n", common::djot()).expect("editor");
     dj.insert_link(0, 1, "a)b").expect("link");
     assert_eq!(dj.source_str().unwrap(), "[w](a\\)b)\n");
 
     // Whitespace is where the formats part ways: Markdown needs the angle
     // form (a bare space ends the destination and kills the link outright),
     // Djot must NOT use it (it would link to the literal text `<a b>`).
-    let mut md = Editor::new_str("w\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("w\n", common::markdown()).expect("editor");
     md.insert_link(0, 1, "a b").expect("link");
     assert_eq!(md.source_str().unwrap(), "[w](<a b>)\n");
 
-    let mut dj2 = Editor::new_str("w\n", Format::Djot).expect("editor");
+    let mut dj2 = Editor::new_str("w\n", common::djot()).expect("editor");
     dj2.insert_link(0, 1, "a b").expect("link");
     assert_eq!(dj2.source_str().unwrap(), "[w](a b)\n");
 }
@@ -1737,16 +1739,16 @@ fn editor_insert_link_escapes_the_destination() {
 fn editor_insert_image_escapes_the_destination_per_format() {
     // The whole point of the op: a caller's `![](my cat.png)` is not an image
     // in Markdown, and the correct repair differs by format.
-    let mut md = Editor::new_str("w\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("w\n", common::markdown()).expect("editor");
     md.insert_image(0, 1, "my cat.png").expect("image");
     assert_eq!(md.source_str().unwrap(), "![w](<my cat.png>)\n");
 
-    let mut dj = Editor::new_str("w\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("w\n", common::djot()).expect("editor");
     dj.insert_image(0, 1, "my cat.png").expect("image");
     assert_eq!(dj.source_str().unwrap(), "![w](my cat.png)\n");
 
     // A `)` would close the image early and spill the rest as literal text.
-    let mut paren = Editor::new_str("w\n", Format::Djot).expect("editor");
+    let mut paren = Editor::new_str("w\n", common::djot()).expect("editor");
     paren.insert_image(0, 1, "a)b.png").expect("image");
     assert_eq!(paren.source_str().unwrap(), "![w](a\\)b.png)\n");
 }
@@ -1755,20 +1757,20 @@ fn editor_insert_image_escapes_the_destination_per_format() {
 fn editor_insert_image_keeps_an_empty_alt_empty() {
     // Unlike a link, where an empty range spells an autolink or doubles the
     // destination as text — an image with no alt is ordinary.
-    let mut ed = Editor::new_str("ab\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("ab\n", common::markdown()).expect("editor");
     ed.insert_image(1, 1, "cat.png").expect("image");
     assert_eq!(ed.source_str().unwrap(), "a![](cat.png)b\n");
 }
 
 #[test]
 fn editor_insert_image_rejects_a_newline_destination() {
-    let mut ed = Editor::new_str("w\n", Format::Djot).expect("editor");
+    let mut ed = Editor::new_str("w\n", common::djot()).expect("editor");
     assert_eq!(
         ed.insert_image(0, 1, "a\nb.png"),
         Err(Error::InvalidArgument)
     );
 
-    let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<a>hi</a>", common::xml()).expect("editor");
     assert_eq!(
         xml.insert_image(3, 5, "x.png"),
         Err(Error::UnsupportedFormat)
@@ -1777,16 +1779,16 @@ fn editor_insert_image_rejects_a_newline_destination() {
 
 #[test]
 fn editor_insert_link_rejects_a_newline_destination() {
-    let mut ed = Editor::new_str("w\n", Format::Djot).expect("editor");
+    let mut ed = Editor::new_str("w\n", common::djot()).expect("editor");
     assert_eq!(ed.insert_link(0, 1, "a\nb"), Err(Error::InvalidArgument));
 
-    let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<a>hi</a>", common::xml()).expect("editor");
     assert_eq!(xml.insert_link(3, 5, "u"), Err(Error::UnsupportedFormat));
 }
 
 #[test]
 fn editor_insert_literal_keeps_typed_specials_literal() {
-    for format in [Format::Markdown, Format::Djot] {
+    for format in [common::markdown(), common::djot()] {
         let mut ed = Editor::new_str("z\n", format).expect("editor");
         // A `*` at a line start would open emphasis unescaped.
         ed.insert_literal(0, "*hi*").expect("literal");
@@ -1810,12 +1812,12 @@ fn editor_insert_literal_keeps_typed_specials_literal() {
 #[test]
 fn editor_insert_literal_escapes_block_markers_only_at_line_start() {
     // Mid-line, a `#` opens nothing and is left as typed.
-    let mut ed = Editor::new_str("az\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("az\n", common::markdown()).expect("editor");
     ed.insert_literal(1, "# ").expect("literal");
     assert_eq!(ed.source_str().unwrap(), "a# z\n");
 
     // At a line start it would open a heading, so it is escaped.
-    let mut ed2 = Editor::new_str("z\n", Format::Markdown).expect("editor");
+    let mut ed2 = Editor::new_str("z\n", common::markdown()).expect("editor");
     ed2.insert_literal(0, "# ").expect("literal");
     assert_eq!(ed2.source_str().unwrap(), "\\# z\n");
     assert!(
@@ -1829,30 +1831,30 @@ fn editor_insert_literal_escapes_block_markers_only_at_line_start() {
 #[test]
 fn editor_insert_literal_escapes_a_dollar_only_under_math() {
     // Under the math extension `$` opens a formula, so it is escaped.
-    let exts = MarkdownExtensions { math: true, ..Default::default() };
-    let mut ed = Editor::new_ext(b"a \n", Format::Markdown, exts).expect("editor");
+    let exts = twig_markdown::Extensions { math: true, ..Default::default() };
+    let mut ed = common::new_ext(b"a \n", common::markdown(), exts).expect("editor");
     ed.insert_literal(2, "$x$ and $$y$$").expect("literal");
     assert_eq!(ed.source_str().unwrap(), "a \\$x\\$ and \\$\\$y\\$\\$\n");
 
     // Without it a `$` is text, and stays bare.
-    let mut plain = Editor::new_str("a \n", Format::Markdown).expect("editor");
+    let mut plain = Editor::new_str("a \n", common::markdown()).expect("editor");
     plain.insert_literal(2, "$x$ and $$y$$").expect("literal");
     assert_eq!(plain.source_str().unwrap(), "a $x$ and $$y$$\n");
 }
 
 #[test]
 fn editor_insert_literal_rejects_bad_offset_and_parse_only_format() {
-    let mut ed = Editor::new_str("ab\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("ab\n", common::markdown()).expect("editor");
     assert_eq!(ed.insert_literal(99, "x"), Err(Error::InvalidArgument));
 
-    let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<a>hi</a>", common::xml()).expect("editor");
     assert_eq!(xml.insert_literal(3, "x"), Err(Error::UnsupportedFormat));
 }
 
 #[test]
 fn editor_insert_line_break_splices_in_cell_br() {
     let mut ed =
-        Editor::new_str("| a | b |\n| --- | --- |\n", Format::Markdown).expect("editor");
+        Editor::new_str("| a | b |\n| --- | --- |\n", common::markdown()).expect("editor");
     // Caret just after `a` in the header cell.
     ed.insert_line_break(3).expect("line break");
     assert_eq!(ed.source_str().unwrap(), "| a<br> | b |\n| --- | --- |\n");
@@ -1865,16 +1867,16 @@ fn editor_insert_line_break_splices_in_cell_br() {
 #[test]
 fn editor_insert_line_break_rejects_off_cell_off_format_and_bad_offset() {
     // Not inside a cell → NotFound.
-    let mut para = Editor::new_str("just text\n", Format::Markdown).expect("editor");
+    let mut para = Editor::new_str("just text\n", common::markdown()).expect("editor");
     assert_eq!(para.insert_line_break(3), Err(Error::NotFound));
 
     // Djot has no in-cell break spelling → UnsupportedFormat.
-    let mut dj = Editor::new_str("| a | b |\n| --- | --- |\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("| a | b |\n| --- | --- |\n", common::djot()).expect("editor");
     assert_eq!(dj.insert_line_break(3), Err(Error::UnsupportedFormat));
 
     // Out-of-range offset → InvalidArgument.
     let mut ed =
-        Editor::new_str("| a | b |\n| --- | --- |\n", Format::Markdown).expect("editor");
+        Editor::new_str("| a | b |\n| --- | --- |\n", common::markdown()).expect("editor");
     assert_eq!(ed.insert_line_break(9999), Err(Error::InvalidArgument));
 }
 
@@ -1883,7 +1885,7 @@ fn editor_insert_thematic_break_is_blank_separated_per_format() {
     // The blank line above is load-bearing, not cosmetic: flush against the
     // paragraph, Markdown's `---` is a setext underline and the paragraph
     // becomes an <h2>. So assert the reparsed KIND, not just the bytes.
-    let mut md = Editor::new_str("a\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("a\n", common::markdown()).expect("editor");
     md.insert_thematic_break(0).expect("rule");
     assert_eq!(md.source_str().unwrap(), "a\n\n---\n");
     let nodes = md.nodes().expect("nodes");
@@ -1892,17 +1894,17 @@ fn editor_insert_thematic_break_is_blank_separated_per_format() {
 
     // Djot spells the same construct differently — the reason the spelling
     // is the library's and not the caller's.
-    let mut dj = Editor::new_str("a\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("a\n", common::djot()).expect("editor");
     dj.insert_thematic_break(0).expect("rule");
     assert_eq!(dj.source_str().unwrap(), "a\n\n* * *\n");
 
-    let mut xml = Editor::new_str("<a>hi</a>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<a>hi</a>", common::xml()).expect("editor");
     assert_eq!(xml.insert_thematic_break(3), Err(Error::UnsupportedFormat));
 }
 
 #[test]
 fn editor_insert_table_writes_an_editable_table_after_the_block() {
-    let mut md = Editor::new_str("a\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("a\n", common::markdown()).expect("editor");
     md.insert_table(0, 1, 2).expect("table");
     assert_eq!(md.source_str().unwrap(), "a\n\n|  |  |\n| --- | --- |\n|  |  |\n");
     // What was minted is what the table edits read back.
@@ -1912,47 +1914,47 @@ fn editor_insert_table_writes_an_editable_table_after_the_block() {
         "a\n\n|  |  |\n| --- | --- |\n|  |  |\n|  |  |\n"
     );
 
-    let mut dj = Editor::new_str("a\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("a\n", common::djot()).expect("editor");
     dj.insert_table(0, 1, 2).expect("table");
     assert_eq!(dj.source_str().unwrap(), "a\n\n|  |  |\n|---|---|\n|  |  |\n");
 
-    let mut md = Editor::new_str("a\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("a\n", common::markdown()).expect("editor");
     assert_eq!(md.insert_table(0, 0, 2), Err(Error::InvalidArgument));
     assert_eq!(md.insert_table(0, 1, 0), Err(Error::InvalidArgument));
     assert_eq!(md.source_str().unwrap(), "a\n");
 
-    let mut html = Editor::new_str("<p>ab</p>\n", Format::Html).expect("editor");
+    let mut html = Editor::new_str("<p>ab</p>\n", common::html()).expect("editor");
     assert_eq!(html.insert_table(4, 1, 1), Err(Error::UnsupportedFormat));
-    assert!(!Format::Html.supports(Gesture::InsertTable));
-    assert!(Format::Markdown.supports(Gesture::InsertTable));
+    assert!(!common::html().supports(Gesture::InsertTable));
+    assert!(common::markdown().supports(Gesture::InsertTable));
 }
 
 #[test]
 fn editor_split_block_keeps_both_halves_the_same_kind() {
     // A list item's halves are both items — the marker is repeated, so the
     // second half doesn't fall out of the list as a paragraph.
-    let mut item = Editor::new_str("- this is a list item\n", Format::Markdown).expect("editor");
+    let mut item = Editor::new_str("- this is a list item\n", common::markdown()).expect("editor");
     item.split_block(10).expect("split");
     assert_eq!(item.source_str().unwrap(), "- this is \n- a list item\n");
     let nodes = item.nodes().expect("nodes");
     assert_eq!(nodes.iter().filter(|n| n.kind == Kind::ListItem).count(), 2);
 
     // At the item's end the empty sibling IS the point — that is Enter.
-    let mut tail = Editor::new_str("- a\n", Format::Markdown).expect("editor");
+    let mut tail = Editor::new_str("- a\n", common::markdown()).expect("editor");
     tail.split_block(3).expect("split");
     assert_eq!(tail.source_str().unwrap(), "- a\n- \n");
 
     // A paragraph divides on a blank line instead.
-    let mut para = Editor::new_str("ab\n", Format::Markdown).expect("editor");
+    let mut para = Editor::new_str("ab\n", common::markdown()).expect("editor");
     para.split_block(1).expect("split");
     assert_eq!(para.source_str().unwrap(), "a\n\nb\n");
 
     // A table has no honest caret-split: a newline mid-cell destroys it.
     let mut table =
-        Editor::new_str("| a | b |\n|---|---|\n| c | d |\n", Format::Markdown).expect("editor");
+        Editor::new_str("| a | b |\n|---|---|\n| c | d |\n", common::markdown()).expect("editor");
     assert_eq!(table.split_block(3), Err(Error::NotEditable));
 
-    let mut empty = Editor::new_str("", Format::Markdown).expect("editor");
+    let mut empty = Editor::new_str("", common::markdown()).expect("editor");
     assert_eq!(empty.split_block(0), Err(Error::NotFound));
 }
 
@@ -1962,11 +1964,11 @@ fn editor_join_blocks_carries_the_markup_that_has_to_travel() {
     // gesture: `below` joins the div's last paragraph, and the `</div>` is
     // carried past the text that came in rather than being left above it.
     let src = "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n";
-    let exts = MarkdownExtensions {
+    let exts = twig_markdown::Extensions {
         html_elements: true,
         ..Default::default()
     };
-    let mut into = Editor::new_ext(src.as_bytes(), Format::Markdown, exts).expect("editor");
+    let mut into = common::new_ext(src.as_bytes(), common::markdown(), exts).expect("editor");
     into.join_blocks(44).expect("join");
     assert_eq!(
         into.source_str().unwrap(),
@@ -1978,20 +1980,20 @@ fn editor_join_blocks_carries_the_markup_that_has_to_travel() {
     // Out of the div instead: B leaves it, so the div's own closers go with
     // B's markup — and the paragraph's attributes go with them, because the
     // joined text is the other block's.
-    let mut out_of = Editor::new_ext(src.as_bytes(), Format::Markdown, exts).expect("editor");
+    let mut out_of = common::new_ext(src.as_bytes(), common::markdown(), exts).expect("editor");
     out_of.join_blocks(29).expect("join");
     assert_eq!(out_of.source_str().unwrap(), "above\nhello\n\nbelow\n");
 
     // A list item's continuation is spaces, not its marker: two items in,
     // one out.
-    let mut item = Editor::new_str("- a\n- b\n", Format::Markdown).expect("editor");
+    let mut item = Editor::new_str("- a\n- b\n", common::markdown()).expect("editor");
     item.join_blocks(6).expect("join");
     assert_eq!(item.source_str().unwrap(), "- a\n  b\n");
     let nodes = item.nodes().expect("nodes");
     assert_eq!(nodes.iter().filter(|n| n.kind == Kind::ListItem).count(), 1);
 
     // The document's first block has nothing above it.
-    let mut first = Editor::new_str("above\n", Format::Markdown).expect("editor");
+    let mut first = Editor::new_str("above\n", common::markdown()).expect("editor");
     assert_eq!(first.join_blocks(0), Err(Error::NotFound));
 }
 
@@ -1999,14 +2001,14 @@ fn editor_join_blocks_carries_the_markup_that_has_to_travel() {
 fn editor_move_block_spells_the_destination_prefixes() {
     // Out of a quote: the `> ` and the `>` separator line go with the
     // block, and it arrives blank-separated at the top level.
-    let mut out = Editor::new_str("> a\n>\n> y\n\nb\n", Format::Markdown).expect("editor");
+    let mut out = Editor::new_str("> a\n>\n> y\n\nb\n", common::markdown()).expect("editor");
     let change = out.move_block(8, 13).expect("move");
     assert_eq!(out.source_str().unwrap(), "> a\n\nb\n\ny\n");
     assert_eq!(change.old.start, 4);
 
     // Into a list item's tail: the continuation indent and the blank line
     // that makes it a second block of the item.
-    let mut tail = Editor::new_str("- x\n\ny\n", Format::Markdown).expect("editor");
+    let mut tail = Editor::new_str("- x\n\ny\n", common::markdown()).expect("editor");
     tail.move_block(5, 3).expect("move");
     assert_eq!(tail.source_str().unwrap(), "- x\n\n  y\n");
     let nodes = tail.nodes().expect("nodes");
@@ -2014,18 +2016,18 @@ fn editor_move_block_spells_the_destination_prefixes() {
 
     // A bullet's text is the bullet: the item moves whole, and between
     // two items of a tight list no blank is written.
-    let mut items = Editor::new_str("- a\n  - b\n- c\n", Format::Markdown).expect("editor");
+    let mut items = Editor::new_str("- a\n  - b\n- c\n", common::markdown()).expect("editor");
     items.move_block(12, 0).expect("move");
     assert_eq!(items.source_str().unwrap(), "- c\n- a\n  - b\n");
 
     // Where it already is moves nothing; inside a fence is no boundary.
-    let mut same = Editor::new_str("a\n\n```\nx\n```\n", Format::Markdown).expect("editor");
+    let mut same = Editor::new_str("a\n\n```\nx\n```\n", common::markdown()).expect("editor");
     assert_eq!(same.move_block(0, 1), Err(Error::InvalidArgument));
     assert_eq!(same.move_block(0, 8), Err(Error::NotEditable));
     assert_eq!(same.move_block(2, 0), Err(Error::NotFound));
 
     // XML has no blocks a caret could name.
-    let mut xml = Editor::new_str("<r><a/><b/></r>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<r><a/><b/></r>", common::xml()).expect("editor");
     assert_eq!(xml.move_block(3, 11), Err(Error::UnsupportedFormat));
 }
 
@@ -2036,22 +2038,22 @@ fn editor_join_blocks_is_spelled_in_html_where_the_split_is_not() {
     // inside one is exactly the break the join needs, and the reparse hands
     // back the single paragraph the gesture claims to have made.
     let mut ed =
-        Editor::new_str("<p>a</p>\n<p class=\"x\">b</p>\n", Format::Html).expect("editor");
+        Editor::new_str("<p>a</p>\n<p class=\"x\">b</p>\n", common::html()).expect("editor");
     assert_eq!(ed.split_block(4), Err(Error::UnsupportedFormat));
-    assert!(Format::Html.supports(Gesture::JoinBlocks));
+    assert!(common::html().supports(Gesture::JoinBlocks));
     ed.join_blocks(22).expect("join");
     assert_eq!(ed.source_str().unwrap(), "<p>a\nb</p>\n");
     let nodes = ed.nodes().expect("nodes");
     assert_eq!(nodes.iter().filter(|n| n.kind == Kind::Para).count(), 1);
 
     // XML spells nothing at all, so there the refusal is the format's.
-    let mut xml = Editor::new_str("<r>ab</r>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<r>ab</r>", common::xml()).expect("editor");
     assert_eq!(xml.join_blocks(4), Err(Error::UnsupportedFormat));
 }
 
 #[test]
 fn editor_toggle_code_block_round_trips_and_measures_the_fence() {
-    let mut ed = Editor::new_str("a\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("a\n", common::markdown()).expect("editor");
     ed.toggle_code_block(0, 1, Some("zig")).expect("fence");
     assert_eq!(ed.source_str().unwrap(), "```zig\na\n```\n");
     let nodes = ed.nodes().expect("nodes");
@@ -2062,7 +2064,7 @@ fn editor_toggle_code_block_round_trips_and_measures_the_fence() {
 
     // Three backticks in the body would close a three-backtick fence, so the
     // fence is measured against the body rather than fixed.
-    let mut runs = Editor::new_str("a ``` b\n", Format::Markdown).expect("editor");
+    let mut runs = Editor::new_str("a ``` b\n", common::markdown()).expect("editor");
     runs.toggle_code_block(0, 7, None).expect("fence");
     assert_eq!(runs.source_str().unwrap(), "````\na ``` b\n````\n");
 }
@@ -2071,7 +2073,7 @@ fn editor_toggle_code_block_round_trips_and_measures_the_fence() {
 fn editor_toggle_code_block_inside_a_list_item_keeps_the_item() {
     // The fence sits at the item's content column, with the item's marker
     // on its line, so the block stays the item's — and comes back out.
-    let mut ed = Editor::new_str("- a\n- b\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("- a\n- b\n", common::markdown()).expect("editor");
     ed.toggle_code_block(2, 3, None).expect("fence");
     assert_eq!(ed.source_str().unwrap(), "- ```\n  a\n  ```\n- b\n");
     ed.toggle_code_block(8, 8, None).expect("unfence");
@@ -2080,7 +2082,7 @@ fn editor_toggle_code_block_inside_a_list_item_keeps_the_item() {
 
 #[test]
 fn editor_set_code_language_retags_clears_and_refuses() {
-    let mut ed = Editor::new_str("```zig\na\n```\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("```zig\na\n```\n", common::markdown()).expect("editor");
     ed.set_code_language(0, Some("rust")).expect("retag");
     assert_eq!(ed.source_str().unwrap(), "```rust\na\n```\n");
 
@@ -2098,18 +2100,18 @@ fn editor_set_code_language_retags_clears_and_refuses() {
         Err(Error::InvalidArgument)
     );
     // Djot's runs to the end of the line, so the same string is fine there.
-    let mut dj = Editor::new_str("```\na\n```\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("```\na\n```\n", common::djot()).expect("editor");
     dj.set_code_language(0, Some("a b"))
         .expect("djot info string");
     assert_eq!(dj.source_str().unwrap(), "```a b\na\n```\n");
 
-    let mut para = Editor::new_str("x\n", Format::Markdown).expect("editor");
+    let mut para = Editor::new_str("x\n", common::markdown()).expect("editor");
     assert_eq!(para.set_code_language(0, Some("zig")), Err(Error::NotFound));
 }
 
 #[test]
 fn editor_task_checkbox_gestures() {
-    let mut ed = Editor::new_str("- a\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("- a\n", common::markdown()).expect("editor");
 
     // The box is added by one gesture and ticked by another — adding
     // converts the item's kind, ticking only changes what the box holds.
@@ -2138,13 +2140,13 @@ fn editor_task_checkbox_gestures() {
     // asks for one.
     assert_eq!(ed.set_task_checked(2, true), Err(Error::NotEditable));
     // And a caret in no list item has no item at all.
-    let mut para = Editor::new_str("a\n", Format::Markdown).expect("editor");
+    let mut para = Editor::new_str("a\n", common::markdown()).expect("editor");
     assert_eq!(para.toggle_task_item(0), Err(Error::NotFound));
 }
 
 #[test]
 fn editor_insert_footnote_writes_both_halves_as_one_edit() {
-    for format in [Format::Markdown, Format::Djot] {
+    for format in [common::markdown(), common::djot()] {
         let mut ed = Editor::new_str("see\n", format).expect("editor");
         ed.insert_footnote(3, "a").expect("footnote");
         assert_eq!(ed.source_str().unwrap(), "see[^a]\n\n[^a]: \n");
@@ -2162,7 +2164,7 @@ fn editor_insert_footnote_writes_both_halves_as_one_edit() {
 
 #[test]
 fn editor_insert_footnote_reuses_an_existing_definition() {
-    let mut ed = Editor::new_str("see\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("see\n", common::markdown()).expect("editor");
     ed.insert_footnote(3, "a").expect("first");
     ed.insert_footnote(7, "a").expect("second reference");
     assert_eq!(ed.source_str().unwrap(), "see[^a][^a]\n\n[^a]: \n");
@@ -2180,7 +2182,7 @@ fn editor_insert_footnote_reuses_an_existing_definition() {
 
 #[test]
 fn editor_undo_redo_round_trip() {
-    let mut ed = Editor::new_str("hello\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("hello\n", common::markdown()).expect("editor");
     ed.edit_range(5, 5, "!").expect("edit");
     assert_eq!(ed.source_str().unwrap(), "hello!\n");
 
@@ -2195,7 +2197,7 @@ fn editor_undo_redo_round_trip() {
 
 #[test]
 fn editor_coalesce_folds_a_run() {
-    let mut ed = Editor::new_str("\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("\n", common::markdown()).expect("editor");
     ed.edit_range(0, 0, "a").expect("edit");
     ed.edit_range(1, 1, "b").expect("edit");
     ed.coalesce_last_undo().expect("coalesce");
@@ -2208,13 +2210,13 @@ fn editor_coalesce_folds_a_run() {
 
 #[test]
 fn editor_revision_bumps_per_successful_mutation() {
-    let mut ed = Editor::new_str("x\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("x\n", common::markdown()).expect("editor");
     assert_eq!(ed.revision(), 0);
     ed.edit_range(1, 1, "y").expect("edit");
     assert_eq!(ed.revision(), 1);
 
     // A reparse-breaking edit is rolled back and must not bump the revision.
-    let mut xml = Editor::new_str("<a>ok</a>", Format::Xml).expect("editor");
+    let mut xml = Editor::new_str("<a>ok</a>", common::xml()).expect("editor");
     assert_eq!(xml.revision(), 0);
     assert!(xml.replace_content("0", "<b>").is_err());
     assert_eq!(xml.revision(), 0);
@@ -2228,7 +2230,7 @@ fn editor_revision_bumps_per_successful_mutation() {
 
 #[test]
 fn editor_dirty_range_tracks_and_clears() {
-    let mut ed = Editor::new_str("abcdefgh\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("abcdefgh\n", common::markdown()).expect("editor");
     // Clean to start.
     assert_eq!(ed.dirty_range(), None);
 
@@ -2258,7 +2260,7 @@ fn editor_dirty_range_tracks_and_clears() {
 
 #[test]
 fn editor_caret_blob_follows_undo_and_redo() {
-    let mut ed = Editor::new_str("hello\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("hello\n", common::markdown()).expect("editor");
     assert!(ed.caret_blob().unwrap().is_empty());
 
     // Set the pre-edit caret, then edit: the retired undo step captures it.
@@ -2281,7 +2283,7 @@ fn editor_caret_blob_follows_undo_and_redo() {
 
 #[test]
 fn editor_coalesced_run_keeps_the_pre_run_caret() {
-    let mut ed = Editor::new_str("\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("\n", common::markdown()).expect("editor");
     ed.set_caret_blob(b"c0").expect("set caret");
     ed.edit_range(0, 0, "a").expect("edit");
     ed.set_caret_blob(b"c1").expect("set caret");
@@ -2297,7 +2299,7 @@ fn editor_coalesced_run_keeps_the_pre_run_caret() {
 
 #[test]
 fn editor_renumber_ordered_lists_fixes_a_stale_sequence() {
-    let mut ed = Editor::new_str("1. a\n2. x\n2. b\n3. c\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("1. a\n2. x\n2. b\n3. c\n", common::markdown()).expect("editor");
     ed.renumber_ordered_lists(0).expect("renumber ok");
     assert_eq!(ed.source_str().unwrap(), "1. a\n2. x\n3. b\n4. c\n");
 }
@@ -2307,25 +2309,25 @@ fn editor_renumber_ordered_lists_leaves_djot_prose_alone() {
     // Djot reads `   2. b` as text inside item `a`; Markdown reads the same
     // bytes as a nested item. The author's digit survives in the one case.
     let src = "1. a\n   2. b\n2. c\n";
-    let mut dj = Editor::new_str(src, Format::Djot).expect("editor");
+    let mut dj = Editor::new_str(src, common::djot()).expect("editor");
     dj.renumber_ordered_lists(0).expect("renumber ok");
     assert_eq!(dj.source_str().unwrap(), src);
 
-    let mut md = Editor::new_str(src, Format::Markdown).expect("editor");
+    let mut md = Editor::new_str(src, common::markdown()).expect("editor");
     md.renumber_ordered_lists(0).expect("renumber ok");
     assert_eq!(md.source_str().unwrap(), "1. a\n   1. b\n2. c\n");
 }
 
 #[test]
 fn editor_renumber_ordered_lists_off_a_list_is_not_found() {
-    let mut ed = Editor::new_str("a paragraph\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("a paragraph\n", common::markdown()).expect("editor");
     assert!(matches!(ed.renumber_ordered_lists(2), Err(Error::NotFound)));
 }
 
 #[test]
 fn editor_table_insert_row_and_set_alignment() {
     let src = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str(src, common::markdown()).expect("editor");
     ed.table_insert_row(24, true).expect("insert row"); // caret in body `1`
     assert_eq!(
         ed.source_str().unwrap(),
@@ -2337,14 +2339,14 @@ fn editor_table_insert_row_and_set_alignment() {
 
 #[test]
 fn editor_table_edit_off_a_table_is_not_found() {
-    let mut ed = Editor::new_str("nope\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("nope\n", common::markdown()).expect("editor");
     assert!(matches!(ed.table_delete_row(2), Err(Error::NotFound)));
 }
 
 #[test]
 fn editor_set_block_converts_setext_heading() {
     // A setext heading rebuilt from its content_span collapses the underline.
-    let mut ed = Editor::new_str("Title\n=====\n\nbody\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("Title\n=====\n\nbody\n", common::markdown()).expect("editor");
     ed.set_block(0, BlockKind::Heading(1))
         .expect("setext to atx");
     assert_eq!(ed.source_str().unwrap(), "# Title\n\nbody\n");
@@ -2352,7 +2354,7 @@ fn editor_set_block_converts_setext_heading() {
 
 #[test]
 fn editor_moves_a_node_next_to_another_in_one_step() {
-    let mut ed = Editor::new_str("<svg>\n  <rect/>\n  <circle/>\n</svg>\n", Format::Xml)
+    let mut ed = Editor::new_str("<svg>\n  <rect/>\n  <circle/>\n</svg>\n", common::xml())
         .expect("editor");
     ed.move_after("element[name=\"rect\"]", "element[name=\"circle\"]")
         .expect("after");
@@ -2381,18 +2383,18 @@ fn editor_moves_a_node_next_to_another_in_one_step() {
         Err(Error::NotFound)
     );
     // Markdown's blank-line separator travels the same way.
-    let mut md = Editor::new_str("A\n\nB\n\nC\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("A\n\nB\n\nC\n", common::markdown()).expect("editor");
     md.move_after("1", "2").expect("after");
     assert_eq!(md.source_str().unwrap(), "A\n\nC\n\nB\n");
 }
 
 #[test]
 fn editor_unwrap_and_smart_delete() {
-    let mut ed = Editor::new_str("<r><box><b/><c/></box></r>", Format::Xml).expect("editor");
+    let mut ed = Editor::new_str("<r><box><b/><c/></box></r>", common::xml()).expect("editor");
     ed.unwrap_node("0.0").expect("unwrap"); // <box>
     assert_eq!(ed.source_str().expect("source"), "<r><b/><c/></r>");
 
-    let mut md = Editor::new_str("A\n\nB\n\nC\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("A\n\nB\n\nC\n", common::markdown()).expect("editor");
     md.delete_smart("1").expect("delete_smart"); // the "B" paragraph
     assert_eq!(md.source_str().expect("source"), "A\n\nC\n");
 }
@@ -2402,13 +2404,13 @@ fn editor_directives_require_the_extension_flag() {
     let src = ":::vis{.public}\nhi\n:::\n";
     // Without the flag, the colon-fence lines are plain paragraph text —
     // no directive node.
-    let mut plain = Editor::new_str(src, Format::Markdown).expect("editor");
+    let mut plain = Editor::new_str(src, common::markdown()).expect("editor");
     assert_eq!(plain.query("directive").expect("query").len(), 0);
     // With it enabled, the container directive is recognized.
-    let mut ext = Editor::new_ext(
+    let mut ext = common::new_ext(
         src.as_bytes(),
-        Format::Markdown,
-        MarkdownExtensions {
+        common::markdown(),
+        twig_markdown::Extensions {
             directives: true,
             ..Default::default()
         },
@@ -2419,13 +2421,13 @@ fn editor_directives_require_the_extension_flag() {
 
 #[test]
 fn editor_set_node_attrs_rewrites_an_xml_tag_by_id_and_nothing_else() {
-    assert!(Format::Xml.supports(Gesture::SetNodeAttrs));
-    assert!(!Format::Xml.is_authorable());
-    assert!(!Format::Html.supports(Gesture::SetNodeAttrs));
-    assert!(!Format::Djot.supports(Gesture::SetNodeAttrs));
+    assert!(common::xml().supports(Gesture::SetNodeAttrs));
+    assert!(!common::xml().is_authorable());
+    assert!(!common::html().supports(Gesture::SetNodeAttrs));
+    assert!(!common::djot().supports(Gesture::SetNodeAttrs));
 
     let src = "<svg>\n  <g id=\"a\">\n    <rect x=\"1\" y=\"2\"/>\n  </g>\n</svg>\n";
-    let mut ed = Editor::new_str(src, Format::Xml).expect("editor");
+    let mut ed = Editor::new_str(src, common::xml()).expect("editor");
     let rect = |ed: &mut Editor| {
         ed.nodes()
             .expect("nodes")
@@ -2492,7 +2494,7 @@ fn editor_set_node_attrs_rewrites_an_xml_tag_by_id_and_nothing_else() {
         ed.set_node_attrs(id, &[("hidden", None)]),
         Err(Error::InvalidArgument)
     );
-    let mut md = Editor::new_str("hello\n", Format::Markdown).expect("editor");
+    let mut md = Editor::new_str("hello\n", common::markdown()).expect("editor");
     assert_eq!(
         md.set_node_attrs(NodeId(0), &[("a", Some("b"))]),
         Err(Error::UnsupportedFormat)
@@ -2503,7 +2505,7 @@ fn editor_set_node_attrs_rewrites_an_xml_tag_by_id_and_nothing_else() {
 fn editor_set_block_attrs_spells_per_format_and_replaces_rather_than_merging() {
     // djot: the line before the block, rewritten in place; the block's
     // bytes are never touched.
-    let mut dj = Editor::new_str("hello _em_\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("hello _em_\n", common::djot()).expect("editor");
     dj.set_block_attrs(0, &[("class", Some("center"))]).expect("class");
     assert_eq!(dj.source_str().unwrap(), "{.center}\nhello _em_\n");
     dj.set_block_attrs(12, &[("data-size", Some("large"))]).expect("size");
@@ -2512,27 +2514,27 @@ fn editor_set_block_attrs_spells_per_format_and_replaces_rather_than_merging() {
     assert_eq!(dj.source_str().unwrap(), "hello _em_\n");
 
     // HTML: the tag; AsciiDoc: its attribute line.
-    let mut html = Editor::new_str("<p>a</p>\n", Format::Html).expect("editor");
+    let mut html = Editor::new_str("<p>a</p>\n", common::html()).expect("editor");
     html.set_block_attrs(4, &[("class", Some("c"))]).expect("class");
     assert_eq!(html.source_str().unwrap(), "<p class=\"c\">a</p>\n");
-    let mut adoc = Editor::new_str("hello\n", Format::Asciidoc).expect("editor");
+    let mut adoc = Editor::new_str("hello\n", common::asciidoc()).expect("editor");
     adoc.set_block_attrs(0, &[("class", Some("c"))]).expect("class");
     assert_eq!(adoc.source_str().unwrap(), "[.c]\nhello\n");
 
     // Markdown: refused without the flag; a div with it, rewritten rather
     // than nested on a second call, unwrapped by an empty list.
-    assert!(!Format::Markdown.supports(Gesture::SetBlockAttrs));
-    let exts = MarkdownExtensions {
+    assert!(!common::markdown().supports(Gesture::SetBlockAttrs));
+    let exts = twig_markdown::Extensions {
         html_elements: true,
         ..Default::default()
     };
-    assert!(Format::Markdown.supports_with(exts, Gesture::SetBlockAttrs));
-    let mut plain = Editor::new_str("hello\n", Format::Markdown).expect("editor");
+    assert!(common::markdown().supports_flags(common::flags(exts), Gesture::SetBlockAttrs));
+    let mut plain = Editor::new_str("hello\n", common::markdown()).expect("editor");
     assert_eq!(
         plain.set_block_attrs(0, &[("class", Some("c"))]),
         Err(Error::UnsupportedFormat)
     );
-    let mut md = Editor::new_ext(b"hello\n", Format::Markdown, exts).expect("editor");
+    let mut md = common::new_ext(b"hello\n", common::markdown(), exts).expect("editor");
     md.set_block_attrs(0, &[("class", Some("c"))]).expect("class");
     assert_eq!(md.source_str().unwrap(), "<div class=\"c\">\n\nhello\n\n</div>\n");
     md.set_block_attrs(20, &[("class", Some("d"))]).expect("reclass");
@@ -2555,7 +2557,7 @@ fn editor_set_block_attrs_spells_per_format_and_replaces_rather_than_merging() {
 
 #[test]
 fn editor_wrap_range_attrs_spells_a_span_and_re_styles_rather_than_nesting() {
-    let mut dj = Editor::new_str("a big b\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("a big b\n", common::djot()).expect("editor");
     dj.wrap_range_attrs(2, 5, &[("class", Some("large"))]).expect("wrap");
     assert_eq!(dj.source_str().unwrap(), "a [big]{.large} b\n");
     dj.wrap_range_attrs(3, 6, &[("class", Some("small"))]).expect("re-style");
@@ -2563,23 +2565,23 @@ fn editor_wrap_range_attrs_spells_a_span_and_re_styles_rather_than_nesting() {
     dj.wrap_range_attrs(3, 6, &[]).expect("unwrap");
     assert_eq!(dj.source_str().unwrap(), "a big b\n");
 
-    let mut html = Editor::new_str("<p>a big b</p>\n", Format::Html).expect("editor");
+    let mut html = Editor::new_str("<p>a big b</p>\n", common::html()).expect("editor");
     html.wrap_range_attrs(5, 8, &[("class", Some("large"))]).expect("wrap");
     assert_eq!(html.source_str().unwrap(), "<p>a <span class=\"large\">big</span> b</p>\n");
 
     // Markdown reads the span back only under `html_elements`; AsciiDoc
     // has no spelling that keeps every key.
-    assert!(!Format::Markdown.supports(Gesture::WrapRangeAttrs));
-    assert!(!Format::Asciidoc.supports(Gesture::WrapRangeAttrs));
-    let exts = MarkdownExtensions {
+    assert!(!common::markdown().supports(Gesture::WrapRangeAttrs));
+    assert!(!common::asciidoc().supports(Gesture::WrapRangeAttrs));
+    let exts = twig_markdown::Extensions {
         html_elements: true,
         ..Default::default()
     };
-    assert!(Format::Markdown.supports_with(exts, Gesture::WrapRangeAttrs));
-    let mut md = Editor::new_ext(b"a big b\n", Format::Markdown, exts).expect("editor");
+    assert!(common::markdown().supports_flags(common::flags(exts), Gesture::WrapRangeAttrs));
+    let mut md = common::new_ext(b"a big b\n", common::markdown(), exts).expect("editor");
     md.wrap_range_attrs(2, 5, &[("class", Some("large"))]).expect("wrap");
     assert_eq!(md.source_str().unwrap(), "a <span class=\"large\">big</span> b\n");
-    let mut plain = Editor::new_str("a big b\n", Format::Markdown).expect("editor");
+    let mut plain = Editor::new_str("a big b\n", common::markdown()).expect("editor");
     assert_eq!(
         plain.wrap_range_attrs(2, 5, &[("class", Some("large"))]),
         Err(Error::UnsupportedFormat)
@@ -2588,11 +2590,11 @@ fn editor_wrap_range_attrs_spells_a_span_and_re_styles_rather_than_nesting() {
 
 #[test]
 fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
-    let exts = MarkdownExtensions {
+    let exts = twig_markdown::Extensions {
         directives: true,
         ..Default::default()
     };
-    let mut md = Editor::new_ext(b"a\n\nb\n", Format::Markdown, exts).expect("editor");
+    let mut md = common::new_ext(b"a\n\nb\n", common::markdown(), exts).expect("editor");
     md.insert_directive(0, "page-break", None, &[])
         .expect("directive");
     assert_eq!(md.source_str().unwrap(), "a\n\n::page-break\n\nb\n");
@@ -2601,7 +2603,7 @@ fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
 
     // A label and an attribute, in the serializer's own spelling — the
     // value is quoted because that is what the Markdown serializer writes.
-    let mut em = Editor::new_ext(b"a\n", Format::Markdown, exts).expect("editor");
+    let mut em = common::new_ext(b"a\n", common::markdown(), exts).expect("editor");
     em.insert_directive(0, "embed", Some("Contents"), &[("src", Some("x.html"))])
         .expect("directive");
     assert_eq!(
@@ -2613,7 +2615,7 @@ fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
     // Djot's div is anonymous, so its spelling is an empty `:::` fence
     // carrying the name — which is why the gate asks about the NAME
     // surviving rather than about the syntax.
-    let mut dj = Editor::new_str("a\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("a\n", common::djot()).expect("editor");
     dj.insert_directive(0, "page-break", None, &[])
         .expect("directive");
     assert_eq!(dj.source_str().unwrap(), "a\n\n::: page-break\n:::\n");
@@ -2621,10 +2623,10 @@ fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
     // `None` is no label and `Some("")` is an empty one — two different
     // documents, which is the whole reason the parameter is an `Option`
     // rather than a `&str`.
-    let mut none = Editor::new_ext(b"", Format::Markdown, exts).expect("editor");
+    let mut none = common::new_ext(b"", common::markdown(), exts).expect("editor");
     none.insert_directive(0, "x", None, &[]).expect("directive");
     assert_eq!(none.source_str().unwrap(), "::x\n");
-    let mut empty = Editor::new_ext(b"", Format::Markdown, exts).expect("editor");
+    let mut empty = common::new_ext(b"", common::markdown(), exts).expect("editor");
     empty
         .insert_directive(0, "x", Some(""), &[])
         .expect("directive");
@@ -2633,62 +2635,62 @@ fn editor_insert_directive_writes_a_directive_the_reparse_reads_back() {
 
 #[test]
 fn editor_insert_math_writes_a_formula_the_reparse_reads_back() {
-    let exts = MarkdownExtensions {
+    let exts = twig_markdown::Extensions {
         math: true,
         ..Default::default()
     };
-    let mut md = Editor::new_ext(b"a  b\n", Format::Markdown, exts).expect("editor");
+    let mut md = common::new_ext(b"a  b\n", common::markdown(), exts).expect("editor");
     md.insert_inline_math(2, "x^2").expect("inline");
     assert_eq!(md.source_str().unwrap(), "a $x^2$ b\n");
     md.insert_display_math(0, "\\frac{1}{2}").expect("display");
     assert_eq!(md.source_str().unwrap(), "a $x^2$ b\n\n$$\\frac{1}{2}$$\n");
 
-    let mut dj = Editor::new_str("a  b\n", Format::Djot).expect("editor");
+    let mut dj = Editor::new_str("a  b\n", common::djot()).expect("editor");
     dj.insert_inline_math(2, "a`b").expect("inline");
     assert_eq!(dj.source_str().unwrap(), "a $``a`b`` b\n");
 
     // Refusals leave the source as it was.
     assert_eq!(md.insert_inline_math(0, " x"), Err(Error::InvalidArgument));
-    let mut code = Editor::new_ext(b"`code`\n", Format::Markdown, exts).expect("editor");
+    let mut code = common::new_ext(b"`code`\n", common::markdown(), exts).expect("editor");
     assert_eq!(code.insert_inline_math(3, "x"), Err(Error::NotEditable));
     assert_eq!(code.source_str().unwrap(), "`code`\n");
 
-    let mut plain = Editor::new_str("a\n", Format::Markdown).expect("editor");
+    let mut plain = Editor::new_str("a\n", common::markdown()).expect("editor");
     assert_eq!(plain.insert_inline_math(0, "x"), Err(Error::UnsupportedFormat));
-    assert!(!Format::Markdown.supports(Gesture::InsertInlineMath));
-    assert!(Format::Markdown.supports_with(exts, Gesture::InsertDisplayMath));
-    assert!(Format::Asciidoc.supports(Gesture::InsertInlineMath));
-    assert!(!Format::Asciidoc.supports(Gesture::InsertDisplayMath));
+    assert!(!common::markdown().supports(Gesture::InsertInlineMath));
+    assert!(common::markdown().supports_flags(common::flags(exts), Gesture::InsertDisplayMath));
+    assert!(common::asciidoc().supports(Gesture::InsertInlineMath));
+    assert!(!common::asciidoc().supports(Gesture::InsertDisplayMath));
 }
 
 #[test]
 fn editor_insert_directive_needs_the_extension_it_will_be_read_back_with() {
     // Without the flag `::page-break` is a paragraph of colons, so the
     // gesture refuses rather than minting bytes one press cannot undo.
-    let mut plain = Editor::new_str("a\n", Format::Markdown).expect("editor");
+    let mut plain = Editor::new_str("a\n", common::markdown()).expect("editor");
     assert_eq!(
         plain.insert_directive(0, "page-break", None, &[]),
         Err(Error::UnsupportedFormat)
     );
     assert_eq!(plain.source_str().unwrap(), "a\n");
 
-    assert!(!Format::Markdown.supports(Gesture::InsertDirective));
-    assert!(Format::Markdown.supports_with(
-        MarkdownExtensions {
+    assert!(!common::markdown().supports(Gesture::InsertDirective));
+    assert!(common::markdown().supports_flags(common::flags(
+        twig_markdown::Extensions {
             directives: true,
             ..Default::default()
-        },
+        }),
         Gesture::InsertDirective
     ));
     // Djot needs no extension; XML spells nothing at all.
-    assert!(Format::Djot.supports(Gesture::InsertDirective));
-    assert!(!Format::Xml.supports(Gesture::InsertDirective));
+    assert!(common::djot().supports(Gesture::InsertDirective));
+    assert!(!common::xml().supports(Gesture::InsertDirective));
 
     // An empty name is the caller's error, not a nameless directive.
-    let mut ext = Editor::new_ext(
+    let mut ext = common::new_ext(
         b"a\n",
-        Format::Markdown,
-        MarkdownExtensions {
+        common::markdown(),
+        twig_markdown::Extensions {
             directives: true,
             ..Default::default()
         },
@@ -2721,13 +2723,13 @@ fn editor_insert_directive_needs_the_extension_it_will_be_read_back_with() {
 fn document_html_elements_make_embedded_img_queryable() {
     let src = "text <img src=\"a.png\" alt=\"x\"> more\n";
     // Without the flag, the `<img>` is opaque raw HTML — no `image` node.
-    let mut plain = Document::parse_str(src, Format::Markdown).expect("parse");
+    let mut plain = Document::parse_str(src, common::markdown()).expect("parse");
     assert_eq!(plain.query("image").expect("query").len(), 0);
     // With it enabled on the read path, the promoted image is queryable.
-    let mut ext = Document::parse_str_with(
+    let mut ext = common::parse_str_with(
         src,
-        Format::Markdown,
-        MarkdownExtensions {
+        common::markdown(),
+        twig_markdown::Extensions {
             html_elements: true,
             ..Default::default()
         },
@@ -2741,10 +2743,10 @@ fn document_html_elements_make_embedded_img_queryable() {
 #[test]
 fn editor_filter_public_audience_view() {
     let src = "# Archive\n\n:::vis{.public}\nPublic.\n:::\n\n:::vis{.family}\nPrivate.\n:::\n";
-    let mut ed = Editor::new_ext(
+    let mut ed = common::new_ext(
         src.as_bytes(),
-        Format::Markdown,
-        MarkdownExtensions {
+        common::markdown(),
+        twig_markdown::Extensions {
             directives: true,
             ..Default::default()
         },
@@ -2762,7 +2764,7 @@ fn editor_filter_public_audience_view() {
 
 #[test]
 fn editor_filter_rejects_a_malformed_selector() {
-    let mut ed = Editor::new_str("hi\n", Format::Markdown).expect("editor");
+    let mut ed = Editor::new_str("hi\n", common::markdown()).expect("editor");
     assert_eq!(
         ed.filter("list >", None, false),
         Err(Error::InvalidArgument)
@@ -2792,7 +2794,7 @@ fn builder_builds_and_renders_a_document() {
     assert!(html.contains("<h1>Title</h1>"), "{html}");
     assert!(html.contains("<em>world</em>"), "{html}");
 
-    let md = String::from_utf8(b.serialize(doc, Format::Markdown).unwrap()).unwrap();
+    let md = String::from_utf8(b.serialize(doc, common::markdown()).unwrap()).unwrap();
     assert!(md.contains("# Title"), "{md}");
     assert!(md.contains("*world*"), "{md}");
 
@@ -2848,7 +2850,7 @@ fn builder_lists_round_trip_to_markdown() {
     let doc = b.add(VoidKind::Doc).unwrap();
     b.set_children(doc, &[list]).unwrap();
 
-    let md = String::from_utf8(b.serialize(doc, Format::Markdown).unwrap()).unwrap();
+    let md = String::from_utf8(b.serialize(doc, common::markdown()).unwrap()).unwrap();
     assert!(md.contains("1. one"), "{md}");
     assert!(md.contains("2. two"), "{md}");
 }
@@ -2862,7 +2864,7 @@ fn builder_rejects_invalid_kind_and_id() {
 
     // A root id past the end can't be rendered.
     assert_eq!(b.render_html(NodeId(4242)), Err(Error::InvalidArgument));
-    assert_eq!(b.serialize_to(NodeId(4242), Target::Djot), Err(Error::InvalidArgument));
+    assert_eq!(b.serialize_to(NodeId(4242), common::djot().target()), Err(Error::InvalidArgument));
     assert_eq!(b.ast_json(NodeId(4242)), Err(Error::InvalidArgument));
     assert_eq!(b.query(NodeId(4242), "str"), Err(Error::InvalidArgument));
     let p = b.add(VoidKind::Para).unwrap();
@@ -2950,18 +2952,18 @@ fn the_wire_space_ends_where_the_sweep_does() {
         assert!(!all[i + 1..].contains(a), "{a:?} listed twice");
     }
     for fmt in [
-        Format::Djot,
-        Format::Markdown,
-        Format::Xml,
-        Format::Html,
-        Format::Asciidoc,
-        Format::Commonmark,
-        Format::Gfm,
-        Format::Svg,
+        common::djot(),
+        common::markdown(),
+        common::xml(),
+        common::html(),
+        common::asciidoc(),
+        common::commonmark(),
+        common::gfm(),
+        common::svg(),
     ] {
         for g in &all {
             let _ = fmt.supports(*g);
-            let _ = fmt.supports_with(MarkdownExtensions::default(), *g);
+            let _ = fmt.supports_flags(common::flags(twig_markdown::Extensions::default()), *g);
         }
     }
 }
@@ -2972,39 +2974,39 @@ fn supports_answers_per_gesture_where_authorable_cannot() {
     // it — it spells the inline marks, and every block its parser reads
     // back through a renderer — while a toolbar built on that predicate
     // would show a task-box button and a footnote button that both fail.
-    assert!(Format::Html.is_authorable());
-    assert!(Format::Html.supports(Gesture::ToggleInline(InlineKind::Strong)));
-    assert!(Format::Html.supports(Gesture::SetBlock));
-    assert!(Format::Html.supports(Gesture::InsertLiteral));
-    assert!(Format::Html.supports(Gesture::ToggleBlockContainer(
+    assert!(common::html().is_authorable());
+    assert!(common::html().supports(Gesture::ToggleInline(InlineKind::Strong)));
+    assert!(common::html().supports(Gesture::SetBlock));
+    assert!(common::html().supports(Gesture::InsertLiteral));
+    assert!(common::html().supports(Gesture::ToggleBlockContainer(
         BlockContainerKind::BlockQuote
     )));
-    assert!(Format::Html.supports(Gesture::ToggleCodeBlock));
-    assert!(Format::Html.supports(Gesture::InsertLink));
-    assert!(!Format::Html.supports(Gesture::ToggleTaskItem));
-    assert!(!Format::Html.supports(Gesture::InsertFootnote));
+    assert!(common::html().supports(Gesture::ToggleCodeBlock));
+    assert!(common::html().supports(Gesture::InsertLink));
+    assert!(!common::html().supports(Gesture::ToggleTaskItem));
+    assert!(!common::html().supports(Gesture::InsertFootnote));
     // The nine that used to answer nothing at all: HTML has a table its
     // parser reads and no spelling to write one back with, no blank-line
     // block separation, and no numbered list marker.
-    assert!(!Format::Html.supports(Gesture::TableInsertRow));
-    assert!(!Format::Html.supports(Gesture::TableSetAlignment));
-    assert!(!Format::Html.supports(Gesture::SplitBlock));
+    assert!(!common::html().supports(Gesture::TableInsertRow));
+    assert!(!common::html().supports(Gesture::TableSetAlignment));
+    assert!(!common::html().supports(Gesture::SplitBlock));
     // And the one that goes the other way, which is why the join has a gate
     // of its own: HTML cannot be split at a blank line and *can* be joined
     // at a newline inside its `<p>`.
-    assert!(Format::Html.supports(Gesture::JoinBlocks));
+    assert!(common::html().supports(Gesture::JoinBlocks));
     // And the block move, whose lines HTML has like any other format.
-    assert!(Format::Html.supports(Gesture::MoveBlock));
-    assert!(!Format::Html.supports(Gesture::RenumberOrderedLists));
-    assert!(Format::Markdown.supports(Gesture::TableInsertRow));
-    assert!(Format::Djot.supports(Gesture::SplitBlock));
+    assert!(common::html().supports(Gesture::MoveBlock));
+    assert!(!common::html().supports(Gesture::RenumberOrderedLists));
+    assert!(common::markdown().supports(Gesture::TableInsertRow));
+    assert!(common::djot().supports(Gesture::SplitBlock));
 
     // A format that spells no prose answers false to every caret gesture,
     // so the coarse predicate agrees there — it only misleads in the middle
     // of the range. The one gesture XML (and its svg dialect) supports is
     // the node-addressed one, which no caret asks for and `is_authorable`
     // deliberately does not count.
-    for fmt in [Format::Xml, Format::Svg] {
+    for fmt in [common::xml(), common::svg()] {
         assert!(!fmt.is_authorable());
         for g in all_gestures() {
             assert_eq!(
@@ -3017,19 +3019,19 @@ fn supports_answers_per_gesture_where_authorable_cannot() {
     // AsciiDoc is in the middle of the range the other way round from
     // HTML: the block gestures work, a link prints through its renderer,
     // the footnote/table shapes don't.
-    assert!(Format::Asciidoc.is_authorable());
-    assert!(Format::Asciidoc.supports(Gesture::SetBlock));
-    assert!(Format::Asciidoc.supports(Gesture::ToggleInline(InlineKind::Mark)));
-    assert!(Format::Asciidoc.supports(Gesture::InsertLink));
-    assert!(!Format::Asciidoc.supports(Gesture::InsertFootnote));
-    assert!(!Format::Asciidoc.supports(Gesture::TableInsertRow));
+    assert!(common::asciidoc().is_authorable());
+    assert!(common::asciidoc().supports(Gesture::SetBlock));
+    assert!(common::asciidoc().supports(Gesture::ToggleInline(InlineKind::Mark)));
+    assert!(common::asciidoc().supports(Gesture::InsertLink));
+    assert!(!common::asciidoc().supports(Gesture::InsertFootnote));
+    assert!(!common::asciidoc().supports(Gesture::TableInsertRow));
 
     // And the two authorable formats differ from each other, which is the
     // other half of why one boolean can't serve.
-    assert!(Format::Djot.supports(Gesture::ToggleInline(InlineKind::Mark)));
-    assert!(!Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Mark)));
-    assert!(Format::Markdown.supports(Gesture::InsertLineBreak));
-    assert!(!Format::Djot.supports(Gesture::InsertLineBreak));
+    assert!(common::djot().supports(Gesture::ToggleInline(InlineKind::Mark)));
+    assert!(!common::markdown().supports(Gesture::ToggleInline(InlineKind::Mark)));
+    assert!(common::markdown().supports(Gesture::InsertLineBreak));
+    assert!(!common::djot().supports(Gesture::InsertLineBreak));
 }
 
 #[test]
@@ -3038,7 +3040,7 @@ fn supports_agrees_with_what_the_editor_then_does() {
     // can be made to demonstrate, the query's answer is the call's answer.
     // Zig covers the full (format x gesture) sweep; what's checked here is
     // that the Rust decode reaches the same question.
-    for fmt in [Format::Djot, Format::Markdown, Format::Html] {
+    for fmt in [common::djot(), common::markdown(), common::html()] {
         let mut ed = Editor::new_str("ab\n", fmt).expect("editor");
         let claimed = fmt.supports(Gesture::ToggleInline(InlineKind::Mark));
         let observed = ed.toggle_inline(0, 2, InlineKind::Mark);
@@ -3062,8 +3064,8 @@ fn supports_agrees_with_what_the_editor_then_does() {
     // and cannot be written back, so the refusal has to arrive before
     // anything is spliced. A `Ok(())` here once meant a destroyed table.
     let src = "<table><tr><td>a</td></tr></table>";
-    let mut ed = Editor::new_str(src, Format::Html).expect("editor");
-    assert!(!Format::Html.supports(Gesture::TableInsertRow));
+    let mut ed = Editor::new_str(src, common::html()).expect("editor");
+    assert!(!common::html().supports(Gesture::TableInsertRow));
     assert_eq!(ed.table_insert_row(15, true), Err(Error::UnsupportedFormat));
     assert_eq!(ed.renumber_ordered_lists(15), Err(Error::UnsupportedFormat));
     assert!(matches!(ed.split_block(15), Err(Error::UnsupportedFormat)));
@@ -3078,24 +3080,24 @@ fn supports_rides_the_gestures_own_kind_space() {
     // ported: the `(gesture, kind)` wire pairs and the C side's rejection of
     // mismatched ones are gone with the C layer; the Rust types make the
     // mismatches unrepresentable. The per-kind answers are what remain.
-    assert!(Format::Markdown.supports(Gesture::ToggleBlockContainer(BlockContainerKind::BulletList)));
-    assert!(Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Emph)));
-    assert!(!Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Superscript)));
-    assert!(Format::Markdown.supports(Gesture::InsertLink));
+    assert!(common::markdown().supports(Gesture::ToggleBlockContainer(BlockContainerKind::BulletList)));
+    assert!(common::markdown().supports(Gesture::ToggleInline(InlineKind::Emph)));
+    assert!(!common::markdown().supports(Gesture::ToggleInline(InlineKind::Superscript)));
+    assert!(common::markdown().supports(Gesture::InsertLink));
 }
 
 #[test]
 fn toggle_line_block_makes_a_verse_whose_lines_report_their_indent() {
-    let exts = MarkdownExtensions {
+    let exts = twig_markdown::Extensions {
         html_elements: true,
         ..Default::default()
     };
-    assert!(!Format::Markdown.supports(Gesture::ToggleLineBlock));
-    assert!(Format::Markdown.supports_with(exts, Gesture::ToggleLineBlock));
-    assert!(Format::Djot.supports(Gesture::ToggleLineBlock));
-    assert!(!Format::Html.supports(Gesture::ToggleLineBlock));
+    assert!(!common::markdown().supports(Gesture::ToggleLineBlock));
+    assert!(common::markdown().supports_flags(common::flags(exts), Gesture::ToggleLineBlock));
+    assert!(common::djot().supports(Gesture::ToggleLineBlock));
+    assert!(!common::html().supports(Gesture::ToggleLineBlock));
 
-    let mut ed = Editor::new_ext("One\n\u{2003}two\n".as_bytes(), Format::Markdown, exts).expect("editor");
+    let mut ed = common::new_ext("One\n\u{2003}two\n".as_bytes(), common::markdown(), exts).expect("editor");
     ed.toggle_line_block(0, 0).expect("toggle on");
     assert_eq!(
         ed.source_str().expect("source"),
@@ -3108,6 +3110,6 @@ fn toggle_line_block_makes_a_verse_whose_lines_report_their_indent() {
     ed.toggle_line_block(0, 0).expect("toggle off");
     assert_eq!(ed.source_str().expect("source"), "One\n\u{2003}two\n");
 
-    let mut plain = Editor::new("One\n".as_bytes(), Format::Markdown).expect("editor");
+    let mut plain = Editor::new("One\n".as_bytes(), common::markdown()).expect("editor");
     assert_eq!(plain.toggle_line_block(0, 0), Err(Error::UnsupportedFormat));
 }

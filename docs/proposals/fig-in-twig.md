@@ -11,9 +11,19 @@ updated: 2026-10-15
 
 ## Status
 
-`draft`. Step 1 below is built, in `crates/twig-meta`. It is a crate of its
-own, beside `twig-doc`, so nothing about `twig-doc` itself changes until the
-decisions under **Open questions** are made.
+`draft`. Step 1 below is built, and the split this proposal argued for is
+decided the other way: **`twig-meta` is folded into `twig-doc`** as
+`twig::meta`, behind `twig-doc`'s one feature, `fig`, which is on by
+default. Full fig integration is the direction, and core parsing always
+honours a document's `twig` settings: `Document::parse`, `Editor::new`, the
+CLI and the C ABI read a document as its frontmatter asks
+(`format::parse_as_asked`, `format::resolve_as_asked`). A program that wants
+twig without fig turns the feature off (`default-features = false`) and
+parses exactly as it asks. The first two open questions below are answered
+by that: the CLI and the C ABI have fig, and settings apply unasked.
+
+The sections below keep the argument as it was made, when `twig-meta` was a
+crate of its own.
 
 This proposal was first written against the Zig implementation, where step 1
 was a `src/meta/` module behind `zig build -Dfig`. twig and fig are both
@@ -97,6 +107,10 @@ org's rule) and can be published, or folded into `twig-doc` behind a `fig`
 feature. Either is a small move: the crate uses only `twig-doc`'s public
 modules.
 
+**Update, 2026-10-15.** fig 7, the Rust port, is on crates.io, and
+`twig-meta` became `twig-doc`'s default `fig` feature (see **Status**) — the
+one feature [one crate per language](language-crates.md) leaves `twig-doc`.
+
 ### The API
 
 ```rust
@@ -174,9 +188,9 @@ reads to know a document's dialect without being told.
    `twig` CLI. Whether the release CLI depends on `twig-meta` is an open
    question below, and waits on fig being on crates.io, since `twig-doc-cli`
    is published.
-5. **fig by version.** Once fig's Rust port is on crates.io, `twig-meta`
-   depends on it by version and is published (or becomes `twig-doc`'s `fig`
-   feature). Then prov moves `MetaEditor` from `fig::Embed` to it.
+5. **fig by version.** Done: `twig-doc` depends on fig 7 by version, and
+   `twig::meta` is what was `twig-meta`. Next, prov moves `MetaEditor` from
+   `fig::Embed` to it.
 6. **The hoisted record**, and the HTML printer and editor reading it.
 
 ## Open questions

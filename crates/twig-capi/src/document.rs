@@ -288,7 +288,7 @@ pub unsafe extern "C" fn twig_parse_ext(
         let Some(source) = (unsafe { slice_of(input_ptr, input_len) }) else { return TWIG_STATUS_INVALID_ARGUMENT };
         let Some(fmt) = int_to_format(format) else { return TWIG_STATUS_UNSUPPORTED_FORMAT };
         let cfg = config_from_flags(fmt, md_flags);
-        let Ok(parsed) = reg::parse(fmt, &cfg, source) else { return TWIG_STATUS_PARSE_ERROR };
+        let Ok(parsed) = reg::parse_as_asked(fmt, &cfg, source) else { return TWIG_STATUS_PARSE_ERROR };
         let handle = Box::new(DocumentHandle::new(View::Owned(Box::new(parsed))));
         unsafe { put(out_doc, Box::into_raw(handle) as *mut TwigDocument) };
         TWIG_STATUS_OK

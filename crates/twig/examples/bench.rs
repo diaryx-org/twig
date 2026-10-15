@@ -114,10 +114,10 @@ fn main() {
     BYTES_PEAK.store(live0, Relaxed);
     for _ in 0..iters {
         match fmt {
-            Format::Djot => drop(twig::languages::djot::parse(&source)),
-            Format::Markdown => drop(twig::languages::markdown::parse(&source, Default::default())),
-            Format::Html => drop(twig::languages::html::parse(&source)),
-            Format::Xml => match twig::languages::xml::parse(&source) {
+            Format::Djot => drop(twig_djot::parse(&source)),
+            Format::Markdown => drop(twig_markdown::parse(&source, Default::default())),
+            Format::Html => drop(twig_html::parse(&source)),
+            Format::Xml => match twig_xml::parse(&source) {
                 Ok(d) => drop(d),
                 Err(e) => fail(format!("xml parse failed: {}", e.name())),
             },

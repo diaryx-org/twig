@@ -7,6 +7,31 @@ use crate::options::ArgError;
 use crate::languages;
 use twig::format::{self, Format, Target, target_for};
 
+/// Register every language twig ships, in the order `twig lang list` and
+/// the help listings show them. Idempotent.
+pub fn register_languages() {
+    twig_djot::register();
+    twig_markdown::register();
+    twig_xml::register();
+    twig_html::register();
+    twig_asciidoc::register();
+}
+
+/// The compiled formats: every registered row but the runtime ones.
+pub fn compiled() -> Vec<Format> {
+    format::registered().into_iter().filter(|f| !f.is_runtime()).collect()
+}
+
+/// The compiled targets: each compiled language's own row.
+pub fn compiled_targets() -> Vec<Target> {
+    format::registered_targets().into_iter().filter(|t| t.as_format().is_some_and(|f| !f.is_runtime())).collect()
+}
+
+/// The HTML target `-o html` renders through.
+pub fn html_target() -> Target {
+    twig_html::format().target()
+}
+
 pub fn parse_format_name(name: &str) -> Option<Format> {
     format::parse_format_name(name).or_else(|| languages::resolve_name(name))
 }
@@ -79,7 +104,7 @@ pub fn parse_output_selection(name: &str) -> Option<OutputSelection> {
 
 pub fn print_supported_input_formats(w: &mut dyn Write) {
     let _ = w.write_all(b"supported input formats:\n");
-    for f in Format::COMPILED {
+    for f in compiled() {
         let _ = write!(w, "  - {}", f.name());
         for alias in f.aliases() {
             let _ = write!(w, " ({alias})");
@@ -97,8 +122,8 @@ pub fn print_supported_output_targets(w: &mut dyn Write) {
     for m in OutputMode::ALL {
         let _ = writeln!(w, "  - {}", m.name());
     }
-    for t in Target::COMPILED {
-        if parse_output_mode(t.static_name()).is_some() {
+    for t in compiled_targets() {
+        if parse_output_mode(t.name()).is_some() {
             continue;
         }
         let _ = write!(w, "  - {}", t.name());

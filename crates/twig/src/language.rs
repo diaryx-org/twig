@@ -1,14 +1,14 @@
 //! Languages registered at runtime: a format this library did not compile in,
-//! supplied as a Rust [`Language`] and registered with [`register`]. The
+//! supplied as a Rust [`TableLanguage`] and registered with [`register_table`]. The
 //! pure-Rust counterpart of the FFI binding's `twig::language` module
 //! (`bindings/rust/twig/src/language.rs`), with the same names and
 //! semantics, implemented over `crate::runtime` instead of the C ABI.
 //!
-//! A language **reads**: its [`Language::parse`] turns source into the node
+//! A language **reads**: its [`TableLanguage::parse`] turns source into the node
 //! table — the JSON `twig convert -o table` prints for a compiled format. It
-//! may **write**: [`Language::print`] turns a node table (without positions)
+//! may **write**: [`TableLanguage::print`] turns a node table (without positions)
 //! back into source. It may **author**: its [`Description::syntax`] is the
-//! table an editor's gestures write with, and [`Language::render`] answers
+//! table an editor's gestures write with, and [`TableLanguage::render`] answers
 //! the renderers that table names.
 //!
 //! A language may declare [`Feature`]s and [`Set`]s. Every call says which
@@ -39,14 +39,14 @@ pub struct Description {
     /// Dot-less and lowercase, and no format's already.
     pub extensions: Vec<String>,
     pub aliases: Vec<String>,
-    /// Whether the language prints — [`Language::print`] is then called.
+    /// Whether the language prints — [`TableLanguage::print`] is then called.
     pub write: bool,
     /// Whether the language authors: [`Description::syntax`] is then its
     /// table.
     pub author: bool,
     /// The table an editor writes with, as a JSON object — the shape
     /// `twig lang syntax <format>` prints. Its `renderers` name what
-    /// [`Language::render`] answers.
+    /// [`TableLanguage::render`] answers.
     pub syntax: Option<String>,
     pub features: Vec<Feature>,
     pub sets: Vec<Set>,
@@ -211,7 +211,7 @@ impl Call<'_> {
 /// A language supplied at runtime. Called from whichever thread parses or
 /// prints, hence `Send + Sync`; kept for the life of the process, since there
 /// is no unregistration.
-pub trait Language: Send + Sync + 'static {
+pub trait TableLanguage: Send + Sync + 'static {
     fn describe(&self) -> Description;
 
     /// `source` to the node table of its parse, as JSON. `row` is the name
@@ -229,12 +229,12 @@ pub trait Language: Send + Sync + 'static {
         Err("this language does not print".to_owned())
     }
 
-    /// [`Language::parse`], told the features in force.
+    /// [`TableLanguage::parse`], told the features in force.
     fn parse_with(&self, call: &Call<'_>, source: &[u8]) -> Result<Vec<u8>, String> {
         self.parse(call.row, source)
     }
 
-    /// [`Language::print`], told the features in force.
+    /// [`TableLanguage::print`], told the features in force.
     fn print_with(&self, call: &Call<'_>, table: &[u8]) -> Result<Vec<u8>, String> {
         self.print(call.row, table)
     }
@@ -247,7 +247,7 @@ pub trait Language: Send + Sync + 'static {
     /// - `{"which":"spells_autolink","text":"<…>"}` — answer `true` or
     ///   `false`.
     ///
-    /// The default answers `render_block` with [`Language::print_with`] and
+    /// The default answers `render_block` with [`TableLanguage::print_with`] and
     /// refuses the rest.
     fn render(&self, call: &Call<'_>, request: &[u8]) -> Result<Vec<u8>, String> {
         // The library writes a render_block request as exactly this prefix,
@@ -260,7 +260,7 @@ pub trait Language: Send + Sync + 'static {
     }
 }
 
-/// Why [`register`] refused a language.
+/// Why [`register_table`] refused a language.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegisterError {
     /// [`Error::InvalidLanguage`] for a refusal; otherwise what the call
@@ -329,7 +329,7 @@ fn render_request(request: &Render) -> Vec<u8> {
 }
 
 /// `language` as the runtime registry takes one.
-fn runtime_language<L: Language>(language: Arc<L>, write: bool) -> runtime::Language {
+fn runtime_language<L: TableLanguage>(language: Arc<L>, write: bool) -> runtime::Language {
     let (a, b, c) = (language.clone(), language.clone(), language);
     runtime::Language {
         parse: Box::new(move |call, source| guarded(|| a.parse_with(&call_of(call), source))),
@@ -349,13 +349,13 @@ fn runtime_language<L: Language>(language: Arc<L>, write: bool) -> runtime::Lang
 /// process; each of its sets is a format too, found with
 /// `format::parse_format_name`. On refusal nothing is registered and the
 /// language is dropped.
-pub fn register<L: Language>(language: L) -> Result<crate::api::Format, RegisterError> {
+pub fn register_table<L: TableLanguage>(language: L) -> Result<crate::api::Format, RegisterError> {
     let description = language.describe();
     let json = description.to_json();
     let mut diag = String::new();
     let parsed = runtime::Description::parse(json.as_bytes(), &mut diag).map_err(|_| refused(diag.clone()))?;
     let lang = runtime_language(Arc::new(language), description.write);
-    runtime::register(lang, parsed, &mut diag).map(crate::api::Format::from_engine).map_err(|_| refused(diag))
+    runtime::register(lang, parsed, &mut diag).map_err(|_| refused(diag))
 }
 
 /// A language answering the helper wire — one request line to one response
@@ -368,7 +368,7 @@ pub struct Server {
 impl Server {
     /// Serve `language`. A description the library cannot read is refused,
     /// with why; the load check is the calling end's.
-    pub fn new<L: Language>(language: L) -> Result<Server, RegisterError> {
+    pub fn new<L: TableLanguage>(language: L) -> Result<Server, RegisterError> {
         let description = language.describe();
         let json = description.to_json();
         let lang = runtime_language(Arc::new(language), description.write);
@@ -388,7 +388,7 @@ impl Server {
 /// Serve `language` on this process's stdin and stdout until stdin ends —
 /// the whole of a helper's `main`. A description the library cannot read is
 /// an `InvalidData` error before any line is read.
-pub fn serve<L: Language>(language: L) -> std::io::Result<()> {
+pub fn serve<L: TableLanguage>(language: L) -> std::io::Result<()> {
     let mut server =
         Server::new(language).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     let stdin = std::io::stdin();
@@ -429,7 +429,7 @@ mod tests {
         out
     }
 
-    impl Language for Lines {
+    impl TableLanguage for Lines {
         fn describe(&self) -> Description {
             Description {
                 name: self.0.to_owned(),
@@ -480,20 +480,20 @@ mod tests {
 
     #[test]
     fn a_registered_language_is_a_format_like_any_other() {
-        let format = register(Lines("rust-lines")).expect("register").to_engine();
-        assert!(matches!(format, Format::Runtime(_)));
+        let format = crate::language::register_table(Lines("rust-lines")).expect("register");
+        assert!(format.is_runtime());
         assert_eq!(format.name(), "rust-lines");
         assert_eq!(format::parse_format_name("rust-lines"), Some(format));
-        assert_eq!(format::parse_format_name("gfm"), Some(Format::Gfm));
+        assert_eq!(format::parse_format_name("gfm"), Some(crate::test_languages::gfm()));
         assert_eq!(Target::from(format).as_format(), Some(format));
 
         let cfg = ParseConfig::default();
         let doc = format::parse(format, &cfg, b"alpha\nbeta\n").expect("parse");
         assert_eq!(format::render_html(&doc).unwrap(), b"<p>alpha</p>\n<p>beta</p>\n");
-        assert_eq!(format::serialize_converted(&doc, Target::Markdown).unwrap(), b"alpha\n\nbeta\n");
+        assert_eq!(format::serialize_converted(&doc, crate::test_languages::markdown().target()).unwrap(), b"alpha\n\nbeta\n");
         assert_eq!(format::serialize_canonical(&doc).unwrap(), b"alpha\nbeta\n");
 
-        let md = format::parse(Format::Markdown, &cfg, b"# T\n\nx\n").expect("markdown");
+        let md = format::parse(crate::test_languages::markdown(), &cfg, b"# T\n\nx\n").expect("markdown");
         assert_eq!(format::serialize_converted(&md, Target::from(format)).unwrap(), b"T\nx\n");
 
         // It reads and writes, and does not author.
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn a_refusal_says_why_and_registers_nothing() {
         struct Taken;
-        impl Language for Taken {
+        impl TableLanguage for Taken {
             fn describe(&self) -> Description {
                 Description { name: "markdown".into(), samples: vec!["x".into()], ..Description::default() }
             }
@@ -515,12 +515,12 @@ mod tests {
                 Ok(br#"{"nodes":[{"kind":"doc","span":[0,1]}]}"#.to_vec())
             }
         }
-        let err = register(Taken).unwrap_err();
+        let err = crate::language::register_table(Taken).unwrap_err();
         assert_eq!(err.error, Error::InvalidLanguage);
         assert!(err.message.contains("already a format's"), "{}", err.message);
 
         struct Panics;
-        impl Language for Panics {
+        impl TableLanguage for Panics {
             fn describe(&self) -> Description {
                 Description { name: "rust-panics".into(), samples: vec!["x".into()], ..Description::default() }
             }
@@ -528,7 +528,7 @@ mod tests {
                 panic!("boom")
             }
         }
-        let err = register(Panics).unwrap_err();
+        let err = crate::language::register_table(Panics).unwrap_err();
         assert!(err.message.contains("the language panicked"), "{}", err.message);
         assert_eq!(format::parse_format_name("rust-panics"), None);
     }
@@ -537,7 +537,7 @@ mod tests {
     /// that has it on, and a literal spelled by a renderer.
     struct CrlfLines;
 
-    impl Language for CrlfLines {
+    impl TableLanguage for CrlfLines {
         fn describe(&self) -> Description {
             Description {
                 name: "rust-crlf".into(),
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn features_sets_and_renderers_reach_every_entry_point() {
-        let format = register(CrlfLines).expect("register").to_engine();
+        let format = crate::language::register_table(CrlfLines).expect("register");
         let set = format::parse_format_name("rust-crlf-crlf").expect("the set is a format");
         assert_ne!(set, format);
         assert_eq!(set.dialect_of(), Some(format));
@@ -623,7 +623,7 @@ mod tests {
         assert!(refused.starts_with(br#"{"ok":false"#));
 
         struct Unreadable;
-        impl Language for Unreadable {
+        impl TableLanguage for Unreadable {
             fn describe(&self) -> Description {
                 Description {
                     name: "rust-unreadable".into(),

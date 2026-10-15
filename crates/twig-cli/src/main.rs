@@ -5,6 +5,8 @@ mod args;
 mod format;
 mod languages;
 mod options;
+#[cfg(test)]
+mod test_formats;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -27,8 +29,9 @@ where
 {
     let mut stderr = std::io::stderr().lock();
 
-    // Before parsing: `-i`, `--lang` and the extension table reach the
-    // configured runtime languages.
+    // Every language twig ships, then — before parsing, so `-i`, `--lang`
+    // and the extension table reach them — the configured runtime languages.
+    format::register_languages();
     languages::init(&mut stderr);
 
     let cli = match Cli::try_parse_from(argv) {

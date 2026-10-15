@@ -5,7 +5,8 @@ name = "twig-doc-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
+# twig-doc with fig asks for 1.88.
+rust-version = "1.88"
 description = "The `twig` command-line tool: parse, query, edit, and losslessly round-trip Djot, Markdown, HTML, XML, and AsciiDoc documents."
 repository.workspace = true
 homepage.workspace = true
@@ -18,5 +19,12 @@ name = "twig"
 path = "src/main.rs"
 
 [dependencies]
-twig-doc.workspace = true
+# With fig: a document is read as its frontmatter's `twig` settings ask.
+twig-doc = { workspace = true, features = ["fig"] }
+# Every language twig ships, registered at startup.
+twig-djot = { workspace = true, default-features = true }
+twig-markdown = { workspace = true, default-features = true }
+twig-xml = { workspace = true, default-features = true }
+twig-html = { workspace = true, default-features = true }
+twig-asciidoc = { workspace = true, default-features = true }
 clap = { version = "4.6", features = ["derive"] }

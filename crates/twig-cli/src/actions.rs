@@ -73,7 +73,7 @@ fn warn_about_loss(
 ) {
     let target = match output {
         OutputMode::Ast | OutputMode::Table => return,
-        OutputMode::Html => Target::Html,
+        OutputMode::Html => crate::format::html_target(),
         OutputMode::Canonical => output_target.unwrap_or_else(|| format::target_for(input)),
     };
     let Ok(warnings) = twig::diagnostics::analyze(&doc.doc.ast, doc.doc.ast.root, target) else { return };
@@ -94,7 +94,7 @@ pub fn convert_source(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> ActionResult {
-    let doc = match format::parse(input, parse_config, source) {
+    let doc = match format::parse_as_asked(input, parse_config, source) {
         Ok(d) => d,
         Err(e) => {
             let _ = writeln!(stderr, "error: failed to parse '{display_name}' as {}: {}", input.name(), e.name());
@@ -164,7 +164,7 @@ pub fn convert_source(
 
 pub fn run_query(stdout: &mut dyn Write, stderr: &mut dyn Write, opts: &QueryOptions) -> ActionResult {
     let source = read_source(&opts.file, stderr)?;
-    let doc = match format::parse_to_ast(opts.input, &opts.parse_config, &source) {
+    let doc = match format::parse_as_asked(opts.input, &opts.parse_config, &source).map(|p| p.doc) {
         Ok(d) => d,
         Err(e) => {
             let _ = writeln!(stderr, "error: failed to parse '{}' as {}: {}", opts.file, opts.input.name(), e.name());
@@ -243,9 +243,10 @@ pub fn run_filter(stdout: &mut dyn Write, stderr: &mut dyn Write, opts: &FilterO
     write_result(stdout, stderr, &opts.file, opts.dry_run, &filtered)
 }
 
-/// A splicer over `source` that reparses as `input` under `cfg`.
+/// A splicer over `source` that reparses as `input` under `cfg`, or as the
+/// document's own `twig` settings ask.
 fn new_splicer(source: &[u8], input: Format, cfg: &ParseConfig) -> Result<twig::ast::splicer::Splicer, String> {
-    let cfg = *cfg;
+    let (input, cfg) = format::resolve_as_asked(input, cfg, source);
     let parse: twig::ast::splicer::ParseFn = Box::new(move |src: &[u8]| {
         format::parse_to_ast(input, &cfg, src).map_err(|e| twig::ast::splicer::ParseError::new(e.name()))
     });
@@ -419,43 +420,43 @@ mod tests {
     #[test]
     fn identify() {
         let mut out = Vec::new();
-        run_identify(&mut out, &IdentifyOptions { file: "post.md".into(), input: Format::Markdown });
+        run_identify(&mut out, &IdentifyOptions { file: "post.md".into(), input: crate::test_formats::markdown() });
         assert_eq!(out, b"markdown\n");
     }
 
     #[test]
     fn warn_reports_loss_on_stderr_only() {
-        let (o, e) = convert("a^b^ c\n", Format::Djot, OutputMode::Canonical, Some(Target::Markdown), true);
+        let (o, e) = convert("a^b^ c\n", crate::test_formats::djot(), OutputMode::Canonical, Some(crate::test_formats::markdown().target()), true);
         assert_eq!(o, "a^b^ c\n");
         assert!(e.contains("`superscript`") && e.contains("markdown"));
-        let (o, e) = convert("a^b^ c\n", Format::Djot, OutputMode::Canonical, Some(Target::Markdown), false);
+        let (o, e) = convert("a^b^ c\n", crate::test_formats::djot(), OutputMode::Canonical, Some(crate::test_formats::markdown().target()), false);
         assert_eq!(o, "a^b^ c\n");
         assert_eq!(e, "");
     }
 
     #[test]
     fn djot_html_resolves_footnotes_and_table_reads_back() {
-        let (o, _) = convert("hi[^1]\n\n[^1]: a note\n", Format::Djot, OutputMode::Html, None, false);
+        let (o, _) = convert("hi[^1]\n\n[^1]: a note\n", crate::test_formats::djot(), OutputMode::Html, None, false);
         assert!(o.contains("doc-endnotes") && o.contains("id=\"fn1\""));
         let src = "hi[^1]\n\n[^1]: a note\n";
-        let (o, _) = convert(src, Format::Djot, OutputMode::Table, None, false);
+        let (o, _) = convert(src, crate::test_formats::djot(), OutputMode::Table, None, false);
         let doc = twig::ast::table::decode(src.as_bytes(), o.as_bytes()).unwrap();
-        assert!(twig::languages::djot::parse(src.as_bytes()).ast.eql(&doc.ast));
+        assert!(twig_djot::parse(src.as_bytes()).ast.eql(&doc.ast));
     }
 
     #[test]
     fn canonical_and_cross_conversion() {
-        assert_eq!(convert("<a><b/></a>", Format::Xml, OutputMode::Canonical, None, false).0, "<a><b/></a>");
-        assert!(convert("hello *world*\n", Format::Djot, OutputMode::Canonical, None, false).0.contains("*world*"));
-        assert!(convert("[x][a]\n\n[a]: /u\n", Format::Markdown, OutputMode::Canonical, None, false).0.contains("[a]: /u"));
-        assert!(convert("This is *markdown*.\n", Format::Markdown, OutputMode::Canonical, Some(Target::Djot), false).0.contains("_markdown_"));
-        assert!(convert("This is _djot emphasis_.\n", Format::Djot, OutputMode::Canonical, Some(Target::Markdown), false).0.contains("*djot emphasis*"));
-        assert!(convert("hello\n", Format::Djot, OutputMode::Ast, None, false).0.contains("\"kind\": \"doc\""));
+        assert_eq!(convert("<a><b/></a>", crate::test_formats::xml(), OutputMode::Canonical, None, false).0, "<a><b/></a>");
+        assert!(convert("hello *world*\n", crate::test_formats::djot(), OutputMode::Canonical, None, false).0.contains("*world*"));
+        assert!(convert("[x][a]\n\n[a]: /u\n", crate::test_formats::markdown(), OutputMode::Canonical, None, false).0.contains("[a]: /u"));
+        assert!(convert("This is *markdown*.\n", crate::test_formats::markdown(), OutputMode::Canonical, Some(crate::test_formats::djot().target()), false).0.contains("_markdown_"));
+        assert!(convert("This is _djot emphasis_.\n", crate::test_formats::djot(), OutputMode::Canonical, Some(crate::test_formats::markdown().target()), false).0.contains("*djot emphasis*"));
+        assert!(convert("hello\n", crate::test_formats::djot(), OutputMode::Ast, None, false).0.contains("\"kind\": \"doc\""));
     }
 
     #[test]
     fn locator_failures_name_their_form() {
-        let doc = twig::languages::xml::parse(b"<r><a/><a/></r>").unwrap();
+        let doc = twig_xml::parse(b"<r><a/><a/></r>").unwrap();
         for (loc, want) in [
             ("0..1", "index path"),
             ("0.x.1", "selector"),

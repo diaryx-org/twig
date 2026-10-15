@@ -1,0 +1,24 @@
+[package]
+name = "twig-kit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "What twig's languages share: the document tree, spans, the spelling table, the generic HTML printer and the Language trait. Pure Rust, std alone."
+repository.workspace = true
+homepage.workspace = true
+keywords = ["document", "ast", "twig", "parser"]
+categories = ["parser-implementations", "text-processing"]
+rust-version.workspace = true
+
+# Nothing: the kit is std alone.
+[dependencies]
+
+# The kit's checks that need a real parse, in `tests/`: each language crate
+# without its `twig` feature, so on the kit alone. By path, so `cargo
+# publish` drops them.
+[dev-dependencies]
+twig-djot = { path = "../twig-djot", default-features = false }
+twig-markdown = { path = "../twig-markdown", default-features = false }
+twig-html = { path = "../twig-html", default-features = false }
+twig-xml = { path = "../twig-xml", default-features = false }
+twig-asciidoc = { path = "../twig-asciidoc", default-features = false }

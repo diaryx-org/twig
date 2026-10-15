@@ -5,6 +5,8 @@
 //! cover it. The runtime-language half (`twig_language_register`, the
 //! server) belongs to the runtime layer's tests.
 
+mod common;
+
 use twig::*;
 
 #[test]
@@ -16,27 +18,27 @@ fn abi_version_matches_header() {
 #[test]
 fn markdown_dialect_codes_match_runtime() {
     let src = "a ~~b~~ c\n";
-    assert!(!Format::Commonmark.supports(Gesture::ToggleInline(InlineKind::Delete)));
-    assert!(Format::Gfm.supports(Gesture::ToggleInline(InlineKind::Delete)));
+    assert!(!common::commonmark().supports(Gesture::ToggleInline(InlineKind::Delete)));
+    assert!(common::gfm().supports(Gesture::ToggleInline(InlineKind::Delete)));
 
-    let mut doc = Document::parse_str(src, Format::Gfm).unwrap();
+    let mut doc = Document::parse_str(src, common::gfm()).unwrap();
     assert_eq!(doc.query("delete").unwrap().len(), 1);
-    assert_eq!(doc.serialize(Format::Gfm).unwrap(), src.as_bytes());
+    assert_eq!(doc.serialize(common::gfm()).unwrap(), src.as_bytes());
 
-    let mut doc = Document::parse_str(src, Format::Commonmark).unwrap();
+    let mut doc = Document::parse_str(src, common::commonmark()).unwrap();
     assert_eq!(doc.query("delete").unwrap().len(), 0);
 
     // The wire codes the C header pins, which `Format::code` still reports.
-    assert_eq!(Format::Djot.code(), 1);
-    assert_eq!(Format::Svg.code(), 8);
-    assert!(Format::Svg.code() < 4096);
-    assert_eq!(Target::Asciidoc.code(), 5);
+    assert_eq!(common::djot().code(), 1);
+    assert_eq!(common::svg().code(), 8);
+    assert!(common::svg().code() < 4096);
+    assert_eq!(common::asciidoc().target().code(), 5);
 }
 
 #[test]
 fn line_prefixes_answer_two_different_questions() {
     let src = "> - a\n";
-    let mut doc = Document::parse_str(src, Format::Markdown).unwrap();
+    let mut doc = Document::parse_str(src, common::markdown()).unwrap();
 
     let span = doc.line_prefix(4).unwrap().expect("a prefix");
     assert_eq!(span, 0..4);
@@ -57,7 +59,7 @@ fn line_prefixes_answer_two_different_questions() {
 #[test]
 fn task_items_report_their_checkbox_state() {
     let src = "- [ ] a\n- [x] b\n- [X] c\n- d\n";
-    let mut doc = Document::parse_str(src, Format::Markdown).unwrap();
+    let mut doc = Document::parse_str(src, common::markdown()).unwrap();
     let nodes = doc.nodes().unwrap();
     let (mut checked, mut unchecked, mut plain, mut other) = (0, 0, 0, 0);
     for n in &nodes {
@@ -84,7 +86,7 @@ fn task_items_report_their_checkbox_state() {
 #[test]
 fn definitions_are_reachable_only_through_their_own_call() {
     let src = "text[^1]\n\n[^1]: note\n";
-    let mut doc = Document::parse_str(src, Format::Markdown).unwrap();
+    let mut doc = Document::parse_str(src, common::markdown()).unwrap();
     let parentless = doc.nodes().unwrap().iter().filter(|n| n.parent.is_none()).count();
     assert_eq!(parentless, 2);
     let defs = doc.definitions().unwrap();
@@ -94,28 +96,28 @@ fn definitions_are_reachable_only_through_their_own_call() {
 
 #[test]
 fn diagnostics_report_what_a_conversion_loses() {
-    let mut doc = Document::parse_str("a^b^ c\n", Format::Djot).unwrap();
-    let warnings = doc.diagnostics(Target::Markdown).unwrap();
+    let mut doc = Document::parse_str("a^b^ c\n", common::djot()).unwrap();
+    let warnings = doc.diagnostics(common::markdown().target()).unwrap();
     assert_eq!(
         warnings,
         vec![Warning { fidelity: Fidelity::Degraded, path: "0/1".into(), kind: Kind::Superscript }]
     );
-    assert_eq!(doc.diagnostics(Target::Djot).unwrap(), vec![]);
-    assert_eq!(doc.diagnostics(Target::Xml), Err(Error::UnsupportedFormat));
+    assert_eq!(doc.diagnostics(common::djot().target()).unwrap(), vec![]);
+    assert_eq!(doc.diagnostics(common::xml().target()), Err(Error::UnsupportedFormat));
 
     // A node that survives while its attributes do not.
-    let mut doc2 = Document::parse_str("{.center}\nhello\n", Format::Djot).unwrap();
-    let warnings = doc2.diagnostics(Target::Markdown).unwrap();
+    let mut doc2 = Document::parse_str("{.center}\nhello\n", common::djot()).unwrap();
+    let warnings = doc2.diagnostics(common::markdown().target()).unwrap();
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0].fidelity, Fidelity::AttrsDegraded);
     assert_eq!(warnings[0].kind, Kind::Para);
-    assert_eq!(doc2.diagnostics(Target::Html).unwrap(), vec![]);
+    assert_eq!(doc2.diagnostics(common::html().target()).unwrap(), vec![]);
 }
 
 #[test]
 fn align_codes_match_runtime() {
     let src = "| a | b | c | d |\n| :- | -: | :-: | - |\n| 1 | 2 | 3 | 4 |\n";
-    let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+    let mut ed = Editor::new_str(src, common::markdown()).unwrap();
     let nodes = ed.nodes().unwrap();
     let seen: Vec<Option<Alignment>> = nodes.iter().filter(|n| n.kind == Kind::Cell).take(4).map(|n| n.alignment).collect();
     assert_eq!(
@@ -130,7 +132,7 @@ fn align_codes_match_runtime() {
 #[test]
 fn cell_extent_accessors() {
     let src = "<table><tr><td colspan=\"2\" rowspan=\"3\">a</td><td>b</td></tr></table>";
-    let mut doc = Document::parse_str(src, Format::Html).unwrap();
+    let mut doc = Document::parse_str(src, common::html()).unwrap();
     let cells: Vec<NodeId> = doc.nodes().unwrap().iter().filter(|n| n.kind == Kind::Cell).map(|n| n.id).collect();
     assert_eq!(cells.len(), 2);
     assert_eq!(doc.cell_extent(cells[0]).unwrap(), Some((2, 3)));
@@ -142,7 +144,7 @@ fn cell_extent_accessors() {
 
 #[test]
 fn editor_document_shares_the_read_surface() {
-    let mut ed = Editor::new_str("# one\n\ntwo\n", Format::Markdown).unwrap();
+    let mut ed = Editor::new_str("# one\n\ntwo\n", common::markdown()).unwrap();
     let heading;
     {
         let mut view = ed.document().unwrap();
@@ -174,7 +176,7 @@ fn editor_document_shares_the_read_surface() {
 
         // The two methods a view cannot serve.
         assert_eq!(view.render_html(), Err(Error::UnsupportedFormat));
-        assert_eq!(view.serialize(Format::Markdown), Err(Error::UnsupportedFormat));
+        assert_eq!(view.serialize(common::markdown()), Err(Error::UnsupportedFormat));
     }
 
     // After an edit a fresh view reads the current tree.
@@ -186,7 +188,7 @@ fn editor_document_shares_the_read_surface() {
 
 #[test]
 fn new_block_gestures_link_and_edit() {
-    let mut ed = Editor::new_str("- a\n", Format::Markdown).unwrap();
+    let mut ed = Editor::new_str("- a\n", common::markdown()).unwrap();
     ed.toggle_task_item(2).unwrap();
     ed.set_task_checked(6, true).unwrap();
     assert_eq!(ed.source_str().unwrap(), "- [x] a\n");
@@ -203,16 +205,16 @@ fn new_block_gestures_link_and_edit() {
     assert_eq!(ed.insert_directive(6, "page-break", None, &[]), Err(Error::UnsupportedFormat));
 
     // Math, under the flag that makes `$` open a formula.
-    let math_exts = MarkdownExtensions { math: true, ..Default::default() };
-    let mut math = Editor::new_ext(b"a  b\n", Format::Markdown, math_exts).unwrap();
+    let math_exts = twig_markdown::Extensions { math: true, ..Default::default() };
+    let mut math = common::new_ext(b"a  b\n", common::markdown(), math_exts).unwrap();
     math.insert_inline_math(2, "x").unwrap();
     math.insert_display_math(0, "y").unwrap();
     assert_eq!(math.source_str().unwrap(), "a $x$ b\n\n$$y$$\n");
     assert_eq!(math.insert_inline_math(0, "x "), Err(Error::InvalidArgument));
 
     // Directives with the flag on: a label and an attribute.
-    let dir_exts = MarkdownExtensions { directives: true, ..Default::default() };
-    let mut dir = Editor::new_ext(b"a\n", Format::Markdown, dir_exts).unwrap();
+    let dir_exts = twig_markdown::Extensions { directives: true, ..Default::default() };
+    let mut dir = common::new_ext(b"a\n", common::markdown(), dir_exts).unwrap();
     dir.insert_directive(0, "embed", Some("Contents"), &[("src", Some("x.html"))]).unwrap();
     assert_eq!(dir.source_str().unwrap(), "a\n\n::embed[Contents]{src=\"x.html\"}\n");
     // An empty label is not no label.
@@ -221,8 +223,8 @@ fn new_block_gestures_link_and_edit() {
 
     // Block attributes need html_elements.
     assert_eq!(dir.set_block_attrs(0, &[("class", Some("center"))]), Err(Error::UnsupportedFormat));
-    let attr_exts = MarkdownExtensions { html_elements: true, ..Default::default() };
-    let mut attr_ed = Editor::new_ext(b"hello\n", Format::Markdown, attr_exts).unwrap();
+    let attr_exts = twig_markdown::Extensions { html_elements: true, ..Default::default() };
+    let mut attr_ed = common::new_ext(b"hello\n", common::markdown(), attr_exts).unwrap();
     attr_ed.set_block_attrs(0, &[("class", Some("center"))]).unwrap();
     assert_eq!(attr_ed.source_str().unwrap(), "<div class=\"center\">\n\nhello\n\n</div>\n");
     attr_ed.wrap_range_attrs(22, 27, &[("class", Some("large"))]).unwrap();
@@ -232,10 +234,10 @@ fn new_block_gestures_link_and_edit() {
     );
 
     // A node's attributes, by id: XML only.
-    assert!(Format::Xml.supports(Gesture::SetNodeAttrs));
-    assert!(!Format::Xml.supports(Gesture::SetBlockAttrs));
-    assert!(!Format::Markdown.supports(Gesture::SetNodeAttrs));
-    let mut svg = Editor::new_str("<svg><rect x=\"1\"/></svg>", Format::Svg).unwrap();
+    assert!(common::xml().supports(Gesture::SetNodeAttrs));
+    assert!(!common::xml().supports(Gesture::SetBlockAttrs));
+    assert!(!common::markdown().supports(Gesture::SetNodeAttrs));
+    let mut svg = Editor::new_str("<svg><rect x=\"1\"/></svg>", common::svg()).unwrap();
     let rect = svg.nodes().unwrap().into_iter().find(|n| n.name.as_deref() == Some("rect")).unwrap().id;
     svg.set_node_attrs(rect, &[("x", Some("10")), ("fill", Some("red"))]).unwrap();
     assert_eq!(svg.source_str().unwrap(), "<svg><rect x=\"10\" fill=\"red\"/></svg>");
@@ -254,26 +256,26 @@ fn new_block_gestures_link_and_edit() {
     assert_eq!(dir.insert_directive(0, "x", Some("]"), &[]), Err(Error::InvalidArgument));
 
     // Splitting a list item repeats its marker; a table refuses.
-    let mut splitter = Editor::new_str("- ab\n", Format::Markdown).unwrap();
+    let mut splitter = Editor::new_str("- ab\n", common::markdown()).unwrap();
     splitter.split_block(3).unwrap();
     assert_eq!(splitter.source_str().unwrap(), "- a\n- b\n");
-    let mut table = Editor::new_str("| a | b |\n|---|---|\n| c | d |\n", Format::Markdown).unwrap();
+    let mut table = Editor::new_str("| a | b |\n|---|---|\n| c | d |\n", common::markdown()).unwrap();
     assert_eq!(table.split_block(3), Err(Error::NotEditable));
 
     // And the inverse.
-    let mut joiner = Editor::new_str("- a\n- b\n", Format::Markdown).unwrap();
+    let mut joiner = Editor::new_str("- a\n- b\n", common::markdown()).unwrap();
     joiner.join_blocks(6).unwrap();
     assert_eq!(joiner.source_str().unwrap(), "- a\n  b\n");
     assert_eq!(joiner.join_blocks(2), Err(Error::NotFound));
 
     // A move across a quote's edge.
-    let mut mover = Editor::new_str("> a\n>\n> y\n\nb\n", Format::Markdown).unwrap();
+    let mut mover = Editor::new_str("> a\n>\n> y\n\nb\n", common::markdown()).unwrap();
     mover.move_block(8, 13).unwrap();
     assert_eq!(mover.source_str().unwrap(), "> a\n\nb\n\ny\n");
     assert_eq!(mover.move_block(8, 7), Err(Error::InvalidArgument));
 
     // No language leaves the fence bare; a set one tags it.
-    let mut bare = Editor::new_str("x\n", Format::Markdown).unwrap();
+    let mut bare = Editor::new_str("x\n", common::markdown()).unwrap();
     bare.toggle_code_block(0, 1, None).unwrap();
     assert_eq!(bare.source_str().unwrap(), "```\nx\n```\n");
     bare.set_code_language(0, Some("zig")).unwrap();
@@ -283,36 +285,36 @@ fn new_block_gestures_link_and_edit() {
 
 #[test]
 fn format_capability_matches_the_gestures() {
-    assert!(!Format::Xml.is_authorable());
-    assert!(Format::Html.is_authorable());
-    assert!(Format::Html.supports(Gesture::ToggleInline(InlineKind::Strong)));
-    assert!(!Format::Html.supports(Gesture::ToggleTaskItem));
-    assert!(!Format::Markdown.supports(Gesture::ToggleInline(InlineKind::Mark)));
-    assert!(Format::Djot.supports(Gesture::ToggleInline(InlineKind::Mark)));
+    assert!(!common::xml().is_authorable());
+    assert!(common::html().is_authorable());
+    assert!(common::html().supports(Gesture::ToggleInline(InlineKind::Strong)));
+    assert!(!common::html().supports(Gesture::ToggleTaskItem));
+    assert!(!common::markdown().supports(Gesture::ToggleInline(InlineKind::Mark)));
+    assert!(common::djot().supports(Gesture::ToggleInline(InlineKind::Mark)));
 
-    let mut md = Editor::new_str("ab\n", Format::Markdown).unwrap();
+    let mut md = Editor::new_str("ab\n", common::markdown()).unwrap();
     assert_eq!(md.toggle_inline(0, 2, InlineKind::Mark), Err(Error::UnsupportedFormat));
-    let mut dj = Editor::new_str("ab\n", Format::Djot).unwrap();
+    let mut dj = Editor::new_str("ab\n", common::djot()).unwrap();
     assert!(dj.toggle_inline(0, 2, InlineKind::Mark).is_ok());
 
-    assert!(!Format::Html.supports(Gesture::TableInsertRow));
-    assert!(!Format::Html.supports(Gesture::SplitBlock));
-    assert!(Format::Html.supports(Gesture::JoinBlocks));
-    assert!(!Format::Xml.supports(Gesture::JoinBlocks));
-    assert!(Format::Html.supports(Gesture::MoveBlock));
-    assert!(!Format::Xml.supports(Gesture::MoveBlock));
-    assert!(!Format::Html.supports(Gesture::RenumberOrderedLists));
-    assert!(Format::Markdown.supports(Gesture::TableInsertRow));
-    assert!(!Format::Html.supports(Gesture::InsertTable));
-    assert!(Format::Djot.supports(Gesture::InsertTable));
-    assert!(!Format::Markdown.supports(Gesture::InsertDirective));
-    let dir = MarkdownExtensions { directives: true, ..Default::default() };
-    assert!(Format::Markdown.supports_with(dir, Gesture::InsertDirective));
-    assert!(Format::Djot.supports(Gesture::InsertDirective));
-    assert!(!Format::Xml.supports(Gesture::InsertDirective));
+    assert!(!common::html().supports(Gesture::TableInsertRow));
+    assert!(!common::html().supports(Gesture::SplitBlock));
+    assert!(common::html().supports(Gesture::JoinBlocks));
+    assert!(!common::xml().supports(Gesture::JoinBlocks));
+    assert!(common::html().supports(Gesture::MoveBlock));
+    assert!(!common::xml().supports(Gesture::MoveBlock));
+    assert!(!common::html().supports(Gesture::RenumberOrderedLists));
+    assert!(common::markdown().supports(Gesture::TableInsertRow));
+    assert!(!common::html().supports(Gesture::InsertTable));
+    assert!(common::djot().supports(Gesture::InsertTable));
+    assert!(!common::markdown().supports(Gesture::InsertDirective));
+    let dir = twig_markdown::Extensions { directives: true, ..Default::default() };
+    assert!(common::markdown().supports_flags(common::flags(dir), Gesture::InsertDirective));
+    assert!(common::djot().supports(Gesture::InsertDirective));
+    assert!(!common::xml().supports(Gesture::InsertDirective));
 
     let html_table = "<table><tr><td>a</td></tr></table>";
-    let mut ht = Editor::new_str(html_table, Format::Html).unwrap();
+    let mut ht = Editor::new_str(html_table, common::html()).unwrap();
     assert_eq!(ht.table_insert_row(15, true), Err(Error::UnsupportedFormat));
     assert_eq!(ht.insert_table(15, 1, 1), Err(Error::UnsupportedFormat));
     assert_eq!(ht.split_block(15), Err(Error::UnsupportedFormat));
@@ -320,20 +322,21 @@ fn format_capability_matches_the_gestures() {
     assert_eq!(ht.renumber_ordered_lists(15), Err(Error::UnsupportedFormat));
     assert_eq!(ht.source_str().unwrap(), html_table);
 
-    assert!(Format::Markdown.supports(Gesture::ToggleBlockContainer(BlockContainerKind::BulletList)));
+    assert!(common::markdown().supports(Gesture::ToggleBlockContainer(BlockContainerKind::BulletList)));
 }
 
 #[test]
 fn format_names_and_lookups() {
     // `twig_format_by_name` / `twig_format_name` / `twig_format_dialect_of`
     // and `twig_format_feature_bit` over the compiled rows.
-    assert_eq!(Format::by_name("md"), Some(Format::Markdown));
-    assert_eq!(Format::by_name("gfm"), Some(Format::Gfm));
-    assert_eq!(Format::by_name("svg"), Some(Format::Svg));
+    common::all();
+    assert_eq!(Format::by_name("md"), Some(common::markdown()));
+    assert_eq!(Format::by_name("gfm"), Some(common::gfm()));
+    assert_eq!(Format::by_name("svg"), Some(common::svg()));
     assert_eq!(Format::by_name("nope"), None);
-    assert_eq!(Format::Gfm.name(), "gfm");
-    assert_eq!(Target::Markdown.name(), "markdown");
-    assert_eq!(Format::Gfm.feature_flags(&["math"]), Ok(1 << 1));
-    assert_eq!(Format::Djot.feature_flags(&["math"]), Err(Error::UnsupportedFormat));
-    assert_eq!(Format::Djot.feature_flags(&[]), Ok(0));
+    assert_eq!(common::gfm().name(), "gfm");
+    assert_eq!(common::markdown().target().name(), "markdown");
+    assert_eq!(common::gfm().feature_flags(&["math"]), Ok(1 << 1));
+    assert_eq!(common::djot().feature_flags(&["math"]), Err(Error::UnsupportedFormat));
+    assert_eq!(common::djot().feature_flags(&[]), Ok(0));
 }

@@ -77,10 +77,11 @@ changelog entirely. Anything the parser does not recognise lands in a visible
 
 ## Tests
 
-`cargo test --workspace` runs everything: the engine (`crates/twig`, including
-the vendored conformance corpora under `crates/twig/testdata/`), the CLI
-(`crates/twig-cli`), the C ABI (`crates/twig-capi`) and `twig-meta`
-(`crates/twig-meta`, which fetches fig from git). CI also compiles
+`cargo test --workspace` runs everything: the kit (`crates/twig-kit`), the
+core (`crates/twig`, with its default `fig` feature; `cargo test -p twig-doc
+--no-default-features` checks it without), each language crate with its
+vendored conformance corpora under `crates/twig-<name>/testdata/`, the CLI
+(`crates/twig-cli`) and the C ABI (`crates/twig-capi`). CI also compiles
 `bindings/c/test/header_test.c` against the C ABI's static library, so a change
 to `bindings/c/include/twig.h` is checked as C:
 
@@ -92,5 +93,5 @@ Span changes are the ones worth being careful with, and the way to check one is
 to **slice the source with the resulting span and assert on the bytes** —
 `assert_eq!(&src[sp.start..sp.end], "> a\n>\n> ")`. A span bug is usually
 invisible in the HTML, so a rendering assertion will not catch it.
-`crates/twig/src/languages/markdown/block_tests.rs`'s span tests are the
+`crates/twig-markdown/src/block_tests.rs`'s span tests are the
 pattern.

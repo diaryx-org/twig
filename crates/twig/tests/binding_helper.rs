@@ -1,6 +1,8 @@
 //! The FFI binding's own tests for this module (bindings/rust/twig/src/helper.rs),
 //! run unchanged against the pure-Rust crate as an outside consumer.
 
+mod common;
+
     use twig::helper::spawn;
 use twig::Error;
     use twig::{Document, Target};
@@ -29,7 +31,7 @@ esac"#
         assert_eq!(format.name(), "rust-shx");
         let mut doc = Document::parse_str("x", format).expect("parse");
         assert_eq!(doc.render_html().unwrap(), b"<p>x</p>\n");
-        assert_eq!(doc.serialize_to(Target::Markdown).unwrap(), b"x\n");
+        assert_eq!(doc.serialize_to(common::markdown().target()).unwrap(), b"x\n");
         assert_eq!(
             doc.serialize_to(Target::from(format)).err(),
             Some(Error::UnsupportedFormat)
