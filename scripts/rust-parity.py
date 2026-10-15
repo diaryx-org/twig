@@ -128,9 +128,7 @@ VARIANTS = {
 def run(binary, args):
     try:
         p = subprocess.run([binary] + args, capture_output=True, timeout=30)
-        # The usage lines echo argv[0]; the two binaries live at different paths.
-        b = binary.encode()
-        return p.returncode, p.stdout.replace(b, b"twig"), p.stderr.replace(b, b"twig")
+        return p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         return "timeout", b"", b""
     except FileNotFoundError:
@@ -174,9 +172,16 @@ FILTERS = [
 ]
 
 
+def normalized(binary, result):
+    """The usage lines echo argv[0]; the two binaries live at different paths."""
+    b = binary.encode()
+    code, out, err = result
+    return code, out.replace(b, b"twig"), err.replace(b, b"twig")
+
+
 def cmd_job(zig, rust, label, args):
-    z = run(zig, args)
-    r = run(rust, args)
+    z = normalized(zig, run(zig, args))
+    r = normalized(rust, run(rust, args))
     same = z[0] == r[0] and z[1] == r[1] and z[2] == r[2]
     return label[0], label[1], label[2], " ".join(args), same, z, r
 
