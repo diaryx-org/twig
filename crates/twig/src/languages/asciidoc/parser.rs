@@ -4125,3 +4125,663 @@ fn map_offset(offsets: &[usize], scratch: &[u8], off: usize) -> usize {
     }
     offsets[line] + (off - line_start)
 }
+
+// ── tests ───────────────────────────────────────────────────────────────────
+//
+// The corpora (`conformance.rs`) judge every shape the ASG schema has a name
+// for. What is tested here is the rest: the constructs draft-01 does not
+// model, the tree-side facts the ASG comparison cannot see, and the parser's
+// own edge cases.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Ast;
+    use crate::languages::asciidoc::asg;
+
+    fn first_block(doc: &Document) -> NodeId {
+        doc.ast.nodes[doc.ast.root as usize].first_child.unwrap()
+    }
+
+    fn nth(doc: &Document, parent: NodeId, n: usize) -> NodeId {
+        let mut id = doc.ast.nodes[parent as usize].first_child.unwrap();
+        for _ in 0..n {
+            id = doc.ast.nodes[id as usize].next_sibling.unwrap();
+        }
+        id
+    }
+
+    fn next(doc: &Document, id: NodeId) -> NodeId {
+        doc.ast.nodes[id as usize].next_sibling.unwrap()
+    }
+
+    fn first_child(doc: &Document, id: NodeId) -> NodeId {
+        doc.ast.nodes[id as usize].first_child.unwrap()
+    }
+
+    fn kind(doc: &Document, id: NodeId) -> &Kind {
+        &doc.ast.nodes[id as usize].kind
+    }
+
+    fn str_of(doc: &Document, id: NodeId) -> &str {
+        match kind(doc, id) {
+            Kind::Str(s) => std::str::from_utf8(s).unwrap(),
+            k => panic!("not a str: {:?}", k),
+        }
+    }
+
+    fn text(doc: &Document, id: NodeId) -> &str {
+        std::str::from_utf8(doc.text(id)).unwrap()
+    }
+
+    fn attr<'d>(ast: &'d Ast, id: NodeId, key: &str) -> Option<&'d str> {
+        ast.attrs_of(id).get(key.as_bytes()).map(|v| std::str::from_utf8(v).unwrap())
+    }
+
+    fn container(doc: &Document, id: NodeId) -> &Container {
+        match kind(doc, id) {
+            Kind::Container(c) => c,
+            k => panic!("not a container: {:?}", k),
+        }
+    }
+
+    fn text_leaf(doc: &Document, id: NodeId) -> (TextLeafKind, &[u8]) {
+        match kind(doc, id) {
+            Kind::TextLeaf { kind, text } => (*kind, text),
+            k => panic!("not a text leaf: {:?}", k),
+        }
+    }
+
+    #[test]
+    fn a_single_paragraph() {
+        let doc = parse(b"A paragraph that consists of a single line.\n");
+        let para = first_block(&doc);
+        assert_eq!(*kind(&doc, para), Kind::Para);
+        assert_eq!(str_of(&doc, first_child(&doc, para)), "A paragraph that consists of a single line.");
+    }
+
+    #[test]
+    fn a_document_title_becomes_the_top_level_heading_attribute_entries_attach_to_the_document() {
+        let doc = parse(b"= Document Title\n:icons: font\n:toc:\n");
+        let marker = first_block(&doc);
+        assert_eq!(container(&doc, marker).name, b"document-attributes");
+        assert_eq!(attr(&doc.ast, marker, "icons"), Some("font"));
+        assert_eq!(attr(&doc.ast, marker, "toc"), Some(""));
+        let heading = next(&doc, marker);
+        // 1, not the ASG's 0: twig's shared `heading.level` is 1-based.
+        assert_eq!(*kind(&doc, heading), Kind::Heading { level: 1 });
+        assert_eq!(doc.marker_text(heading), Some(&b"= "[..]));
+    }
+
+    #[test]
+    fn the_author_and_revision_lines_become_the_documents_implicit_attributes() {
+        let doc = parse(b"= Title\nDoc Writer <doc@example.org>; Ann B. Lee\nv2.1, 2024-05-01: Remark\n:toc:\n");
+        let m = first_block(&doc);
+        let a = |k| attr(&doc.ast, m, k);
+        assert_eq!(a("author"), Some("Doc Writer"));
+        assert_eq!(a("firstname"), Some("Doc"));
+        assert_eq!(a("lastname"), Some("Writer"));
+        assert_eq!(a("email"), Some("doc@example.org"));
+        assert_eq!(a("author_2"), Some("Ann B. Lee"));
+        assert_eq!(a("middlename_2"), Some("B."));
+        assert_eq!(a("revnumber"), Some("2.1"));
+        assert_eq!(a("revdate"), Some("2024-05-01"));
+        assert_eq!(a("revremark"), Some("Remark"));
+        assert_eq!(a("toc"), Some(""));
+        // The header's span runs through its last line.
+        let heading = next(&doc, m);
+        assert_eq!(text(&doc, heading), "= Title\nDoc Writer <doc@example.org>; Ann B. Lee\nv2.1, 2024-05-01: Remark\n:toc:");
+    }
+
+    #[test]
+    fn front_matter_is_a_metadata_block_and_the_title_still_follows_it() {
+        let doc = parse(b"---\ntitle: x\n---\n= Title\n\nbody\n");
+        let fm = first_block(&doc);
+        assert_eq!(*kind(&doc, fm), Kind::Metadata { lang: b"yaml".to_vec(), text: b"title: x".to_vec() });
+        assert_eq!(text(&doc, fm), "---\ntitle: x\n---");
+        let marker = next(&doc, fm);
+        assert_eq!(container(&doc, marker).name, b"document-attributes");
+    }
+
+    #[test]
+    fn a_section_nests_a_paragraph_inside_it_and_a_same_level_heading_closes_it() {
+        let doc = parse(b"== One\n\n=== Two\n\npar\n\n== Three\n");
+        let sec_one = first_block(&doc);
+        assert_eq!(*kind(&doc, sec_one), Kind::Section);
+        let heading_one = first_child(&doc, sec_one);
+        assert_eq!(*kind(&doc, heading_one), Kind::Heading { level: 2 });
+        let sec_two = next(&doc, heading_one);
+        assert_eq!(*kind(&doc, sec_two), Kind::Section);
+        let sec_three = next(&doc, sec_one);
+        assert_eq!(doc.ast.nodes[sec_three as usize].next_sibling, None);
+    }
+
+    #[test]
+    fn section_metadata_lands_on_the_section_and_the_titles_anchor_is_its_id() {
+        let doc = parse(b"[.classy]\n== One [[one]]\n\npar\n");
+        let sec = first_block(&doc);
+        assert_eq!(attr(&doc.ast, sec, "id"), Some("one"));
+        assert_eq!(attr(&doc.ast, sec, "class"), Some("classy"));
+        // The paragraph did not inherit the section's metadata.
+        let para = nth(&doc, sec, 1);
+        assert!(doc.ast.attrs_of(para).is_empty());
+        let heading = nth(&doc, sec, 0);
+        assert_eq!(str_of(&doc, first_child(&doc, heading)), "One");
+    }
+
+    #[test]
+    fn block_metadata_becomes_the_blocks_attrs() {
+        let doc = parse(b".A title\n[#the-id.a.b%opt,key=val]\ntext\n");
+        let para = first_block(&doc);
+        assert_eq!(attr(&doc.ast, para, "id"), Some("the-id"));
+        assert_eq!(attr(&doc.ast, para, "class"), Some("a b"));
+        assert_eq!(attr(&doc.ast, para, "title"), Some("A title"));
+        assert_eq!(attr(&doc.ast, para, "options"), Some("opt"));
+        assert_eq!(attr(&doc.ast, para, "key"), Some("val"));
+        // The block's span starts at its first metadata line; the attribute
+        // line's own span is recorded too.
+        assert_eq!(text(&doc, para), ".A title\n[#the-id.a.b%opt,key=val]\ntext");
+        assert_eq!(doc.attrs_text(para), Some(&b"[#the-id.a.b%opt,key=val]"[..]));
+    }
+
+    #[test]
+    fn an_unrecognized_style_is_a_class_a_leftover_positional_keeps_its_number() {
+        let doc = parse(b"[lead,second]\ntext\n");
+        let b = first_block(&doc);
+        assert_eq!(attr(&doc.ast, b, "class"), Some("lead"));
+        assert_eq!(attr(&doc.ast, b, "$2"), Some("second"));
+    }
+
+    #[test]
+    fn a_source_blocks_language_rides_in_the_code_block_not_in_attrs() {
+        let doc = parse(b"[source,ruby]\n----\nputs 1\n----\n");
+        let b = first_block(&doc);
+        assert_eq!(*kind(&doc, b), Kind::CodeBlock { lang: Some(b"ruby".to_vec()), text: b"puts 1".to_vec() });
+        assert!(doc.ast.attrs_of(b).is_empty());
+    }
+
+    #[test]
+    fn a_lang_listing_and_a_markdown_fence_both_carry_the_language() {
+        let doc = parse(b"[,js]\n----\nx\n----\n\n```py\ny\n```\n");
+        let a = first_block(&doc);
+        assert_eq!(*kind(&doc, a), Kind::CodeBlock { lang: Some(b"js".to_vec()), text: b"x".to_vec() });
+        let b = next(&doc, a);
+        assert_eq!(*kind(&doc, b), Kind::CodeBlock { lang: Some(b"py".to_vec()), text: b"y".to_vec() });
+    }
+
+    #[test]
+    fn a_pass_block_is_a_raw_block_not_a_code_block() {
+        let doc = parse(b"++++\n<div>x</div>\n++++\n");
+        assert_eq!(
+            *kind(&doc, first_block(&doc)),
+            Kind::RawBlock { format: b"html".to_vec(), text: b"<div>x</div>".to_vec() }
+        );
+    }
+
+    #[test]
+    fn an_admonition_is_the_container_named_by_its_variant_in_all_three_spellings() {
+        let doc = parse(b"NOTE: remember\n\n[TIP]\nhandy\n\n[WARNING]\n====\ncareful\n====\n");
+        let note = first_block(&doc);
+        assert_eq!(container(&doc, note).name, b"note");
+        assert_eq!(container(&doc, note).form, Some(Form::BlockFenced));
+        assert_eq!(doc.marker_text(note), Some(&b"NOTE: "[..]));
+        let para = first_child(&doc, note);
+        assert_eq!(str_of(&doc, first_child(&doc, para)), "remember");
+        let tip = next(&doc, note);
+        assert_eq!(container(&doc, tip).name, b"tip");
+        assert!(doc.ast.attrs_of(tip).is_empty());
+        let warning = next(&doc, tip);
+        assert_eq!(container(&doc, warning).name, b"warning");
+        assert_eq!(text(&doc, warning), "[WARNING]\n====\ncareful\n====");
+    }
+
+    #[test]
+    fn a_quote_paragraph_is_a_block_quote_verse_is_a_line_block_with_depths() {
+        let doc = parse(b"[quote,Someone]\nwords\n\n[verse]\n____\nRoses\n    deep\n  mid\n____\n");
+        let quote = first_block(&doc);
+        assert_eq!(*kind(&doc, quote), Kind::BlockQuote);
+        assert_eq!(attr(&doc.ast, quote, "attribution"), Some("Someone"));
+        let verse = next(&doc, quote);
+        assert_eq!(*kind(&doc, verse), Kind::LineBlock);
+        assert_eq!(*kind(&doc, nth(&doc, verse, 0)), Kind::Line { indent: 0 });
+        assert_eq!(*kind(&doc, nth(&doc, verse, 1)), Kind::Line { indent: 2 });
+        assert_eq!(*kind(&doc, nth(&doc, verse, 2)), Kind::Line { indent: 1 });
+        assert_eq!(str_of(&doc, first_child(&doc, nth(&doc, verse, 1))), "deep");
+    }
+
+    #[test]
+    fn a_markdown_style_quote_parses_its_interior_as_blocks_at_their_real_offsets() {
+        let doc = parse(b"> one *two*\n> \n> - item\n");
+        let quote = first_block(&doc);
+        assert_eq!(*kind(&doc, quote), Kind::BlockQuote);
+        let para = nth(&doc, quote, 0);
+        assert_eq!(*kind(&doc, para), Kind::Para);
+        let strong = nth(&doc, para, 1);
+        assert_eq!(*kind(&doc, strong), Kind::InlineMark(InlineMark::Strong));
+        assert_eq!(text(&doc, strong), "*two*");
+        let list = nth(&doc, quote, 1);
+        assert_eq!(*kind(&doc, list), Kind::BulletList { tight: true });
+        assert_eq!(text(&doc, list), "- item");
+    }
+
+    #[test]
+    fn a_discrete_heading_is_a_heading_in_the_flow_not_a_section() {
+        let doc = parse(b"[discrete]\n== Title\n\npar\n");
+        let h = first_block(&doc);
+        assert_eq!(*kind(&doc, h), Kind::Heading { level: 2 });
+        assert_eq!(*kind(&doc, next(&doc, h)), Kind::Para);
+        assert!(doc.ast.attrs_of(h).is_empty());
+    }
+
+    #[test]
+    fn block_macros_image_is_a_paragraph_holding_an_image_audio_video_and_toc_are_leaf_directives() {
+        let doc = parse(b"image::a.png[Alt,200,100]\n\nvideo::v.mp4[poster.png]\n\ntoc::[]\n");
+        let p = first_block(&doc);
+        assert_eq!(*kind(&doc, p), Kind::Para);
+        let img = first_child(&doc, p);
+        assert_eq!(*kind(&doc, img), Kind::Image(Link { destination: Some(b"a.png".to_vec()), reference: None }));
+        assert_eq!(str_of(&doc, first_child(&doc, img)), "Alt");
+        assert_eq!(attr(&doc.ast, img, "width"), Some("200"));
+        assert_eq!(attr(&doc.ast, img, "height"), Some("100"));
+        let video = next(&doc, p);
+        let vc = container(&doc, video);
+        assert_eq!(vc.name, b"video");
+        assert_eq!(vc.form, Some(Form::BlockLeaf));
+        assert_eq!(vc.argument.as_deref(), Some(&b"v.mp4"[..]));
+        assert_eq!(attr(&doc.ast, video, "poster"), Some("poster.png"));
+        assert_eq!(doc.container_origin(video), Some(ContainerOrigin::Directive));
+        let toc = next(&doc, video);
+        assert_eq!(container(&doc, toc).name, b"toc");
+        assert_eq!(container(&doc, toc).argument, None);
+    }
+
+    #[test]
+    fn a_body_attribute_entry_is_a_substitution_definition_a_reference_is_its_use() {
+        let doc = parse(b":name: Twig\n\nHello {name} and {nbsp}there {undefined-one}\n");
+        let def = first_block(&doc);
+        assert_eq!(*kind(&doc, def), Kind::Substitution { label: b"name".to_vec() });
+        assert_eq!(str_of(&doc, first_child(&doc, def)), "Twig");
+        let para = next(&doc, def);
+        let u = nth(&doc, para, 1);
+        assert_eq!(text_leaf(&doc, u), (TextLeafKind::SubstitutionReference, &b"name"[..]));
+        assert_eq!(text(&doc, u), "{name}");
+        assert_eq!(*kind(&doc, nth(&doc, para, 3)), Kind::NonBreakingSpace);
+    }
+
+    #[test]
+    fn intrinsic_character_attributes_are_text() {
+        let doc = parse_inline_list(b"a{sp}b{startsb}c{endsb}\n");
+        let s = first_block(&doc);
+        assert_eq!(str_of(&doc, s), "a b[c]");
+        assert_eq!(doc.ast.nodes[s as usize].next_sibling, None);
+    }
+
+    #[test]
+    fn an_unordered_list_item_carries_its_bullet_spelling_and_marker_span() {
+        let doc = parse(b"* water\n");
+        let list = first_block(&doc);
+        assert_eq!(*kind(&doc, list), Kind::BulletList { tight: true });
+        let item = first_child(&doc, list);
+        assert_eq!(doc.spelling(item), Some(Spelling::Bullet(Bullet::Star)));
+        assert_eq!(doc.marker_text(item), Some(&b"* "[..]));
+        assert_eq!(str_of(&doc, first_child(&doc, item)), "water");
+    }
+
+    #[test]
+    fn ordered_markers_carry_numbering_start_and_delimiter_spelling() {
+        // An empty attribute line keeps the two lists apart.
+        let doc = parse(b"c. one\nd. two\n\n[]\niv) four\n");
+        let alpha = first_block(&doc);
+        assert_eq!(
+            *kind(&doc, alpha),
+            Kind::OrderedList { numbering: ListNumbering::LowerAlpha, tight: true, start: Some(3) }
+        );
+        assert_eq!(doc.spelling(alpha), Some(Spelling::OrderedDelim(OrderedDelim::Period)));
+        let roman = next(&doc, alpha);
+        assert_eq!(
+            *kind(&doc, roman),
+            Kind::OrderedList { numbering: ListNumbering::LowerRoman, tight: true, start: Some(4) }
+        );
+        assert_eq!(doc.spelling(roman), Some(Spelling::OrderedDelim(OrderedDelim::ParenAfter)));
+    }
+
+    #[test]
+    fn a_list_whose_every_item_carries_a_box_is_a_task_list() {
+        let doc = parse(b"* [x] done\n* [ ] todo\n\n[]\n* [x] a\n* b\n");
+        let tasks = first_block(&doc);
+        assert_eq!(*kind(&doc, tasks), Kind::TaskList { tight: true });
+        assert_eq!(*kind(&doc, nth(&doc, tasks, 0)), Kind::TaskListItem { checked: true });
+        assert_eq!(*kind(&doc, nth(&doc, tasks, 1)), Kind::TaskListItem { checked: false });
+        assert_eq!(str_of(&doc, first_child(&doc, nth(&doc, tasks, 0))), "done");
+        // One item without a box: a plain list, the box literal text.
+        let plain = next(&doc, tasks);
+        assert_eq!(*kind(&doc, plain), Kind::BulletList { tight: true });
+        let boxed = nth(&doc, plain, 0);
+        assert_eq!(str_of(&doc, nth(&doc, boxed, 0)), "[x] ");
+        assert_eq!(str_of(&doc, nth(&doc, boxed, 1)), "a");
+    }
+
+    #[test]
+    fn list_continuation_attaches_blocks_the_items_principal_stays_inline() {
+        let doc = parse(b"* one\n+\n[source]\n----\ncode\n----\n+\nmore\n* two\n");
+        let list = first_block(&doc);
+        let item = nth(&doc, list, 0);
+        assert!(matches!(kind(&doc, nth(&doc, item, 0)), Kind::Str(_)));
+        let code = nth(&doc, item, 1);
+        assert!(matches!(kind(&doc, code), Kind::CodeBlock { .. }));
+        assert_eq!(text(&doc, code), "[source]\n----\ncode\n----");
+        assert_eq!(*kind(&doc, nth(&doc, item, 2)), Kind::Para);
+        assert_eq!(text(&doc, nth(&doc, list, 1)), "* two");
+    }
+
+    #[test]
+    fn a_description_list_terms_a_definition_nesting_and_a_nested_list() {
+        let doc = parse(b"CPU:: brain\nRAM::\n  memory\n+\nextra\nGPU::\n* fast\n");
+        let dl = first_block(&doc);
+        assert_eq!(*kind(&doc, dl), Kind::DefinitionList);
+        let cpu = nth(&doc, dl, 0);
+        assert_eq!(*kind(&doc, nth(&doc, cpu, 0)), Kind::Term);
+        assert_eq!(doc.marker_text(cpu), Some(&b":: "[..]));
+        let cpu_def = nth(&doc, cpu, 1);
+        assert_eq!(*kind(&doc, cpu_def), Kind::Definition);
+        assert_eq!(str_of(&doc, first_child(&doc, cpu_def)), "brain");
+        let ram = nth(&doc, dl, 1);
+        let ram_def = nth(&doc, ram, 1);
+        assert_eq!(str_of(&doc, nth(&doc, ram_def, 0)), "memory");
+        assert_eq!(*kind(&doc, nth(&doc, ram_def, 1)), Kind::Para);
+        let gpu = nth(&doc, dl, 2);
+        let gpu_def = nth(&doc, gpu, 1);
+        assert_eq!(*kind(&doc, nth(&doc, gpu_def, 0)), Kind::BulletList { tight: true });
+    }
+
+    #[test]
+    fn a_table_cells_header_detection_spans_alignment_and_a_caption() {
+        let src = b".Fruit\n[cols=\"1,1\",options=\"header\"]\n|===\n|Name |Count\n\n|Apple\n^|3\n\n2+|wide\n|===\n";
+        let doc = parse(src);
+        let table = first_block(&doc);
+        assert_eq!(*kind(&doc, table), Kind::Table);
+        assert_eq!(doc.text(table), &src[..src.len() - 1]);
+        let cap = nth(&doc, table, 0);
+        assert_eq!(*kind(&doc, cap), Kind::Caption);
+        assert_eq!(str_of(&doc, first_child(&doc, cap)), "Fruit");
+        let head = nth(&doc, table, 1);
+        assert_eq!(*kind(&doc, head), Kind::Row { head: true });
+        assert!(matches!(kind(&doc, nth(&doc, head, 0)), Kind::Cell(c) if c.head));
+        assert_eq!(str_of(&doc, first_child(&doc, nth(&doc, head, 0))), "Name");
+        let body = nth(&doc, table, 2);
+        assert_eq!(*kind(&doc, body), Kind::Row { head: false });
+        let count = nth(&doc, body, 1);
+        assert!(matches!(kind(&doc, count), Kind::Cell(c) if c.alignment == Alignment::Center));
+        assert_eq!(str_of(&doc, first_child(&doc, count)), "3");
+        let wide = nth(&doc, nth(&doc, table, 3), 0);
+        assert!(matches!(kind(&doc, wide), Kind::Cell(c) if c.colspan == 2));
+        assert_eq!(attr(&doc.ast, table, "cols"), Some("1,1"));
+    }
+
+    #[test]
+    fn an_implicit_header_the_first_row_on_one_line_followed_by_a_blank_line() {
+        let doc = parse(b"|===\n|A |B\n\n|1 |2\n|===\n");
+        let table = first_block(&doc);
+        assert_eq!(*kind(&doc, nth(&doc, table, 0)), Kind::Row { head: true });
+        assert_eq!(*kind(&doc, nth(&doc, table, 1)), Kind::Row { head: false });
+        let doc2 = parse(b"|===\n|A |B\n|1 |2\n|===\n");
+        assert_eq!(*kind(&doc2, nth(&doc2, first_block(&doc2), 0)), Kind::Row { head: false });
+    }
+
+    #[test]
+    fn a_tables_cells_may_span_lines_and_hold_escaped_bars() {
+        let doc = parse(b"|===\n|one\nline two \\| kept\n|three\n|===\n");
+        let row = nth(&doc, first_block(&doc), 0);
+        let first = first_child(&doc, nth(&doc, row, 0));
+        assert_eq!(str_of(&doc, first), "one\nline two | kept");
+    }
+
+    #[test]
+    fn spans_constrained_unconstrained_monospace_superscript_subscript_and_curved_quotes() {
+        let doc = parse_inline_list(b"*s* **u** `m` ^up^ ~down~ \"`dq`\" '`sq`'\n");
+        let root = doc.ast.root;
+        assert_eq!(*kind(&doc, nth(&doc, root, 0)), Kind::InlineMark(InlineMark::Strong));
+        assert_eq!(*kind(&doc, nth(&doc, root, 2)), Kind::InlineMark(InlineMark::Strong));
+        assert_eq!(text(&doc, nth(&doc, root, 2)), "**u**");
+        assert_eq!(text_leaf(&doc, nth(&doc, root, 4)).0, TextLeafKind::Verbatim);
+        assert_eq!(*kind(&doc, nth(&doc, root, 6)), Kind::InlineMark(InlineMark::Superscript));
+        assert_eq!(*kind(&doc, nth(&doc, root, 8)), Kind::InlineMark(InlineMark::Subscript));
+        assert_eq!(*kind(&doc, nth(&doc, root, 10)), Kind::InlineMark(InlineMark::DoubleQuoted));
+        assert_eq!(*kind(&doc, nth(&doc, root, 12)), Kind::InlineMark(InlineMark::SingleQuoted));
+        assert_eq!(str_of(&doc, first_child(&doc, nth(&doc, root, 10))), "dq");
+    }
+
+    #[test]
+    fn a_superscript_may_not_contain_whitespace_a_doubled_opener_with_no_doubled_close_is_constrained() {
+        let doc = parse_inline_list(b"^a b^ and **bold*\n");
+        let first = first_block(&doc);
+        assert_eq!(str_of(&doc, first), "^a b^ and ");
+        let span = next(&doc, first);
+        assert_eq!(*kind(&doc, span), Kind::InlineMark(InlineMark::Strong));
+        assert_eq!(str_of(&doc, first_child(&doc, span)), "*bold");
+    }
+
+    #[test]
+    fn a_constrained_spans_interior_is_never_empty() {
+        let doc = parse_inline_list(b"****\n");
+        let span = first_block(&doc);
+        assert_eq!(*kind(&doc, span), Kind::InlineMark(InlineMark::Strong));
+        assert_eq!(str_of(&doc, first_child(&doc, span)), "*");
+    }
+
+    #[test]
+    fn a_role_before_a_span_is_its_class_a_role_on_a_hash_span_makes_it_a_styled_span() {
+        let doc = parse_inline_list(b"[.big]*x* [.red#r]#y# [#only]_z_\n");
+        let root = doc.ast.root;
+        let x = nth(&doc, root, 0);
+        assert_eq!(*kind(&doc, x), Kind::InlineMark(InlineMark::Strong));
+        assert_eq!(attr(&doc.ast, x, "class"), Some("big"));
+        assert_eq!(text(&doc, x), "[.big]*x*");
+        let y = nth(&doc, root, 2);
+        assert_eq!(container(&doc, y).name, b"");
+        assert_eq!(container(&doc, y).form, Some(Form::InlineText));
+        assert_eq!(attr(&doc.ast, y, "class"), Some("red"));
+        assert_eq!(attr(&doc.ast, y, "id"), Some("r"));
+        let z = nth(&doc, root, 4);
+        assert_eq!(*kind(&doc, z), Kind::InlineMark(InlineMark::Emph));
+        assert_eq!(attr(&doc.ast, z, "id"), Some("only"));
+    }
+
+    #[test]
+    fn a_macro_needs_no_word_boundary_before_it_a_url_does() {
+        let doc = parse_inline_list(b"xfootnote:[n] xhttps://a.org\n");
+        let root = doc.ast.root;
+        assert_eq!(str_of(&doc, nth(&doc, root, 0)), "x");
+        assert_eq!(text_leaf(&doc, nth(&doc, root, 1)).0, TextLeafKind::FootnoteReference);
+        assert_eq!(str_of(&doc, nth(&doc, root, 2)), " xhttps://a.org");
+    }
+
+    #[test]
+    fn a_bracket_that_precedes_nothing_spannable_is_literal_text() {
+        let doc = parse_inline_list(b"see [1] and [.x]plain\n");
+        assert_eq!(str_of(&doc, first_block(&doc)), "see [1] and [.x]plain");
+    }
+
+    #[test]
+    fn links_bare_url_angle_url_bracketed_text_link_macro_attributes_email() {
+        let doc = parse_inline_list(
+            b"https://a.org <https://b.org> https://c.org[C^] link:d.html[D,window=_blank,role=ext] x@y.org\n",
+        );
+        let root = doc.ast.root;
+        let a = nth(&doc, root, 0);
+        assert_eq!(text_leaf(&doc, a), (TextLeafKind::Url, &b"https://a.org"[..]));
+        let b = nth(&doc, root, 2);
+        assert_eq!(text(&doc, b), "<https://b.org>");
+        assert_eq!(doc.content_text(b), Some(&b"https://b.org"[..]));
+        let c = nth(&doc, root, 4);
+        assert_eq!(*kind(&doc, c), Kind::Link(Link { destination: Some(b"https://c.org".to_vec()), reference: None }));
+        assert_eq!(str_of(&doc, first_child(&doc, c)), "C");
+        assert_eq!(attr(&doc.ast, c, "window"), Some("_blank"));
+        let d = nth(&doc, root, 6);
+        assert_eq!(*kind(&doc, d), Kind::Link(Link { destination: Some(b"d.html".to_vec()), reference: None }));
+        assert_eq!(str_of(&doc, first_child(&doc, d)), "D");
+        assert_eq!(attr(&doc.ast, d, "class"), Some("ext"));
+        assert_eq!(attr(&doc.ast, d, "window"), Some("_blank"));
+        let e = nth(&doc, root, 8);
+        assert_eq!(text_leaf(&doc, e), (TextLeafKind::Email, &b"x@y.org"[..]));
+    }
+
+    #[test]
+    fn a_cross_reference_is_a_link_to_a_fragment() {
+        let doc = parse_inline_list(b"<<sec>> <<sec,Text>> xref:other#frag[]\n");
+        let root = doc.ast.root;
+        let a = nth(&doc, root, 0);
+        assert_eq!(*kind(&doc, a), Kind::Link(Link { destination: Some(b"#sec".to_vec()), reference: None }));
+        assert_eq!(str_of(&doc, first_child(&doc, a)), "sec");
+        let b = nth(&doc, root, 2);
+        assert_eq!(str_of(&doc, first_child(&doc, b)), "Text");
+        let c = nth(&doc, root, 4);
+        assert_eq!(*kind(&doc, c), Kind::Link(Link { destination: Some(b"other#frag".to_vec()), reference: None }));
+    }
+
+    #[test]
+    fn an_inline_image_carries_its_alt_text_as_children_and_its_size_in_attrs() {
+        let doc = parse_inline_list(b"see image:a.png[Alt,50] here\n");
+        let img = nth(&doc, doc.ast.root, 1);
+        assert_eq!(*kind(&doc, img), Kind::Image(Link { destination: Some(b"a.png".to_vec()), reference: None }));
+        assert_eq!(str_of(&doc, first_child(&doc, img)), "Alt");
+        assert_eq!(attr(&doc.ast, img, "width"), Some("50"));
+        assert_eq!(text(&doc, img), "image:a.png[Alt,50]");
+    }
+
+    #[test]
+    fn footnotes_a_reference_at_the_use_and_a_detached_definition_numbered_in_order() {
+        let doc = parse(b"a footnote:[first] b footnote:named[second] c footnote:named[]\n");
+        let para = first_block(&doc);
+        let r1 = nth(&doc, para, 1);
+        assert_eq!(text_leaf(&doc, r1), (TextLeafKind::FootnoteReference, &b"1"[..]));
+        assert_eq!(doc.content_text(r1), Some(&b"first"[..]));
+        let r2 = nth(&doc, para, 3);
+        assert_eq!(text_leaf(&doc, r2).1, b"named");
+        let r3 = nth(&doc, para, 5);
+        assert_eq!(text_leaf(&doc, r3).1, b"named");
+        assert_eq!(doc.content_span(r3), None);
+        // Two definitions, unattached, found the way djot's and Markdown's are.
+        let roots = doc.ast.definition_roots();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(*kind(&doc, roots[0]), Kind::Footnote { label: b"1".to_vec() });
+        assert_eq!(*kind(&doc, roots[1]), Kind::Footnote { label: b"named".to_vec() });
+        let body = first_child(&doc, roots[1]);
+        assert_eq!(*kind(&doc, body), Kind::Para);
+        assert_eq!(str_of(&doc, first_child(&doc, body)), "second");
+    }
+
+    #[test]
+    fn passthroughs_math_kbd_btn_and_an_inline_anchor() {
+        let doc =
+            parse_inline_list(b"+++<b>+++ pass:[<i>] stem:[x^2] kbd:[Ctrl+C] btn:[OK] [[here]] anchor:there[]\n");
+        let root = doc.ast.root;
+        assert_eq!(*kind(&doc, nth(&doc, root, 0)), Kind::RawInline { format: b"html".to_vec(), text: b"<b>".to_vec() });
+        assert_eq!(*kind(&doc, nth(&doc, root, 2)), Kind::RawInline { format: b"html".to_vec(), text: b"<i>".to_vec() });
+        assert_eq!(text_leaf(&doc, nth(&doc, root, 4)), (TextLeafKind::InlineMath, &b"x^2"[..]));
+        let kbd = nth(&doc, root, 6);
+        assert_eq!(container(&doc, kbd).name, b"kbd");
+        assert_eq!(str_of(&doc, first_child(&doc, kbd)), "Ctrl+C");
+        let btn = nth(&doc, root, 8);
+        assert_eq!(container(&doc, btn).name, b"b");
+        assert_eq!(attr(&doc.ast, btn, "class"), Some("button"));
+        let here = nth(&doc, root, 10);
+        assert_eq!(attr(&doc.ast, here, "id"), Some("here"));
+        assert_eq!(doc.ast.nodes[here as usize].first_child, None);
+        let there = nth(&doc, root, 12);
+        assert_eq!(attr(&doc.ast, there, "id"), Some("there"));
+    }
+
+    #[test]
+    fn hard_breaks_a_trailing_plus_and_every_newline_under_hardbreaks() {
+        let doc = parse(b"a +\nb\n\n[%hardbreaks]\nc\nd\n");
+        let p1 = first_block(&doc);
+        assert_eq!(str_of(&doc, nth(&doc, p1, 0)), "a");
+        assert_eq!(*kind(&doc, nth(&doc, p1, 1)), Kind::HardBreak);
+        assert_eq!(text(&doc, nth(&doc, p1, 1)), " +\n");
+        assert_eq!(str_of(&doc, nth(&doc, p1, 2)), "b");
+        let p2 = next(&doc, p1);
+        assert_eq!(*kind(&doc, nth(&doc, p2, 1)), Kind::HardBreak);
+        assert_eq!(text(&doc, nth(&doc, p2, 1)), "\n");
+    }
+
+    #[test]
+    fn replacements_symbols_arrows_an_em_dash_and_an_ellipsis() {
+        let doc = parse_inline_list(b"(C) a->b x--y wait...\n");
+        let root = doc.ast.root;
+        assert_eq!(str_of(&doc, nth(&doc, root, 0)), "\u{a9} a\u{2192}b x");
+        assert_eq!(*kind(&doc, nth(&doc, root, 1)), Kind::SmartPunctuation(SmartPunctuationKind::EmDash));
+        assert_eq!(str_of(&doc, nth(&doc, root, 2)), "y wait");
+        assert_eq!(*kind(&doc, nth(&doc, root, 3)), Kind::SmartPunctuation(SmartPunctuationKind::Ellipses));
+    }
+
+    #[test]
+    fn escapes_a_backslash_before_a_mark_a_macro_a_scheme_or_a_backslash() {
+        let doc = parse_inline_list(b"\\*a* \\link:x[y] \\https://z.org \\\\ \\q\n");
+        let s = first_block(&doc);
+        assert_eq!(str_of(&doc, s), "*a* link:x[y] https://z.org \\ \\q");
+        assert_eq!(doc.ast.nodes[s as usize].next_sibling, None);
+    }
+
+    #[test]
+    fn a_character_reference_is_its_own_str_decoded() {
+        let doc = parse_inline_list(b"a &amp; &#x41; &bogus; b\n");
+        let root = doc.ast.root;
+        assert_eq!(str_of(&doc, nth(&doc, root, 1)), "&");
+        assert_eq!(text(&doc, nth(&doc, root, 1)), "&amp;");
+        assert_eq!(str_of(&doc, nth(&doc, root, 3)), "A");
+        assert_eq!(str_of(&doc, nth(&doc, root, 4)), " &bogus; b");
+    }
+
+    #[test]
+    fn an_indented_paragraph_is_a_literal_block_with_its_common_indent_stripped() {
+        let doc = parse(b"    one\n      two\n");
+        let b = first_block(&doc);
+        assert_eq!(*kind(&doc, b), Kind::CodeBlock { lang: None, text: b"one\n  two".to_vec() });
+        assert_eq!(doc.content_text(b), Some(&b"    one\n      two"[..]));
+    }
+
+    #[test]
+    fn degenerate_inputs_parse_and_encode_without_crashing() {
+        for source in [
+            &b""[..], b"\n", b"   \n", b"\n\n\n", b"= \n", b"----\n", b"****\n", b"*\n", b"|===\n", b"|===\n|\n",
+            b"[[\n", b"[]\n", b".\n", b"..\n", b"term::\n", b"* \n", b"+\n", b"footnote:[]\n", b"image::[]\n",
+            b"<<>>\n", b"[.]*x*\n", b"> \n", b"```\n", b"[verse]\n____\n____\n", b"NOTE: \n", b"---\n",
+            b"---\n---\n", b"&#0;\n", b"{}\n", b"1. \n", b"= T\nA <\n", b"[source]\n", b"[quote]\n\n", b"\\\n",
+            b"*a\n**b\n", b"|===\n2+|a\n|===\n", b"toc::[foo]\n", b"audio::a.mp3[x,y]\n",
+        ] {
+            let doc = parse(source);
+            let _ = asg::encode(&doc, asg::Root::Document);
+        }
+    }
+
+    #[test]
+    fn every_construct_the_parser_produces_encodes_as_an_asg() {
+        let src = b"= T\nA B <a@b.org>\n\nNOTE: x^2^ ~s~ \"`q`\" [.r]#y# image:i.png[] footnote:[f] {v} {nbsp} +++r+++ pass:[p] stem:[m] kbd:[K] [[a]] a +\nb\n\n:e: v\n\n[quote]\nq\n\n> md\n\n|===\n|c\n|===\n\n* [x] t\n\n[verse]\nv\n";
+        let doc = parse(src);
+        let json = asg::encode(&doc, asg::Root::Document);
+        let parsed = crate::json::parse(&json).expect("valid JSON");
+        assert!(matches!(parsed, crate::json::Value::Object(_)));
+    }
+
+    #[test]
+    fn delimited_blocks_carry_no_asg_bookkeeping_in_attrs() {
+        let doc = parse(b"----\ncode\n----\n\n[source,ruby]\n----\nx\n----\n");
+        for id in 0..doc.ast.nodes.len() {
+            assert!(doc.ast.attrs_of(id as NodeId).entries.is_empty());
+        }
+    }
+
+    #[test]
+    fn zig_parse_int_semantics() {
+        assert_eq!(zig_parse_uint(b"+10", 10, u32::MAX as u64), Some(10));
+        assert_eq!(zig_parse_uint(b"-0", 10, u32::MAX as u64), Some(0));
+        assert_eq!(zig_parse_uint(b"-5", 10, u32::MAX as u64), None);
+        assert_eq!(zig_parse_uint(b"1_0", 10, u32::MAX as u64), Some(10));
+        assert_eq!(zig_parse_uint(b"_10", 10, u32::MAX as u64), None);
+        assert_eq!(zig_parse_uint(b"", 10, u32::MAX as u64), None);
+        assert_eq!(zig_parse_uint(b"+", 10, u32::MAX as u64), None);
+        assert_eq!(zig_parse_uint(b"4294967296", 10, u32::MAX as u64), None);
+        assert_eq!(zig_parse_uint(b"fF", 16, 0x1f_ffff), Some(255));
+    }
+}

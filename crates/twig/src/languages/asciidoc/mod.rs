@@ -1,6 +1,8 @@
 //! AsciiDoc: the parser, the conformance harness that judges it, and the ASG
 //! codec both compare through. Port of `src/languages/asciidoc/asciidoc.zig`.
 
+pub mod asg;
+pub mod conformance;
 pub mod parser;
 pub mod serializer;
 
