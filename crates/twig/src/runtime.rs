@@ -1441,6 +1441,14 @@ mod tests {
         }
     }
 
+
+    fn editor_over(fmt: Format, cfg: ParseConfig, src: &[u8]) -> crate::ast::editor::Editor {
+        let pf: crate::ast::splicer::ParseFn = Box::new(move |s| {
+            format::parse_to_ast(fmt, &cfg, s).map_err(|e| crate::ast::splicer::ParseError::new(e.name()))
+        });
+        crate::ast::editor::Editor::new(src, pf, format::syntax_for_config(fmt, &cfg)).unwrap()
+    }
+
     fn djot_twin() -> Language {
         Language::new(djot_parse).with_print(djot_print)
     }
@@ -1548,8 +1556,27 @@ mod tests {
         let table = format::syntax_for(fmt);
         assert!(table.authorable());
         assert!(table.renderer_context.is_some());
-        // TODO(port): the editor half of this test (gestures through the
-        // row edit as djot's do) waits for crate::ast::editor.
+        // Every gesture djot's table offers, the twin's offers.
+        use crate::ast::editor::{supports, ContainerKind, Gesture, InlineKind};
+        for g in [
+            Gesture::SetBlock,
+            Gesture::InsertLiteral,
+            Gesture::InsertLink,
+            Gesture::ToggleInline(InlineKind::Strong),
+            Gesture::ToggleBlockContainer(ContainerKind::BlockQuote),
+        ] {
+            assert_eq!(supports(format::syntax_for(Format::Djot), g), supports(table, g));
+        }
+        // A gesture through the row edits as djot's does, renderers and all.
+        let cfg = ParseConfig::default();
+        let mut twin = editor_over(fmt, cfg, b"Hello world.\n");
+        let mut real = editor_over(Format::Djot, cfg, b"Hello world.\n");
+        for e in [&mut twin, &mut real] {
+            e.toggle_inline(crate::span::Span::new(6, 11), InlineKind::Strong).unwrap();
+            e.insert_literal(0, b"*a* ").unwrap();
+            e.insert_link(crate::span::Span::new(0, 0), b"https://x.dev").unwrap();
+        }
+        assert_eq!(String::from_utf8_lossy(real.source_bytes()), String::from_utf8_lossy(twin.source_bytes()));
         let mut out = Vec::new();
         let mut b = crate::ast::Builder::new();
         let s = b.add_leaf(crate::ast::Kind::Str(b"x".to_vec()));
@@ -1584,6 +1611,13 @@ mod tests {
         let mut out = Vec::new();
         (t.render_block.unwrap())(t, &ast, q, &mut out).unwrap();
         assert_eq!(out, b"> q\n");
+        // A formula goes in through `render_block`, here the twin's print.
+        let cfg = ParseConfig::default();
+        let mut twin = editor_over(fmt, cfg, b"Cost.\n");
+        let mut real = editor_over(Format::Djot, cfg, b"Cost.\n");
+        twin.insert_inline_math(4, b"x`y").unwrap();
+        real.insert_inline_math(4, b"x`y").unwrap();
+        assert_eq!(real.source_bytes(), twin.source_bytes());
     }
 
     /// Markdown, with two of its extensions as features a caller turns on.
@@ -1707,8 +1741,14 @@ mod tests {
         assert_eq!(spelling(crate::syntax::markdown::for_options(&opts)), spelling(format::syntax_for(set)));
         let through_set = format::parse(set, &plain, src).unwrap();
         assert!(with.doc.ast.eql(&through_set.doc.ast));
-        // TODO(port): the editor half (insert_literal escapes the dollar)
-        // waits for crate::ast::editor.
+        // An editor over the row with math laid on may insert a formula, and
+        // its literal escapes the dollar it would otherwise mint one with.
+        let mut editor = editor_over(fmt, with_math, b"x\n");
+        editor.insert_literal(0, b"$5 ").unwrap();
+        assert_eq!(editor.source_bytes(), b"\\$5 x\n");
+        use crate::ast::editor::{supports, Gesture};
+        assert!(supports(format::syntax_for_config(fmt, &with_math), Gesture::InsertInlineMath));
+        assert!(!supports(format::syntax_for(fmt), Gesture::InsertInlineMath));
     }
 
     fn failing_parse(_: &Call, source: &[u8]) -> Result<Vec<u8>, String> {

@@ -437,6 +437,14 @@ mod tests {
         }
     }
 
+
+    fn editor_over(fmt: Format, cfg: format::ParseConfig, src: &[u8]) -> crate::ast::editor::Editor {
+        let pf: crate::ast::splicer::ParseFn = Box::new(move |s| {
+            format::parse_to_ast(fmt, &cfg, s).map_err(|e| crate::ast::splicer::ParseError::new(e.name()))
+        });
+        crate::ast::editor::Editor::new(src, pf, format::syntax_for_config(fmt, &cfg)).unwrap()
+    }
+
     fn loopback(lang: Language, description: &str) -> Arc<Loopback> {
         let mut diag = String::new();
         let server = Server::new(lang, description.as_bytes(), &mut diag).unwrap_or_else(|_| panic!("server refused: {diag}"));
@@ -510,7 +518,21 @@ mod tests {
         // literal dollar stays bare: the base table's alphabet.
         assert_eq!(format::syntax_for(fmt).text_escapes, md.text_escapes);
         assert!(format::syntax_for(set).text_escapes.unwrap().contains(&b'$'));
-        // TODO(port): the Editor half of this test waits for crate::ast::editor.
+
+        // A formula goes in through `render_block` across the wire, and a
+        // literal dollar is escaped.
+        let cfg = ParseConfig::default();
+        let mut editor = editor_over(set, cfg, b"Cost.\n");
+        lp.log.lock().unwrap().clear();
+        editor.insert_inline_math(4, b"x^2").unwrap();
+        editor.insert_literal(0, b"$ ").unwrap();
+        editor.insert_link(crate::span::Span::new(0, 0), b"https://x.dev").unwrap();
+        assert_eq!(String::from_utf8_lossy(editor.source_bytes()), "<https://x.dev>\\$ Cost$x^2$.\n");
+        use crate::ast::editor::{supports, Gesture};
+        assert!(!supports(format::syntax_for(fmt), Gesture::InsertInlineMath));
+        let mut plain = editor_over(fmt, cfg, b"Cost.\n");
+        plain.insert_literal(0, b"$ ").unwrap();
+        assert_eq!(plain.source_bytes(), b"$ Cost.\n");
     }
 
     #[test]

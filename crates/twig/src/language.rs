@@ -410,6 +410,14 @@ mod tests {
     use super::*;
     use crate::format::{self, ParseConfig, Target};
 
+
+    fn editor_over(fmt: Format, cfg: ParseConfig, src: &[u8]) -> crate::ast::editor::Editor {
+        let pf: crate::ast::splicer::ParseFn = Box::new(move |s| {
+            format::parse_to_ast(fmt, &cfg, s).map_err(|e| crate::ast::splicer::ParseError::new(e.name()))
+        });
+        crate::ast::editor::Editor::new(src, pf, format::syntax_for_config(fmt, &cfg)).unwrap()
+    }
+
     /// Every non-empty line a paragraph of one `str`; printed back one per
     /// line.
     struct Lines(&'static str);
@@ -593,8 +601,12 @@ mod tests {
         let mut out = Vec::new();
         table.render_text(b"*x* ", crate::syntax::TextPosition::InlineText, &mut out).unwrap();
         assert_eq!(out, b"*x* ");
-        // TODO(port): the Editor half (insert_literal through the row) waits
-        // for crate::ast::editor.
+        use crate::ast::editor::{supports, Gesture};
+        assert!(supports(table, Gesture::InsertLiteral));
+        assert!(supports(format::syntax_for_config(format, &crlf), Gesture::InsertLiteral));
+        let mut editor = editor_over(format, crlf, b"a\n");
+        editor.insert_literal(0, b"*x* ").unwrap();
+        assert_eq!(editor.source_bytes(), b"*x* a\n");
     }
 
     #[test]
