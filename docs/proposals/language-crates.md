@@ -30,15 +30,16 @@ fig answered the same question in its 3.0 epoch and its Rust port (fig 7):
 `fig-kit` holds what languages share, `fig-core` carries no language and its
 registry starts empty, and every language is a crate on the kit that a
 program registers. This proposal moves twig to the same shape, with one
-difference fig does not have: `twig-doc` has **no features at all**, no
+difference fig does not have: `twig-doc` has **no language features**, no
 language behind a flag. A program depends on the language crates it wants.
+Its one feature is `fig`, on by default ([fig in twig](fig-in-twig.md)).
 
 ## The shape
 
 | Crate | What it holds | Depends on |
 |---|---|---|
 | `twig-kit` | The tree (`ast`), `Document`, spans, the spelling table (`Syntax`) and its JSON, the node table, the generic HTML printer and its presets, the HTML entity table, the fidelity types, and the `Language` trait | nothing |
-| `twig-doc` (`twig`) | The editor and splicer, the registry, conversion, the contract, diagnostics, the runtime and helper carriers, the public API | `twig-kit` |
+| `twig-doc` (`twig`) | The editor and splicer, the registry, conversion, the contract, diagnostics, the runtime and helper carriers, the public API; with `fig`, a document's metadata (`twig::meta`) and its `twig` settings | `twig-kit`; fig 7 with `fig` |
 | `twig-markdown` | `markdown`, `commonmark`, `gfm` | `twig-kit`, `twig-html` |
 | `twig-djot` | `djot` | `twig-kit` |
 | `twig-html` | `html` (the parser; the printer is the kit's) | `twig-kit` |
@@ -91,8 +92,10 @@ This is the major release's break, and `docs/CHANGELOG.md` carries it.
 - `twig::Language` is the kit's compiled-language trait; the node-table
   trait is `TableLanguage`, registered with `register_table`.
 - `format::ParseFailure` is a reason string; `ParseConfig` is a feature mask.
-- `twig_meta::Resolved::markdown_extensions` is gone: `Resolved::features`
-  names them.
+- `twig-meta` is `twig::meta`, behind `twig-doc`'s default `fig` feature,
+  and `Resolved::markdown_extensions` is gone: `Resolved::features` names
+  them. With `fig` on, every parse honours a document's `twig` settings
+  ([fig in twig](fig-in-twig.md)).
 
 What does not change: the C ABI (`twig-capi` registers every shipped language
 under its `TWIG_FORMAT_*` code before its first entry point answers), the
@@ -117,8 +120,7 @@ tests that read a real document moved to where the languages are visible:
 
 Path-only dev-dependencies are dropped by `cargo publish`, so the order is
 the dependency order: `twig-kit`, `twig-doc`, `twig-html`, `twig-markdown`,
-`twig-djot`, `twig-xml`, `twig-asciidoc`, `twig-meta`, `twig-doc-cli`
-(`release.yml`). `twig-meta` publishes now that fig 7 is on crates.io.
+`twig-djot`, `twig-xml`, `twig-asciidoc`, `twig-doc-cli` (`release.yml`).
 
 ## What this is not
 

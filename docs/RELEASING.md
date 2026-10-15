@@ -99,7 +99,7 @@ Both workflows fire on the same `v*` tag and neither can be undone.
 - **`release.yml`** — re-runs the workspace suite, checks the tag against the
   workspace version, then publishes to crates.io in dependency order
   (`twig-kit`, `twig-doc`, `twig-html`, `twig-markdown`, `twig-djot`,
-  `twig-xml`, `twig-asciidoc`, `twig-meta`, then `twig-doc-cli`) and cuts the GitHub release with `git-cliff`-generated notes.
+  `twig-xml`, `twig-asciidoc`, then `twig-doc-cli`) and cuts the GitHub release with `git-cliff`-generated notes.
 - **`homebrew.yml`** — builds the CLI binaries (`twig-doc-cli`) and a
   `wasm32-wasip1` build, attaches them to the same release, and writes
   `diaryx-org/homebrew-tap`.

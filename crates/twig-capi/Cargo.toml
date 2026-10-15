@@ -15,7 +15,8 @@ crate-type = ["staticlib", "cdylib"]
 doctest = false
 
 [dependencies]
-twig-doc.workspace = true
+# With fig: a document is read as its frontmatter's `twig` settings ask.
+twig-doc = { workspace = true, features = ["fig"] }
 # The bundle: every language twig ships, registered under its TWIG_FORMAT_*
 # code before the first entry point answers.
 twig-djot = { workspace = true, default-features = true }

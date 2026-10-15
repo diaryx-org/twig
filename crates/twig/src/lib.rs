@@ -11,7 +11,7 @@
 //!   (`twig-markdown`, `twig-djot`, …).
 
 #[doc = include_str!("../README.md")]
-#[cfg(doctest)]
+#[cfg(all(doctest, feature = "fig"))]
 pub struct ReadmeDoctests;
 
 pub mod api;
@@ -21,6 +21,8 @@ pub mod diagnostics;
 pub mod format;
 pub mod helper;
 pub mod language;
+#[cfg(feature = "fig")]
+pub mod meta;
 pub mod runtime;
 pub mod wire;
 

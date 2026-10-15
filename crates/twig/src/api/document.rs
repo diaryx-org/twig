@@ -441,7 +441,7 @@ impl Document {
 fn parse_flags(input: &[u8], format: Format, flags: u32) -> Result<Document, Error> {
     let fmt = format.resolve()?;
     let cfg = config_from_flags(fmt, flags);
-    let parsed = reg::parse(fmt, &cfg, input).map_err(|_| Error::ParseError)?;
+    let parsed = reg::parse_as_asked(fmt, &cfg, input).map_err(|_| Error::ParseError)?;
     Ok(Document { view: View::Owned(parsed) })
 }
 

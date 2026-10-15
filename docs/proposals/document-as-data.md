@@ -19,7 +19,7 @@ live.
 ## The question
 
 fig reads config and twig reads documents, and the two meet only at a
-document's frontmatter (`twig-meta`). The interop this proposal is after is
+document's frontmatter (`twig::meta`). The interop this proposal is after is
 wider: Markdown into JSON (or YAML, or TOML) and back, with fig's whole
 toolchain — `get`, `set`, `convert`, its lossless editor — working on a
 document, and a config's data written out as a document.
@@ -51,7 +51,7 @@ What that gets right:
 
 ## The proposal
 
-A crate, `twig-fig` (in this repository, on `twig-doc` and `fig-kit`), that
+Under `twig-doc`'s `fig` feature, beside `twig::meta`, an adapter that
 makes every registered twig language a fig `Language`:
 
 1. **Read.** `parse_table` maps a twig `Document` onto fig's node table as a
@@ -60,7 +60,7 @@ makes every registered twig language a fig `Language`:
    its span. Headings carry `level`; lists and tables keep their items and
    rows as nested sequences, because those are data already; a table's rows
    are records keyed by its header row. Frontmatter is the parsed fig value
-   itself, through `twig-meta`, not a string. `--verbose`'s equivalent is the
+   itself, through `twig::meta`, not a string. `--verbose`'s equivalent is the
    node table twig already writes.
 2. **Write.** fig's printer over that shape writes Markdown (or any target
    twig prints): a sequence of records becomes the blocks they name, and a
@@ -86,5 +86,5 @@ with no work of their own.
 - **Types.** Markdown only has strings. fig's lossless envelope (`$fig`)
   already carries types through string-only formats; whether a document
   should declare that it takes one is fig's `Caps` question.
-- **Where it lives.** In twig (it follows twig's tree, which changes more)
-  or in fig (as `fig-markdown`)? This draft says twig.
+- **Where it lives.** In twig's `fig` feature (it follows twig's tree, which
+  changes more) or in fig (as `fig-markdown`)? This draft says twig.

@@ -543,6 +543,44 @@ pub fn parse(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<ParsedDoc,
     Ok(ParsedDoc { format: fmt, config: *cfg, doc: parse_to_ast(fmt, cfg, source)? })
 }
 
+/// Whether `source` can carry `twig` settings: a frontmatter block opens the
+/// document, and every fence twig reads one with is `---` or `+++`.
+#[cfg(feature = "fig")]
+fn could_hold_settings(source: &[u8]) -> bool {
+    source.starts_with(b"---") || source.starts_with(b"+++")
+}
+
+/// Parse `source` as it asks to be read: as `fmt` under `cfg`, unless its
+/// frontmatter's `twig` settings name a dialect of the same language or
+/// features to lay over the caller's (`crate::meta::settings`), in which
+/// case as they say. Without the `fig` feature, [`parse`].
+pub fn parse_as_asked(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<ParsedDoc, ParseFailure> {
+    let parsed = parse(fmt, cfg, source)?;
+    #[cfg(feature = "fig")]
+    if could_hold_settings(source) {
+        if let Some((f, c)) = crate::meta::settings_override(&parsed.doc, fmt, cfg) {
+            return parse(f, &c, source);
+        }
+    }
+    Ok(parsed)
+}
+
+/// The row and config `source` asks to be read with ([`parse_as_asked`]),
+/// for a caller that parses it itself — an editor, whose every reparse
+/// keeps what the document asked for when it was opened.
+pub fn resolve_as_asked(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> (Format, ParseConfig) {
+    #[cfg(feature = "fig")]
+    if could_hold_settings(source) {
+        if let Ok(doc) = parse_to_ast(fmt, cfg, source) {
+            if let Some(over) = crate::meta::settings_override(&doc, fmt, cfg) {
+                return over;
+            }
+        }
+    }
+    let _ = source;
+    (fmt, *cfg)
+}
+
 /// Render a parse to HTML with its row's renderer.
 pub fn render_html(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
     if let Some(r) = native(doc.format.0) {

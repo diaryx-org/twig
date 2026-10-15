@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/twig-kit", "crates/twig", "crates/twig-djot", "crates/twig-markdown", "crates/twig-html", "crates/twig-xml", "crates/twig-asciidoc", "crates/twig-rst", "crates/twig-cli", "crates/twig-capi", "crates/twig-meta"]
+members = ["crates/twig-kit", "crates/twig", "crates/twig-djot", "crates/twig-markdown", "crates/twig-html", "crates/twig-xml", "crates/twig-asciidoc", "crates/twig-rst", "crates/twig-cli", "crates/twig-capi"]
 default-members = ["crates/twig-kit", "crates/twig", "crates/twig-djot", "crates/twig-markdown", "crates/twig-html", "crates/twig-xml", "crates/twig-asciidoc", "crates/twig-rst", "crates/twig-cli"]
 
 [workspace.package]

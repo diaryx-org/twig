@@ -122,7 +122,7 @@ impl Editor {
     /// what the editor's own reparse reads back.
     fn create(input: &[u8], format: Format, flags: u32) -> Result<Self, Error> {
         let fmt = format.resolve()?;
-        let cfg = config_from_flags(fmt, flags);
+        let (fmt, cfg) = reg::resolve_as_asked(fmt, &config_from_flags(fmt, flags), input);
         let parse: splicer::ParseFn =
             Box::new(move |src: &[u8]| reg::parse_to_ast(fmt, &cfg, src).map_err(|e| ParseError::new(e.name())));
         let syntax = reg::syntax_for_config(fmt, &cfg);

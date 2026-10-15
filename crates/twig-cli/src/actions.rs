@@ -94,7 +94,7 @@ pub fn convert_source(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> ActionResult {
-    let doc = match format::parse(input, parse_config, source) {
+    let doc = match format::parse_as_asked(input, parse_config, source) {
         Ok(d) => d,
         Err(e) => {
             let _ = writeln!(stderr, "error: failed to parse '{display_name}' as {}: {}", input.name(), e.name());
@@ -164,7 +164,7 @@ pub fn convert_source(
 
 pub fn run_query(stdout: &mut dyn Write, stderr: &mut dyn Write, opts: &QueryOptions) -> ActionResult {
     let source = read_source(&opts.file, stderr)?;
-    let doc = match format::parse_to_ast(opts.input, &opts.parse_config, &source) {
+    let doc = match format::parse_as_asked(opts.input, &opts.parse_config, &source).map(|p| p.doc) {
         Ok(d) => d,
         Err(e) => {
             let _ = writeln!(stderr, "error: failed to parse '{}' as {}: {}", opts.file, opts.input.name(), e.name());
@@ -243,9 +243,10 @@ pub fn run_filter(stdout: &mut dyn Write, stderr: &mut dyn Write, opts: &FilterO
     write_result(stdout, stderr, &opts.file, opts.dry_run, &filtered)
 }
 
-/// A splicer over `source` that reparses as `input` under `cfg`.
+/// A splicer over `source` that reparses as `input` under `cfg`, or as the
+/// document's own `twig` settings ask.
 fn new_splicer(source: &[u8], input: Format, cfg: &ParseConfig) -> Result<twig::ast::splicer::Splicer, String> {
-    let cfg = *cfg;
+    let (input, cfg) = format::resolve_as_asked(input, cfg, source);
     let parse: twig::ast::splicer::ParseFn = Box::new(move |src: &[u8]| {
         format::parse_to_ast(input, &cfg, src).map_err(|e| twig::ast::splicer::ParseError::new(e.name()))
     });

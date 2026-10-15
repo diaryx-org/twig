@@ -1,4 +1,5 @@
-//! `twig-meta`: the config a document carries, read and edited through fig.
+//! The config a document carries, read and edited through fig — behind the
+//! default `fig` feature.
 //!
 //! twig finds a document's metadata — a `metadata` node, the frontmatter or
 //! endmatter block the Markdown parser reads — and fig edits what is inside
@@ -8,16 +9,18 @@
 //! included, is the host's as it was.
 //!
 //! This is what fig's `Embed` did before 6.0, which took embedding out of fig
-//! (fig's `docs/migrating-to-6.md`, "Embedding has left fig"). `twig-doc`
-//! stays fig-free: this crate depends on both. See
+//! (fig's `docs/migrating-to-6.md`, "Embedding has left fig"). It was the
+//! `twig-meta` crate; it is core's now, so that every parse can honour a
+//! document's own `twig` settings ([`settings`]): `Document::parse`,
+//! `Editor::new` and the CLI read a document as its frontmatter asks. See
 //! `docs/proposals/fig-in-twig.md`.
 //!
 //! ```
-//! use twig_meta::{Embed, Where};
+//! use twig::meta::{Embed, Where};
 //!
 //! let host = b"---\ntitle: Hi # kept\n---\n# Body\n";
-//! let parsed = twig_meta::parse_host(host, twig_markdown::format()).unwrap();
-//! let block = twig_meta::find(&parsed.doc, Where::Front).unwrap();
+//! let parsed = twig::meta::parse_host(host, twig_markdown::format()).unwrap();
+//! let block = twig::meta::find(&parsed.doc, Where::Front).unwrap();
 //! let mut e = Embed::open(host, &block).unwrap();
 //! e.editor_mut().set_value(&["title".into()], "Hello").unwrap();
 //! assert_eq!(e.render().unwrap(), b"---\ntitle: Hello # kept\n---\n# Body\n");
@@ -27,9 +30,9 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Once;
 
-use twig::ast::Kind;
-use twig::document::Document;
-use twig::format::{self as reg, ParsedDoc};
+use crate::ast::Kind;
+use crate::document::Document;
+use crate::format::{self as reg, Format, ParseConfig, ParsedDoc};
 
 pub mod settings;
 pub use settings::Settings;
@@ -46,7 +49,7 @@ pub enum Where {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Block {
     /// The `metadata` node in the tree it was found in.
-    pub node: twig::ast::NodeId,
+    pub node: crate::ast::NodeId,
     pub at: Where,
     /// The language tag as written on the fence (`yaml` for a bare `---`).
     pub lang: String,
@@ -68,7 +71,7 @@ pub enum Error {
     UnsupportedLanguage(String),
     /// twig refused: a format it does not know, a feature its row does not
     /// declare, or a host it could not parse.
-    Twig(twig::Error),
+    Twig(crate::Error),
     /// fig refused: a body that does not parse, or an edit it cannot make.
     Fig(fig::Error),
 }
@@ -96,8 +99,8 @@ impl std::error::Error for Error {
     }
 }
 
-impl From<twig::Error> for Error {
-    fn from(e: twig::Error) -> Self {
+impl From<crate::Error> for Error {
+    fn from(e: crate::Error) -> Self {
         Error::Twig(e)
     }
 }
@@ -193,23 +196,23 @@ pub fn dialect_for(lang: &str) -> Option<fig::Format> {
 
 /// Parse `host` as `format` with its default extensions (frontmatter is
 /// always read).
-pub fn parse_host(host: &[u8], format: twig::Format) -> Result<ParsedDoc, Error> {
+pub fn parse_host(host: &[u8], format: crate::Format) -> Result<ParsedDoc, Error> {
     parse_host_with(host, format, &[])
 }
 
 /// [`parse_host`] with `features` (the row's feature names) turned on.
 pub fn parse_host_with(
     host: &[u8],
-    format: twig::Format,
+    format: crate::Format,
     features: &[&str],
 ) -> Result<ParsedDoc, Error> {
     let flags = format.feature_flags(features)?;
     if !format.is_registered() {
-        return Err(Error::Twig(twig::Error::UnsupportedFormat));
+        return Err(Error::Twig(crate::Error::UnsupportedFormat));
     }
     let fmt = format;
     let cfg = reg::ParseConfig::for_features(fmt, flags);
-    reg::parse(fmt, &cfg, host).map_err(|_| Error::Twig(twig::Error::ParseError))
+    reg::parse(fmt, &cfg, host).map_err(|_| Error::Twig(crate::Error::ParseError))
 }
 
 /// Read the document's metadata block at `at` as a fig [`fig::Document`], or
@@ -258,7 +261,7 @@ impl Embed {
 
     /// Open `host`'s metadata block at `at`, parsing it as `format`.
     /// [`Error::NoMetadata`] when it has none there.
-    pub fn open_in(host: &[u8], format: twig::Format, at: Where) -> Result<Embed, Error> {
+    pub fn open_in(host: &[u8], format: crate::Format, at: Where) -> Result<Embed, Error> {
         let parsed = parse_host(host, format)?;
         let block = find(&parsed.doc, at).ok_or(Error::NoMetadata)?;
         Embed::open(host, &block)
@@ -268,7 +271,7 @@ impl Embed {
     /// `lang` above its first line, empty until an edit writes to it. Only a
     /// Markdown host is read for an existing block; `format` names its
     /// dialect.
-    pub fn open_or_init(host: &[u8], format: twig::Format, lang: &str) -> Result<Embed, Error> {
+    pub fn open_or_init(host: &[u8], format: crate::Format, lang: &str) -> Result<Embed, Error> {
         let parsed = parse_host(host, format)?;
         if let Some(block) = find(&parsed.doc, Where::Front) {
             return Embed::open(host, &block);
@@ -366,7 +369,7 @@ fn closer_for(lang: &str) -> &'static str {
 /// read as asked.
 #[derive(Debug)]
 pub struct Resolved {
-    pub format: twig::Format,
+    pub format: crate::Format,
     /// Every feature to turn on: the caller's, then the document's, each
     /// once, all of them declared by `format`'s row.
     pub features: Vec<String>,
@@ -385,9 +388,9 @@ impl Resolved {
 
 
     /// Parse `host` as it asks to be read.
-    pub fn parse(&self, host: &[u8]) -> Result<twig::Document, Error> {
+    pub fn parse(&self, host: &[u8]) -> Result<crate::Document, Error> {
         let features: Vec<&str> = self.features.iter().map(String::as_str).collect();
-        Ok(twig::Document::parse_with_features(
+        Ok(crate::Document::parse_with_features(
             host,
             self.format,
             &features,
@@ -398,8 +401,8 @@ impl Resolved {
 /// Resolve `host`'s settings (see [`Resolved`]). The frontmatter is found
 /// with `format`'s own row and the caller's `features`, which every Markdown
 /// row reads alike, so the settings cannot change where they themselves are.
-/// A caller's feature `format` does not declare is [`twig::Error::NotFound`].
-pub fn resolve(host: &[u8], format: twig::Format, features: &[&str]) -> Result<Resolved, Error> {
+/// A caller's feature `format` does not declare is [`crate::Error::NotFound`].
+pub fn resolve(host: &[u8], format: crate::Format, features: &[&str]) -> Result<Resolved, Error> {
     let parsed = parse_host_with(host, format, features)?;
     let mut out = Resolved {
         format,
@@ -435,4 +438,25 @@ fn dedup(names: impl Iterator<Item = String>) -> Vec<String> {
         }
     }
     out
+}
+
+/// The row and config `doc`'s own `twig` settings ask for, over the row
+/// `format` and the caller's `cfg` it was parsed with: the dialect it names,
+/// and its features laid over the caller's. `None` when it asks for nothing
+/// different — no frontmatter, frontmatter fig cannot read, no `twig` key,
+/// or only names this twig does not act on.
+pub(crate) fn settings_override(doc: &Document, format: Format, cfg: &ParseConfig) -> Option<(Format, ParseConfig)> {
+    let block = find(doc, Where::Front)?;
+    let dialect = dialect_for(&block.lang)?;
+    let meta = fig::Document::parse(&doc.source[block.body], dialect).and_then(|d| d.to_value()).ok()?;
+    let settings = Settings::read(&meta, format);
+    let to = settings.dialect.unwrap_or(format);
+    let mut mask = cfg.features;
+    for name in &settings.features {
+        if let Some(bit) = reg::feature_bit(to, name) {
+            mask |= bit;
+        }
+    }
+    let resolved = ParseConfig::for_features(to, mask);
+    (to != format || resolved != *cfg).then_some((to, resolved))
 }

@@ -14,7 +14,7 @@ concurrency:
 jobs:
   # The workspace's own test suite: the engine (twig-doc), the CLI
   # (twig-doc-cli), the C ABI (twig-capi), the kit and the language crates,
-  # and twig-meta (fig 7, from crates.io),
+  # with twig-doc's default fig feature (fig 7, from crates.io),
   # across Linux and macOS.
   test:
     name: test (${{ matrix.os }})
@@ -34,6 +34,10 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --release
+
+      # The core without fig: no dependency but the kit.
+      - name: Test twig-doc without fig
+        run: cargo test -p twig-doc --release --no-default-features
 
   # The CLI also ships as a wasm32-wasip1 download (homebrew.yml), so keep it
   # building for that target.

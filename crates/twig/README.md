@@ -37,6 +37,25 @@ assert_eq!(ed.source_str()?, "## Hello\n");
 # Ok::<(), twig::Error>(())
 ```
 
+## fig
+
+`twig-doc`'s one feature, `fig`, is on by default. With it, a document's
+frontmatter is read and edited in place through
+[fig](https://crates.io/crates/fig) (`twig::meta`), and every parse reads a
+document as its frontmatter's `twig` settings ask — a dialect of its own
+language, and features laid over the caller's:
+
+```rust
+let markdown = twig_markdown::format();
+let src = "---\ntwig:\n  features: [math]\n---\n$x$\n";
+let mut doc = twig::Document::parse_str(src, markdown)?;
+assert_eq!(doc.query("inline_math")?.len(), 1);
+# Ok::<(), twig::Error>(())
+```
+
+With `default-features = false`, twig depends on nothing but `twig-kit` and
+parses exactly as the caller asks.
+
 A `Format` is a handle to a row of the registry. A name finds one too
 (`Format::by_name("gfm")`), once its language is registered. A language is
 anything implementing [`twig_kit::Language`](https://docs.rs/twig-kit): a

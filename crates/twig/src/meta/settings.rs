@@ -14,7 +14,7 @@
 //! `dialect` names a row of the host's language (`gfm`, `commonmark`), and
 //! `features` names the features that row lays over its own — Markdown's
 //! extensions, or a runtime language's declared features — by the names
-//! [`twig::Format::feature_flags`] reads. Settings only add: a caller's own
+//! [`crate::Format::feature_flags`] reads. Settings only add: a caller's own
 //! features are laid under them ([`Settings::apply`]), and a name twig does
 //! not know is reported in `ignored`, never an error, since a document read
 //! by an older twig should still render.
@@ -24,7 +24,7 @@
 pub struct Settings {
     /// The row the document asks to be read as, when it names one of its own
     /// language's rows.
-    pub dialect: Option<twig::Format>,
+    pub dialect: Option<crate::Format>,
     /// The features it asks for, by name.
     pub features: Vec<String>,
     /// Names under `twig` this twig does not act on: unknown keys, a dialect
@@ -36,7 +36,7 @@ pub struct Settings {
 impl Settings {
     /// The settings `meta` — a document's parsed metadata — holds for a host
     /// of format `host`. A document with no `twig` key has none.
-    pub fn read(meta: &fig::Value, host: twig::Format) -> Settings {
+    pub fn read(meta: &fig::Value, host: crate::Format) -> Settings {
         let mut out = Settings::default();
         let Some(root) = meta.get("twig") else {
             return out;
@@ -83,7 +83,7 @@ impl Settings {
     /// caller's own `features`: the document's dialect, when it names one,
     /// and its features laid over the caller's. A feature the resulting row
     /// does not declare is added to `ignored`.
-    pub fn apply(&mut self, host: twig::Format, features: &[&str]) -> (twig::Format, Vec<String>) {
+    pub fn apply(&mut self, host: crate::Format, features: &[&str]) -> (crate::Format, Vec<String>) {
         let format = self.dialect.unwrap_or(host);
         let mut on: Vec<String> = Vec::new();
         let names = features
@@ -108,11 +108,11 @@ impl Settings {
 
 /// `name` as a row of `host`'s language: `host` itself, or a dialect of the
 /// same language. `None` for an unknown name or another language's row.
-fn dialect_of(host: twig::Format, name: &str) -> Option<twig::Format> {
-    let f = twig::Format::by_name(name)?;
+fn dialect_of(host: crate::Format, name: &str) -> Option<crate::Format> {
+    let f = crate::Format::by_name(name)?;
     (language_of(f) == language_of(host)).then_some(f)
 }
 
-fn language_of(f: twig::Format) -> twig::Format {
+fn language_of(f: crate::Format) -> crate::Format {
     f.dialect_of().unwrap_or(f)
 }

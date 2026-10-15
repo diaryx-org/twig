@@ -1,4 +1,9 @@
-use twig_meta::{Embed, Error, Where, find, parse_host, resolve};
+//! `twig::meta`, and every parse honouring a document's `twig` settings: the
+//! default `fig` feature.
+
+#![cfg(feature = "fig")]
+
+use twig::meta::{Embed, Error, Where, find, parse_host, resolve};
 
 fn s(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).unwrap()
@@ -127,14 +132,14 @@ fn open_or_init_a_host_with_frontmatter_opens_it_whatever_language_was_asked() {
 fn read_gives_the_block_as_a_fig_document() {
     let host = b"---\ntitle: Hi\ntags: [a, b]\n---\nbody\n";
     let parsed = parse_host(host, twig_markdown::format()).unwrap();
-    let meta = twig_meta::read(&parsed.doc, Where::Front)
+    let meta = twig::meta::read(&parsed.doc, Where::Front)
         .unwrap()
         .unwrap()
         .to_value()
         .unwrap();
     assert_eq!(Some("Hi"), meta.get("title").and_then(|v| v.as_str()));
     assert_eq!(2, meta.get("tags").and_then(|v| v.as_seq()).unwrap().len());
-    assert!(twig_meta::read(&parsed.doc, Where::End).unwrap().is_none());
+    assert!(twig::meta::read(&parsed.doc, Where::End).unwrap().is_none());
 }
 
 #[test]
@@ -188,4 +193,48 @@ fn resolve_a_callers_feature_the_row_does_not_declare_is_an_error() {
         resolve(b"body\n", twig_markdown::format(), &["sparkles"]),
         Err(Error::Twig(twig::Error::NotFound))
     ));
+}
+
+// ── every parse honours the document's settings ──
+
+#[test]
+fn a_parse_reads_the_document_as_its_frontmatter_asks() {
+    let host = "---\ntwig:\n  dialect: gfm\n  features: [math]\n---\n$x$ and ~~gone~~\n";
+    let mut doc = twig::Document::parse_str(host, twig_markdown::format()).unwrap();
+    let kinds: Vec<_> = doc.nodes().unwrap().into_iter().map(|n| n.kind).collect();
+    assert!(kinds.contains(&twig::Kind::InlineMath), "{kinds:?}");
+    // GFM's HTML conventions, as the dialect asked.
+    let html = String::from_utf8(doc.render_html().unwrap()).unwrap();
+    assert!(html.contains("<del>gone</del>"), "{html}");
+}
+
+#[test]
+fn an_editor_reads_and_reparses_the_document_as_it_asks() {
+    let host = "---\ntwig:\n  features: math\n---\n$x$\n";
+    let mut ed = twig::Editor::new_str(host, twig_markdown::format()).unwrap();
+    assert_eq!(ed.query("inline_math").unwrap().len(), 1);
+    // A reparse after an edit keeps the features the document asked for.
+    ed.replace("inline_math", "$y$").unwrap();
+    assert_eq!(ed.query("inline_math").unwrap().len(), 1);
+}
+
+#[test]
+fn a_document_without_settings_reads_as_asked() {
+    for host in ["$x$\n", "---\ntitle: plain\n---\n$x$\n", "---\ntwig: [unclosed\n---\n$x$\n"] {
+        let mut doc = twig::Document::parse_str(host, twig_markdown::format()).unwrap();
+        let kinds: Vec<_> = doc.nodes().unwrap().into_iter().map(|n| n.kind).collect();
+        assert!(!kinds.contains(&twig::Kind::InlineMath), "{host:?}: {kinds:?}");
+    }
+}
+
+#[test]
+fn settings_only_add_to_the_callers_features_and_stay_in_the_language() {
+    // The caller's `directives` stays on; `dialect: djot` names another
+    // language's row and is not acted on.
+    let host = "---\ntwig:\n  dialect: djot\n  features: [math]\n---\n$x$\n\n::leaf\n";
+    let mut doc =
+        twig::Document::parse_with_features(host.as_bytes(), twig_markdown::format(), &["directives"]).unwrap();
+    let kinds: Vec<_> = doc.nodes().unwrap().into_iter().map(|n| n.kind).collect();
+    assert!(kinds.contains(&twig::Kind::InlineMath), "{kinds:?}");
+    assert_eq!(doc.query("directive").unwrap().len(), 1);
 }

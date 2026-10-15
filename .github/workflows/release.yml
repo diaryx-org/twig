@@ -53,7 +53,7 @@ jobs:
 
       # Ordered publish, each crate after the ones it depends on: the kit, the
       # core, the languages (Markdown after HTML, whose parser it reads raw HTML
-      # with), twig-meta, then the CLI. A re-run after a partial
+      # with), then the CLI. A re-run after a partial
       # publish must not choke on the crate that DID land, so an "already
       # uploaded/exists" response is treated as success and the job is safe to
       # re-run. crates.io throttles new-crate creation, so a rate-limit
@@ -91,7 +91,6 @@ jobs:
           publish twig-djot
           publish twig-xml
           publish twig-asciidoc
-          publish twig-meta
           publish twig-doc-cli
 
       # Manual (workflow_dispatch) dry run: every published crate packages and
@@ -101,7 +100,7 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           cargo package -p twig-kit -p twig-doc -p twig-html -p twig-markdown \
-            -p twig-djot -p twig-xml -p twig-asciidoc -p twig-meta -p twig-doc-cli
+            -p twig-djot -p twig-xml -p twig-asciidoc -p twig-doc-cli
 
       # Release notes from the same .config/cliff.toml that writes CHANGELOG.md's
       # Unreleased region, so the two group commits identically. This replaces

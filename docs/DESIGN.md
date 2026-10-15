@@ -46,8 +46,9 @@ why a module is shaped the way it is. Shared conventions worth naming once:
   feature that adds its `register()`/`format()`. `crates/twig-cli` is the
   `twig` binary (`twig-doc-cli`) and `crates/twig-capi` the C ABI declared
   in `bindings/c/include/twig.h`; both register every shipped language at
-  startup. `crates/twig-meta` edits a document's metadata through fig
-  (`docs/proposals/fig-in-twig.md`). `docs/proposals/language-crates.md`
+  startup. `twig-doc`'s one feature, `fig` (on by default), reads and edits
+  a document's metadata through fig (`twig::meta`) and has every parse
+  honour the document's `twig` settings (`docs/proposals/fig-in-twig.md`). `docs/proposals/language-crates.md`
   is the argument.
 - **Per-language crates.** Each format lives in `crates/twig-<name>/` with
   the same internal shape (a scanner/parser, a serializer, `syntax_table.rs`

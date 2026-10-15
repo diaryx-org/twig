@@ -249,6 +249,11 @@ dependencies = [
 name = "twig-doc"
 version = "5.0.0"
 dependencies = [
+ "fig",
+ "fig-figl",
+ "fig-json",
+ "fig-toml",
+ "fig-yaml",
  "twig-asciidoc",
  "twig-djot",
  "twig-html",
@@ -298,22 +303,6 @@ dependencies = [
  "twig-doc",
  "twig-html",
  "twig-kit",
-]
-
-[[package]]
-name = "twig-meta"
-version = "5.0.0"
-dependencies = [
- "fig",
- "fig-figl",
- "fig-json",
- "fig-toml",
- "fig-yaml",
- "twig-asciidoc",
- "twig-djot",
- "twig-doc",
- "twig-html",
- "twig-markdown",
 ]
 
 [[package]]

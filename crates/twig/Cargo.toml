@@ -12,7 +12,8 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["djot", "markdown", "parser", "ast", "document"]
 categories = ["parser-implementations", "text-processing"]
-rust-version.workspace = true
+# fig, behind the default `fig` feature, asks for 1.88 (its let chains).
+rust-version = "1.88"
 
 [lib]
 name = "twig"
@@ -20,6 +21,22 @@ path = "src/lib.rs"
 
 [dependencies]
 twig-kit.workspace = true
+# fig, and the four languages a document's metadata is written in most:
+# YAML (`---`), TOML (`+++`), JSON and figl (`---json`, `---figl`), each
+# without serde. `twig::meta` reads and edits a document's frontmatter
+# through them, and parsing honours the `twig` settings it holds.
+fig = { version = "7", optional = true }
+fig-yaml = { version = "7", default-features = false, features = ["fig"], optional = true }
+fig-toml = { version = "7", default-features = false, features = ["fig"], optional = true }
+fig-json = { version = "7", default-features = false, features = ["fig"], optional = true }
+fig-figl = { version = "7", default-features = false, features = ["fig"], optional = true }
+
+[features]
+# fig: a document's metadata read and edited in place (`twig::meta`), and a
+# document read as its frontmatter's `twig` settings ask. Off, twig parses
+# exactly as the caller asks and has no dependency but the kit.
+default = ["fig"]
+fig = ["dep:fig", "dep:fig-yaml", "dep:fig-toml", "dep:fig-json", "dep:fig-figl"]
 
 # The language crates, for the tests: the unit tests register each crate's
 # language value with this crate's registry (`src/test_languages.rs`), the

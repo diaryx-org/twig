@@ -69,10 +69,11 @@ names no language, and one crate per language
 - [`crates/twig-capi`](crates/twig-capi) builds the C ABI declared in
   [`bindings/c/include/twig.h`](bindings/c/include/twig.h), with every
   language registered under its `TWIG_FORMAT_*` code.
-- [`crates/twig-meta`](crates/twig-meta) reads and edits a document's
-  frontmatter and endmatter through [fig](https://github.com/diaryx-org/fig)
-  7, in place, with comments and fences kept, and reads the render settings a
-  document names under its `twig` key ([proposal](docs/proposals/fig-in-twig.md)).
+- `twig-doc`'s one feature, `fig` (on by default), reads and edits a
+  document's frontmatter and endmatter through [fig](https://github.com/diaryx-org/fig)
+  7 (`twig::meta`), in place, with comments and fences kept, and has every
+  parse read a document as its frontmatter's `twig` settings ask
+  ([proposal](docs/proposals/fig-in-twig.md)).
 
 ```
 cargo build --release        # target/release/twig
