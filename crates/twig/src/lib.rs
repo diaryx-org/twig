@@ -10,6 +10,7 @@
 //!   serializer.
 //! - [`format`] — the registry tying formats to their parsers and printers.
 
+pub mod api;
 pub mod ast;
 pub mod attrs_writer;
 pub mod contract;
@@ -30,4 +31,5 @@ pub mod wire;
 
 pub mod cli;
 
+pub use api::*;
 pub use error::Error;
