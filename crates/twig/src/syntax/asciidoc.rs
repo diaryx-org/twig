@@ -37,10 +37,8 @@ fn spells_autolink(_: &Syntax, angled: &[u8]) -> bool {
 
 /// The serializer over a fragment.
 fn render_block(_: &Syntax, ast: &Ast, root: NodeId, out: &mut Vec<u8>) -> Result<(), Error> {
-    // TODO(port): `crate::languages::asciidoc` serializer's `serialize_ast`
-    // over `super::fragment(ast, root)` once it lands.
-    let _ = (ast, root, out);
-    Err(Error::Internal)
+    out.extend_from_slice(&crate::languages::asciidoc::serializer::serialize_ast(&super::fragment(ast, root)));
+    Ok(())
 }
 
 pub static TABLE: Syntax = Syntax {
@@ -141,12 +139,19 @@ mod tests {
 
     #[test]
     fn the_escape_alphabets_are_disjoint() {
-        // TODO(port): the Zig test also parses `\X` for every byte with the
-        // AsciiDoc inline parser; add once `languages::asciidoc` lands.
         let te = TABLE.text_escapes.unwrap();
         let bse = TABLE.block_start_escapes.unwrap();
         for c in te {
             assert!(!bse.contains(c));
+        }
+        // Each escaped byte parses as itself: `\X` yields a `str` "X".
+        for &c in te.iter().chain(bse.iter()) {
+            if c == b'\\' {
+                continue;
+            }
+            let doc = crate::languages::asciidoc::parser::parse_inline_list(&[b'\\', c, b'\n']);
+            let first = doc.ast.nodes[doc.ast.root as usize].first_child.unwrap();
+            assert_eq!(doc.ast.kind(first), &crate::ast::Kind::Str(vec![c]), "byte {}", c as char);
         }
         TABLE.assert_coherent();
     }

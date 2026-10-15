@@ -20,10 +20,8 @@ fn spells_autolink(_: &Syntax, angled: &[u8]) -> bool {
 
 /// The serializer over a fragment.
 fn render_block(_: &Syntax, ast: &Ast, root: NodeId, out: &mut Vec<u8>) -> Result<(), Error> {
-    // TODO(port): `crate::languages::djot::serializer`'s `serialize_ast` over
-    // `super::fragment(ast, root)` once the djot serializer lands.
-    let _ = (ast, root, out);
-    Err(Error::Internal)
+    out.extend_from_slice(&crate::languages::djot::serializer::serialize_ast(&super::fragment(ast, root)));
+    Ok(())
 }
 
 /// Djot's table.
