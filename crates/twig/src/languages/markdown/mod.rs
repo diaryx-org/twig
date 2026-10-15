@@ -20,6 +20,11 @@ mod conformance;
 #[cfg(test)]
 mod gfm_conformance;
 
+#[cfg(test)]
+mod block_tests;
+#[cfg(test)]
+mod differential;
+
 pub use options::{Dialect, Extensions, ParseOptions};
 
 use crate::document::Document;

@@ -2361,3 +2361,7 @@ fn decode_char_ref(text: &[u8], at: usize) -> Option<(Vec<u8>, usize)> {
     let replacement = entities::lookup(name)?;
     Some((replacement.to_vec(), i + 1))
 }
+
+#[cfg(test)]
+#[path = "inline_tests.rs"]
+mod tests;
