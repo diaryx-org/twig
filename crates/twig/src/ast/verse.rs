@@ -266,12 +266,125 @@ fn spelling_at(src: &[u8], pos: usize) -> Option<usize> {
     EM_SPACE_SPELLINGS.iter().find(|s| src[pos..].starts_with(s)).map(|s| s.len())
 }
 
-// TODO(port): the Zig tests drive the Markdown and djot parsers (not yet
-// ported); port them once `crate::languages::{markdown,djot}::parse` exist.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ast::{Builder, Container};
+    use crate::languages::markdown::{self, ParseOptions};
+
+    /// Each line's source text, from its first child to its last.
+    fn line_texts<'d>(doc: &'d Document, block: NodeId) -> Vec<&'d [u8]> {
+        doc.ast
+            .children(block)
+            .map(|line| {
+                let kids = doc.ast.child_ids(line.id);
+                match (kids.first(), kids.last()) {
+                    (Some(&f), Some(&l)) => &doc.source[doc.span(f).start..doc.span(l).end],
+                    _ => &b""[..],
+                }
+            })
+            .collect()
+    }
+
+    fn html_elements() -> ParseOptions {
+        ParseOptions { html_elements: true, ..ParseOptions::default() }
+    }
+
+    /// TODO(port): the Markdown block parser is still a stub in places; these
+    /// tests run once it parses a paragraph.
+    fn markdown_ready() -> bool {
+        let doc = markdown::parse(b"a\n", ParseOptions::default());
+        let ready = doc.ast.node(doc.ast.root).first_child.is_some();
+        if !ready {
+            eprintln!("markdown parser not ported yet; skipping");
+        }
+        ready
+    }
+
+    #[test]
+    fn markdown_every_line_break_is_a_line_and_a_blank_line_a_stanza() {
+        if !markdown_ready() {
+            return;
+        }
+        let src = b"<div class=\"verse\">\n\nOne line\nsoft-broken\\\nhard-broken\n\nstanza two\n\n</div>\n";
+        let doc = markdown::parse(src, html_elements());
+        let block = doc.ast.node(doc.ast.root).first_child.unwrap();
+        assert_eq!(doc.ast.kind(block), &Kind::LineBlock);
+        assert!(doc.ast.attrs_of(block).is_empty());
+        let texts = line_texts(&doc, block);
+        let want: [&[u8]; 5] = [b"One line", b"soft-broken", b"hard-broken", b"", b"stanza two"];
+        assert_eq!(texts, want);
+        let gap = doc.ast.child_ids(block)[3];
+        let at = src.windows(8).position(|w| w == b"\n\nstanza").unwrap() + 1;
+        assert_eq!(doc.span(gap).start, at);
+    }
+
+    #[test]
+    fn markdown_em_spaces_are_the_indent_raw_or_as_an_entity() {
+        if !markdown_ready() {
+            return;
+        }
+        let src = "<div class=\"verse center\">\n\nzero\n\u{2003}one\n&emsp;&#8195;two\n\n</div>\n";
+        let s = src.as_bytes();
+        let doc = markdown::parse(s, html_elements());
+        let block = doc.ast.node(doc.ast.root).first_child.unwrap();
+        assert_eq!(doc.ast.kind(block), &Kind::LineBlock);
+        assert_eq!(doc.ast.attrs_of(block).get(b"class"), Some(&b"center"[..]));
+        let lines = doc.ast.child_ids(block);
+        assert_eq!(lines.len(), 3);
+        let want_text: [&[u8]; 3] = [b"zero", b"one", b"two"];
+        let want_start: [&[u8]; 3] = [b"zero", "\u{2003}".as_bytes(), b"&emsp;"];
+        for (i, &line) in lines.iter().enumerate() {
+            assert_eq!(doc.ast.kind(line), &Kind::Line { indent: i as u32 });
+            let str_id = doc.ast.node(line).first_child.unwrap();
+            assert_eq!(doc.ast.kind(str_id), &Kind::Str(want_text[i].to_vec()));
+            assert_eq!(doc.span(str_id).of(s), want_text[i]);
+            assert!(s[doc.span(line).start..].starts_with(want_start[i]));
+        }
+    }
+
+    #[test]
+    fn markdown_a_div_holding_more_than_paragraphs_or_without_html_elements_is_not_a_verse() {
+        if !markdown_ready() {
+            return;
+        }
+        let mixed = b"<div class=\"verse\">\n\n# A heading\n\nA line\n\n</div>\n";
+        let doc = markdown::parse(mixed, html_elements());
+        let block = doc.ast.node(doc.ast.root).first_child.unwrap();
+        assert!(matches!(doc.ast.kind(block), Kind::Container(_)));
+        assert_eq!(doc.ast.attrs_of(block).get(b"class"), Some(&b"verse"[..]));
+
+        let plain = b"<div class=\"verse\">\n\nA line\n\n</div>\n";
+        let raw = markdown::parse(plain, ParseOptions::COMMONMARK);
+        assert!(raw.ast.nodes.iter().all(|n| n.kind != Kind::LineBlock));
+    }
+
+    #[test]
+    fn djot_a_verse_div_is_a_line_block_its_other_classes_kept() {
+        let src = "{.center}\n::: verse\nOne\\\n\u{2003}two\n\nthree\n:::\n";
+        let doc = crate::languages::djot::parse(src.as_bytes());
+        let block = doc.ast.node(doc.ast.root).first_child.unwrap();
+        assert_eq!(doc.ast.kind(block), &Kind::LineBlock);
+        assert_eq!(doc.ast.attrs_of(block).get(b"class"), Some(&b"center"[..]));
+        let want: [&[u8]; 4] = [b"One", b"two", b"", b"three"];
+        assert_eq!(line_texts(&doc, block), want);
+    }
+
+    #[test]
+    fn the_rewrite_leaves_nothing_behind_for_compaction_to_miss() {
+        if !markdown_ready() {
+            return;
+        }
+        let doc = markdown::parse(b"<div class=\"verse\">\n\na\nb\n\nc\n\n</div>\n", html_elements());
+        let mut seen = vec![false; doc.ast.nodes.len()];
+        let mut stack = vec![doc.ast.root];
+        while let Some(id) = stack.pop() {
+            seen[id as usize] = true;
+            stack.extend(doc.ast.child_ids(id));
+        }
+        assert!(seen.iter().all(|&s| s));
+        assert!(doc.ast.nodes.iter().all(|n| n.kind != Kind::Para && n.kind != Kind::SoftBreak));
+    }
 
     /// `<div class="verse center">` with "a\n\u{2003}b" and "&emsp;c",
     /// hand-built with source positions.

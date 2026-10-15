@@ -1093,9 +1093,21 @@ mod tests {
         assert_eq!(doc.ast.kind(next(&doc, para)), &Kind::BlockQuote);
     }
 
-    // TODO(port): "HTML tight-list item text stays on the marker's line through
-    // djot/markdown" and "HTML soft-wrapped list-item paragraph keeps
-    // continuation indent" need the djot/Markdown serializers' `serialize_ast`.
+    // TODO(port): the djot halves of the next two need the djot serializer's
+    // `serialize_ast` (not yet ported).
+    #[test]
+    fn tight_list_item_text_stays_on_the_markers_line_through_markdown() {
+        let doc = parse("<ul>\n<li>\none\n</li>\n<li>\ntwo\n</li>\n</ul>\n");
+        let md = crate::languages::markdown::serializer::serialize_ast(&doc.ast);
+        assert_eq!(String::from_utf8(md).unwrap(), "- one\n- two\n");
+    }
+
+    #[test]
+    fn soft_wrapped_list_item_paragraph_keeps_continuation_indent_in_markdown() {
+        let doc = parse("<ul>\n<li>\n<p>one\ntwo</p>\n</li>\n</ul>\n");
+        let md = crate::languages::markdown::serializer::serialize_ast(&doc.ast);
+        assert_eq!(String::from_utf8(md).unwrap(), "- one\n  two\n");
+    }
 
     #[test]
     fn framed_leaves_carry_an_interior_content_span() {

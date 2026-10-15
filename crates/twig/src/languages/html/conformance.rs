@@ -2,11 +2,9 @@
 //! THIS module's generic `serialize` with the parsed document's own labels as
 //! the `Context`. Port of `src/languages/html/conformance.zig`.
 //!
-//! TODO(port): the Zig suite parses each case with the djot parser. Until
-//! `crate::languages::djot::parse` is ported, the documents come from the Zig
-//! oracle's node table (`convert -i djot -o table`), read back with
-//! `ast::table::decode` — the same tree, so the renderer is held to the same
-//! byte-exact expectations. Swap `parse_djot` for the Rust parser then.
+//! A second run takes its documents from the Zig oracle's node table
+//! (`convert -i djot -o table`, read back with `ast::table::decode`), holding
+//! the renderer alone to the same byte-exact expectations.
 
 use std::path::PathBuf;
 
@@ -113,7 +111,7 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// TODO(port): replace with `crate::languages::djot::parse` once ported.
+/// The oracle's parse of `input`, via its node table.
 fn parse_djot(input: &[u8]) -> Option<Document> {
     let bin = repo().join("zig-out/bin/twig");
     let out = std::process::Command::new(bin)
@@ -140,12 +138,8 @@ fn parse_djot(input: &[u8]) -> Option<Document> {
     crate::ast::table::decode(input, &out.stdout).ok()
 }
 
-#[test]
-fn shared_html_printer_matches_djot_js_conformance_corpus() {
-    if !repo().join("zig-out/bin/twig").exists() {
-        eprintln!("oracle not built; skipping (TODO(port): use the Rust djot parser)");
-        return;
-    }
+/// Run every fixture through `parse` and the shared printer.
+fn run_corpus(parse: impl Fn(&[u8]) -> Option<Document>) {
     let mut total = 0;
     let mut skipped = 0;
     let mut failures: Vec<String> = Vec::new();
@@ -158,7 +152,8 @@ fn shared_html_printer_matches_djot_js_conformance_corpus() {
                 skipped += 1;
                 continue;
             }
-            let rendered = match parse_djot(&c.input) {
+            // The parsed document's own label tables are the `Context`.
+            let rendered = match parse(&c.input) {
                 Some(doc) => serialize_alloc(&doc.ast, Some(&doc.labels)).unwrap(),
                 None => b"<parse error>".to_vec(),
             };
@@ -182,4 +177,20 @@ fn shared_html_printer_matches_djot_js_conformance_corpus() {
             failures.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
         );
     }
+}
+
+#[test]
+fn shared_html_printer_matches_djot_js_conformance_corpus() {
+    run_corpus(|input| Some(crate::languages::djot::parse(input)));
+}
+
+/// The same corpus over the Zig oracle's parse (read back from its node
+/// table), so a renderer regression can't hide behind a djot parser one.
+#[test]
+fn shared_html_printer_matches_djot_js_corpus_over_oracle_parse() {
+    if !repo().join("zig-out/bin/twig").exists() {
+        eprintln!("oracle not built; skipping");
+        return;
+    }
+    run_corpus(parse_djot);
 }
