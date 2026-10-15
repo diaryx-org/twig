@@ -26,15 +26,31 @@ use crate::document::Document;
 
 /// Parse `source` (Markdown/CommonMark text) into a `Document`.
 ///
-/// `options` decides what parses; it is not recorded on the result.
+/// `options` decides what parses; it is not recorded on the result. The one
+/// option rendering needs — `options.dialect`, for GFM's HTML conventions —
+/// is passed to the HTML renderer by whoever holds the preset.
 pub fn parse(source: &[u8], options: ParseOptions) -> Document {
-    // TODO(port): block parser in progress.
-    let _ = options;
-    let mut b = crate::ast::Builder::new();
-    let root = b.add_container(crate::ast::Kind::Doc, &[]);
-    b.set_span(root, crate::span::Span::new(0, source.len()));
-    crate::ast::compact::run(b.finish_document(source, root))
+    block::parse(source, options)
 }
+
+/// Whether `angled` — a whole `<…>` run, brackets included — spells a
+/// CommonMark autolink (an absolute URI or an email) rather than raw HTML or
+/// literal text. The inline scanner's own two recognizers, asked in the order
+/// the scanner itself dispatches them.
+pub fn spells_autolink(angled: &[u8]) -> bool {
+    if angled.len() < 2 || angled[0] != b'<' {
+        return false;
+    }
+    if inline::scan_autolink_uri(angled, 0) == Some(angled.len()) {
+        return true;
+    }
+    if inline::scan_autolink_email(angled, 0) == Some(angled.len()) {
+        return true;
+    }
+    false
+}
+
+pub use block::Parser;
 
 /// Small documents exercising the shared engine contract; not a conformance
 /// corpus. These are the default flavor's.
