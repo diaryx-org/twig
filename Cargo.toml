@@ -4,7 +4,7 @@ members = ["crates/twig-kit", "crates/twig", "crates/twig-djot", "crates/twig-ma
 default-members = ["crates/twig-kit", "crates/twig", "crates/twig-djot", "crates/twig-markdown", "crates/twig-html", "crates/twig-xml", "crates/twig-asciidoc", "crates/twig-rst", "crates/twig-cli"]
 
 [workspace.package]
-version = "5.0.0"
+version = "6.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
@@ -12,14 +12,14 @@ repository = "https://github.com/diaryx-org/twig"
 homepage = "https://github.com/diaryx-org/twig"
 
 [workspace.dependencies]
-twig-doc = { path = "crates/twig", version = "5.0.0", default-features = false }
-twig-kit = { path = "crates/twig-kit", version = "5.0.0" }
-twig-djot = { path = "crates/twig-djot", version = "5.0.0", default-features = false }
-twig-markdown = { path = "crates/twig-markdown", version = "5.0.0", default-features = false }
-twig-html = { path = "crates/twig-html", version = "5.0.0", default-features = false }
-twig-xml = { path = "crates/twig-xml", version = "5.0.0", default-features = false }
-twig-asciidoc = { path = "crates/twig-asciidoc", version = "5.0.0", default-features = false }
-twig-rst = { path = "crates/twig-rst", version = "5.0.0", default-features = false }
+twig-doc = { path = "crates/twig", version = "6.0.0", default-features = false }
+twig-kit = { path = "crates/twig-kit", version = "6.0.0" }
+twig-djot = { path = "crates/twig-djot", version = "6.0.0", default-features = false }
+twig-markdown = { path = "crates/twig-markdown", version = "6.0.0", default-features = false }
+twig-html = { path = "crates/twig-html", version = "6.0.0", default-features = false }
+twig-xml = { path = "crates/twig-xml", version = "6.0.0", default-features = false }
+twig-asciidoc = { path = "crates/twig-asciidoc", version = "6.0.0", default-features = false }
+twig-rst = { path = "crates/twig-rst", version = "6.0.0", default-features = false }
 
 [profile.release]
 debug = 1

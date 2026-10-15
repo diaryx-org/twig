@@ -90,6 +90,76 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 6.0.0
+
+### Breaking
+
+- one crate per language, over a kit and a core that names none ([`a8b8c69`](https://github.com/diaryx-org/twig/commit/a8b8c693b87a3f11405ddb7972c01464f181d68a))
+- fold twig-meta into twig-doc behind a default fig feature ([`102be5d`](https://github.com/diaryx-org/twig/commit/102be5dcde1e4fb6f4aac284e7473e9e088b1510))
+
+### Added
+
+- **rust** — start the pure-Rust port with the shared AST core ([`2c141e6`](https://github.com/diaryx-org/twig/commit/2c141e6786da8598b38a43f252844a9c7fd7287a))
+- **rust/markdown** — ParseOptions, Dialect, Extensions and a parse stub ([`1d62709`](https://github.com/diaryx-org/twig/commit/1d627096e9d003a273d67adf9f1ba1bf7bbc4214))
+- **rust/markdown** — entities table, directive attributes, highlight colours ([`9c4c341`](https://github.com/diaryx-org/twig/commit/9c4c341e8175313237fcb93f4e585ade27f71f34))
+- **rust** — decode the node table, checked as the Zig decoder checks it ([`9d3c110`](https://github.com/diaryx-org/twig/commit/9d3c11062f3fe21509df440fcfd0d70a8c3fd5de))
+- **rust/html** — generic HTML renderer (serializer) and render presets ([`e6cf2af`](https://github.com/diaryx-org/twig/commit/e6cf2af67d92299171a4d02e364a5c956c7de24e))
+- **rust/xml** — port the XML parser and serializer with an oracle differential test ([`5842b23`](https://github.com/diaryx-org/twig/commit/5842b23d50bec11138569b14b2314a04fd65c006))
+- **rust** — attrs_writer and the verse pass ([`caaf4ab`](https://github.com/diaryx-org/twig/commit/caaf4abae63b04c43e0ff48109dc9f6da3c1fcd2))
+- **rust** — the Format and Target axes, features and name resolution ([`61942cf`](https://github.com/diaryx-org/twig/commit/61942cf1ecc7a4bd19e15d40f8deae09ba2734f0))
+- **rust/syntax** — the Syntax table and every format's spelling tables ([`e6a9740`](https://github.com/diaryx-org/twig/commit/e6a9740eb09a734cc948464b709574503e959987))
+- **rust/cli** — argument parsing and the CLI's format helpers ([`1061249`](https://github.com/diaryx-org/twig/commit/1061249a6b4feff8110220082d427e3538d068f4))
+- **rust/markdown** — port the Markdown serializer, HTML renderer and conformance suites ([`b1d6fc5`](https://github.com/diaryx-org/twig/commit/b1d6fc5f8c28e29556332e76922e936703280ec6))
+- **rust/html** — forgiving HTML parser, conformance and oracle differential tests ([`f312775`](https://github.com/diaryx-org/twig/commit/f31277505e6768760d7ab4929673dcd35ef23114))
+- **rust/syntax** — syntax_json, the Syntax table as JSON and back ([`7558350`](https://github.com/diaryx-org/twig/commit/7558350fa14e98ebf7e59be994b004ee4db1bcb7))
+- **rust** — attrs_writer reads crate::syntax::AttrSpelling ([`4762f8f`](https://github.com/diaryx-org/twig/commit/4762f8f0b2ad996556f0609f8b0b3c32864d29cf))
+- **rust** — conversion diagnostics — the fidelity tables, the probes and measure ([`2b39886`](https://github.com/diaryx-org/twig/commit/2b398864046af720bac9ed7adf64c6a0601e6ab0))
+- **rust/select** — CSS-lite selector parse and resolve ([`74c625c`](https://github.com/diaryx-org/twig/commit/74c625ce64c4c766a3886ecefabb9ed790244e9e))
+- **rust/markdown** — the block and inline parser ([`78a640e`](https://github.com/diaryx-org/twig/commit/78a640e5b8aa2c9e9c4bb1605d194c7b1ded7b63))
+- **rust/syntax** — defer autolinks to the parsers' scanners, print Markdown fragments ([`dbdb171`](https://github.com/diaryx-org/twig/commit/dbdb171d8234f35854b5361e494f9965177cda51))
+- **rust/asciidoc** — port the parser and serializer, with oracle differential tests ([`d7c6668`](https://github.com/diaryx-org/twig/commit/d7c6668f13e31c4765a1b9a2d807d6abd653742a))
+- **rust/rst** — port the rST parser, doctree codec, diagnostics and conformance harness ([`e5d2e0e`](https://github.com/diaryx-org/twig/commit/e5d2e0e00493dc2ef159fc060406f9c29a363925))
+- **rust** — the format registry's dispatch; non-UTF-8 strings print as byte arrays, as Zig's JSON does ([`fa7c9c5`](https://github.com/diaryx-org/twig/commit/fa7c9c52051f5b8f0c5e9f85ad684aa98b7e83d4))
+- **rust/djot** — port the djot parser, HTML adapter, serializer and conformance corpus ([`ba3110e`](https://github.com/diaryx-org/twig/commit/ba3110ed7882711382e091bdb47e710282992e5c))
+- **rust/editor** — the span splicer and locators ([`4e34f4f`](https://github.com/diaryx-org/twig/commit/4e34f4f621e2d20bb0c5796e8d9f5825bb58e79e))
+- **rust/editor** — hit-testing, the filter pass and table grid surgery ([`22f7abd`](https://github.com/diaryx-org/twig/commit/22f7abda08f77f2c3235e9026a74c05593cf6f98))
+- **rust/syntax** — print djot and AsciiDoc fragments through their serializers ([`2a5184f`](https://github.com/diaryx-org/twig/commit/2a5184faf3d2baba364da72db9913ce5f16a7e7d))
+- **rust/cli** — convert, query, edit, filter, identify and lang over the registry ([`4badeb1`](https://github.com/diaryx-org/twig/commit/4badeb10f915d35a4e562b47654c51203b23c11f))
+- **rust/asciidoc** — port the ASG codec, the conformance harness and the parser's unit tests ([`3953ffb`](https://github.com/diaryx-org/twig/commit/3953ffbb6c21d28e4d8393228ba8a8b2520600cd))
+- **rust/editor** — the authoring Editor and every gesture ([`f9e7f03`](https://github.com/diaryx-org/twig/commit/f9e7f03740ba101ffa132f61487f9c46ddb7fc71))
+- **rust/asciidoc** — HTML and cross-format oracle differentials; read delimiters from the syntax table ([`dc30a62`](https://github.com/diaryx-org/twig/commit/dc30a62b91d951587f08c035a901daddd57eea82))
+- **rust/api** — the binding-compatible Document, Editor, Builder and Format surface over the engine, with the binding's tests ([`8799e97`](https://github.com/diaryx-org/twig/commit/8799e97d5da1b826960300e52054bc478f96a258))
+- **rust/runtime** — the runtime-language registry, helper wire, contract checks, CLI languages file and the Language/helper API ([`a98c4ee`](https://github.com/diaryx-org/twig/commit/a98c4ee03ffe75c7a6f168f6249a72cd7283c509))
+- **rust/cli** — lang list and lang check over the runtime registry ([`9e9cbe2`](https://github.com/diaryx-org/twig/commit/9e9cbe20e23e6acbd41a70ebe3c59907d92166ed))
+- **rust/contract** — the editor-dependent checks (sample splices, render_text, node_attrs, move_block, every gesture); text doc blocks ([`8d635b3`](https://github.com/diaryx-org/twig/commit/8d635b38bf5e61738f855f4fce965ff765a075fe))
+- **rust** — register and helper::spawn hand back the public Format, re-exported at the root as the binding did ([`af32fc4`](https://github.com/diaryx-org/twig/commit/af32fc44ba530b3609941558b43356eeda064bdf))
+- **rust** — the allocation bench and the keystroke bench, as cargo examples ([`e3c6b4e`](https://github.com/diaryx-org/twig/commit/e3c6b4e3441643492f182c8d50948cff5f381577))
+- **rust/capi** — the C ABI of twig.h over the Rust engine ([`5a55489`](https://github.com/diaryx-org/twig/commit/5a554899887ee2a29846940310f12701f249d018))
+- **meta** — twig-meta, a document's metadata read and edited through fig ([`7015955`](https://github.com/diaryx-org/twig/commit/701595586583ef9d659cdf04ccd4845d7c371215))
+
+### Fixed
+
+- **sys** — leave every file the Apple repack extracts readable ([`1999463`](https://github.com/diaryx-org/twig/commit/1999463420cc9262f79c82ece760cd2026cea147))
+- **asciidoc** — a macro's unnamed first positional and a long author line ([`0a839ef`](https://github.com/diaryx-org/twig/commit/0a839ef633a7cb0169dbb77f508a8c556265efbb))
+- **markdown** — a row's non-cell child is a column with no alignment ([`ac7f373`](https://github.com/diaryx-org/twig/commit/ac7f37301b85a03e6df6c578543e5949c81f87ac))
+- **xml** — refuse a kind XML cannot spell instead of reaching unreachable ([`6584204`](https://github.com/diaryx-org/twig/commit/658420431861e1270c0c8cbae34dcd420fb64611))
+- **table** — the decoder accepts a coloured highlight's marker span ([`7825aa8`](https://github.com/diaryx-org/twig/commit/7825aa80e67cfe927f08f66c239ba8625f4980f0))
+
+### Changed
+
+- **rust/markdown** — the serializer reads attr spelling from the syntax table ([`889750e`](https://github.com/diaryx-org/twig/commit/889750e4ba1df4619a506005dfb4826012966419))
+
+### Behavioural changes
+
+- A document whose frontmatter has a `twig` key is now
+  read as it asks — `dialect` picks a row of the same language (`gfm`,
+  `commonmark`) and `features` turns those features on over the caller's —
+  by `Document::parse*`, `Editor::new*`, `twig convert|query|edit|filter`
+  and `twig_document_parse`/`twig_editor_create`. It used to be read
+  exactly as the caller asked. A document without a `twig` key reads as
+  before.
+
+
 ## 4.1.0
 
 ### Added
