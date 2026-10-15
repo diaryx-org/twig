@@ -467,11 +467,6 @@ impl Author<'_> {
 /// to three space-separated names and an optional `<address>`; a line that
 /// does not fit (four or more names) yields one author whose full name is the
 /// whole text and whose first/last names are its first and last words.
-///
-/// DIVERGENCE NOTE: the Zig keeps only the first four words and reads
-/// `words[n - 1]`, out of bounds from five words on (undefined behaviour in
-/// the ReleaseFast oracle, which observably drops the last name). This port
-/// reproduces the oracle's observable output: no last name past four words.
 #[derive(Clone, Debug)]
 pub struct AuthorIter<'a> {
     rest: &'a [u8],
@@ -521,7 +516,7 @@ impl<'a> Iterator for AuthorIter<'a> {
                     fullname: names,
                     firstname: words[0],
                     middlename: None,
-                    lastname: if n == 4 { Some(words[3]) } else { None },
+                    lastname: Some(words[n - 1]),
                     email,
                 });
             }
@@ -2450,14 +2445,15 @@ impl<'a> Parser<'a> {
                     if !e.value.is_empty() {
                         self.pending.named.push(kv(positional_names[e.index - 1], e.value));
                     }
-                } else if !e.value.is_empty() {
-                    // DIVERGENCE NOTE: the Zig indexes `positional[e.index - 2]`
-                    // here, which underflows for a first positional on
-                    // `audio::`/`toc::` (the ReleaseFast oracle segfaults);
-                    // this port ignores that one value instead.
-                    if e.index < 2 {
-                        continue;
+                } else if e.index == 1 {
+                    // A first positional the macro gives no name — `toc::[x]`,
+                    // `audio::a.mp3[x]`. `pending.positional` is numbered from
+                    // `$2` (a block list's `$1` is its shorthand), so it keeps
+                    // its number here instead, as a leftover one does.
+                    if !e.value.is_empty() {
+                        self.pending.named.push(kv(b"$1", e.value));
                     }
+                } else if !e.value.is_empty() {
                     while self.pending.positional.len() < e.index - 1 {
                         self.pending.positional.push(None);
                     }
@@ -4141,6 +4137,26 @@ mod tests {
 
     fn first_block(doc: &Document) -> NodeId {
         doc.ast.nodes[doc.ast.root as usize].first_child.unwrap()
+    }
+
+    #[test]
+    fn a_macros_unnamed_first_positional_keeps_its_number() {
+        let doc = parse(b"toc::[foo]\n\naudio::a.mp3[bar,baz]\n");
+        let toc = first_block(&doc);
+        assert_eq!(doc.ast.attrs_of(toc).get(b"$1"), Some(&b"foo"[..]));
+        let audio = doc.ast.nodes[toc as usize].next_sibling.unwrap();
+        assert_eq!(doc.ast.attrs_of(audio).get(b"$1"), Some(&b"bar"[..]));
+        assert_eq!(doc.ast.attrs_of(audio).get(b"$2"), Some(&b"baz"[..]));
+    }
+
+    #[test]
+    fn an_author_line_of_more_than_four_names_takes_its_last_word() {
+        let a = AuthorIter::new(b"A B C D E F <a@b.c>").next().unwrap();
+        assert_eq!(a.fullname, b"A B C D E F");
+        assert_eq!(a.firstname, b"A");
+        assert_eq!(a.middlename, None);
+        assert_eq!(a.lastname, Some(&b"F"[..]));
+        assert_eq!(a.email, Some(&b"a@b.c"[..]));
     }
 
     fn nth(doc: &Document, parent: NodeId, n: usize) -> NodeId {

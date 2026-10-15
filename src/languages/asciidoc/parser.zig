@@ -348,16 +348,20 @@ pub const AuthorIter = struct {
                 }
             }
             if (names.len == 0) continue;
-            var words: [4][]const u8 = undefined;
+            // The first three words and the last: enough for either shape,
+            // whatever the count.
+            var words: [3][]const u8 = undefined;
+            var last: []const u8 = undefined;
             var n: usize = 0;
             var it = std.mem.tokenizeAny(u8, names, " \t");
             while (it.next()) |w| {
-                if (n < 4) words[n] = w;
+                if (n < 3) words[n] = w;
+                last = w;
                 n += 1;
             }
             if (n == 0) continue;
             if (n > 3) {
-                return .{ .fullname = names, .firstname = words[0], .middlename = null, .lastname = words[n - 1], .email = email };
+                return .{ .fullname = names, .firstname = words[0], .middlename = null, .lastname = last, .email = email };
             }
             return .{
                 .fullname = names,
@@ -1875,6 +1879,12 @@ const Parser = struct {
                     try self.pending.named.append(self.allocator, .{ .key = k, .value = e.value });
                 } else if (e.index <= positional_names.len) {
                     if (e.value.len > 0) try self.pending.named.append(self.allocator, .{ .key = positional_names[e.index - 1], .value = e.value });
+                } else if (e.index == 1) {
+                    // A first positional the macro gives no name — `toc::[x]`,
+                    // `audio::a.mp3[x]`. `pending.positional` is numbered from
+                    // `$2` (a block list's `$1` is its shorthand), so it keeps
+                    // its number here instead, as a leftover one does.
+                    if (e.value.len > 0) try self.pending.named.append(self.allocator, .{ .key = "$1", .value = e.value });
                 } else if (e.value.len > 0) {
                     while (self.pending.positional.items.len < e.index - 1) try self.pending.positional.append(self.allocator, null);
                     self.pending.positional.items[e.index - 2] = e.value;
@@ -3469,6 +3479,32 @@ test "a discrete heading is a heading in the flow, not a section" {
     try testing.expectEqual(@as(u32, 2), doc.ast.nodes[h].kind.heading.level);
     try testing.expect(doc.ast.nodes[doc.ast.nodes[h].next_sibling.?].kind == .para);
     try testing.expect(doc.ast.attrsOf(h).isEmpty());
+}
+
+test "an author line of more than four names takes its last word as the last name" {
+    // Only the first words are kept; the last name used to be read from past
+    // the end of them.
+    var doc = try parse(testing.allocator, "= T\nA B C D E F <a@b.c>\n\nbody\n");
+    defer doc.deinit();
+    var it = AuthorIter.init("A B C D E F <a@b.c>");
+    const a = it.next().?;
+    try testing.expectEqualStrings("A B C D E F", a.fullname);
+    try testing.expectEqualStrings("A", a.firstname);
+    try testing.expectEqual(@as(?[]const u8, null), a.middlename);
+    try testing.expectEqualStrings("F", a.lastname.?);
+    try testing.expectEqualStrings("a@b.c", a.email.?);
+}
+
+test "a macro's unnamed first positional keeps its number rather than underflowing" {
+    // `toc::` and `audio::` name no positional, so a `[foo]` used to index
+    // `pending.positional` (numbered from `$2`) at -1.
+    var doc = try parse(testing.allocator, "toc::[foo]\n\naudio::a.mp3[bar,baz]\n");
+    defer doc.deinit();
+    const toc = firstBlock(&doc);
+    try testing.expectEqualStrings("foo", doc.ast.attrsOf(toc).get("$1").?);
+    const audio = doc.ast.nodes[toc].next_sibling.?;
+    try testing.expectEqualStrings("bar", doc.ast.attrsOf(audio).get("$1").?);
+    try testing.expectEqualStrings("baz", doc.ast.attrsOf(audio).get("$2").?);
 }
 
 test "block macros: an image is a paragraph holding an image; audio, video and toc are leaf directives" {

@@ -643,6 +643,11 @@ impl<'d> Renderer<'d> {
             let a = self.attrs(id);
             if name == b"video" {
                 self.emit_positional(&[a.get(b"poster"), a.get(b"width"), a.get(b"height")]);
+            } else {
+                // The parser keeps a first positional these macros give no
+                // name as `$1`; only the macro's own brackets can spell it,
+                // a block list's first slot being its style.
+                self.emit_positional(&[a.get(b"$1")]);
             }
             self.emit(b"]\n");
             return;
@@ -1374,6 +1379,11 @@ mod tests {
 
     fn s(b: &[u8]) -> &str {
         std::str::from_utf8(b).unwrap()
+    }
+
+    #[test]
+    fn a_macros_unnamed_first_positional_round_trips_inside_its_brackets() {
+        assert_eq!(s(&round_trip(b"toc::[foo]\n\naudio::a.mp3[bar]\n")), "toc::[foo]\n\naudio::a.mp3[bar]\n");
     }
 
     #[test]
