@@ -78,6 +78,16 @@ XML_SAMPLES = [
 ]
 
 
+# Inputs that once crashed or read out of bounds in one implementation — kept
+# so both stay held to the fixed behaviour.
+REGRESSIONS = [
+    ("asciidoc", "adoc", "toc-positional", b"toc::[foo]\n\naudio::a.mp3[bar,baz]\n"),
+    ("asciidoc", "adoc", "five-name-author", b"= T\nA B C D E F <a@b.c>\n\nbody\n"),
+    ("html", "html", "pre-in-tr", b"<table><tr><pre>x</pre><td>a</td></tr></table>\n"),
+    ("markdown", "md", "colored-highlight", "==\U0001F534 red== and ==\U0001F7E2green== text\n".encode()),
+]
+
+
 def write_corpus(tmp: pathlib.Path):
     """Returns [(format_name, path)]."""
     out = []
@@ -102,6 +112,8 @@ def write_corpus(tmp: pathlib.Path):
         put("markdown", "md", f"repo-{name}", data)
     for name, text in asciidoc_cases():
         put("asciidoc", "adoc", name, text)
+    for fmt, ext, name, data in REGRESSIONS:
+        put(fmt, ext, f"regression-{name}", data)
     for i, data in enumerate(XML_SAMPLES):
         put("xml", "xml", f"sample-{i}", data)
         put("svg", "svg", f"sample-{i}", data)
