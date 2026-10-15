@@ -6,7 +6,7 @@
 
 use crate::ast::verse;
 use crate::ast::{Ast, KindRef, Container, Form, InlineMark, KeyVal, Attrs, Kind, MarkupLeafKind, NodeId, TextLeafKind, Alignment};
-use crate::attrs_writer::{self, AttrSpelling, Quoting};
+use crate::attrs_writer;
 use crate::document::{Bullet, Document, HighlightPrefix, Labels, OrderedDelim, Spelling, ContainerOrigin};
 use crate::languages::html::serializer::write_element_text;
 use crate::languages::markdown::highlight;
@@ -18,21 +18,6 @@ use crate::languages::markdown::highlight;
 fn md_table() -> &'static crate::syntax::Syntax {
     crate::syntax::markdown::table()
 }
-
-// TODO(port): `attrs_writer::write` still takes its own `AttrSpelling` type
-// rather than `crate::syntax::AttrSpelling`; until they are one type, the
-// markdown table's `attr_spelling` is restated here (verbatim from
-// `languages/markdown/syntax.zig`).
-/// `md_syntax.table.attr_spelling`.
-const ATTR_SPELLING: AttrSpelling = AttrSpelling {
-    open: "{",
-    close: "}",
-    quoting: Quoting::WhenNeeded,
-    quote_escapes: "\"\\",
-    id_sigil: Some("#"),
-    class_sigil: Some("."),
-    ..AttrSpelling::DEFAULT
-};
 
 /// One segment of a block's continuation prefix: `"> "` for a block quote, or
 /// the spaces that indent a list item / definition / div body. Chained
@@ -207,7 +192,8 @@ impl<'a> Renderer<'a> {
     /// Re-emit a directive's `{#id .class key=val}` attribute shorthand from
     /// the node's attrs (nothing if it has none).
     fn write_directive_attrs(&mut self, id: NodeId) {
-        attrs_writer::write(self.out, self.ast.attrs_of(id), &ATTR_SPELLING, b"");
+        let Some(sp) = &md_table().attr_spelling else { return };
+        attrs_writer::write(self.out, self.ast.attrs_of(id), sp, b"");
     }
 
     /// One `| a | b |` line for `row`'s cells.
