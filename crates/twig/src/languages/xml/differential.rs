@@ -8,6 +8,15 @@ use std::process::{Command, Stdio};
 
 use crate::ast::{json, table};
 
+/// Whether the Zig oracle is built; prints a skip note when it is not.
+pub(crate) fn oracle_available() -> bool {
+    let ok = oracle_path().is_some();
+    if !ok {
+        eprintln!("zig oracle not built; skipping");
+    }
+    ok
+}
+
 fn oracle_path() -> Option<std::path::PathBuf> {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zig-out/bin/twig");
     p.exists().then_some(p)
@@ -168,8 +177,7 @@ fn check(fmt: &str, src: &[u8]) -> Vec<String> {
 
 #[test]
 fn differential_against_the_zig_oracle() {
-    if oracle_path().is_none() {
-        eprintln!("zig oracle not built; skipping");
+    if !oracle_available() {
         return;
     }
     let mut problems = Vec::new();
