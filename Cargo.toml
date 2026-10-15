@@ -2,7 +2,7 @@
 # library and keeps its own workspace; it is excluded here.
 [workspace]
 resolver = "3"
-members = ["crates/twig"]
+members = ["crates/twig", "crates/twig-capi"]
 exclude = ["bindings"]
 
 [workspace.package]

@@ -1,0 +1,15 @@
+[package]
+name = "twig-capi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The C ABI of Twig (bindings/c/include/twig.h), implemented in Rust over the twig-doc crate."
+repository = "https://github.com/diaryx-org/twig"
+publish = false
+
+[lib]
+name = "twig"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+twig-doc = { path = "../twig" }
