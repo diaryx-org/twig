@@ -392,4 +392,70 @@ mod differential {
         }
         report(problems);
     }
+
+    /// The inputs of djot's vendored `.test` files: every fenced example's
+    /// text up to its `.` separator line.
+    fn djot_corpus() -> Vec<Vec<u8>> {
+        let dir = format!("{}/../../src/languages/djot/testdata", env!("CARGO_MANIFEST_DIR"));
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "test"))
+            .collect();
+        names.sort();
+        let mut out = Vec::new();
+        for path in names {
+            let text = std::fs::read(&path).unwrap();
+            let mut lines = text.split_inclusive(|&c| c == b'\n');
+            while let Some(line) = lines.next() {
+                if !line.starts_with(b"```") {
+                    continue;
+                }
+                let mut input = Vec::new();
+                for l in lines.by_ref() {
+                    if l == b".\n" {
+                        break;
+                    }
+                    input.extend_from_slice(l);
+                }
+                // Skip the expected output up to the closing fence.
+                for l in lines.by_ref() {
+                    if l.starts_with(b"```") {
+                        break;
+                    }
+                }
+                out.push(input);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn djot_to_markdown_matches_the_oracle() {
+        // `convert -i djot -o markdown`: the bare-tree path over djot's
+        // attributes, divs, spans, footnotes, math, line blocks and smart
+        // punctuation — kinds the Markdown and HTML parsers never produce.
+        if !oracle_available() {
+            return;
+        }
+        let mut problems = Vec::new();
+        let corpus = djot_corpus();
+        assert!(corpus.len() > 200, "djot corpus: {} examples", corpus.len());
+        for src in corpus {
+            let want = match oracle(&["convert", "-i", "djot", "-o", "markdown"], &src) {
+                Ok(w) => w,
+                Err(e) => panic!("oracle failed: {}", String::from_utf8_lossy(&e)),
+            };
+            let got = serializer::serialize_ast(&crate::languages::djot::parse(&src).ast);
+            if got != want {
+                problems.push(format!(
+                    "djot->markdown: {:?}\n  ours: {:?}\n  want: {:?}",
+                    String::from_utf8_lossy(&src),
+                    String::from_utf8_lossy(&got),
+                    String::from_utf8_lossy(&want)
+                ));
+            }
+        }
+        report(problems);
+    }
 }
