@@ -25,7 +25,12 @@
             pname = "twig";
             inherit version;
             src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              # twig-meta's fig comes from git, pinned by its rev in
+              # Cargo.lock; the CLI does not build it, but the lock vendors it.
+              outputHashes."fig-6.0.0" = "sha256-RBvK/KOnIEAxBqjMauad8UPdBg9h496nSl0tWRbWAGY=";
+            };
 
             # The CLI crate only; the engine is its dependency, and the C ABI
             # (twig-capi) is not part of the command-line package.

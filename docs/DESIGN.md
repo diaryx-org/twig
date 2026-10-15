@@ -38,7 +38,9 @@ why a module is shaped the way it is. Shared conventions worth naming once:
 - **Crates.** `crates/twig` is the engine (`twig-doc`, library `twig`),
   with no dependencies; `crates/twig-cli` is the `twig` binary
   (`twig-doc-cli`); `crates/twig-capi` builds the C ABI declared in
-  `bindings/c/include/twig.h`. Both wrappers use only the engine's public API.
+  `bindings/c/include/twig.h`; `crates/twig-meta` edits a document's
+  metadata through fig (`docs/proposals/fig-in-twig.md`). All three use only
+  the engine's public API.
 - **Per-language modules.** Each format lives under
   `crates/twig/src/languages/<name>/` with the same internal shape (a
   scanner/parser, a serializer, and a `mod.rs` that declares them and their

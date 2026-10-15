@@ -79,7 +79,8 @@ changelog entirely. Anything the parser does not recognise lands in a visible
 
 `cargo test --workspace` runs everything: the engine (`crates/twig`, including
 the vendored conformance corpora under `crates/twig/testdata/`), the CLI
-(`crates/twig-cli`) and the C ABI (`crates/twig-capi`). CI also compiles
+(`crates/twig-cli`), the C ABI (`crates/twig-capi`) and `twig-meta`
+(`crates/twig-meta`, which fetches fig from git). CI also compiles
 `bindings/c/test/header_test.c` against the C ABI's static library, so a change
 to `bindings/c/include/twig.h` is checked as C:
 
