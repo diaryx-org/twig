@@ -1736,6 +1736,62 @@ fn insertdirective_inside_a_quote_every_line_carries_the_marker() {
 }
 
 #[test]
+fn insertdirective_a_bare_attribute_is_refused_in_every_format() {
+    // Djot has no bare key, so `{wide}` would be a paragraph above an
+    // attribute-less fence; Markdown reads `{wide}` back as `wide=""`. Neither
+    // is the attribute asked for, so the gesture holds it to the grammar every
+    // other attribute gesture does, and writes nothing.
+    for (fmt, cfg) in [
+        (crate::test_languages::djot(), ParseConfig::default()),
+        (crate::test_languages::markdown(), directives_cfg()),
+        (crate::test_languages::asciidoc(), ParseConfig::default()),
+        (crate::test_languages::html(), ParseConfig::default()),
+    ] {
+        let mut fx = mk_with("a\n", fmt, cfg);
+        let wide = [KeyVal::new(b"wide", None)];
+        assert_eq!(Err(Error::InvalidAttribute), fx.ed.insert_directive(0, b"x-card", None, &wide));
+        fx.expect("a\n");
+    }
+}
+
+#[test]
+fn insertdirective_an_empty_attribute_value_reads_back_in_djot() {
+    let mut dj = mk("", crate::test_languages::djot());
+    dj.ed.insert_directive(0, b"x-card", None, &[KeyVal::new(b"wide", Some(b""))]).unwrap();
+    dj.expect("{wide=\"\"}\n::: x-card\n:::\n");
+    let id = dj.find(KindRef::Tag(Tag::Container)).expect("NoContainer");
+    assert_eq!(Some(&b""[..]), dj.ed.ast_view().attrs_of(id).get(b"wide"));
+}
+
+#[test]
+fn insertdirective_a_label_is_refused_where_the_format_has_nowhere_to_put_one() {
+    // Djot would write the label as the fence's body, which reads back as a
+    // paragraph inside a container; AsciiDoc would drop it.
+    for fmt in [crate::test_languages::djot(), crate::test_languages::asciidoc()] {
+        let mut fx = mk("a\n", fmt);
+        assert_eq!(Err(Error::InvalidLabel), fx.ed.insert_directive(0, b"x-card", Some(b"Title"), &[]));
+        fx.expect("a\n");
+    }
+}
+
+#[test]
+fn insertdirective_a_label_reads_back_as_the_directive_s_own_text() {
+    for (fmt, cfg, want) in [
+        (crate::test_languages::markdown(), directives_cfg(), "::x-card[Title]\n"),
+        (crate::test_languages::html(), ParseConfig::default(), "<x-card>Title</x-card>\n"),
+    ] {
+        let mut fx = mk_with("", fmt, cfg);
+        fx.ed.insert_directive(0, b"x-card", Some(b"Title"), &[]).unwrap();
+        fx.expect(want);
+        let id = fx.find(KindRef::ContainerNamed(b"x-card".to_vec())).expect("NoDirective");
+        let ast = fx.ed.ast_view();
+        let child = ast.nodes[id as usize].first_child.expect("NoLabel");
+        assert_eq!(&Kind::Str(b"Title".to_vec()), ast.kind(child));
+        assert!(ast.nodes[child as usize].next_sibling.is_none());
+    }
+}
+
+#[test]
 fn insertdirective_an_empty_document_is_a_legitimate_place_for_one() {
     let mut fx = mk_with("", crate::test_languages::markdown(), directives_cfg());
     fx.ed.insert_directive(0, b"page-break", None, &[]).unwrap();

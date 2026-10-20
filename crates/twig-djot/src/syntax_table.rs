@@ -118,6 +118,8 @@ pub static TABLE: Syntax = Syntax {
     // A named leaf container round-trips as a CLASS: djot's fenced div is
     // anonymous, so `::: name` reads back as `class=name`.
     names_leaf_containers: true,
+    // No `labels_leaf_containers`: a fence has no label, and what is written
+    // inside one reads back as a paragraph of its body.
     block_attrs: Some(BlockAttrs::Native),
     inline_attrs: true,
     // `::: verse`, read as a line block by `ast/verse.rs`.

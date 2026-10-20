@@ -534,6 +534,10 @@ pub struct Syntax {
     /// Whether a NAMED LEAF CONTAINER printed through `render_block` reparses
     /// to a container that still carries that name.
     pub names_leaf_containers: bool,
+    /// Whether such a container's LABEL reparses as its own inline text —
+    /// Markdown's `::name[label]`, an HTML element's content. Where it does
+    /// not, the label would come back as a paragraph, or not at all.
+    pub labels_leaf_containers: bool,
     /// How a BLOCK carrying attributes printed through `render_block` reparses.
     pub block_attrs: Option<BlockAttrs>,
     /// Whether a node's attributes live on its OWN opening spelling.
@@ -579,6 +583,7 @@ impl Syntax {
         block_start_escapes: None,
         cell_line_break: None,
         names_leaf_containers: false,
+        labels_leaf_containers: false,
         block_attrs: None,
         node_attrs: None,
         inline_attrs: false,
@@ -796,6 +801,9 @@ impl Syntax {
         if self.render_block.is_none() {
             if self.names_leaf_containers {
                 return fail(Rule::ClaimNeedsRenderer, "names_leaf_containers");
+            }
+            if self.labels_leaf_containers {
+                return fail(Rule::ClaimNeedsRenderer, "labels_leaf_containers");
             }
             if self.block_attrs.is_some() {
                 return fail(Rule::ClaimNeedsRenderer, "block_attrs");
@@ -1037,6 +1045,7 @@ mod tests {
         assert!(s.table_spelling.is_none());
         assert!(s.block_separator.is_none());
         assert!(!s.names_leaf_containers);
+        assert!(!s.labels_leaf_containers);
         assert!(s.block_attrs.is_none());
         assert!(!s.inline_attrs);
         s.assert_coherent();

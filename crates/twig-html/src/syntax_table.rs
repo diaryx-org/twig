@@ -68,6 +68,8 @@ pub static TABLE: Syntax = Syntax {
     render_block: Some(render_block),
     // An unknown element reads back as a container named by its tag.
     names_leaf_containers: true,
+    // An element's content is its label: `<x-card>Title</x-card>`.
+    labels_leaf_containers: true,
     block_attrs: Some(BlockAttrs::Native),
     inline_attrs: true,
     ..Syntax::NONE

@@ -222,6 +222,7 @@ fn derive(k: Key) -> Syntax {
     }
     // `::name[label]{attrs}` reads back as a container only under directives.
     t.names_leaf_containers = k.directives;
+    t.labels_leaf_containers = k.directives;
     // An attributed block is written inside a `<div>` and an attributed run
     // inside a `<span>`; only `html_elements` pairs the tags back.
     t.block_attrs = if k.html_elements { Some(BlockAttrs::Wrapped) } else { None };
@@ -340,7 +341,7 @@ mod tests {
             if t.mark_colors.is_some() {
                 assert!(t.inline_delim(InlineMark::Mark).unwrap().authorable);
             }
-            if t.names_leaf_containers || t.block_attrs.is_some() || t.inline_attrs {
+            if t.names_leaf_containers || t.labels_leaf_containers || t.block_attrs.is_some() || t.inline_attrs {
                 assert!(t.render_block.is_some());
             }
         }
@@ -415,6 +416,8 @@ mod tests {
         assert!(!table().names_leaf_containers);
         let dir = for_options(&ParseOptions { directives: true, ..opts() });
         assert!(dir.names_leaf_containers);
+        assert!(dir.labels_leaf_containers);
+        assert!(!table().labels_leaf_containers);
         assert!(!same(dir, table()));
         assert!(dir.inline_delim(InlineMark::Delete).unwrap().authorable);
         assert!(!dir.inline_delim(InlineMark::Mark).unwrap().authorable);

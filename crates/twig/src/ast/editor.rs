@@ -1008,7 +1008,10 @@ impl Editor {
 
     /// Insert a LEAF DIRECTIVE — Markdown's `::name[label]{attrs}` — as its own
     /// block after the block `offset` sits in, printed through the format's
-    /// renderer. Gated on `Syntax::names_leaf_containers`.
+    /// renderer. Gated on `Syntax::names_leaf_containers`. `InvalidAttribute`
+    /// for an attribute outside `check_attr`'s grammar, a bare key included;
+    /// `InvalidLabel` for a non-empty label where the format has no
+    /// `Syntax::labels_leaf_containers`, or one the brackets cannot hold.
     pub fn insert_directive(&mut self, offset: usize, name: &[u8], label: Option<&[u8]>, attrs: &[KeyVal]) -> R {
         if !self.syntax.names_leaf_containers {
             return Err(Error::UnsupportedFormat);
@@ -1018,6 +1021,16 @@ impl Editor {
             return Err(Error::InvalidRange);
         }
         check_directive_name(name)?;
+        for kv in attrs {
+            check_attr(kv)?;
+        }
+        // Where the format has nowhere to put a label, an empty one is no
+        // label and any other is refused.
+        let label = match label {
+            Some(l) if !self.syntax.labels_leaf_containers && !l.is_empty() => return Err(Error::InvalidLabel),
+            Some(_) if !self.syntax.labels_leaf_containers => None,
+            label => label,
+        };
         if let Some(l) = label {
             if contains_any(l, b"\r\n[]") {
                 return Err(Error::InvalidLabel);

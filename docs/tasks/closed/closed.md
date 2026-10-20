@@ -27,6 +27,7 @@ contents:
 - '[Every CLI invocation that loads an authoring helper re-runs the whole gesture check](/docs/tasks/closed/runtime-load-check-cost-per-invocation.md)'
 - '[The CLI writes stdout from offset 0, so `>>` overwrites what the file held](/docs/tasks/closed/cli-stdout-overwrites-an-appended-file.md)'
 - '[A gesture over an AsciiDoc paragraph admonition takes its label into the new block](/docs/tasks/closed/asciidoc-admonition-label-gestures.md)'
+- '[A djot directive written with a bare attribute or a label does not read back as one](/docs/tasks/closed/djot-insert-directive-round-trip.md)'
 ---
 
 # Closed tasks

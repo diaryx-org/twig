@@ -290,6 +290,7 @@ fn write_syntax_members(w: &mut Stringify, s: &Syntax) {
     opt_bytes_field(w, "block_start_escapes", s.block_start_escapes);
     opt_bytes_field(w, "cell_line_break", s.cell_line_break);
     bool_field(w, "names_leaf_containers", s.names_leaf_containers, false);
+    bool_field(w, "labels_leaf_containers", s.labels_leaf_containers, false);
     if let Some(b) = s.block_attrs {
         w.field("block_attrs");
         w.str(b.name().as_bytes());
@@ -348,6 +349,7 @@ pub fn eql(a: &Syntax, b: &Syntax) -> bool {
         && a.block_start_escapes == b.block_start_escapes
         && a.cell_line_break == b.cell_line_break
         && a.names_leaf_containers == b.names_leaf_containers
+        && a.labels_leaf_containers == b.labels_leaf_containers
         && a.block_attrs == b.block_attrs
         && a.node_attrs == b.node_attrs
         && a.inline_attrs == b.inline_attrs
@@ -674,7 +676,7 @@ fn node_attrs(v: &Value, path: &str) -> Result<NodeAttrs, Problem> {
     Ok(n)
 }
 
-const SYNTAX_MEMBERS: [&str; 25] = [
+const SYNTAX_MEMBERS: [&str; 26] = [
     "inline_delims",
     "text_leaf_delims",
     "mark_colors",
@@ -696,6 +698,7 @@ const SYNTAX_MEMBERS: [&str; 25] = [
     "block_start_escapes",
     "cell_line_break",
     "names_leaf_containers",
+    "labels_leaf_containers",
     "block_attrs",
     "node_attrs",
     "inline_attrs",
@@ -727,6 +730,7 @@ fn members_syntax(o: &Obj) -> Result<Syntax, Problem> {
         block_start_escapes: o.opt("block_start_escapes", bytes)?,
         cell_line_break: o.opt("cell_line_break", bytes)?,
         names_leaf_containers: o.or("names_leaf_containers", false, boolean)?,
+        labels_leaf_containers: o.or("labels_leaf_containers", false, boolean)?,
         block_attrs: o.opt("block_attrs", |v, p| name(v, p, BlockAttrs::from_name))?,
         node_attrs: o.opt("node_attrs", node_attrs)?,
         inline_attrs: o.or("inline_attrs", false, boolean)?,
