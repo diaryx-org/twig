@@ -266,6 +266,9 @@ pub fn renderers(entry: &Entry, r: &mut Report) -> CheckResult {
         if t.names_leaf_containers {
             named_leaf_container(entry, &cfg, r)?;
         }
+        if t.labels_leaf_containers {
+            labelled_leaf_container(entry, &cfg, r)?;
+        }
         if let Some(shape) = t.block_attrs {
             block_attrs(entry, &cfg, shape, r)?;
         }
@@ -736,6 +739,51 @@ pub fn named_leaf_container(entry: &Entry, cfg: &ParseConfig, r: &mut Report) ->
     }
     Err(r.fail(with_printed(
         format!("{name}: names_leaf_containers: a named leaf container does not come back named:\n").into_bytes(),
+        &printed,
+    )))
+}
+
+/// What `Editor::insert_directive` assumes of a table claiming
+/// `Syntax::labels_leaf_containers`: a named LEAF CONTAINER holding a label,
+/// printed through `render_block`, reparses to a container whose children are
+/// that label's text and nothing else — not a paragraph holding it.
+pub fn labelled_leaf_container(entry: &Entry, cfg: &ParseConfig, r: &mut Report) -> CheckResult {
+    let name = entry.id.name();
+    let mut b = Builder::new();
+    let label = str_leaf(&mut b, "Contents");
+    let root = b.add_container(Kind::Container(crate::ast::Container::with_form(b"x-embed", Form::BlockLeaf)), &[label]);
+    let printed = print_with(entry, table_for(entry, cfg), &b, root, r, "labelled directive")?;
+    let parsed = (entry.parse)(cfg, &printed)
+        .map_err(|e| r.broke(entry, &e, format!("{name}: labels_leaf_containers: a directive's print does not reparse")))?;
+    let ast = &parsed.doc.ast;
+    for (i, n) in ast.nodes.iter().enumerate() {
+        let Kind::Container(c) = &n.kind else { continue };
+        let named = c.name == b"x-embed" || ast.attrs_of(i as NodeId).get(b"class").is_some_and(|class| contains(class, b"x-embed"));
+        if !named {
+            continue;
+        }
+        let mut text = Vec::new();
+        let mut child = n.first_child;
+        while let Some(id) = child {
+            let Kind::Str(s) = &ast.nodes[id as usize].kind else {
+                return Err(r.fail(with_printed(
+                    format!("{name}: labels_leaf_containers: the label comes back as something other than text:\n").into_bytes(),
+                    &printed,
+                )));
+            };
+            text.extend_from_slice(s);
+            child = ast.nodes[id as usize].next_sibling;
+        }
+        if text != b"Contents" {
+            return Err(r.fail(with_printed(
+                format!("{name}: labels_leaf_containers: the directive comes back without its label:\n").into_bytes(),
+                &printed,
+            )));
+        }
+        return Ok(());
+    }
+    Err(r.fail(with_printed(
+        format!("{name}: labels_leaf_containers: a labelled leaf container does not come back named:\n").into_bytes(),
         &printed,
     )))
 }
@@ -2042,13 +2090,33 @@ fn probe_insert_table(t: &mut Trial, b: &BlockSite) -> CheckResult {
     )
 }
 
+/// The directive, then the two calls a format may not be able to write back:
+/// a label, which only a table claiming `labels_leaf_containers` may accept,
+/// and a bare attribute, which every format refuses.
 fn probe_directive(t: &mut Trial, b: &BlockSite) -> CheckResult {
     let caret = b.caret;
     t.run(
         "insert_directive",
         |e| e.insert_directive(caret, b"x-embed", None, &[KeyVal::new(b"src", Some(b"x.html"))]),
         |_, _| Ok(()),
-    )
+    )?;
+    let labels = t.entry.syntax.labels_leaf_containers;
+    let mut e = t.open()?;
+    match e.insert_directive(caret, b"x-embed", Some(b"Contents"), &[]) {
+        Ok(()) if !labels => return Err(t.broken(&e, "insert_directive", "a label is accepted with nowhere to put it")),
+        Ok(()) => t.succeeded(&e, "insert_directive")?,
+        Err(err) if labels => return t.refused(&e, "insert_directive", err),
+        Err(editor::Error::InvalidLabel) => t.refused(&e, "insert_directive", editor::Error::InvalidLabel)?,
+        Err(err) => {
+            let why = format!("a label is refused as {}, not InvalidLabel", err.name());
+            return Err(t.broken(&e, "insert_directive", &why));
+        }
+    }
+    let mut e = t.open()?;
+    match e.insert_directive(caret, b"x-embed", None, &[KeyVal::new(b"wide", None)]) {
+        Err(editor::Error::InvalidAttribute) => t.refused(&e, "insert_directive", editor::Error::InvalidAttribute),
+        _ => Err(t.broken(&e, "insert_directive", "a bare attribute is not refused as InvalidAttribute")),
+    }
 }
 
 fn probe_block_attrs(t: &mut Trial, b: &BlockSite) -> CheckResult {

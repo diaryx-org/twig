@@ -1653,8 +1653,11 @@ TwigStatus twig_editor_insert_table(
 // wrinkle: a NULL label_ptr with label_len == 0 is NO LABEL, which is a
 // different document from an empty one (`::name` against `::name[]`), so a
 // non-NULL pointer with a zero length writes the empty label. `attrs` is the
-// same (key, value) array twig_builder_set_attrs takes, with a NULL value for a
-// bare attribute; attrs_len == 0 (with any attrs_ptr) writes none.
+// same (key, value) array twig_builder_set_attrs takes; attrs_len == 0 (with
+// any attrs_ptr) writes none. Each attribute is held to the grammar
+// twig_editor_set_block_attrs holds one to, and a NULL value (a bare attribute)
+// is refused: djot has no spelling for one, and Markdown reads `{key}` back as
+// `key=""`.
 //
 // A NAME is an ASCII letter followed by letters, digits, `-` and `_` — the
 // grammar every format reads one back by, checked before anything is written
@@ -1663,10 +1666,14 @@ TwigStatus twig_editor_insert_table(
 // DIFFERENT wrong document per format (`::a b` is a paragraph holding an inline
 // directive named `a`, `::: a:b` is a paragraph of colons, `<a b>` is a tag
 // named `a`). A LABEL may not carry a line end or a square bracket, either of
-// which closes the `[...]` it is written in.
+// which closes the `[...]` it is written in. Only Markdown and HTML have a place
+// for one: djot would write it as the fence's body, which reads back as a
+// paragraph, and AsciiDoc would drop it, so there a non-empty label is refused
+// and an empty one is no label.
 //
 // TWIG_STATUS_INVALID_ARGUMENT for a name outside that grammar (an empty one
-// included), a label carrying a line end or a bracket, an `offset` past the
+// included), a label carrying a line end or a bracket, a label the format has
+// no place for, an attribute outside the grammar, an `offset` past the
 // source, a NULL name_ptr with a non-zero length, or a NULL attrs_ptr with a
 // non-zero attrs_len. There is no TWIG_STATUS_NOT_FOUND: an empty document is a
 // fine place for a directive.

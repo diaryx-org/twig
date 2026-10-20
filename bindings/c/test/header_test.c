@@ -454,6 +454,12 @@ static void test_new_block_gestures_link_and_edit(void) {
     CHECK(twig_editor_insert_directive(dir, 0, (const uint8_t *)"x", 1,
                                        (const uint8_t *)"]", 1, NULL, 0, NULL)
           == TWIG_STATUS_INVALID_ARGUMENT);
+    // A NULL value is a bare attribute, which `{wide}` would read back as
+    // `wide=""`: refused, as twig_editor_set_block_attrs refuses it.
+    const TwigKeyVal bare_attrs[] = {{(const uint8_t *)"wide", 4, NULL, 0}};
+    CHECK(twig_editor_insert_directive(dir, 0, (const uint8_t *)"x", 1, NULL, 0,
+                                       bare_attrs, 1, NULL)
+          == TWIG_STATUS_INVALID_ARGUMENT);
     twig_editor_destroy(dir);
 
     // Splitting a list item repeats its marker, so the second half is a sibling

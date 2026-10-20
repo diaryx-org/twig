@@ -93,6 +93,8 @@ pub static TABLE: Syntax = Syntax {
     spells_autolink: Some(spells_autolink),
     // A named leaf container survives as a STYLE (or its native form).
     names_leaf_containers: true,
+    // No `labels_leaf_containers`: neither the style nor `<<<` has a place for
+    // one, and the serializer leaves it out.
     block_attrs: Some(BlockAttrs::Native),
     // `[verse]` over a `____` block is AsciiDoc's own line block.
     line_blocks: true,
