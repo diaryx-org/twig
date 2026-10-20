@@ -45,14 +45,16 @@ leaves `known_findings` in the same commit.
 
 ## Resolution
 
-Done on 2026-10-20, by refusing. Both gestures now answer `NotEditable`
-when a container above the covered blocks spells itself on the first
-block's own first line (`label_on_first_line` in `src/ast/editor.rs`),
-which in twig's formats is only AsciiDoc's paragraph admonition, and the
-source is left as it was. The delimited form (`[NOTE]` over `====`) puts its
-label on a line of its own and the gestures run inside it as before. The
-entries left `KNOWN_FINDINGS` in `src/contract.rs`, and
-`a_gesture_over_an_asciidoc_paragraph_admonition_is_refused_not_spelled_into_its_label`
-in `src/ast/editor_test.rs` holds it. Keeping the admonition by rewriting it
-to the delimited form, the better answer above, is still open to whoever
-wants it.
+Done on 2026-10-20, by keeping the admonition. When a container above the
+covered blocks spells itself on the first block's own first line
+(`labelled_parent` in `src/ast/editor.rs`, which in twig's formats is only
+AsciiDoc's paragraph admonition), both gestures rebuild that container with
+the new block inside it and print it through the format's renderer
+(`rewrap_labelled`), so `NOTE: An admonition.` becomes `[NOTE]` over `====`
+holding `* An admonition.` or a `[source,zig]` listing. The admonition's
+title and id come with it, a code block takes the paragraph's source as its
+text, and a quote around the admonition keeps its prefix on every line. The
+delimited form puts its label on a line of its own, and the gestures run
+inside it as before. The entries left `KNOWN_FINDINGS` in `src/contract.rs`,
+and `a_gesture_over_an_asciidoc_paragraph_admonition_keeps_it_in_the_delimited_form`
+in `src/ast/editor_test.rs` holds it.
