@@ -25,6 +25,7 @@ contents:
 - '[`twig convert` drops a runtime language''s reason for refusing a print](/docs/tasks/closed/runtime-print-refusal-reaches-convert.md)'
 - '[A runtime target reports every kind its fidelity probe did not reach as degraded](/docs/tasks/closed/runtime-fidelity-unprobed-kinds-are-not-degraded.md)'
 - '[Every CLI invocation that loads an authoring helper re-runs the whole gesture check](/docs/tasks/closed/runtime-load-check-cost-per-invocation.md)'
+- '[The CLI writes stdout from offset 0, so `>>` overwrites what the file held](/docs/tasks/closed/cli-stdout-overwrites-an-appended-file.md)'
 ---
 
 # Closed tasks

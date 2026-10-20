@@ -9,7 +9,6 @@ contents:
 - '[A gesture over an AsciiDoc paragraph admonition takes its label into the new block](/docs/tasks/asciidoc-admonition-label-gestures.md)'
 - '[A djot directive written with a bare attribute or a label does not read back as one](/docs/tasks/djot-insert-directive-round-trip.md)'
 - '[Read a node table without building a JSON value tree first](/docs/tasks/table-decode-without-a-value-tree.md)'
-- '[The CLI writes stdout from offset 0, so `>>` overwrites what the file held](/docs/tasks/cli-stdout-overwrites-an-appended-file.md)'
 - '[The Rust crate cannot write a document''s node table, or read its list spelling](/docs/tasks/rust-node-table-encoder.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
