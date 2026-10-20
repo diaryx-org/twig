@@ -659,6 +659,9 @@ impl Editor {
 
         let region_start = locate::line_start_at(src, doc.span(blocks.first).start);
         let region_end = locate::line_end_at(src, doc.span(blocks.last).end.saturating_sub(1));
+        if label_on_first_line(doc, &blocks, region_start) {
+            return Err(Error::NotEditable);
+        }
         let mut out = Vec::new();
 
         if let Some(target) = locate::innermost_of_kind(doc, &blocks.chain, kind.tag()) {
@@ -1926,6 +1929,9 @@ impl Editor {
         let blocks = covered_blocks(doc, span.start, span.end).map_err(|_| Error::NoBlock)?;
         let region_start = locate::line_start_at(src, doc.span(blocks.first).start);
         let region_end = locate::line_end_at(src, doc.span(blocks.last).end.saturating_sub(1));
+        if label_on_first_line(doc, &blocks, region_start) {
+            return Err(Error::NotEditable);
+        }
         let at = blocks.chain.iter().position(|&x| x == blocks.first).ok_or(Error::NoBlock)?;
         let frame = CodeFrame::new(self.syntax, doc, &blocks.chain[..at]);
         if self.syntax.list_attach.is_some() && frame.opens_item(doc, region_start) {
@@ -2574,6 +2580,18 @@ fn covered_blocks(doc: &Document, start: usize, end: usize) -> R<BlockRange> {
     let first = chain_a[p + 1];
     let last = if p + 1 < chain_b.len() { chain_b[p + 1] } else { first };
     Ok(BlockRange { first, last, chain: chain_a })
+}
+
+/// True when a container above the covered blocks spells itself on the first
+/// block's own first line, as AsciiDoc's `NOTE: ` paragraph admonition does.
+/// That label is no line prefix the line model strips and writes back (a
+/// quote's `> ` and a list marker are), so a gesture that takes the block's
+/// lines would carry it into the new block as text.
+fn label_on_first_line(doc: &Document, blocks: &BlockRange, region_start: usize) -> bool {
+    let at = blocks.chain.iter().position(|&x| x == blocks.first).unwrap_or(0);
+    blocks.chain[..at].iter().any(|&c| {
+        matches!(doc.ast.kind(c), Kind::Container(_)) && doc.marker_span(c).is_some_and(|m| m.start >= region_start)
+    })
 }
 
 /// True when the range's lines cover every block `target` holds.

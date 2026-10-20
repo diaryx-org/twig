@@ -6,7 +6,6 @@ created: 2026-09-15
 updated: 2026-10-05
 part_of: '[Twig](/README.md)'
 contents:
-- '[A gesture over an AsciiDoc paragraph admonition takes its label into the new block](/docs/tasks/asciidoc-admonition-label-gestures.md)'
 - '[A djot directive written with a bare attribute or a label does not read back as one](/docs/tasks/djot-insert-directive-round-trip.md)'
 - '[Read a node table without building a JSON value tree first](/docs/tasks/table-decode-without-a-value-tree.md)'
 - '[The Rust crate cannot write a document''s node table, or read its list spelling](/docs/tasks/rust-node-table-encoder.md)'

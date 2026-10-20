@@ -3,9 +3,9 @@ title: A gesture over an AsciiDoc paragraph admonition takes its label into the 
 description: '`toggleBlockContainer` and `toggleCodeBlock` over the paragraph of `NOTE: An admonition.` rewrite the whole line, so the `NOTE:` label becomes text of a list item or a code block and the admonition is lost — a success reported over a document whose admonition is gone.'
 author: adammharris
 created: 2026-09-23
-updated: 2026-09-23
-status: open
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-20
+status: done
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # A gesture over an AsciiDoc paragraph admonition takes its label into the new block
@@ -42,3 +42,17 @@ it, which AsciiDoc spells only in the delimited form (`[NOTE]` over `====`) —
 or refuse with `error.NotEditable` over a paragraph admonition. The first is
 the better answer and a larger change; either closes this, and the entry
 leaves `known_findings` in the same commit.
+
+## Resolution
+
+Done on 2026-10-20, by refusing. Both gestures now answer `NotEditable`
+when a container above the covered blocks spells itself on the first
+block's own first line (`label_on_first_line` in `src/ast/editor.rs`),
+which in twig's formats is only AsciiDoc's paragraph admonition, and the
+source is left as it was. The delimited form (`[NOTE]` over `====`) puts its
+label on a line of its own and the gestures run inside it as before. The
+entries left `KNOWN_FINDINGS` in `src/contract.rs`, and
+`a_gesture_over_an_asciidoc_paragraph_admonition_is_refused_not_spelled_into_its_label`
+in `src/ast/editor_test.rs` holds it. Keeping the admonition by rewriting it
+to the delimited form, the better answer above, is still open to whoever
+wants it.
