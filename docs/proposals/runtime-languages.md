@@ -42,7 +42,7 @@ pieces of groundwork replace those, and each is in:
    changed (`add(contract): every gesture, everywhere…`). It found four bugs
    in the compiled formats, fixed in `fix(markdown)` and `fix(editor)` beside
    it, and one filed as
-   [a task](/docs/tasks/asciidoc-admonition-label-gestures.md).
+   [a task](/docs/tasks/closed/asciidoc-admonition-label-gestures.md).
 5. The line model is written down in `syntax.zig`'s module doc, and
    `validate` enforces the parts that are facts about a table's bytes.
 

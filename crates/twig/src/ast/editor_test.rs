@@ -4339,17 +4339,6 @@ fn togglecodeblock_a_tab_at_an_item_s_content_column_is_the_column_not_past_it()
 }
 
 #[test]
-fn togglecodeblock_an_asciidoc_admonition_s_label_is_not_a_container_prefix() {
-    // `NOTE: ` is the paragraph's own marker, not a prefix its lines carry, so
-    // the fence goes round the whole line — as it always has.
-    let mut fx = mk("NOTE: a\n", crate::test_languages::asciidoc());
-    fx.ed.toggle_code_block(Span::new(6, 6), None).unwrap();
-    fx.expect("```\nNOTE: a\n```\n");
-    fx.ed.toggle_code_block(Span::new(4, 4), None).unwrap();
-    fx.expect("NOTE: a\n");
-}
-
-#[test]
 fn togglecodeblock_asciidoc_fences_an_item_s_attached_block_not_its_principal_text() {
     // AsciiDoc attaches a block to an item by a `+` line, at column zero; the
     // item's own first line is its principal text, where a fence is text too.
@@ -5423,3 +5412,50 @@ fn togglelineblock_refused_across_a_heading_and_unsupported_where_a_verse_cannot
     assert_eq!(html.ed.toggle_line_block(0, 0), Err(Error::UnsupportedFormat));
 }
 
+
+#[test]
+fn a_gesture_over_an_asciidoc_paragraph_admonition_keeps_it_in_the_delimited_form() {
+    // `NOTE: ` is the admonition's spelling, on its paragraph's own first
+    // line, and it is no line prefix the line model can strip and write back.
+    // Taking the paragraph's lines would make the label text of the new block,
+    // so the admonition is rewritten to the form that spells it on lines of
+    // its own, `[NOTE]` over `====`, with the new block inside.
+    let source = "NOTE: An admonition.\n";
+    let wrapped = [
+        (ContainerKind::BulletList, "* An admonition.\n"),
+        (ContainerKind::OrderedList, ". An admonition.\n"),
+        (ContainerKind::BlockQuote, "____\nAn admonition.\n____\n"),
+    ];
+    for span in [Span::new(6, 20), Span::new(9, 9)] {
+        for (kind, inner) in wrapped {
+            let mut fx = mk(source, crate::test_languages::asciidoc());
+            fx.ed.toggle_block_container(span, kind).unwrap();
+            fx.expect(&format!("[NOTE]\n====\n{inner}====\n"));
+            let note = fx.find(KindRef::Tag(Tag::Container)).expect("the admonition is gone");
+            let ast = fx.ed.ast_view();
+            let Kind::Container(c) = ast.kind(note) else { unreachable!() };
+            eq_str("note", &c.name);
+            let inner_block = ast.nodes[note as usize].first_child.expect("the admonition is empty");
+            assert_eq!(ast.kind(inner_block).tag(), kind.tag());
+            fx.ed.splicer.undo().unwrap();
+            fx.expect(source);
+        }
+        let mut fx = mk(source, crate::test_languages::asciidoc());
+        fx.ed.toggle_code_block(span, Some(b"zig")).unwrap();
+        fx.expect("[NOTE]\n====\n[source,zig]\n----\nAn admonition.\n----\n====\n");
+        expect_code_within(&fx, Tag::Container, Some("An admonition."));
+    }
+    // What the admonition carries comes with it, the block's source is the
+    // listing's text, and a quote around it keeps its prefix on every line.
+    let mut fx = mk("a\n\n.Heads up\n[#n]\nTIP: Two *lines*\nhere.\n\nb\n", crate::test_languages::asciidoc());
+    fx.ed.toggle_code_block(Span::new(26, 26), None).unwrap();
+    fx.expect("a\n\n.Heads up\n[TIP#n]\n====\n----\nTwo *lines*\nhere.\n----\n====\n\nb\n");
+    let mut fx = mk("> NOTE: a\n> b\n", crate::test_languages::asciidoc());
+    fx.ed.toggle_block_container(Span::new(8, 8), ContainerKind::BulletList).unwrap();
+    fx.expect("> [NOTE]\n> ====\n> * a\n> b\n> ====\n");
+    // Already delimited, the label has a line of its own and the gesture
+    // takes the paragraph's lines as anywhere else.
+    let mut fx = mk("[NOTE]\n====\nAn admonition.\n====\n", crate::test_languages::asciidoc());
+    fx.ed.toggle_block_container(Span::new(12, 26), ContainerKind::BulletList).unwrap();
+    fx.expect("[NOTE]\n====\n* An admonition.\n====\n");
+}

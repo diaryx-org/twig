@@ -659,6 +659,19 @@ impl Editor {
 
         let region_start = locate::line_start_at(src, doc.span(blocks.first).start);
         let region_end = locate::line_end_at(src, doc.span(blocks.last).end.saturating_sub(1));
+        if let Some(label) = labelled_parent(doc, &blocks, region_start) {
+            return self.rewrap_labelled(label, &blocks, |b, ast, covered, _| {
+                let all_paras = covered.iter().all(|&c| *ast.kind(c) == Kind::Para);
+                let kids: Vec<NodeId> = covered
+                    .iter()
+                    .map(|&c| {
+                        let block = b.graft_subtree(ast, c);
+                        if kind == ContainerKind::BlockQuote { block } else { b.add_container(Kind::ListItem, &[block]) }
+                    })
+                    .collect();
+                b.add_container(container_node_kind(kind, all_paras), &kids)
+            });
+        }
         let mut out = Vec::new();
 
         if let Some(target) = locate::innermost_of_kind(doc, &blocks.chain, kind.tag()) {
@@ -695,6 +708,57 @@ impl Editor {
         }
         build_container_add(src, doc, &blocks, region_start, region_end, &sp, &mut out);
         self.commit_splice(region_start, region_end, &out)
+    }
+
+    /// `toggle_block_container` and `toggle_code_block` under a container
+    /// that spells itself on its first child's first line (see
+    /// [`labelled_parent`]): `label` is rebuilt with `wrap`'s block in place
+    /// of the covered ones and printed through the format's renderer, which
+    /// writes the container in a spelling of its own lines (AsciiDoc's
+    /// delimited admonition), so the container is kept rather than its label
+    /// taken into the new block as text. `wrap` is also handed the covered
+    /// blocks' source, label excluded and behind no quote prefix. `NotEditable`
+    /// where the format has no renderer or the covered blocks are not
+    /// `label`'s own children.
+    fn rewrap_labelled(
+        &mut self,
+        label: NodeId,
+        blocks: &BlockRange,
+        wrap: impl FnOnce(&mut Builder, &Ast, &[NodeId], &[u8]) -> NodeId,
+    ) -> R {
+        let render = self.syntax.render_block.ok_or(Error::NotEditable)?;
+        let src = self.source_bytes();
+        let doc = &self.splicer.doc;
+        let ast = &doc.ast;
+        let children = ast.child_ids(label);
+        let (Some(lo), Some(hi)) = (
+            children.iter().position(|&c| c == blocks.first),
+            children.iter().position(|&c| c == blocks.last),
+        ) else {
+            return Err(Error::NotEditable);
+        };
+        let span = doc.span(label);
+        let prefix = container_prefix(src, span.start);
+        let blank = trim_end(prefix, b" ");
+        let mut body = Vec::new();
+        let covered = &src[doc.span(blocks.first).start..block_span_end(src, doc.span(blocks.last))];
+        for (i, line) in covered.split(|&c| c == b'\n').enumerate() {
+            if i > 0 {
+                body.push(b'\n');
+            }
+            let line = line.strip_prefix(prefix).or_else(|| line.strip_prefix(blank)).unwrap_or(line);
+            body.extend_from_slice(line);
+        }
+        let mut b = Builder::new();
+        let mut kids: Vec<NodeId> = children[..lo].iter().map(|&c| b.graft_subtree(ast, c)).collect();
+        kids.push(wrap(&mut b, ast, &children[lo..=hi], &body));
+        kids.extend(children[hi + 1..].iter().map(|&c| b.graft_subtree(ast, c)));
+        let root = b.add_container(ast.kind(label).clone(), &kids);
+        if let Some(ai) = ast.nodes[label as usize].attrs {
+            b.set_attrs(root, ast.attrs[ai as usize].clone());
+        }
+        let end = block_span_end(src, span);
+        self.splice_rendered_prefixed(&b, root, render, Span::new(span.start, end))
     }
 
     /// `toggle_block_container` where there is no block to wrap: the caret
@@ -1926,6 +1990,12 @@ impl Editor {
         let blocks = covered_blocks(doc, span.start, span.end).map_err(|_| Error::NoBlock)?;
         let region_start = locate::line_start_at(src, doc.span(blocks.first).start);
         let region_end = locate::line_end_at(src, doc.span(blocks.last).end.saturating_sub(1));
+        if let Some(label) = labelled_parent(doc, &blocks, region_start) {
+            let lang = lang.map(|l| l.to_vec());
+            return self.rewrap_labelled(label, &blocks, |b, _, _, body| {
+                b.add_leaf(Kind::CodeBlock { lang, text: body.to_vec() })
+            });
+        }
         let at = blocks.chain.iter().position(|&x| x == blocks.first).ok_or(Error::NoBlock)?;
         let frame = CodeFrame::new(self.syntax, doc, &blocks.chain[..at]);
         if self.syntax.list_attach.is_some() && frame.opens_item(doc, region_start) {
@@ -2574,6 +2644,18 @@ fn covered_blocks(doc: &Document, start: usize, end: usize) -> R<BlockRange> {
     let first = chain_a[p + 1];
     let last = if p + 1 < chain_b.len() { chain_b[p + 1] } else { first };
     Ok(BlockRange { first, last, chain: chain_a })
+}
+
+/// The container above the covered blocks that spells itself on the first
+/// block's own first line, as AsciiDoc's `NOTE: ` paragraph admonition does.
+/// That label is no line prefix the line model strips and writes back (a
+/// quote's `> ` and a list marker are), so a gesture that took the block's
+/// lines would carry it into the new block as text.
+fn labelled_parent(doc: &Document, blocks: &BlockRange, region_start: usize) -> Option<NodeId> {
+    let at = blocks.chain.iter().position(|&x| x == blocks.first).unwrap_or(0);
+    blocks.chain[..at].iter().copied().find(|&c| {
+        matches!(doc.ast.kind(c), Kind::Container(_)) && doc.marker_span(c).is_some_and(|m| m.start >= region_start)
+    })
 }
 
 /// True when the range's lines cover every block `target` holds.

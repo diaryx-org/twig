@@ -2201,10 +2201,7 @@ mod tests {
     /// Broken promises the gesture check knows of (the Zig harness's
     /// `known_findings`). A finding here is tolerated; one that stops being
     /// found fails the test, so the list only shrinks.
-    const KNOWN_FINDINGS: [&str; 2] = [
-        "asciidoc: toggle_block_container over sample 0: the paragraph \"An admonition.\" is gone",
-        "asciidoc: toggle_code_block over sample 0: no zig code block holding the paragraph came back",
-    ];
+    const KNOWN_FINDINGS: [&str; 0] = [];
 
     #[test]
     fn every_gesture_everywhere_over_every_authorable_format() {
