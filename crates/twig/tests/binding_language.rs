@@ -74,8 +74,10 @@ mod common;
         assert!(format.is_runtime());
         assert_eq!(format.name(), "rust-lines");
         assert_eq!(Format::by_name("rust-lines"), Some(format));
-        assert_eq!(Format::by_name("gfm"), Some(common::gfm()));
-        assert_eq!(common::gfm().name(), "gfm");
+        // Registered first: the lookup finds gfm only once Markdown is in.
+        let gfm = common::gfm();
+        assert_eq!(Format::by_name("gfm"), Some(gfm));
+        assert_eq!(gfm.name(), "gfm");
         assert_eq!(Target::from(format).as_format(), Some(format));
 
         let mut doc = Document::parse_str("alpha\nbeta\n", format).expect("parse");
