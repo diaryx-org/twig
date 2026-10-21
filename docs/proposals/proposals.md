@@ -13,7 +13,6 @@ contents:
 - '[Proposal: runtime languages](runtime-languages.md)'
 - '[Proposal: the tree gestures a canvas over an SVG needs](tree-gestures-for-a-canvas.md)'
 - '[Proposal: fig in twig](fig-in-twig.md)'
-- '[Proposal: fig in twig](fig-in-twig.md)'
 - '[Proposal: one crate per language](language-crates.md)'
 - '[Proposal: a document as data](document-as-data.md)'
 ---

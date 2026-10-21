@@ -46,7 +46,7 @@ parse. No static group can hold it.
 encodes at most one classification, and there are at least three worth having.
 
 **The grouping test fails.** The three families that *are* nested
-(§ [When a family gets nested](/#when-a-family-gets-nested)) share one
+(§ [When a family gets nested](#when-a-family-gets-nested)) share one
 property: every generic consumer treats their members identically, and only
 the printers tell them apart. Blocks are the opposite — `html/serializer.rs`
 switches 35 kinds apart in a single switch, `rst/doctree.rs` 46. Consumers
