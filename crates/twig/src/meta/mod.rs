@@ -1,12 +1,13 @@
 //! The config a document carries, read and edited through fig — behind the
 //! default `fig` feature.
 //!
-//! twig finds a document's metadata — a `metadata` node, the frontmatter or
-//! endmatter block the Markdown parser reads — and fig edits what is inside
-//! it. The block's body is handed to [`fig::Editor`] as a config document of
-//! its own, and whatever the editor leaves in its source is spliced back
-//! between the block's fences. Every byte outside the body, the fences
-//! included, is the host's as it was.
+//! twig finds a document's metadata — a `metadata` node: the frontmatter or
+//! endmatter block the Markdown parser reads, or the
+//! `<script type="application/<lang>">` data island the HTML parser reads —
+//! and fig edits what is inside it. The block's body is handed to
+//! [`fig::Editor`] as a config document of its own, and whatever the editor
+//! leaves in its source is spliced back between the block's fences. Every
+//! byte outside the body, the fences included, is the host's as it was.
 //!
 //! This is what fig's `Embed` did before 6.0, which took embedding out of fig
 //! (fig's `docs/migrating-to-6.md`, "Embedding has left fig"). It was the
@@ -74,6 +75,11 @@ pub enum Error {
     Twig(crate::Error),
     /// fig refused: a body that does not parse, or an edit it cannot make.
     Fig(fig::Error),
+    /// An HTML data island's edited body holds `</script` or `<!--`. Raw text
+    /// has no escape: the first would end the island early and let what
+    /// follows run as a page script, the second would stop `</script>` from
+    /// closing it. The HTML printer refuses the same bodies.
+    UnsafeIslandBody,
 }
 
 impl fmt::Display for Error {
@@ -85,6 +91,9 @@ impl fmt::Display for Error {
             }
             Error::Twig(e) => write!(f, "twig: {e}"),
             Error::Fig(e) => write!(f, "fig: {e}"),
+            Error::UnsafeIslandBody => {
+                f.write_str("the edited metadata holds </script or <!--, unsafe in an HTML <script> island")
+            }
         }
     }
 }
@@ -112,8 +121,11 @@ impl From<fig::Error> for Error {
 }
 
 /// The document's metadata block at `at`, or `None` when it has none.
-/// `doc` is a parsed document ([`parse_host`]); only Markdown's parser
-/// produces `metadata` nodes today.
+/// `doc` is a parsed document ([`parse_host`]). Markdown's parser reads
+/// frontmatter and endmatter as `metadata` nodes; HTML's reads a
+/// `<script type="application/<lang>">` data island as one, wherever in the
+/// page it sits (typically `<head>`), and the first such island is the
+/// document's front block. An island is never endmatter.
 pub fn find(doc: &Document, at: Where) -> Option<Block> {
     let nodes = &doc.ast.nodes;
     let first = nodes.get(doc.ast.root as usize)?.first_child?;
@@ -127,25 +139,79 @@ pub fn find(doc: &Document, at: Where) -> Option<Block> {
             last
         }
     };
+    if let Kind::Metadata { lang, .. } = &nodes[id as usize].kind {
+        let span = doc.span(id);
+        let span = span.start..span.end;
+        if is_island(doc, &span) {
+            return (at == Where::Front).then(|| island(doc, id, lang, span));
+        }
+        // Frontmatter is the document's first block and endmatter its last; a
+        // document holding only one block of metadata has it as both, and it
+        // is the one at the position the source puts it.
+        let leads = span.start == 0;
+        if leads != (at == Where::Front) {
+            return None;
+        }
+        return Some(Block {
+            node: id,
+            at,
+            lang: String::from_utf8_lossy(lang).into_owned(),
+            body: body_of(&doc.source, span.clone()),
+            span,
+        });
+    }
+    if at == Where::End {
+        return None;
+    }
+    // Not leading the document: an island may still sit deeper, in `<head>`.
+    let id = first_island(doc, first)?;
     let Kind::Metadata { lang, .. } = &nodes[id as usize].kind else {
         return None;
     };
     let span = doc.span(id);
-    // Frontmatter is the document's first block and endmatter its last; a
-    // document holding only one block of metadata has it as both, and it is
-    // the one at the position the source puts it.
-    let leads = span.start == 0;
-    if leads != (at == Where::Front) {
-        return None;
+    Some(island(doc, id, lang, span.start..span.end))
+}
+
+/// Whether the metadata node spanning `span` is an HTML data island rather
+/// than a fenced block: its source opens a tag.
+fn is_island(doc: &Document, span: &Range<usize>) -> bool {
+    doc.source.get(span.start) == Some(&b'<')
+}
+
+/// The first data island at or after `from` in document order, descending
+/// into each node's children before its next sibling.
+fn first_island(doc: &Document, from: crate::ast::NodeId) -> Option<crate::ast::NodeId> {
+    let nodes = &doc.ast.nodes;
+    let mut next = Some(from);
+    while let Some(id) = next {
+        let node = &nodes[id as usize];
+        if matches!(node.kind, Kind::Metadata { .. }) {
+            let span = doc.span(id);
+            if is_island(doc, &(span.start..span.end)) {
+                return Some(id);
+            }
+        }
+        if let Some(found) = node.first_child.and_then(|c| first_island(doc, c)) {
+            return Some(found);
+        }
+        next = node.next_sibling;
     }
-    let span = span.start..span.end;
-    Some(Block {
+    None
+}
+
+/// The block a data island makes: its body is the content span the HTML
+/// parser gives it, between the open tag's line and the close tag.
+fn island(doc: &Document, id: crate::ast::NodeId, lang: &[u8], span: Range<usize>) -> Block {
+    let body = doc
+        .content_span(id)
+        .map_or(span.end..span.end, |c| c.start..c.end);
+    Block {
         node: id,
-        at,
+        at: Where::Front,
         lang: String::from_utf8_lossy(lang).into_owned(),
-        body: body_of(&doc.source, span.clone()),
         span,
-    })
+        body,
+    }
 }
 
 /// The body of a fenced block spanning `span`: from past the opening fence's
@@ -243,6 +309,9 @@ pub struct Embed {
     /// The dialect the body is edited as.
     dialect: fig::Format,
     lang: String,
+    /// The block is an HTML `<script>` island, whose raw-text body
+    /// [`render`](Embed::render) refuses to let close it early.
+    island: bool,
 }
 
 impl Embed {
@@ -256,6 +325,7 @@ impl Embed {
             &host[block.body.end..],
             dialect,
             &block.lang,
+            host.get(block.span.start) == Some(&b'<'),
         )
     }
 
@@ -268,9 +338,10 @@ impl Embed {
     }
 
     /// Open `host`'s frontmatter, or — when it has none — a new block of
-    /// `lang` above its first line, empty until an edit writes to it. Only a
-    /// Markdown host is read for an existing block; `format` names its
-    /// dialect.
+    /// `lang` above its first line, empty until an edit writes to it. In an
+    /// HTML host (`format` named `html`) the block found or written is a
+    /// `<script type="application/<lang>">` data island, since a `---` fence
+    /// is text to a browser.
     pub fn open_or_init(host: &[u8], format: crate::Format, lang: &str) -> Result<Embed, Error> {
         let parsed = parse_host(host, format)?;
         if let Some(block) = find(&parsed.doc, Where::Front) {
@@ -278,10 +349,23 @@ impl Embed {
         }
         let dialect =
             dialect_for(lang).ok_or_else(|| Error::UnsupportedLanguage(lang.to_string()))?;
+        if format.name() == "html" {
+            // Inside `<head>`, or past a leading doctype: a block above
+            // `<!doctype html>` would put the page in quirks mode.
+            let at = island_home(&parsed.doc);
+            let mut before = host[..at].to_vec();
+            if before.last().is_some_and(|&b| b != b'\n') {
+                before.push(b'\n');
+            }
+            before.extend_from_slice(format!("<script type=\"application/{lang}\">\n").as_bytes());
+            let mut after = b"</script>\n".to_vec();
+            after.extend_from_slice(&host[at..]);
+            return Embed::open_parts(&before, b"", &after, dialect, lang, true);
+        }
         let before = format!("{}\n", fence_for(lang));
         let mut after = format!("{}\n", closer_for(lang)).into_bytes();
         after.extend_from_slice(host);
-        Embed::open_parts(before.as_bytes(), b"", &after, dialect, lang)
+        Embed::open_parts(before.as_bytes(), b"", &after, dialect, lang, false)
     }
 
     fn open_parts(
@@ -290,6 +374,7 @@ impl Embed {
         after: &[u8],
         dialect: fig::Format,
         lang: &str,
+        island: bool,
     ) -> Result<Embed, Error> {
         Ok(Embed {
             before: before.to_vec(),
@@ -297,6 +382,7 @@ impl Embed {
             editor: fig::Editor::open(content, dialect)?,
             dialect,
             lang: lang.to_string(),
+            island,
         })
     }
 
@@ -327,9 +413,13 @@ impl Embed {
 
     /// The host with the edited body between its fences. A body that does
     /// not end its last line is given a line ending, so the closing fence
-    /// stays on a line of its own.
+    /// stays on a line of its own. An HTML island's body holding `</script`
+    /// or `<!--` is [`Error::UnsafeIslandBody`].
     pub fn render(&self) -> Result<Vec<u8>, Error> {
         let body = self.body()?.as_bytes();
+        if self.island && (contains_ignore_case(body, b"</script") || contains_ignore_case(body, b"<!--")) {
+            return Err(Error::UnsafeIslandBody);
+        }
         let mut out = Vec::with_capacity(self.before.len() + body.len() + 1 + self.after.len());
         out.extend_from_slice(&self.before);
         out.extend_from_slice(body);
@@ -339,6 +429,54 @@ impl Embed {
         out.extend_from_slice(&self.after);
         Ok(out)
     }
+}
+
+/// Whether `hay` holds `needle`, ASCII case folded.
+fn contains_ignore_case(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+/// Where a new island goes in an HTML page: past the line of its `<head>`
+/// open tag when it has one, else past the line of a leading doctype, else
+/// at its first byte.
+fn island_home(doc: &Document) -> usize {
+    let nodes = &doc.ast.nodes;
+    let past_line = |at: usize| match doc.source.get(at..) {
+        Some(rest) if rest.starts_with(b"\r\n") => at + 2,
+        Some(rest) if rest.starts_with(b"\n") => at + 1,
+        _ => at,
+    };
+    let mut stack: Vec<crate::ast::NodeId> = nodes[doc.ast.root as usize].first_child.into_iter().collect();
+    while let Some(id) = stack.pop() {
+        let node = &nodes[id as usize];
+        if let Kind::Container(c) = &node.kind {
+            if c.name.eq_ignore_ascii_case(b"head") {
+                if let Some(content) = doc.content_span(id) {
+                    return past_line(content.start);
+                }
+            }
+        }
+        if let Some(n) = node.next_sibling {
+            stack.push(n);
+        }
+        if let Some(c) = node.first_child {
+            stack.push(c);
+        }
+    }
+    let mut doctype_end = 0;
+    let mut next = nodes[doc.ast.root as usize].first_child;
+    while let Some(id) = next {
+        let node = &nodes[id as usize];
+        match &node.kind {
+            Kind::MarkupLeaf { kind: crate::ast::MarkupLeafKind::Doctype, .. } => {
+                doctype_end = past_line(doc.span(id).end);
+                break;
+            }
+            Kind::MarkupLeaf { .. } => next = node.next_sibling,
+            _ => break,
+        }
+    }
+    doctype_end
 }
 
 /// The opening fence a new frontmatter block of `lang` is written with: a

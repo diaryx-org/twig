@@ -117,6 +117,30 @@ fn attr_value<'a>(attrs: &'a [KeyVal], key: &[u8]) -> Option<&'a [u8]> {
 
 /// Twig's HTML renderer spells alignment `style="text-align: left;"`;
 /// `align="left"` is read too.
+/// The config language a `<script>` holds when it is a metadata data island,
+/// the form the printer writes a `metadata` node in: its only attribute is a
+/// `type` of `application/<lang>` naming a config language. The spellings fig
+/// 5 read are read too (`application/x-yaml`, `text/yaml`, `application/yml`,
+/// `application/fig`). Any other attribute (an `id` a page script looks the
+/// data up by) makes it a page's own data, which stays generic markup.
+fn island_lang(attrs: &[KeyVal]) -> Option<Vec<u8>> {
+    let [kv] = attrs else { return None };
+    if kv.key != b"type" {
+        return None;
+    }
+    let mime = trim(kv.value.as_deref()?, b" \t\r\n").to_ascii_lowercase();
+    let lang: &[u8] = match mime.as_slice() {
+        b"application/yaml" | b"application/x-yaml" | b"text/yaml" => b"yaml",
+        b"application/yml" => b"yml",
+        b"application/json" => b"json",
+        b"application/toml" => b"toml",
+        b"application/figl" => b"figl",
+        b"application/fig" => b"fig",
+        _ => return None,
+    };
+    Some(lang.to_vec())
+}
+
 fn cell_alignment(attrs: &[KeyVal]) -> Alignment {
     if let Some(style) = attr_value(attrs, b"style") {
         if let Some(at) = style.windows(10).position(|w| w == b"text-align") {
@@ -391,6 +415,11 @@ impl<'s> Parser<'s> {
             let end = self.raw_text_end(&name);
             self.pos = end;
             let raw = &s[raw_start..end];
+            if name == b"script" {
+                if let Some(lang) = island_lang(&attrs) {
+                    return self.data_island(start, raw_start, end, lang);
+                }
+            }
             let text = if is_rcdata(&name) { decode_text(raw) } else { raw.to_vec() };
             if self.pos < s.len() && self.end_tag_matches(&name) {
                 self.consume_end_tag();
@@ -414,6 +443,35 @@ impl<'s> Parser<'s> {
         self.builder.set_content_span(id, Span::new(content_start, content_end));
         self.mark_element_origin(id);
         self.set_element_attrs(id, &attrs);
+        id
+    }
+
+    /// A `<script type="application/<lang>">` data island, read back as the
+    /// `metadata` node the printer wrote it from. The body is the raw text
+    /// less the line ending the printer puts after the open tag and any
+    /// indentation before the close tag, so that its content span is exactly
+    /// the bytes a config editor owns.
+    fn data_island(&mut self, start: usize, raw_start: usize, end: usize, lang: Vec<u8>) -> NodeId {
+        let s = self.source;
+        let mut body_start = raw_start;
+        if s[body_start..end].starts_with(b"\r\n") {
+            body_start += 2;
+        } else if s[body_start..end].starts_with(b"\n") {
+            body_start += 1;
+        }
+        let mut body_end = end;
+        if let Some(nl) = s[body_start..end].iter().rposition(|&b| b == b'\n') {
+            if trim(&s[body_start + nl + 1..end], b" \t").is_empty() {
+                body_end = body_start + nl + 1;
+            }
+        }
+        if self.pos < s.len() && self.end_tag_matches(b"script") {
+            self.consume_end_tag();
+        }
+        let text = s[body_start..body_end].to_vec();
+        let id = self.builder.add_leaf(Kind::Metadata { lang, text });
+        self.builder.set_span(id, Span::new(start, self.pos));
+        self.builder.set_content_span(id, Span::new(body_start, body_end));
         id
     }
 
@@ -626,6 +684,7 @@ impl<'s> Parser<'s> {
                 | Kind::Section
                 | Kind::Container(_)
                 | Kind::CodeBlock { .. }
+                | Kind::Metadata { .. }
                 | Kind::BlockQuote
                 | Kind::BulletList { .. }
                 | Kind::OrderedList { .. }
@@ -973,6 +1032,38 @@ mod tests {
         assert_eq!(doc.ast.kind(script).container().unwrap().text.as_deref(), Some(&b"a < b &amp;"[..]));
         assert!(doc.ast.kind(script).holds_opaque_text());
         assert_eq!(doc.content_span(script), Some(Span::new(47, 58)));
+    }
+
+    #[test]
+    fn a_typed_script_island_reads_back_as_metadata() {
+        let src = "<head>\n  <script type=\"application/yaml\">\ntitle: Hi\n  </script>\n</head>";
+        let doc = parse(src);
+        let island = (0..doc.ast.nodes.len() as NodeId)
+            .find(|&i| matches!(doc.ast.kind(i), Kind::Metadata { .. }))
+            .expect("a metadata node");
+        assert_eq!(doc.ast.kind(island), &Kind::Metadata { lang: b"yaml".to_vec(), text: b"title: Hi\n".to_vec() });
+        let body = doc.content_span(island).unwrap();
+        assert_eq!(&src.as_bytes()[body.start..body.end], b"title: Hi\n");
+        let span = doc.span(island);
+        assert!(src[span.start..span.end].starts_with("<script") && src[..span.end].ends_with("</script>"));
+
+        // The printer writes a metadata node as this island; it reads back.
+        let printed = "<script type=\"application/json\">\n{\"a\": 1}\n</script>\n";
+        assert_eq!(parse_to_html(printed.as_bytes()), printed.as_bytes());
+    }
+
+    #[test]
+    fn a_script_that_is_not_a_bare_config_island_stays_markup() {
+        for src in [
+            "<script>let a = 1;</script>",
+            "<script type=\"application/javascript\">x</script>",
+            "<script type=\"application/ld+json\">{}</script>",
+            "<script type=\"application/json\" id=\"data\">{}</script>",
+        ] {
+            let doc = parse(src);
+            let node = first(&doc, doc.ast.root);
+            assert_eq!(doc.ast.kind(node).container().unwrap().name, b"script", "{src}");
+        }
     }
 
     #[test]
