@@ -110,7 +110,10 @@ export function init(): Promise<void> {
   if (exports) return Promise.resolve();
   if (initPromise) return initPromise;
   initPromise = WebAssembly.instantiate(decodeBase64(WASM_BASE64), {}).then(({ instance }) => {
-    exports = instance.exports as unknown as Exports;
+    // A synchronous call while this was compiling made the instance already,
+    // and its handles live in that instance's memory: keep it, and drop this
+    // one.
+    exports ??= instance.exports as unknown as Exports;
   });
   return initPromise;
 }
