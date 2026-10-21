@@ -75,6 +75,11 @@ pub enum Error {
     Twig(crate::Error),
     /// fig refused: a body that does not parse, or an edit it cannot make.
     Fig(fig::Error),
+    /// An HTML data island's edited body holds `</script` or `<!--`. Raw text
+    /// has no escape: the first would end the island early and let what
+    /// follows run as a page script, the second would stop `</script>` from
+    /// closing it. The HTML printer refuses the same bodies.
+    UnsafeIslandBody,
 }
 
 impl fmt::Display for Error {
@@ -86,6 +91,9 @@ impl fmt::Display for Error {
             }
             Error::Twig(e) => write!(f, "twig: {e}"),
             Error::Fig(e) => write!(f, "fig: {e}"),
+            Error::UnsafeIslandBody => {
+                f.write_str("the edited metadata holds </script or <!--, unsafe in an HTML <script> island")
+            }
         }
     }
 }
@@ -301,6 +309,9 @@ pub struct Embed {
     /// The dialect the body is edited as.
     dialect: fig::Format,
     lang: String,
+    /// The block is an HTML `<script>` island, whose raw-text body
+    /// [`render`](Embed::render) refuses to let close it early.
+    island: bool,
 }
 
 impl Embed {
@@ -314,6 +325,7 @@ impl Embed {
             &host[block.body.end..],
             dialect,
             &block.lang,
+            host.get(block.span.start) == Some(&b'<'),
         )
     }
 
@@ -337,15 +349,23 @@ impl Embed {
         }
         let dialect =
             dialect_for(lang).ok_or_else(|| Error::UnsupportedLanguage(lang.to_string()))?;
-        let (open, close) = if format.name() == "html" {
-            (format!("<script type=\"application/{lang}\">"), "</script>".to_string())
-        } else {
-            (fence_for(lang), closer_for(lang).to_string())
-        };
-        let before = format!("{open}\n");
-        let mut after = format!("{close}\n").into_bytes();
+        if format.name() == "html" {
+            // Inside `<head>`, or past a leading doctype: a block above
+            // `<!doctype html>` would put the page in quirks mode.
+            let at = island_home(&parsed.doc);
+            let mut before = host[..at].to_vec();
+            if before.last().is_some_and(|&b| b != b'\n') {
+                before.push(b'\n');
+            }
+            before.extend_from_slice(format!("<script type=\"application/{lang}\">\n").as_bytes());
+            let mut after = b"</script>\n".to_vec();
+            after.extend_from_slice(&host[at..]);
+            return Embed::open_parts(&before, b"", &after, dialect, lang, true);
+        }
+        let before = format!("{}\n", fence_for(lang));
+        let mut after = format!("{}\n", closer_for(lang)).into_bytes();
         after.extend_from_slice(host);
-        Embed::open_parts(before.as_bytes(), b"", &after, dialect, lang)
+        Embed::open_parts(before.as_bytes(), b"", &after, dialect, lang, false)
     }
 
     fn open_parts(
@@ -354,6 +374,7 @@ impl Embed {
         after: &[u8],
         dialect: fig::Format,
         lang: &str,
+        island: bool,
     ) -> Result<Embed, Error> {
         Ok(Embed {
             before: before.to_vec(),
@@ -361,6 +382,7 @@ impl Embed {
             editor: fig::Editor::open(content, dialect)?,
             dialect,
             lang: lang.to_string(),
+            island,
         })
     }
 
@@ -391,9 +413,13 @@ impl Embed {
 
     /// The host with the edited body between its fences. A body that does
     /// not end its last line is given a line ending, so the closing fence
-    /// stays on a line of its own.
+    /// stays on a line of its own. An HTML island's body holding `</script`
+    /// or `<!--` is [`Error::UnsafeIslandBody`].
     pub fn render(&self) -> Result<Vec<u8>, Error> {
         let body = self.body()?.as_bytes();
+        if self.island && (contains_ignore_case(body, b"</script") || contains_ignore_case(body, b"<!--")) {
+            return Err(Error::UnsafeIslandBody);
+        }
         let mut out = Vec::with_capacity(self.before.len() + body.len() + 1 + self.after.len());
         out.extend_from_slice(&self.before);
         out.extend_from_slice(body);
@@ -403,6 +429,54 @@ impl Embed {
         out.extend_from_slice(&self.after);
         Ok(out)
     }
+}
+
+/// Whether `hay` holds `needle`, ASCII case folded.
+fn contains_ignore_case(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+/// Where a new island goes in an HTML page: past the line of its `<head>`
+/// open tag when it has one, else past the line of a leading doctype, else
+/// at its first byte.
+fn island_home(doc: &Document) -> usize {
+    let nodes = &doc.ast.nodes;
+    let past_line = |at: usize| match doc.source.get(at..) {
+        Some(rest) if rest.starts_with(b"\r\n") => at + 2,
+        Some(rest) if rest.starts_with(b"\n") => at + 1,
+        _ => at,
+    };
+    let mut stack: Vec<crate::ast::NodeId> = nodes[doc.ast.root as usize].first_child.into_iter().collect();
+    while let Some(id) = stack.pop() {
+        let node = &nodes[id as usize];
+        if let Kind::Container(c) = &node.kind {
+            if c.name.eq_ignore_ascii_case(b"head") {
+                if let Some(content) = doc.content_span(id) {
+                    return past_line(content.start);
+                }
+            }
+        }
+        if let Some(n) = node.next_sibling {
+            stack.push(n);
+        }
+        if let Some(c) = node.first_child {
+            stack.push(c);
+        }
+    }
+    let mut doctype_end = 0;
+    let mut next = nodes[doc.ast.root as usize].first_child;
+    while let Some(id) = next {
+        let node = &nodes[id as usize];
+        match &node.kind {
+            Kind::MarkupLeaf { kind: crate::ast::MarkupLeafKind::Doctype, .. } => {
+                doctype_end = past_line(doc.span(id).end);
+                break;
+            }
+            Kind::MarkupLeaf { .. } => next = node.next_sibling,
+            _ => break,
+        }
+    }
+    doctype_end
 }
 
 /// The opening fence a new frontmatter block of `lang` is written with: a

@@ -184,6 +184,46 @@ fn open_or_init_an_html_host_opens_its_island_and_writes_a_new_one_as_an_island(
 }
 
 #[test]
+fn render_refuses_an_island_body_that_would_end_the_island() {
+    let host = b"<script type=\"application/yaml\">\ntitle: Hi\n</script>\n<p>Body</p>\n";
+    for value in ["</script><script>alert(1)</script>", "</SCRIPT >", "<!--<script>"] {
+        let mut e = Embed::open_in(host, twig_html::format(), Where::Front).unwrap();
+        e.editor_mut().set_value(&["title".into()], value).unwrap();
+        assert!(matches!(e.render(), Err(Error::UnsafeIslandBody)), "{value}");
+
+        let mut e = Embed::open_or_init(b"<p>Body</p>\n", twig_html::format(), "yaml").unwrap();
+        e.editor_mut().set_value(&["title".into()], value).unwrap();
+        assert!(matches!(e.render(), Err(Error::UnsafeIslandBody)), "{value}");
+    }
+    // A Markdown fence has no such hazard.
+    let mut e = Embed::open_or_init(b"# Body\n", twig_markdown::format(), "yaml").unwrap();
+    e.editor_mut().set_value(&["title".into()], "</script>").unwrap();
+    assert!(e.render().is_ok());
+}
+
+#[test]
+fn open_or_init_an_html_page_puts_the_island_in_head_or_past_the_doctype() {
+    let init = |host: &str| {
+        let mut e = Embed::open_or_init(host.as_bytes(), twig_html::format(), "yaml").unwrap();
+        e.editor_mut().set_value(&["id".into()], "x").unwrap();
+        String::from_utf8(e.render().unwrap()).unwrap()
+    };
+    assert_eq!(
+        "<!doctype html>\n<html>\n<head>\n<script type=\"application/yaml\">\nid: x\n</script>\n  <title>T</title>\n</head>\n<body></body>\n</html>\n",
+        init("<!doctype html>\n<html>\n<head>\n  <title>T</title>\n</head>\n<body></body>\n</html>\n")
+    );
+    assert_eq!(
+        "<!DOCTYPE html>\n<script type=\"application/yaml\">\nid: x\n</script>\n<p>Body</p>\n",
+        init("<!DOCTYPE html>\n<p>Body</p>\n")
+    );
+    // What it writes, it finds again.
+    let out = init("<!doctype html><p>Body</p>");
+    assert_eq!("<!doctype html>\n<script type=\"application/yaml\">\nid: x\n</script>\n<p>Body</p>", out);
+    let parsed = parse_host(out.as_bytes(), twig_html::format()).unwrap();
+    assert!(find(&parsed.doc, Where::Front).is_some());
+}
+
+#[test]
 fn read_gives_the_block_as_a_fig_document() {
     let host = b"---\ntitle: Hi\ntags: [a, b]\n---\nbody\n";
     let parsed = parse_host(host, twig_markdown::format()).unwrap();
