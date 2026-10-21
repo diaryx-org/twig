@@ -23,3 +23,15 @@ twig-rst = { path = "crates/twig-rst", version = "6.0.0", default-features = fal
 
 [profile.release]
 debug = 1
+
+# The WebAssembly module `@diaryx/twig` inlines (bindings/typescript), built
+# for size: `cargo build -p twig-capi --profile wasm --target
+# wasm32-unknown-unknown`, as fig builds `@diaryx/fig`'s.
+[profile.wasm]
+inherits = "release"
+debug = 0
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

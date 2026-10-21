@@ -2993,6 +2993,89 @@ TwigStatus twig_format_name(int format, const uint8_t **out_ptr, size_t *out_len
 // TWIG_STATUS_NOT_FOUND for a language's own row, which is nobody's dialect.
 TwigStatus twig_format_dialect_of(int format, int *out_format);
 
+
+// ── Memory ──────────────────────────────────────────────────────────────────
+// Every buffer this API hands out is borrowed from a handle, and every input is
+// copied in, so a caller in the library's address space never needs these.
+// They bridge one that is not — the WebAssembly build, driven from JavaScript
+// (@diaryx/twig) — which cannot otherwise place input where the library can
+// read it.
+
+// `len` uninitialized bytes from the library's allocator, or NULL for a
+// zero-length request or on failure. Release with twig_free.
+uint8_t *twig_alloc(size_t len);
+// Release a twig_alloc buffer. A SIZED free: `len` must be the length passed to
+// twig_alloc. A NULL pointer or zero length is a no-op.
+void twig_free(uint8_t *ptr, size_t len);
+
+// ── Metadata ────────────────────────────────────────────────────────────────
+// A document's metadata block: the frontmatter or endmatter a Markdown parse
+// reads (`---` YAML, `+++` TOML, `---<lang>`), or the first
+// `<script type="application/<lang>">` data island an HTML page carries, which
+// is always the FRONT block. Its body is config in the language the fence or
+// the `type` names, and is fig's to read and edit; twig locates it and splices
+// it. Purely additive — no struct changed, so TWIG_ABI_VERSION stays 6.
+
+// Which block: the one the document opens with, or the trailing one.
+#define TWIG_META_FRONT 0
+#define TWIG_META_END 1
+
+// Locate `doc`'s metadata block at `at`: the whole block, fences or tags
+// included, into *out_span; the bytes between them into *out_body (empty, at
+// the closing fence, for a block with no body); and its language tag as written
+// (`yaml` for a bare `---`) into out_lang_ptr/out_lang_len, borrowed until the
+// next twig_document_metadata call on this handle or its destruction. Any out
+// pointer may be NULL. TWIG_STATUS_NOT_FOUND when the document has no block
+// there; TWIG_STATUS_INVALID_ARGUMENT for an `at` that is neither code.
+TwigStatus twig_document_metadata(
+    TwigDocument *doc,
+    int at,
+    TwigSpan *out_span,
+    TwigSpan *out_body,
+    const uint8_t **out_lang_ptr,
+    size_t *out_lang_len
+);
+
+// The body of `doc`'s metadata block at `at`, read by fig and written as one line of
+// JSON — losslessly, so a value JSON cannot spell comes back as fig's `$fig`
+// envelope. Borrowed until the next twig_document_metadata_json call on this
+// handle or its destruction. TWIG_STATUS_NOT_FOUND when there is no block,
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a language fig has not registered (twig
+// brings YAML, TOML, JSON and figl), TWIG_STATUS_PARSE_ERROR for a body that
+// does not parse as its language.
+TwigStatus twig_document_metadata_json(
+    TwigDocument *doc,
+    int at,
+    const uint8_t **out_ptr,
+    size_t *out_len
+);
+
+// Replace the body of the editor's metadata block at `at` with `body`, which
+// must parse as the block's language: a caller edits the body with fig, comments
+// kept, and hands the result back here. Every byte outside the body is kept; a
+// body that does not end its last line is given a line ending. For
+// TWIG_META_FRONT on a document with no front block, a new one of `lang` (YAML
+// when `lang` is empty) is written above the first line — or, in an HTML page,
+// as a data island inside <head>, else past a leading doctype. `lang` is
+// otherwise ignored: an existing block keeps its language.
+//
+// One splice and one undo step, reported into out_change (may be NULL).
+// TWIG_STATUS_NOT_FOUND for TWIG_META_END on a document without endmatter;
+// TWIG_STATUS_PARSE_ERROR when `body` does not parse as the language;
+// TWIG_STATUS_UNSUPPORTED_FORMAT for a language fig has not registered;
+// TWIG_STATUS_UNSAFE_METADATA for an island body holding `</script` or `<!--`;
+// TWIG_STATUS_EDIT_CONFLICT when the document no longer parses. On any failure
+// nothing changed.
+TwigStatus twig_editor_set_metadata(
+    TwigEditor *editor,
+    int at,
+    const uint8_t *lang,
+    size_t lang_len,
+    const uint8_t *body,
+    size_t body_len,
+    TwigChange *out_change
+);
+
 #ifdef __cplusplus
 }
 #endif
