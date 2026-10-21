@@ -1,0 +1,71 @@
+name: Release (npm)
+# Publish @diaryx/twig (bindings/typescript): the JS library over twig-capi
+# compiled to WebAssembly. Split out from release.yml (crates.io) so the
+# publish, with its own required secret, can run (and be re-triggered)
+# independently of it.
+#
+# Runs on the `v*.*.*` tag, like release.yml — one tag releases every artifact
+# at twig's one version — and by hand via `workflow_dispatch`. It publishes the
+# version package.json carries, which the checks below hold to the workspace
+# and the tag, and no-ops if that exact version is already out.
+#
+# Required repository secret:
+# NPM_TOKEN  — npm automation token with publish rights to @diaryx/twig (not
+# yet set — this job fails at the publish step until it is added: `gh secret
+# set NPM_TOKEN`).
+on:
+  workflow_dispatch: {}
+  push: { tags: [v*.*.*] }
+permissions: { id-token: write, contents: read }
+jobs:
+  npm:
+    name: Publish @diaryx/twig
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # `npm run build` builds twig's wasm module from the Rust workspace.
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: actions/setup-node@v7
+        with:
+          # Node 24+ for the tests, not for the package (engines is >=22).
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: bindings/typescript/package-lock.json
+      - name: Verify the package carries the workspace's version
+        run: node bindings/typescript/scripts/version-sync.mjs --check
+      - name: Verify tag matches the version
+        if: github.ref_type == 'tag'
+        run: |
+          want=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"$/\1/p' Cargo.toml)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$want" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME ($tag) != Cargo.toml version ($want)"
+            exit 1
+          fi
+          echo "version $want matches tag $GITHUB_REF_NAME"
+      - run: npm ci
+        working-directory: bindings/typescript
+      - run: npm run build
+        working-directory: bindings/typescript
+      - run: npm test
+        working-directory: bindings/typescript
+      # Idempotent like the crate publishes: npm reports a duplicate version as
+      # E403 "cannot publish over the previously published versions" — only
+      # that exact conflict is swallowed, so a bad token (E401) or a forbidden
+      # scope still fails.
+      - name: Publish to npm
+        working-directory: bindings/typescript
+        env: { NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}' }
+        run: |
+          if out=$(npm publish --access public 2>&1); then
+            echo "$out"
+          else
+            echo "$out"
+            if echo "$out" | grep -qiE 'cannot publish over|previously published|EPUBLISHCONFLICT'; then
+              echo "::notice::npm version already published — skipping"
+            else
+              exit 1
+            fi
+          fi

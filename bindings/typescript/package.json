@@ -1,0 +1,74 @@
+{
+  "name": "@diaryx/twig",
+  "version": "6.0.0",
+  "description": "Djot, Markdown, HTML, XML and AsciiDoc parsing, querying, lossless in-place editing, conversion, and frontmatter: twig's Rust core compiled to WebAssembly.",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "twig-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/wasm-bytes.ts",
+    "!dist/wasm-bytes.js.map",
+    "!dist/wasm-bytes.d.ts.map",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "keywords": [
+    "markdown",
+    "commonmark",
+    "gfm",
+    "djot",
+    "html",
+    "xml",
+    "asciidoc",
+    "frontmatter",
+    "parser",
+    "ast",
+    "editor",
+    "lossless",
+    "webassembly",
+    "wasm"
+  ],
+  "author": "Adam Harris <amh421@icloud.com>",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/diaryx-org/twig/blob/main/docs/typescript.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diaryx-org/twig.git",
+    "directory": "bindings/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/diaryx-org/twig/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && npm run build:wasm && tsc -p tsconfig.json && node scripts/drop-wasm-bytes-maps.mjs",
+    "prepack": "node scripts/vendor-publish-files.mjs",
+    "prepublishOnly": "npm run build && npm test",
+    "test": "tsc -p tsconfig.test.json && node --conditions=twig-source --test 'test/**/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@diaryx/fig": "^7.0.0",
+    "@diaryx/fig-yaml": "^7.0.0",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.8.0"
+  },
+  "sideEffects": false
+}

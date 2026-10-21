@@ -83,3 +83,43 @@ jobs:
 
       - name: Build the wasm module
         run: cargo build --release -p twig-capi --target wasm32-unknown-unknown
+
+  # `@diaryx/twig` (bindings/typescript): the wasm module built from
+  # twig-capi and inlined, the TypeScript compiled, the suite run, and the
+  # package's version held to the workspace's.
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
+      # Node 24+ for the tests, not for the package (engines is >=22): the
+      # suite runs its .ts files under Node's built-in type stripping and uses
+      # `using`, which Node has from 24.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bindings/typescript/package-lock.json
+
+      - name: Version check
+        run: node bindings/typescript/scripts/version-sync.mjs --check
+
+      - run: npm ci
+        working-directory: bindings/typescript
+
+      - run: npm run build
+        working-directory: bindings/typescript
+
+      - run: npm test
+        working-directory: bindings/typescript
