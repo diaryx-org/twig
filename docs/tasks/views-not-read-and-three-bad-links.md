@@ -56,6 +56,14 @@ which gives them that answer.
   document in another workspace, which would be written `id:<name>/<id>`.
   Whoever wrote the proposal knows which.
 
+## What is left
+
+Five of the six are fixed: the views are written in CEL, `fig-in-twig.md`
+is listed once, and the `AST-KINDS.md` anchor is local. `prov check` now
+reports only the `twig-attributes.md` link, which stays open until its author
+says what it meant. No file by that name is in any diaryx-org repository
+either; plates' `docs/proposals/templating.md` notes the same gap.
+
 thorn's `.config/prov.yaml` has the same three retired views. That belongs in
 a thorn task.
 
