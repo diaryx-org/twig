@@ -343,6 +343,14 @@ impl Embed {
     /// `<script type="application/<lang>">` data island, since a `---` fence
     /// is text to a browser.
     pub fn open_or_init(host: &[u8], format: crate::Format, lang: &str) -> Result<Embed, Error> {
+        Embed::open_or_init_with(host, format, lang, b"")
+    }
+
+    /// [`open_or_init`](Embed::open_or_init), with a new block opened on
+    /// `body` rather than empty — for a language with no empty document
+    /// (JSON), and for a caller that has the whole body to hand. A block
+    /// already there is opened as it stands, and `body` is not used.
+    pub fn open_or_init_with(host: &[u8], format: crate::Format, lang: &str, body: &[u8]) -> Result<Embed, Error> {
         let parsed = parse_host(host, format)?;
         if let Some(block) = find(&parsed.doc, Where::Front) {
             return Embed::open(host, &block);
@@ -360,12 +368,12 @@ impl Embed {
             before.extend_from_slice(format!("<script type=\"application/{lang}\">\n").as_bytes());
             let mut after = b"</script>\n".to_vec();
             after.extend_from_slice(&host[at..]);
-            return Embed::open_parts(&before, b"", &after, dialect, lang, true);
+            return Embed::open_parts(&before, body, &after, dialect, lang, true);
         }
         let before = format!("{}\n", fence_for(lang));
         let mut after = format!("{}\n", closer_for(lang)).into_bytes();
         after.extend_from_slice(host);
-        Embed::open_parts(before.as_bytes(), b"", &after, dialect, lang, false)
+        Embed::open_parts(before.as_bytes(), body, &after, dialect, lang, false)
     }
 
     fn open_parts(
@@ -404,6 +412,16 @@ impl Embed {
     /// The fence's language tag, as written (`yaml` for a bare `---`).
     pub fn lang(&self) -> &str {
         &self.lang
+    }
+
+    /// Replace the whole body with `body`, which must parse as the block's
+    /// dialect: a caller that edits the body as text of its own (fig's
+    /// TypeScript editor, say) hands the result back through here, and
+    /// [`render`](Embed::render) splices it in as it does an edit made
+    /// through [`editor_mut`](Embed::editor_mut).
+    pub fn set_body(&mut self, body: &[u8]) -> Result<(), Error> {
+        self.editor = fig::Editor::open(body, self.dialect)?;
+        Ok(())
     }
 
     /// The body as the editor holds it now.
