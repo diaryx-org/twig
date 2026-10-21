@@ -951,3 +951,23 @@ fn alloc_and_free_round_trip() {
         twig_free(null_mut(), 0);
     }
 }
+
+#[test]
+fn set_metadata_refuses_an_early_fence_and_repairs_a_bad_body() {
+    let src = "+++\na = 1\n+++\n# Body\n";
+    let ed = Ed::new(src, TWIG_FORMAT_MARKDOWN);
+    let body = "a = \"\"\"\n+++\nhello\n\"\"\"\n";
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, null(), 0, body.as_ptr(), body.len(), null_mut()) },
+        TWIG_STATUS_UNSAFE_METADATA
+    );
+    assert_eq!(ed.source(), src);
+
+    let ed = Ed::new("---\na: [\n---\n# Body\n", TWIG_FORMAT_MARKDOWN);
+    let body = "a: 2\n";
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, null(), 0, body.as_ptr(), body.len(), null_mut()) },
+        TWIG_STATUS_OK
+    );
+    assert_eq!(ed.source(), "---\na: 2\n---\n# Body\n");
+}

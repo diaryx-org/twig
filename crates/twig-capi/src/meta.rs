@@ -6,7 +6,7 @@
 
 use std::ffi::c_int;
 
-use twig::meta::{self, Embed, Where};
+use twig::meta::{self, Where};
 use twig::span::Span;
 
 use crate::document::{handle, span_c};
@@ -29,7 +29,7 @@ fn status_of_meta_error(e: meta::Error) -> TwigStatus {
         meta::Error::NoMetadata => TWIG_STATUS_NOT_FOUND,
         meta::Error::UnsupportedLanguage(_) => TWIG_STATUS_UNSUPPORTED_FORMAT,
         meta::Error::Fig(_) => TWIG_STATUS_PARSE_ERROR,
-        meta::Error::UnsafeIslandBody => TWIG_STATUS_UNSAFE_METADATA,
+        meta::Error::UnsafeIslandBody | meta::Error::BodyEscapesBlock => TWIG_STATUS_UNSAFE_METADATA,
         meta::Error::Twig(twig::Error::UnsupportedFormat) => TWIG_STATUS_UNSUPPORTED_FORMAT,
         meta::Error::Twig(_) => TWIG_STATUS_PARSE_ERROR,
         _ => TWIG_STATUS_INTERNAL_ERROR,
@@ -121,16 +121,7 @@ pub unsafe extern "C" fn twig_editor_set_metadata(
         let Ok(lang) = std::str::from_utf8(lang) else { return TWIG_STATUS_INVALID_ARGUMENT };
         let lang = if lang.is_empty() { "yaml" } else { lang };
         let source = h.editor.source_bytes();
-        let embed = match meta::find(h.editor.doc(), at) {
-            Some(block) => Embed::open(source, &block),
-            None if at == Where::Front => Embed::open_or_init_with(source, h.format, lang, body),
-            None => return TWIG_STATUS_NOT_FOUND,
-        };
-        let rendered = embed.and_then(|mut e| {
-            e.set_body(body)?;
-            e.render()
-        });
-        let after = match rendered {
+        let after = match meta::replace_body(source, h.format, at, lang, body) {
             Ok(after) => after,
             Err(e) => return status_of_meta_error(e),
         };

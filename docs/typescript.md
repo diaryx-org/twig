@@ -188,8 +188,10 @@ step.
 included, stays. The body must parse in the block's language. When a document
 has no front block, `setMetadata` writes one in `lang` (YAML by default): above
 the first line, or in an HTML page as an island inside `<head>` (else after a
-leading doctype). A body that would close its island early (`</script` or
-`<!--`) is refused with `Status.UnsafeMetadata`.
+leading doctype). The old body is never parsed, so `setMetadata` can repair a
+block that does not parse. A body that would close its block early — `</script`
+or `<!--` in an island, or a line such as TOML's `+++` inside a multi-line
+string — is refused with `Status.UnsafeMetadata`, and nothing changes.
 
 `metadataValue` gives the body as data, not as text, so it cannot keep
 comments. To change one value and keep every comment, edit the body with
@@ -222,7 +224,7 @@ and `op` is the C entry point that returned it:
 | `Ambiguous`         | a selector locator matched more than one node               |
 | `NotEditable`       | the node has no editable span                               |
 | `EditConflict`      | the edit would leave a document that does not parse         |
-| `UnsafeMetadata`    | an HTML island body holds `</script` or `<!--`              |
+| `UnsafeMetadata`    | a metadata body would close its block early                 |
 
 A status a newer core adds passes through as its number.
 

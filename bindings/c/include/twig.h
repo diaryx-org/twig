@@ -137,9 +137,12 @@ typedef enum TwigStatus {
     // Editor-only. The edit produced a document that no longer parses; it was
     // rolled back and nothing changed.
     TWIG_STATUS_EDIT_CONFLICT = 8,
-    // Render/serialize-to-HTML only. A metadata node's body contains
-    // `</script`, which a raw-text <script> data island cannot hold; the HTML
-    // printer refused rather than emit it.
+    // A metadata body its block cannot hold. From the HTML printer: a
+    // metadata node's body contains `</script`, which a raw-text <script>
+    // data island cannot hold, and it refused rather than emit it. From
+    // twig_editor_set_metadata: the body would close its block early (an
+    // island's `</script` or `<!--`, a fence line such as TOML's `+++` inside
+    // a multi-line string), so the host would not read it back.
     TWIG_STATUS_UNSAFE_METADATA = 9,
     // twig_language_register refused the language — its description, a
     // sample, or the registry's capacity. The message says which.
@@ -3052,7 +3055,8 @@ TwigStatus twig_document_metadata_json(
 
 // Replace the body of the editor's metadata block at `at` with `body`, which
 // must parse as the block's language: a caller edits the body with fig, comments
-// kept, and hands the result back here. Every byte outside the body is kept; a
+// kept, and hands the result back here. The old body is never parsed, so this
+// repairs a block that does not parse. Every byte outside the body is kept; a
 // body that does not end its last line is given a line ending. For
 // TWIG_META_FRONT on a document with no front block, a new one of `lang` (YAML
 // when `lang` is empty) is written above the first line — or, in an HTML page,
@@ -3063,7 +3067,9 @@ TwigStatus twig_document_metadata_json(
 // TWIG_STATUS_NOT_FOUND for TWIG_META_END on a document without endmatter;
 // TWIG_STATUS_PARSE_ERROR when `body` does not parse as the language;
 // TWIG_STATUS_UNSUPPORTED_FORMAT for a language fig has not registered;
-// TWIG_STATUS_UNSAFE_METADATA for an island body holding `</script` or `<!--`;
+// TWIG_STATUS_UNSAFE_METADATA for a body the block cannot hold: an island body
+// holding `</script` or `<!--`, or any body with a line that closes its fence,
+// which the host would read back as a shorter block and document text;
 // TWIG_STATUS_EDIT_CONFLICT when the document no longer parses. On any failure
 // nothing changed.
 TwigStatus twig_editor_set_metadata(

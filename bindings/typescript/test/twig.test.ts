@@ -246,3 +246,20 @@ test("a metadata body edited with @diaryx/fig keeps its comments", async () => {
   fig.setValue(["title"], "Hello");
   assert.equal(setMetadata(src, "md", fig.source()), "---\ntitle: Hello # kept\ntags: [a, b]\n---\n# Body\n");
 });
+
+test("a body that closes its fence early is refused, and nothing changes", () => {
+  const src = "+++\na = 1\n+++\n# Body\n";
+  using ed = Editor.create(src, "md");
+  assert.throws(
+    () => ed.setMetadata('a = """\n+++\nhello\n"""\n'),
+    (e: unknown) => e instanceof TwigError && e.status === Status.UnsafeMetadata,
+  );
+  assert.equal(ed.source, src);
+});
+
+test("a whole-body replacement repairs metadata that does not parse", () => {
+  using ed = Editor.create("---\na: [\n---\n# Body\n", "md");
+  ed.setMetadata("a: 2\n");
+  assert.equal(ed.source, "---\na: 2\n---\n# Body\n");
+  assert.deepEqual(ed.metadataValue(), { a: 2 });
+});

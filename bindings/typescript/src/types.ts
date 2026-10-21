@@ -66,8 +66,9 @@ export const Status = {
   /** The edit produced a document that no longer parses; it was rolled
    *  back and nothing changed. */
   EditConflict: 8,
-  /** A metadata body holds `</script` or `<!--`, which an HTML `<script>`
-   *  data island cannot hold. */
+  /** A metadata body its block cannot hold: `</script` or `<!--` in an
+   *  HTML `<script>` data island, or a line that closes the block's fence
+   *  early (TOML's `+++` inside a multi-line string). */
   UnsafeMetadata: 9,
   InvalidLanguage: 10,
   InternalError: 255,

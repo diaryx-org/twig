@@ -80,6 +80,11 @@ pub enum Error {
     /// follows run as a page script, the second would stop `</script>` from
     /// closing it. The HTML printer refuses the same bodies.
     UnsafeIslandBody,
+    /// A replacement body parses as its language, but the host does not read
+    /// it back as that block's body: a line of it closes the block's fence
+    /// early (a TOML `+++` inside a multi-line string), so the rest would
+    /// become document text. [`replace_body`] checks for this.
+    BodyEscapesBlock,
 }
 
 impl fmt::Display for Error {
@@ -91,6 +96,9 @@ impl fmt::Display for Error {
             }
             Error::Twig(e) => write!(f, "twig: {e}"),
             Error::Fig(e) => write!(f, "fig: {e}"),
+            Error::BodyEscapesBlock => {
+                f.write_str("the edited metadata would close its block early; the host would not read it back")
+            }
             Error::UnsafeIslandBody => {
                 f.write_str("the edited metadata holds </script or <!--, unsafe in an HTML <script> island")
             }
@@ -329,6 +337,23 @@ impl Embed {
         )
     }
 
+    /// Open the block `block` locates in `host` on `body` in place of the
+    /// body it has, which is never parsed: a whole-body replacement can
+    /// repair a block that does not parse. `body` must parse as the block's
+    /// dialect.
+    pub fn open_with(host: &[u8], block: &Block, body: &[u8]) -> Result<Embed, Error> {
+        let dialect = dialect_for(&block.lang)
+            .ok_or_else(|| Error::UnsupportedLanguage(block.lang.clone()))?;
+        Embed::open_parts(
+            &host[..block.body.start],
+            body,
+            &host[block.body.end..],
+            dialect,
+            &block.lang,
+            host.get(block.span.start) == Some(&b'<'),
+        )
+    }
+
     /// Open `host`'s metadata block at `at`, parsing it as `format`.
     /// [`Error::NoMetadata`] when it has none there.
     pub fn open_in(host: &[u8], format: crate::Format, at: Where) -> Result<Embed, Error> {
@@ -446,6 +471,37 @@ impl Embed {
         }
         out.extend_from_slice(&self.after);
         Ok(out)
+    }
+}
+
+/// `host` with the body of its metadata block at `at` replaced by `body`,
+/// read as `format` — or, for [`Where::Front`] on a host with none, with a new
+/// block of `lang` holding it (see [`Embed::open_or_init`]). The old body is
+/// not parsed, so this repairs a block that does not. Every byte outside the
+/// body is kept.
+///
+/// `body` must parse as the block's language, and the host must read it back
+/// as that block's body: a body holding the block's own closing fence would
+/// end the block early and leave the rest as document text, which is
+/// [`Error::BodyEscapesBlock`]. [`Error::NoMetadata`] for [`Where::End`] on a
+/// host without endmatter.
+pub fn replace_body(host: &[u8], format: crate::Format, at: Where, lang: &str, body: &[u8]) -> Result<Vec<u8>, Error> {
+    let parsed = parse_host(host, format)?;
+    let embed = match find(&parsed.doc, at) {
+        Some(block) => Embed::open_with(host, &block, body)?,
+        None if at == Where::Front => Embed::open_or_init_with(host, format, lang, body)?,
+        None => return Err(Error::NoMetadata),
+    };
+    let out = embed.render()?;
+    // What render put between the fences: the body, its last line ended.
+    let mut want = body.to_vec();
+    if want.last().is_some_and(|&b| b != b'\n') {
+        want.push(b'\n');
+    }
+    let reread = parse_host(&out, format)?;
+    match find(&reread.doc, at) {
+        Some(block) if out[block.body.clone()] == want[..] => Ok(out),
+        _ => Err(Error::BodyEscapesBlock),
     }
 }
 
