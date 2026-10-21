@@ -94,7 +94,7 @@ not the manifest, which is what makes that possible.
 
 ## What the push sets off
 
-Both workflows fire on the same `v*` tag and neither can be undone.
+All three workflows fire on the same `v*` tag and none can be undone.
 
 - **`release.yml`** — re-runs the workspace suite, checks the tag against the
   workspace version, then publishes to crates.io in dependency order
@@ -103,6 +103,11 @@ Both workflows fire on the same `v*` tag and neither can be undone.
 - **`homebrew.yml`** — builds the CLI binaries (`twig-doc-cli`) and a
   `wasm32-wasip1` build, attaches them to the same release, and writes
   `diaryx-org/homebrew-tap`.
+- **`release-npm.yml`** — checks `bindings/typescript/package.json` against the
+  workspace version and the tag, builds the wasm module, runs the suite, and
+  publishes `@diaryx/twig` to npm. It needs the `NPM_TOKEN` secret. The
+  release commit carries the package's version because `ship` runs
+  `scripts/version-sync.mjs` after the bump (`post_bump`).
 
 A crates.io version number is spent even after a yank, which is why `--push` is
 asked for every time rather than being the default.

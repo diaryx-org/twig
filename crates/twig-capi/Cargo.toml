@@ -17,6 +17,9 @@ doctest = false
 [dependencies]
 # With fig: a document is read as its frontmatter's `twig` settings ask.
 twig-doc = { workspace = true, features = ["fig"] }
+# The metadata entry points write a block's body as JSON through fig, the
+# same fig 7 twig-doc reads it with.
+fig = "7"
 # The bundle: every language twig ships, registered under its TWIG_FORMAT_*
 # code before the first entry point answers.
 twig-djot = { workspace = true, default-features = true }

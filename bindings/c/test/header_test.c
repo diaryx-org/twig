@@ -1019,6 +1019,44 @@ static void test_a_language_registered_from_c(void) {
     twig_document_destroy(doc);
 }
 
+// The metadata calls: a block located and read as JSON, its body replaced in
+// an editor, and memory from twig_alloc released with twig_free.
+static void test_metadata_reads_and_replaces_the_body(void) {
+    static const char src[] = "---\ntitle: Hi\n---\n# Body\n";
+    TwigDocument *doc = NULL;
+    CHECK(twig_parse((const uint8_t *)src, sizeof src - 1, TWIG_FORMAT_MARKDOWN, &doc) == TWIG_STATUS_OK);
+    TwigSpan span, body;
+    const uint8_t *lang = NULL;
+    size_t lang_len = 0;
+    CHECK(twig_document_metadata(doc, TWIG_META_FRONT, &span, &body, &lang, &lang_len) == TWIG_STATUS_OK);
+    CHECK(span.start == 0 && body.start == 4 && body.end == 14);
+    CHECK(lang_len == 4 && memcmp(lang, "yaml", 4) == 0);
+    CHECK(twig_document_metadata(doc, TWIG_META_END, NULL, NULL, NULL, NULL) == TWIG_STATUS_NOT_FOUND);
+    const uint8_t *json = NULL;
+    size_t json_len = 0;
+    CHECK(twig_document_metadata_json(doc, TWIG_META_FRONT, &json, &json_len) == TWIG_STATUS_OK);
+    CHECK(json_len >= 14 && memcmp(json, "{\"title\":\"Hi\"}", 14) == 0);
+    twig_document_destroy(doc);
+
+    TwigEditor *ed = NULL;
+    CHECK(twig_editor_create((const uint8_t *)src, sizeof src - 1, TWIG_FORMAT_MARKDOWN, &ed) == TWIG_STATUS_OK);
+    static const char next[] = "title: Hello\n";
+    TwigChange change;
+    CHECK(twig_editor_set_metadata(ed, TWIG_META_FRONT, NULL, 0, (const uint8_t *)next, sizeof next - 1, &change) ==
+          TWIG_STATUS_OK);
+    const uint8_t *out = NULL;
+    size_t out_len = 0;
+    CHECK(twig_editor_source(ed, &out, &out_len) == TWIG_STATUS_OK);
+    static const char want[] = "---\ntitle: Hello\n---\n# Body\n";
+    CHECK(out_len == sizeof want - 1 && memcmp(out, want, out_len) == 0);
+    twig_editor_destroy(ed);
+
+    uint8_t *buf = twig_alloc(8);
+    CHECK(buf != NULL);
+    twig_free(buf, 8);
+    CHECK(twig_alloc(0) == NULL);
+}
+
 int main(void) {
     test_abi_version_matches_header();
     test_markdown_dialect_codes_match_runtime();
@@ -1032,6 +1070,7 @@ int main(void) {
     test_new_block_gestures_link_and_edit();
     test_format_capability_matches_the_gestures();
     test_a_language_registered_from_c();
+    test_metadata_reads_and_replaces_the_body();
     if (failures != 0) {
         fprintf(stderr, "c header test: %d check(s) failed\n", failures);
         return 1;

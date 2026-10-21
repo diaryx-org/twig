@@ -872,3 +872,102 @@ fn a_language_registers_over_a_transport() {
         TWIG_STATUS_INVALID_LANGUAGE
     );
 }
+
+#[test]
+fn metadata_is_located_read_as_json_and_replaced() {
+    let src = "---\ntitle: Hi # kept\ntags: [a, b]\n---\n# Body\n";
+    let doc = parse(src, TWIG_FORMAT_MARKDOWN, 0);
+    let (mut span, mut body) = (TwigSpan::default(), TwigSpan::default());
+    let (mut lp, mut ln) = (null(), 0);
+    assert_eq!(unsafe { twig_document_metadata(doc, TWIG_META_FRONT, &mut span, &mut body, &mut lp, &mut ln) }, TWIG_STATUS_OK);
+    assert_eq!((span.start, span.end), (0, 37));
+    assert_eq!(&src[body.start..body.end], "title: Hi # kept\ntags: [a, b]\n");
+    assert_eq!(bytes(lp, ln), b"yaml");
+    assert_eq!(unsafe { twig_document_metadata(doc, TWIG_META_END, null_mut(), null_mut(), null_mut(), null_mut()) }, TWIG_STATUS_NOT_FOUND);
+    assert_eq!(unsafe { twig_document_metadata(doc, 7, null_mut(), null_mut(), null_mut(), null_mut()) }, TWIG_STATUS_INVALID_ARGUMENT);
+    let (mut p, mut n) = (null(), 0);
+    assert_eq!(unsafe { twig_document_metadata_json(doc, TWIG_META_FRONT, &mut p, &mut n) }, TWIG_STATUS_OK);
+    assert_eq!(bytes(p, n), b"{\"title\":\"Hi\",\"tags\":[\"a\",\"b\"]}\n");
+    unsafe { twig_document_destroy(doc) };
+
+    let ed = Ed::new(src, TWIG_FORMAT_MARKDOWN);
+    let body = "title: Hello # kept\n";
+    let mut change = TwigChange::default();
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, null(), 0, body.as_ptr(), body.len(), &mut change) },
+        TWIG_STATUS_OK
+    );
+    assert_eq!(ed.source(), "---\ntitle: Hello # kept\n---\n# Body\n");
+    // The change is the body's, not the document's.
+    assert_eq!(change.old_span.start, 12);
+    // A body that is not YAML changes nothing.
+    let bad = "a: [\n";
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, null(), 0, bad.as_ptr(), bad.len(), null_mut()) },
+        TWIG_STATUS_PARSE_ERROR
+    );
+    assert_eq!(ed.source(), "---\ntitle: Hello # kept\n---\n# Body\n");
+    assert_eq!(unsafe { twig_editor_undo(ed.0, null_mut()) }, TWIG_STATUS_OK);
+    assert_eq!(ed.source(), src);
+}
+
+#[test]
+fn set_metadata_writes_a_new_block_and_refuses_an_unsafe_island() {
+    let ed = Ed::new("# Body\n", TWIG_FORMAT_MARKDOWN);
+    let (lang, body) = ("toml", "title = \"Hi\"");
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, lang.as_ptr(), lang.len(), body.as_ptr(), body.len(), null_mut()) },
+        TWIG_STATUS_OK
+    );
+    assert_eq!(ed.source(), "+++\ntitle = \"Hi\"\n+++\n# Body\n");
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_END, null(), 0, body.as_ptr(), body.len(), null_mut()) },
+        TWIG_STATUS_NOT_FOUND
+    );
+
+    let page = "<!doctype html>\n<html><head>\n<title>x</title>\n</head><body></body></html>\n";
+    let ed = Ed::new(page, TWIG_FORMAT_HTML);
+    let (lang, body) = ("json", "{\"a\": 1}\n");
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, lang.as_ptr(), lang.len(), body.as_ptr(), body.len(), null_mut()) },
+        TWIG_STATUS_OK
+    );
+    assert!(ed.source().contains("<script type=\"application/json\">\n{\"a\": 1}\n</script>\n"), "{}", ed.source());
+    let unsafe_body = "{\"a\": \"</script>\"}\n";
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, null(), 0, unsafe_body.as_ptr(), unsafe_body.len(), null_mut()) },
+        TWIG_STATUS_UNSAFE_METADATA
+    );
+}
+
+#[test]
+fn alloc_and_free_round_trip() {
+    assert!(twig_alloc(0).is_null());
+    let p = twig_alloc(16);
+    assert!(!p.is_null());
+    unsafe {
+        p.write_bytes(7, 16);
+        twig_free(p, 16);
+        twig_free(null_mut(), 0);
+    }
+}
+
+#[test]
+fn set_metadata_refuses_an_early_fence_and_repairs_a_bad_body() {
+    let src = "+++\na = 1\n+++\n# Body\n";
+    let ed = Ed::new(src, TWIG_FORMAT_MARKDOWN);
+    let body = "a = \"\"\"\n+++\nhello\n\"\"\"\n";
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, null(), 0, body.as_ptr(), body.len(), null_mut()) },
+        TWIG_STATUS_UNSAFE_METADATA
+    );
+    assert_eq!(ed.source(), src);
+
+    let ed = Ed::new("---\na: [\n---\n# Body\n", TWIG_FORMAT_MARKDOWN);
+    let body = "a: 2\n";
+    assert_eq!(
+        unsafe { twig_editor_set_metadata(ed.0, TWIG_META_FRONT, null(), 0, body.as_ptr(), body.len(), null_mut()) },
+        TWIG_STATUS_OK
+    );
+    assert_eq!(ed.source(), "---\na: 2\n---\n# Body\n");
+}

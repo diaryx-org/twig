@@ -46,6 +46,10 @@ pub(crate) struct DocumentHandle {
     warnings: Vec<TwigWarning>,
     /// The path strings `warnings` point into.
     warning_paths: Vec<String>,
+    /// `twig_document_metadata`'s language tag.
+    pub(crate) meta_lang: Vec<u8>,
+    /// `twig_document_metadata_json`'s JSON.
+    pub(crate) meta_json: Vec<u8>,
 }
 
 impl DocumentHandle {
@@ -67,6 +71,8 @@ impl DocumentHandle {
             child_matches: Vec::new(),
             warnings: Vec::new(),
             warning_paths: Vec::new(),
+            meta_lang: Vec::new(),
+            meta_json: Vec::new(),
         }
     }
 
@@ -82,7 +88,7 @@ impl DocumentHandle {
 }
 
 /// The handle behind a non-NULL `TwigDocument`.
-unsafe fn handle<'a>(doc: *mut TwigDocument) -> Option<&'a mut DocumentHandle> {
+pub(crate) unsafe fn handle<'a>(doc: *mut TwigDocument) -> Option<&'a mut DocumentHandle> {
     // SAFETY: every `TwigDocument` this library hands out is a
     // `DocumentHandle` (boxed, or the field of an editor handle).
     unsafe { (doc as *mut DocumentHandle).as_mut() }

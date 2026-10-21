@@ -333,3 +333,33 @@ fn settings_only_add_to_the_callers_features_and_stay_in_the_language() {
     assert!(kinds.contains(&twig::Kind::InlineMath), "{kinds:?}");
     assert_eq!(doc.query("directive").unwrap().len(), 1);
 }
+
+#[test]
+fn replace_body_refuses_a_body_that_closes_its_fence() {
+    let host = b"+++\na = 1\n+++\n# Body\n";
+    let md = twig_markdown::format();
+    // Valid TOML, but its `+++` line would end the block early.
+    let body = b"a = \"\"\"\n+++\nhello\n\"\"\"\n";
+    assert!(matches!(
+        twig::meta::replace_body(host, md, Where::Front, "toml", body),
+        Err(Error::BodyEscapesBlock)
+    ));
+    let out = twig::meta::replace_body(host, md, Where::Front, "toml", b"a = 2").unwrap();
+    assert_eq!(s(&out), "+++\na = 2\n+++\n# Body\n");
+}
+
+#[test]
+fn replace_body_repairs_a_body_that_does_not_parse() {
+    let host = b"---\na: [\n---\n# Body\n";
+    let md = twig_markdown::format();
+    let out = twig::meta::replace_body(host, md, Where::Front, "yaml", b"a: 2\n").unwrap();
+    assert_eq!(s(&out), "---\na: 2\n---\n# Body\n");
+    assert!(matches!(
+        twig::meta::replace_body(host, md, Where::Front, "yaml", b"a: [\n"),
+        Err(Error::Fig(_))
+    ));
+    assert!(matches!(
+        twig::meta::replace_body(b"# Body\n", md, Where::End, "toml", b"a = 1\n"),
+        Err(Error::NoMetadata)
+    ));
+}

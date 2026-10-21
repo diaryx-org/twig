@@ -27,11 +27,13 @@ mod builder;
 mod document;
 mod editor;
 mod language;
+mod meta;
 
 pub use builder::*;
 pub use document::*;
 pub use editor::*;
 pub use language::*;
+pub use meta::*;
 
 // ── status ──────────────────────────────────────────────────────────────────
 
@@ -208,6 +210,39 @@ const _: () = {
     assert!(size_of::<TwigWarning>() == 32);
 };
 
+// The wasm32 layout, which `@diaryx/twig` reads the structs at
+// (bindings/typescript/src/ffi.ts): every pointer and `size_t` is 4 bytes.
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<TwigSpan>() == 8);
+    assert!(size_of::<TwigChange>() == 16);
+    assert!(size_of::<TwigQueryMatch>() == 28);
+    assert!(offset_of!(TwigQueryMatch, span) == 4);
+    assert!(offset_of!(TwigQueryMatch, content_span) == 12);
+    assert!(offset_of!(TwigQueryMatch, has_content_span) == 20);
+    assert!(offset_of!(TwigQueryMatch, kind) == 24);
+    assert!(size_of::<TwigKeyVal>() == 16);
+    assert!(size_of::<TwigWarning>() == 16);
+    assert!(size_of::<TwigFlatNode>() == 108);
+    assert!(offset_of!(TwigFlatNode, span) == 16);
+    assert!(offset_of!(TwigFlatNode, content_span) == 24);
+    assert!(offset_of!(TwigFlatNode, has_content_span) == 32);
+    assert!(offset_of!(TwigFlatNode, level) == 36);
+    assert!(offset_of!(TwigFlatNode, kind) == 40);
+    assert!(offset_of!(TwigFlatNode, text_ptr) == 44);
+    assert!(offset_of!(TwigFlatNode, destination_ptr) == 52);
+    assert!(offset_of!(TwigFlatNode, head) == 60);
+    assert!(offset_of!(TwigFlatNode, alignment) == 64);
+    assert!(offset_of!(TwigFlatNode, name_ptr) == 68);
+    assert!(offset_of!(TwigFlatNode, attrs_ptr) == 76);
+    assert!(offset_of!(TwigFlatNode, directive_form) == 84);
+    assert!(offset_of!(TwigFlatNode, container_origin) == 88);
+    assert!(offset_of!(TwigFlatNode, marker_span) == 92);
+    assert!(offset_of!(TwigFlatNode, has_marker_span) == 100);
+    assert!(offset_of!(TwigFlatNode, checked) == 104);
+};
+
 // ── boundary helpers ────────────────────────────────────────────────────────
 
 /// Run `body`, turning a panic into `TWIG_STATUS_INTERNAL_ERROR`.
@@ -299,6 +334,38 @@ pub(crate) fn format_to_int(fmt: reg::Format) -> c_int {
 /// `configFromFlags`: the flags are the row's features in order.
 pub(crate) fn config_from_flags(fmt: reg::Format, flags: u32) -> reg::ParseConfig {
     reg::ParseConfig::for_features(fmt, flags)
+}
+
+// ── memory ──────────────────────────────────────────────────────────────────
+
+/// `twig_alloc`: `len` uninitialized bytes from the library's allocator, or
+/// NULL for a zero-length request or on failure. What a caller outside the
+/// library's memory (the WebAssembly build, driven from JavaScript) writes
+/// its input into.
+#[unsafe(no_mangle)]
+pub extern "C" fn twig_alloc(len: usize) -> *mut u8 {
+    if len == 0 {
+        return std::ptr::null_mut();
+    }
+    let Ok(layout) = std::alloc::Layout::from_size_align(len, 1) else { return std::ptr::null_mut() };
+    // SAFETY: `layout` has a nonzero size.
+    unsafe { std::alloc::alloc(layout) }
+}
+
+/// `twig_free`: a sized free of what `twig_alloc` returned. A null pointer
+/// or zero length is a no-op.
+///
+/// # Safety
+///
+/// `ptr` must be null or a `twig_alloc(len)` result not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn twig_free(ptr: *mut u8, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    let Ok(layout) = std::alloc::Layout::from_size_align(len, 1) else { return };
+    // SAFETY: the caller promises `ptr` came from `twig_alloc(len)`.
+    unsafe { std::alloc::dealloc(ptr, layout) }
 }
 
 // ── version ─────────────────────────────────────────────────────────────────

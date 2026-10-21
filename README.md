@@ -4,7 +4,7 @@ title: Twig
 author: adammharris
 created: 2026-07-08T22:39:41-07:00
 updated: 2026-08-13T15:50:04-07:00
-contents: ['[DESIGN](/docs/DESIGN.md)', '[AST-KINDS](/docs/AST-KINDS.md)', '[COOKBOOK](/docs/COOKBOOK.md)', '[CHANGELOG](/docs/CHANGELOG.md)', '[AGENTS](/docs/CONTRIBUTING.md)', '[RELEASING](/docs/RELEASING.md)', '[Proposals](/docs/proposals/proposals.md)', '[Tasks](/docs/tasks/tasks.md)', '[twig on diaryx.org](/www/index.md)', '[Audiences](/vocab/audiences.md)']
+contents: ['[DESIGN](/docs/DESIGN.md)', '[AST-KINDS](/docs/AST-KINDS.md)', '[COOKBOOK](/docs/COOKBOOK.md)', '[CHANGELOG](/docs/CHANGELOG.md)', '[AGENTS](/docs/CONTRIBUTING.md)', '[RELEASING](/docs/RELEASING.md)', '[Proposals](/docs/proposals/proposals.md)', '[Tasks](/docs/tasks/tasks.md)', '[twig on diaryx.org](/www/index.md)', '[Audiences](/vocab/audiences.md)', '[TypeScript](/docs/typescript.md)']
 config: .config/prov.yaml
 registry: registry.yaml
 id: 9tz497d
@@ -69,6 +69,10 @@ names no language, and one crate per language
 - [`crates/twig-capi`](crates/twig-capi) builds the C ABI declared in
   [`bindings/c/include/twig.h`](bindings/c/include/twig.h), with every
   language registered under its `TWIG_FORMAT_*` code.
+- [`bindings/typescript`](bindings/typescript) is `@diaryx/twig` on npm:
+  that C ABI compiled to WebAssembly and wrapped for TypeScript and
+  JavaScript, in Node, Bun, Deno and the browser
+  ([guide](docs/typescript.md)).
 - `twig-doc`'s one feature, `fig` (on by default), reads and edits a
   document's frontmatter and endmatter through [fig](https://github.com/diaryx-org/fig)
   7 (`twig::meta`), in place, with comments and fences kept, and has every

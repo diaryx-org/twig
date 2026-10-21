@@ -21,11 +21,14 @@ pub enum TwigEditor {}
 /// `twig_editor_*` reads and the `twig_document_*` ones reached through
 /// `twig_editor_document` are one implementation over one set of buffers.
 pub(crate) struct EditorHandle {
-    editor: EngineEditor,
+    pub(crate) editor: EngineEditor,
     view: DocumentHandle,
+    /// The format the editor reparses as, after the document's own `twig`
+    /// settings: what a new metadata block is written for.
+    pub(crate) format: reg::Format,
 }
 
-unsafe fn editor_handle(ed: *mut TwigEditor) -> Option<*mut EditorHandle> {
+pub(crate) unsafe fn editor_handle(ed: *mut TwigEditor) -> Option<*mut EditorHandle> {
     if ed.is_null() { None } else { Some(ed as *mut EditorHandle) }
 }
 
@@ -41,7 +44,7 @@ unsafe fn view_of(h: *mut EditorHandle) -> *mut TwigDocument {
     unsafe { addr_of_mut!((*h).view) as *mut TwigDocument }
 }
 
-fn change_c(c: splicer::Change) -> TwigChange {
+pub(crate) fn change_c(c: splicer::Change) -> TwigChange {
     TwigChange { old_span: span_c(c.old), new_span: span_c(c.new) }
 }
 
@@ -126,6 +129,7 @@ pub unsafe extern "C" fn twig_editor_create_ext(
         let raw = Box::into_raw(Box::new(EditorHandle {
             editor: engine,
             view: DocumentHandle::new(View::Borrowed(std::ptr::null())),
+            format: fmt,
         }));
         // Only now is the editor at the address the view borrows; the box is
         // never moved, so that address holds until destroy.

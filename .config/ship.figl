@@ -10,6 +10,16 @@ manifest = Cargo.toml
 version_prefix = 'version = "'
 cargo_workspace = true
 
+# The one file the version reaches that no Cargo-manifest rewrite finds: the
+# npm package `@diaryx/twig` (bindings/typescript) and its lockfile, which
+# take the workspace's version. The script copies it in after the bump, and
+# its `--check` is the `version` job below.
+post_bump = node bindings/typescript/scripts/version-sync.mjs
+extra_version_files = [
+  bindings/typescript/package.json,
+  bindings/typescript/package-lock.json,
+]
+
 # How a released section heads itself. The Cargo workspaces in this org write
 # `## v3.2.1 — 2026-08-26`; twig has always written the bare number, and its
 # historical sections are not worth rewriting to agree. Reading accepts both
@@ -36,6 +46,9 @@ tag_starts
 > > workflow = release.yml
 > > does = uploads twig-doc and twig-doc-cli to crates.io and cuts the GitHub release
 > *
+> > workflow = release-npm.yml
+> > does = publishes @diaryx/twig to npm
+> *
 > > workflow = homebrew.yml
 > > does = builds the CLI binaries and the wasm32-wasip1 build, and writes the tap
 
@@ -43,7 +56,7 @@ tag_starts
 # first that fails; `ship ci <id>` runs one. Each is `id`, `name` and `run`
 # (run by `bash -eo pipefail -c` at the repository root).
 #
-# `.github/workflows/ci.yml` does not read this list: it runs the same three
+# `.github/workflows/ci.yml` does not read this list: it runs the same
 # commands as its own jobs, `test` on Linux and macOS as `test (<os>)`, which a
 # job list of one runner per job cannot name without running the suite twice
 # here. A change to what CI runs is an edit there and here.
@@ -70,4 +83,28 @@ cc -std=c99 -Wall -I bindings/c/include bindings/c/test/header_test.c \
    target/release/libtwig.a -lpthread -ldl -lm -o target/header_test
 ./target/header_test
 cargo build --release -p twig-capi --target wasm32-unknown-unknown
+'''
+> *
+> > # The npm package carries the workspace's version (post_bump above).
+> > id = version
+> > name = Version check
+> > run = node bindings/typescript/scripts/version-sync.mjs --check
+> *
+> > # `@diaryx/twig`: the wasm module built and inlined, the TypeScript
+> > # compiled, and the suite run. Skipped with a note without Node 24 and
+> > # the package's installed node_modules (`npm ci` in
+> > # bindings/typescript), so a contributor with Rust alone still gets a
+> > # useful gate; the workflow's `typescript` job installs both and runs it
+> > # for real.
+> > id = typescript
+> > name = TypeScript
+> > run = '''
+cd bindings/typescript
+major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+if [ "$major" -lt 24 ] || [ ! -d node_modules ]; then
+  echo "typescript: needs Node 24+ and \`npm ci\` in bindings/typescript — skipping." >&2
+  exit 0
+fi
+npm run build
+npm test
 '''
