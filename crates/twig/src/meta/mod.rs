@@ -1,12 +1,13 @@
 //! The config a document carries, read and edited through fig — behind the
 //! default `fig` feature.
 //!
-//! twig finds a document's metadata — a `metadata` node, the frontmatter or
-//! endmatter block the Markdown parser reads — and fig edits what is inside
-//! it. The block's body is handed to [`fig::Editor`] as a config document of
-//! its own, and whatever the editor leaves in its source is spliced back
-//! between the block's fences. Every byte outside the body, the fences
-//! included, is the host's as it was.
+//! twig finds a document's metadata — a `metadata` node: the frontmatter or
+//! endmatter block the Markdown parser reads, or the
+//! `<script type="application/<lang>">` data island the HTML parser reads —
+//! and fig edits what is inside it. The block's body is handed to
+//! [`fig::Editor`] as a config document of its own, and whatever the editor
+//! leaves in its source is spliced back between the block's fences. Every
+//! byte outside the body, the fences included, is the host's as it was.
 //!
 //! This is what fig's `Embed` did before 6.0, which took embedding out of fig
 //! (fig's `docs/migrating-to-6.md`, "Embedding has left fig"). It was the
@@ -112,8 +113,11 @@ impl From<fig::Error> for Error {
 }
 
 /// The document's metadata block at `at`, or `None` when it has none.
-/// `doc` is a parsed document ([`parse_host`]); only Markdown's parser
-/// produces `metadata` nodes today.
+/// `doc` is a parsed document ([`parse_host`]). Markdown's parser reads
+/// frontmatter and endmatter as `metadata` nodes; HTML's reads a
+/// `<script type="application/<lang>">` data island as one, wherever in the
+/// page it sits (typically `<head>`), and the first such island is the
+/// document's front block. An island is never endmatter.
 pub fn find(doc: &Document, at: Where) -> Option<Block> {
     let nodes = &doc.ast.nodes;
     let first = nodes.get(doc.ast.root as usize)?.first_child?;
@@ -127,25 +131,79 @@ pub fn find(doc: &Document, at: Where) -> Option<Block> {
             last
         }
     };
+    if let Kind::Metadata { lang, .. } = &nodes[id as usize].kind {
+        let span = doc.span(id);
+        let span = span.start..span.end;
+        if is_island(doc, &span) {
+            return (at == Where::Front).then(|| island(doc, id, lang, span));
+        }
+        // Frontmatter is the document's first block and endmatter its last; a
+        // document holding only one block of metadata has it as both, and it
+        // is the one at the position the source puts it.
+        let leads = span.start == 0;
+        if leads != (at == Where::Front) {
+            return None;
+        }
+        return Some(Block {
+            node: id,
+            at,
+            lang: String::from_utf8_lossy(lang).into_owned(),
+            body: body_of(&doc.source, span.clone()),
+            span,
+        });
+    }
+    if at == Where::End {
+        return None;
+    }
+    // Not leading the document: an island may still sit deeper, in `<head>`.
+    let id = first_island(doc, first)?;
     let Kind::Metadata { lang, .. } = &nodes[id as usize].kind else {
         return None;
     };
     let span = doc.span(id);
-    // Frontmatter is the document's first block and endmatter its last; a
-    // document holding only one block of metadata has it as both, and it is
-    // the one at the position the source puts it.
-    let leads = span.start == 0;
-    if leads != (at == Where::Front) {
-        return None;
+    Some(island(doc, id, lang, span.start..span.end))
+}
+
+/// Whether the metadata node spanning `span` is an HTML data island rather
+/// than a fenced block: its source opens a tag.
+fn is_island(doc: &Document, span: &Range<usize>) -> bool {
+    doc.source.get(span.start) == Some(&b'<')
+}
+
+/// The first data island at or after `from` in document order, descending
+/// into each node's children before its next sibling.
+fn first_island(doc: &Document, from: crate::ast::NodeId) -> Option<crate::ast::NodeId> {
+    let nodes = &doc.ast.nodes;
+    let mut next = Some(from);
+    while let Some(id) = next {
+        let node = &nodes[id as usize];
+        if matches!(node.kind, Kind::Metadata { .. }) {
+            let span = doc.span(id);
+            if is_island(doc, &(span.start..span.end)) {
+                return Some(id);
+            }
+        }
+        if let Some(found) = node.first_child.and_then(|c| first_island(doc, c)) {
+            return Some(found);
+        }
+        next = node.next_sibling;
     }
-    let span = span.start..span.end;
-    Some(Block {
+    None
+}
+
+/// The block a data island makes: its body is the content span the HTML
+/// parser gives it, between the open tag's line and the close tag.
+fn island(doc: &Document, id: crate::ast::NodeId, lang: &[u8], span: Range<usize>) -> Block {
+    let body = doc
+        .content_span(id)
+        .map_or(span.end..span.end, |c| c.start..c.end);
+    Block {
         node: id,
-        at,
+        at: Where::Front,
         lang: String::from_utf8_lossy(lang).into_owned(),
-        body: body_of(&doc.source, span.clone()),
         span,
-    })
+        body,
+    }
 }
 
 /// The body of a fenced block spanning `span`: from past the opening fence's
@@ -268,9 +326,10 @@ impl Embed {
     }
 
     /// Open `host`'s frontmatter, or — when it has none — a new block of
-    /// `lang` above its first line, empty until an edit writes to it. Only a
-    /// Markdown host is read for an existing block; `format` names its
-    /// dialect.
+    /// `lang` above its first line, empty until an edit writes to it. In an
+    /// HTML host (`format` named `html`) the block found or written is a
+    /// `<script type="application/<lang>">` data island, since a `---` fence
+    /// is text to a browser.
     pub fn open_or_init(host: &[u8], format: crate::Format, lang: &str) -> Result<Embed, Error> {
         let parsed = parse_host(host, format)?;
         if let Some(block) = find(&parsed.doc, Where::Front) {
@@ -278,8 +337,13 @@ impl Embed {
         }
         let dialect =
             dialect_for(lang).ok_or_else(|| Error::UnsupportedLanguage(lang.to_string()))?;
-        let before = format!("{}\n", fence_for(lang));
-        let mut after = format!("{}\n", closer_for(lang)).into_bytes();
+        let (open, close) = if format.name() == "html" {
+            (format!("<script type=\"application/{lang}\">"), "</script>".to_string())
+        } else {
+            (fence_for(lang), closer_for(lang).to_string())
+        };
+        let before = format!("{open}\n");
+        let mut after = format!("{close}\n").into_bytes();
         after.extend_from_slice(host);
         Embed::open_parts(before.as_bytes(), b"", &after, dialect, lang)
     }
