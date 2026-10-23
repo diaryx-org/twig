@@ -12,7 +12,7 @@ use std::ops::Range;
 use twig::{
     abi_version, version, version_string, Alignment, Builder, BlockContainerKind, BlockKind, BulletStyle, Change,
     ContainerOrigin, DirectiveForm, Document, DocumentView, Editor, Error, Fidelity, FlatNode, Format, Gesture,
-    InlineKind, Kind, LinePrefix, MarkColor, NodeId, OrderedDelim, OrderedNumbering, QueryMatch,
+    InlineKind, Kind, LinePrefix, MarkColor, NodeId, Op, OrderedDelim, OrderedNumbering, QueryMatch,
     SmartPunctuation, Span, Target, TextKind, Version, VoidKind, Warning, ABI_VERSION,
 };
 
@@ -299,6 +299,10 @@ fn every_binding_item_exists_with_its_signature() {
     let _: fn(&mut Editor) -> R<Vec<u8>> = Editor::ast_json;
     let _: fn(&mut Editor, &str) -> R<Vec<QueryMatch>> = Editor::query;
     let _: fn(&mut Editor, usize, usize, &str) -> R<Change> = Editor::edit_range;
+    let _: fn(&mut Editor, &[Op]) -> R<Change> = Editor::apply;
+    let _: fn(&mut Editor) -> R<Vec<Op>> = Editor::last_ops;
+    let _: fn(&mut Editor, bool) = Editor::set_history;
+    let _: fn(&mut Editor) -> bool = Editor::keeps_history;
     let _: fn(&mut Editor) -> Option<Change> = Editor::last_change;
     let _: fn(&mut Editor) -> R<Option<Change>> = Editor::undo;
     let _: fn(&mut Editor) -> R<Option<Change>> = Editor::redo;
@@ -308,6 +312,7 @@ fn every_binding_item_exists_with_its_signature() {
     let _: fn(&mut Editor) = Editor::clear_dirty;
     let _: fn(&mut Editor, &[u8]) -> R<()> = Editor::set_caret_blob;
     let _: fn(&mut Editor) -> R<Vec<u8>> = Editor::caret_blob;
+    assert_traits::<Op>();
     let _: for<'a> fn(&'a mut Editor) -> R<DocumentView<'a>> = Editor::document;
     let _: fn(&mut Editor) -> R<Vec<FlatNode>> = Editor::nodes;
     let _: fn(&mut Editor, Option<NodeId>) -> R<Vec<QueryMatch>> = Editor::child_spans;

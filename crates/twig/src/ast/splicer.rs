@@ -3,12 +3,24 @@
 //! `src/ast/splicer.zig`.
 //!
 //! ── The one primitive ──────────────────────────────────────────────────────
-//! Everything reduces to `replace_at_span(span, replacement)`: build a new
-//! source buffer that is the old bytes with `[span.start, span.end)`
-//! overwritten, reparse it, and — only if the reparse succeeds — swap it in.
-//! On reparse failure the edit is abandoned and the editor is left exactly as
-//! it was. Bytes outside the spliced span are copied verbatim and never
-//! reflow. An insertion is just a zero-width span.
+//! Everything reduces to `apply_checked(ops)`: build a new source buffer that
+//! is the old bytes with the [`Op`]s applied — retain, insert and delete, read
+//! from the start — reparse it, and — only if the reparse succeeds — swap it
+//! in. On reparse failure the edit is abandoned and the editor is left exactly
+//! as it was. Bytes the ops retain are copied verbatim and never reflow.
+//!
+//! `replace_at_span(span, replacement)` is how the gestures reach it: it
+//! writes the FEWEST ops that turn the span's bytes into `replacement`
+//! ([`ops::diff`]), so wrapping a word in `**` is two inserts and the word
+//! retained, not the word deleted and written again. `splice` is the literal
+//! one — the whole span deleted, the whole replacement inserted — for a
+//! caller who said exactly which bytes go. [`Splicer::last_ops`] is what the
+//! last edit did, as ops.
+//!
+//! ── History ────────────────────────────────────────────────────────────────
+//! An undo step is the inverse ops of its edit and the host's caret blob, not
+//! a copy of the source. History can be turned off (`set_history(false)`) for
+//! a host that keeps its own.
 //!
 //! ── Language-agnostic by construction ──────────────────────────────────────
 //! The splicer holds only source bytes plus a [`ParseFn`] (source ->
@@ -27,6 +39,7 @@
 
 use std::fmt;
 
+use crate::ast::ops::{self, Op};
 use crate::ast::{Ast, KindRef, NodeId, Tag};
 use crate::document::Document;
 use crate::span::Span;
@@ -78,6 +91,8 @@ pub enum Error {
     Rejected,
     /// An index path past the tree.
     PathOutOfBounds,
+    /// Ops that read past the end of the source.
+    OutOfRange,
     /// The reparse failed; nothing changed.
     Parse(ParseError),
 }
@@ -92,6 +107,7 @@ impl Error {
             Error::OverlappingNodes => "OverlappingNodes",
             Error::Rejected => "Rejected",
             Error::PathOutOfBounds => "PathOutOfBounds",
+            Error::OutOfRange => "OutOfRange",
             Error::Parse(p) => &p.name,
         }
     }
@@ -114,11 +130,13 @@ pub struct Change {
     pub new: Span,
 }
 
-/// One history step: a whole source snapshot plus the opaque caret blob the
-/// host associated with THAT document state.
+/// One history step: the ops that lead from the current state to the one the
+/// step restores, plus the opaque caret blob the host associated with THAT
+/// state. On the undo stack they are an edit's inverse; on the redo stack, an
+/// undo's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryEntry {
-    pub source: Vec<u8>,
+    pub ops: Vec<Op>,
     pub caret: Vec<u8>,
 }
 
@@ -150,10 +168,15 @@ pub struct Splicer {
     /// The byte-level effect of the last successful splice (or undo/redo), or
     /// `None` before the first edit. A failed edit leaves it untouched.
     pub last_change: Option<Change>,
-    /// Undo/redo history as whole source snapshots, each tagged with a caret
-    /// blob.
+    /// The last successful edit (or undo/redo) as canonical ops against the
+    /// source before it; empty before the first. A failed edit leaves it
+    /// untouched.
+    pub last_ops: Vec<Op>,
+    /// Undo/redo history as inverse ops, each tagged with a caret blob.
     pub undo_stack: Vec<HistoryEntry>,
     pub redo_stack: Vec<HistoryEntry>,
+    /// Whether edits record undo steps. Off, both stacks stay empty.
+    history: bool,
     /// An opaque, host-owned blob describing the caret for the CURRENT
     /// source state — never read, only stored and handed back.
     current_caret: Vec<u8>,
@@ -181,8 +204,10 @@ impl Splicer {
             doc,
             parse_fn,
             last_change: None,
+            last_ops: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            history: true,
             current_caret: Vec::new(),
             revision: 0,
             dirty: None,
@@ -219,8 +244,25 @@ impl Splicer {
 
     // ── the primitive ──────────────────────────────────────────────────────
 
+    /// Apply `ops` to the source, reparse, and swap in the result, as one
+    /// undo step. `OutOfRange` when they read past the end; on reparse
+    /// failure nothing changes. The `Change` is the span from the first byte
+    /// they touch to the last ([`ops::bounds`]).
+    pub fn apply(&mut self, ops: &[Op]) -> Result<(), Error> {
+        self.apply_checked(ops, None)
+    }
+
+    /// `apply`, committed only if `check` accepts the reparse —
+    /// `Error::Rejected` otherwise, with nothing changed.
+    pub fn apply_checked(&mut self, ops: &[Op], check: Option<Check>) -> Result<(), Error> {
+        let change = ops::bounds(ops);
+        self.commit(ops, change, check)
+    }
+
     /// Overwrite `[span.start, span.end)` of the source with `replacement`,
     /// reparse, and swap in the result. On reparse failure nothing changes.
+    /// The ops recorded are the fewest that make the replacement
+    /// ([`ops::diff`]); the `Change` is the span asked.
     pub fn replace_at_span(&mut self, span: Span, replacement: &[u8]) -> Result<(), Error> {
         self.replace_at_span_checked(span, replacement, None)
     }
@@ -230,12 +272,27 @@ impl Splicer {
     pub fn replace_at_span_checked(&mut self, span: Span, replacement: &[u8], check: Option<Check>) -> Result<(), Error> {
         assert!(span.start <= span.end);
         assert!(span.end <= self.source.len());
-        let s = &self.source;
-        let mut new_src = Vec::with_capacity(span.start + replacement.len() + (s.len() - span.end));
-        new_src.extend_from_slice(&s[..span.start]);
-        new_src.extend_from_slice(replacement);
-        new_src.extend_from_slice(&s[span.end..]);
+        let mut ops = vec![Op::Retain(span.start)];
+        ops.extend(ops::diff(&self.source[span.start..span.end], replacement));
+        let change = Change { old: span, new: Span::new(span.start, span.start + replacement.len()) };
+        self.commit(&ops, change, check)
+    }
 
+    /// `replace_at_span` as asked: the ops recorded delete the whole span and
+    /// insert the whole replacement — for a caller (a keystroke, a paste over
+    /// a selection) that named exactly which bytes go.
+    pub fn splice(&mut self, span: Span, replacement: &[u8]) -> Result<(), Error> {
+        if span.start > span.end || span.end > self.source.len() {
+            return Err(Error::OutOfRange);
+        }
+        let change = Change { old: span, new: Span::new(span.start, span.start + replacement.len()) };
+        self.commit(&ops::splice(span, replacement), change, None)
+    }
+
+    /// The one place the source changes by an edit: apply, reparse, check,
+    /// then swap in and record.
+    fn commit(&mut self, ops: &[Op], change: Change, check: Option<Check>) -> Result<(), Error> {
+        let new_src = ops::apply(&self.source, ops).ok_or(Error::OutOfRange)?;
         let new_doc = (self.parse_fn)(&new_src).map_err(Error::Parse)?;
         if let Some(c) = check {
             if !c(&new_doc) {
@@ -243,21 +300,45 @@ impl Splicer {
             }
         }
 
-        self.doc = new_doc;
-        let old_source = std::mem::replace(&mut self.source, new_src);
-        let old_caret = std::mem::take(&mut self.current_caret);
-        self.record_undo(old_source, old_caret);
+        let ops = ops::canonical(ops.iter().cloned());
+        if self.history {
+            let inverse = ops::invert(&self.source, &ops);
+            let old_caret = std::mem::take(&mut self.current_caret);
+            self.record_undo(inverse, old_caret);
+        } else {
+            self.current_caret.clear();
+        }
         self.redo_stack.clear();
-        self.note_change(Change { old: span, new: Span::new(span.start, span.start + replacement.len()) });
+        self.doc = new_doc;
+        self.source = new_src;
+        self.last_ops = ops;
+        self.note_change(change);
         Ok(())
     }
 
     // ── undo / redo ─────────────────────────────────────────────────────────
 
-    fn record_undo(&mut self, source: Vec<u8>, caret: Vec<u8>) {
-        self.undo_stack.push(HistoryEntry { source, caret });
+    fn record_undo(&mut self, ops: Vec<Op>, caret: Vec<u8>) {
+        self.undo_stack.push(HistoryEntry { ops, caret });
         if self.undo_stack.len() > MAX_UNDO {
             self.undo_stack.remove(0);
+        }
+    }
+
+    /// Whether edits record undo steps.
+    pub fn keeps_history(&self) -> bool {
+        self.history
+    }
+
+    /// Turn undo history on or off. Off drops both stacks, and edits record
+    /// nothing: `undo` and `redo` find nothing to do, and `coalesce_last_undo`
+    /// nothing to merge. For a host that keeps its own history over
+    /// [`Splicer::last_ops`].
+    pub fn set_history(&mut self, keep: bool) {
+        self.history = keep;
+        if !keep {
+            self.undo_stack.clear();
+            self.redo_stack.clear();
         }
     }
 
@@ -267,11 +348,16 @@ impl Splicer {
         if self.undo_stack.len() < 2 {
             return;
         }
-        self.undo_stack.pop();
+        let last = self.undo_stack.pop().expect("two steps");
+        let prev = self.undo_stack.last_mut().expect("two steps");
+        // `last` leads back to the state `prev` starts from; together they
+        // lead back to `prev`'s state, whose caret `prev` already holds.
+        prev.ops = ops::compose(&last.ops, &prev.ops);
     }
 
     /// Restore the previous edit step, if any. Returns the `Change` (current →
-    /// restored), or `None` when there's nothing to undo.
+    /// restored), or `None` when there's nothing to undo. A restore the parser
+    /// refuses leaves the step where it was.
     pub fn undo(&mut self) -> Result<Option<Change>, ParseError> {
         let Some(target) = self.undo_stack.pop() else { return Ok(None) };
         self.swap_to(target, true).map(Some)
@@ -283,13 +369,24 @@ impl Splicer {
         self.swap_to(target, false).map(Some)
     }
 
-    /// Make `target` the current state and push the outgoing state onto the
-    /// other stack (redo when undoing).
+    /// Make `target`'s state the current one and push the way back onto the
+    /// other stack (redo when undoing). On failure `target` goes back where
+    /// it came from.
     fn swap_to(&mut self, target: HistoryEntry, onto_redo: bool) -> Result<Change, ParseError> {
-        let new_doc = (self.parse_fn)(&target.source)?;
-        let change = diff_change(&self.source, &target.source);
+        let restored = match ops::apply(&self.source, &target.ops) {
+            Some(s) => (self.parse_fn)(&s).map(|doc| (s, doc)),
+            None => Err(ParseError::new("OutOfRange")),
+        };
+        let (new_src, new_doc) = match restored {
+            Ok(r) => r,
+            Err(e) => {
+                if onto_redo { &mut self.undo_stack } else { &mut self.redo_stack }.push(target);
+                return Err(e);
+            }
+        };
+        let change = diff_change(&self.source, &new_src);
         let outgoing = HistoryEntry {
-            source: std::mem::replace(&mut self.source, target.source),
+            ops: ops::invert(&self.source, &target.ops),
             caret: std::mem::replace(&mut self.current_caret, target.caret),
         };
         if onto_redo {
@@ -298,6 +395,8 @@ impl Splicer {
             self.undo_stack.push(outgoing);
         }
         self.doc = new_doc;
+        self.source = new_src;
+        self.last_ops = target.ops;
         self.note_change(change);
         Ok(change)
     }

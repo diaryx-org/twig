@@ -17,7 +17,7 @@ pub use document::{
     Alignment, ContainerOrigin, DirectiveForm, Document, DocumentView, Fidelity, FlatNode, LinePrefix, QueryMatch,
     Warning,
 };
-pub use editor::{Change, Editor};
+pub use editor::{Change, Editor, Op};
 pub use format::{
     abi_version, version, version_string, BlockContainerKind, BlockKind, Format, Gesture, InlineKind, MarkColor,
     Target, Version, ABI_VERSION, FORMAT_RUNTIME_BASE,
