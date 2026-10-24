@@ -1134,6 +1134,82 @@ fn editor_edit_range_rejects_bad_ranges() {
 }
 
 #[test]
+fn editor_apply_edits_several_places_as_one_step() {
+    let mut ed = Editor::new_str("one two three\n", common::markdown()).expect("editor");
+    let ops = [Op::Insert("(".into()), Op::Retain(4), Op::Delete(3), Op::Insert("2".into())];
+    let c = ed.apply(&ops).expect("apply");
+    assert_eq!(ed.source_str().unwrap(), "(one 2 three\n");
+    assert_eq!((c.old, c.new), (0..7, 0..6));
+    // Read back in their one spelling: an insert before a delete at one place.
+    let canonical = [Op::Insert("(".into()), Op::Retain(4), Op::Insert("2".into()), Op::Delete(3)];
+    assert_eq!(ed.last_ops().unwrap(), canonical);
+    assert!(ed.undo().unwrap().is_some());
+    assert_eq!(ed.source_str().unwrap(), "one two three\n");
+    assert_eq!(ed.undo().unwrap(), None); // the whole edit was one step
+}
+
+#[test]
+fn editor_apply_refuses_ops_past_the_end_or_inside_a_character() {
+    let mut ed = Editor::new_str("é\n", common::markdown()).expect("editor");
+    assert_eq!(ed.apply(&[Op::Retain(4)]), Err(Error::InvalidArgument));
+    assert_eq!(ed.apply(&[Op::Retain(1), Op::Insert("x".into())]), Err(Error::InvalidArgument));
+    assert_eq!(ed.apply(&[Op::Delete(1)]), Err(Error::InvalidArgument));
+    assert_eq!(ed.source_str().unwrap(), "é\n"); // untouched
+    assert_eq!(ed.last_ops().unwrap(), vec![]); // nothing edited yet
+}
+
+#[test]
+fn editor_last_ops_of_a_gesture_are_the_fewest_that_make_it() {
+    let mut ed = Editor::new_str("a word here\n", common::markdown()).expect("editor");
+    let c = ed.toggle_inline(2, 6, InlineKind::Strong).expect("bold");
+    assert_eq!(ed.source_str().unwrap(), "a **word** here\n");
+    assert_eq!((c.old, c.new), (2..6, 2..10));
+    assert_eq!(
+        ed.last_ops().unwrap(),
+        vec![Op::Retain(2), Op::Insert("**".into()), Op::Retain(4), Op::Insert("**".into())]
+    );
+    // `edit_range` is the span as asked.
+    ed.edit_range(0, 1, "A").expect("edit");
+    assert_eq!(ed.last_ops().unwrap(), vec![Op::Insert("A".into()), Op::Delete(1)]);
+}
+
+#[test]
+fn editor_with_history_off_keeps_no_steps() {
+    let mut ed = Editor::new_str("a\n", common::markdown()).expect("editor");
+    assert!(ed.keeps_history());
+    ed.set_history(false);
+    assert!(!ed.keeps_history());
+    ed.edit_range(1, 1, "b").expect("edit");
+    assert_eq!(ed.undo().unwrap(), None);
+    assert_eq!(ed.source_str().unwrap(), "ab\n");
+}
+
+#[test]
+fn op_diff_apply_and_compose_work_on_text_alone() {
+    let ops = Op::diff("a word here", "a **word** here!");
+    assert_eq!(
+        ops,
+        vec![
+            Op::Retain(2),
+            Op::Insert("**".into()),
+            Op::Retain(4),
+            Op::Insert("**".into()),
+            Op::Retain(5),
+            Op::Insert("!".into())
+        ]
+    );
+    assert_eq!(Op::apply("a word here", &ops).unwrap(), "a **word** here!");
+    assert_eq!(Op::apply("é", &[Op::Retain(1)]), Err(Error::InvalidArgument));
+    assert_eq!(Op::apply("é", &[Op::Retain(3)]), Err(Error::InvalidArgument));
+
+    let then = [Op::Retain(4), Op::Delete(4)]; // "word" goes
+    let both = Op::compose(&ops, &then).unwrap();
+    assert_eq!(Op::apply("a word here", &both).unwrap(), "a **** here!");
+    // `then` deleting half of the é `first` inserted.
+    assert_eq!(Op::compose(&[Op::Insert("é".into())], &[Op::Retain(1), Op::Delete(1)]), Err(Error::InvalidArgument));
+}
+
+#[test]
 fn editor_last_change_reports_locator_ops_too() {
     let mut ed = Editor::new_str("# One\n\n## Two\n", common::markdown()).expect("editor");
     assert_eq!(ed.last_change(), None); // nothing edited yet

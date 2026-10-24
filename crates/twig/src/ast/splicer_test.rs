@@ -3,6 +3,7 @@
 //! rollback path. Markdown and djot cover the line-shaped formats.
 
 use super::*;
+use crate::ast::ops::Op;
 use {twig_djot as djot, twig_markdown as markdown, twig_xml as xml};
 
 fn parse_xml() -> ParseFn {
@@ -467,4 +468,129 @@ fn caret_blobs_are_evicted_with_their_step_past_max_undo() {
         ed.replace_at_span(Span::new(0, 0), b"x").unwrap();
     }
     assert_eq!(ed.undo_stack.len(), MAX_UNDO);
+}
+
+// ── ops ────────────────────────────────────────────────────────────────────
+
+fn ins(s: &str) -> Op {
+    Op::Insert(s.as_bytes().to_vec())
+}
+
+#[test]
+fn a_gesture_records_the_fewest_ops_and_the_span_it_was_asked() {
+    let mut ed = md_ed("a word here\n");
+    ed.wrap_range(Span::new(2, 6), b"**", b"**").unwrap();
+    assert_eq!(text(&ed), "a **word** here\n");
+    // The word is retained, not deleted and written again.
+    assert_eq!(ed.last_ops, vec![Op::Retain(2), ins("**"), Op::Retain(4), ins("**")]);
+    let c = ed.last_change.unwrap();
+    assert_eq!((c.old, c.new), (Span::new(2, 6), Span::new(2, 10)));
+
+    ed.toggle_inline(Span::new(2, 10), &KindRef::Mark(crate::ast::InlineMark::Strong), b"**", b"**").unwrap();
+    assert_eq!(text(&ed), "a word here\n");
+    assert_eq!(ed.last_ops, vec![Op::Retain(2), Op::Delete(2), Op::Retain(4), Op::Delete(2)]);
+}
+
+#[test]
+fn splice_records_the_whole_span_as_asked() {
+    let mut ed = md_ed("hello\n");
+    ed.splice(Span::new(0, 5), b"help").unwrap();
+    assert_eq!(text(&ed), "help\n");
+    assert_eq!(ed.last_ops, vec![ins("help"), Op::Delete(5)]);
+    assert_eq!(ed.splice(Span::new(3, 99), b""), Err(Error::OutOfRange));
+}
+
+#[test]
+fn apply_is_several_places_in_one_reparse_and_one_undo_step() {
+    let mut ed = md_ed("one two three\n");
+    let rev = ed.revision;
+    ed.apply(&[ins("("), Op::Retain(4), Op::Delete(3), ins("2"), Op::Retain(1), ins("[")]).unwrap();
+    assert_eq!(text(&ed), "(one 2 [three\n");
+    assert_eq!(ed.revision, rev + 1);
+    assert_eq!(ed.undo_stack.len(), 1);
+    let c = ed.last_change.unwrap();
+    assert_eq!((c.old, c.new), (Span::new(0, 8), Span::new(0, 8)));
+
+    ed.undo().unwrap();
+    assert_eq!(text(&ed), "one two three\n");
+    // An undo's ops are the edit's inverse.
+    assert_eq!(ed.last_ops, vec![Op::Delete(1), Op::Retain(4), ins("two"), Op::Delete(1), Op::Retain(1), Op::Delete(1)]);
+    ed.redo().unwrap();
+    assert_eq!(text(&ed), "(one 2 [three\n");
+}
+
+#[test]
+fn apply_past_the_end_or_into_a_broken_parse_changes_nothing() {
+    let mut ed = xml_ed("<a>x</a>");
+    assert_eq!(ed.apply(&[Op::Retain(5), Op::Delete(9)]), Err(Error::OutOfRange));
+    assert_eq!(ed.apply(&[Op::Retain(1), Op::Delete(1), ins("b")]), Err(mismatched()));
+    assert_eq!(text(&ed), "<a>x</a>");
+    assert_eq!(ed.last_ops, Vec::<Op>::new());
+    assert!(ed.undo_stack.is_empty());
+}
+
+#[test]
+fn an_undo_step_holds_the_inverse_ops_not_a_copy_of_the_source() {
+    let long = format!("{}\n", "x".repeat(10_000));
+    let mut ed = md_ed(&long);
+    ed.replace_at_span(Span::new(5, 5), b"y").unwrap();
+    assert_eq!(ed.undo_stack[0].ops, vec![Op::Retain(5), Op::Delete(1)]);
+}
+
+#[test]
+fn coalescing_composes_the_steps_into_one() {
+    let mut ed = md_ed("ab\n");
+    ed.replace_at_span(Span::new(1, 1), b"x").unwrap();
+    ed.replace_at_span(Span::new(2, 2), b"y").unwrap();
+    ed.coalesce_last_undo();
+    ed.replace_at_span(Span::new(0, 1), b"").unwrap();
+    ed.coalesce_last_undo();
+    assert_eq!(text(&ed), "xyb\n");
+    assert_eq!(ed.undo_stack.len(), 1);
+    assert_eq!(ed.undo_stack[0].ops, vec![ins("a"), Op::Delete(2)]);
+    ed.undo().unwrap();
+    assert_eq!(text(&ed), "ab\n");
+    ed.redo().unwrap();
+    assert_eq!(text(&ed), "xyb\n");
+}
+
+#[test]
+fn with_history_off_an_edit_records_no_step() {
+    let mut ed = md_ed("a\n");
+    ed.replace_at_span(Span::new(1, 1), b"b").unwrap();
+    assert!(ed.keeps_history());
+    ed.set_history(false);
+    assert!(ed.undo_stack.is_empty() && ed.redo_stack.is_empty());
+    ed.replace_at_span(Span::new(2, 2), b"c").unwrap();
+    assert!(ed.undo_stack.is_empty());
+    assert_eq!(ed.undo(), Ok(None));
+    assert_eq!(ed.last_ops, vec![Op::Retain(2), ins("c")]);
+    assert_eq!(text(&ed), "abc\n");
+
+    ed.set_history(true);
+    ed.replace_at_span(Span::new(3, 3), b"d").unwrap();
+    ed.undo().unwrap();
+    assert_eq!(text(&ed), "abc\n");
+}
+
+#[test]
+fn an_undo_the_parser_refuses_leaves_its_step_in_place() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let refuse = Rc::new(Cell::new(false));
+    let flag = refuse.clone();
+    let parse: ParseFn = Box::new(move |s: &[u8]| {
+        if flag.get() {
+            return Err(ParseError::new("Refused"));
+        }
+        xml::parse(s).map_err(|e| ParseError::new(e.name()))
+    });
+    let mut ed = Splicer::new(b"<a>x</a>", parse).unwrap();
+    ed.replace_at_span(Span::new(3, 4), b"y").unwrap();
+    refuse.set(true);
+    assert_eq!(ed.undo(), Err(ParseError::new("Refused")));
+    assert_eq!(ed.undo_stack.len(), 1);
+    refuse.set(false);
+    ed.undo().unwrap();
+    assert_eq!(text(&ed), "<a>x</a>");
 }
