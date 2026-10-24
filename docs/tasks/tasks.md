@@ -7,7 +7,6 @@ updated: 2026-10-05
 part_of: '[Twig](/README.md)'
 contents:
 - '[Read a node table without building a JSON value tree first](/docs/tasks/table-decode-without-a-value-tree.md)'
-- '[The Rust crate cannot write a document''s node table, or read its list spelling](/docs/tasks/rust-node-table-encoder.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[The workspace''s views are not read, and its docs have three bad links](/docs/tasks/views-not-read-and-three-bad-links.md)'
 ---

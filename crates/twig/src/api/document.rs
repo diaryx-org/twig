@@ -271,6 +271,13 @@ impl Document {
         Ok(crate::ast::json::encode(self.doc()))
     }
 
+    /// Encode the document as its node table, the JSON `twig lang table`
+    /// prints: one pre-order row per node, with its spans and its
+    /// `spelling`, then the labels.
+    pub fn node_table(&mut self) -> Result<Vec<u8>, Error> {
+        Ok(crate::ast::table::encode(self.doc(), Default::default()))
+    }
+
     /// Resolve a CSS-lite selector against the document, one [`QueryMatch`]
     /// per matching node in document order. A malformed selector yields
     /// [`Error::InvalidArgument`].
