@@ -57,6 +57,35 @@ pub enum Op {
 }
 
 impl Op {
+    /// The fewest ops that turn `old` into `new`, cut between characters:
+    /// Myers' diff over characters, and past 512 edits one splice of what
+    /// lies between the two texts' common prefix and suffix.
+    pub fn diff(old: &str, new: &str) -> Vec<Op> {
+        engine_ops::diff(old.as_bytes(), new.as_bytes())
+            .iter()
+            .map(|op| Op::from_engine(op).expect("a diff of two strings cuts between characters"))
+            .collect()
+    }
+
+    /// `text` with `ops` applied. [`Error::InvalidArgument`] when they read
+    /// past its end or put a position inside a character.
+    pub fn apply(text: &str, ops: &[Op]) -> Result<String, Error> {
+        check_ops(text.as_bytes(), ops)?;
+        let ops: Vec<engine_ops::Op> = ops.iter().map(Op::to_engine).collect();
+        let out = engine_ops::apply(text.as_bytes(), &ops).ok_or(Error::InvalidArgument)?;
+        String::from_utf8(out).map_err(|_| Error::InvalidArgument)
+    }
+
+    /// The one list of ops, in their one spelling, that does `first` and then
+    /// `then`, where `then` reads the text `first` made — a run of edits sent
+    /// as one. [`Error::InvalidArgument`] when `then` puts a position inside
+    /// a character `first` inserted.
+    pub fn compose(first: &[Op], then: &[Op]) -> Result<Vec<Op>, Error> {
+        let first: Vec<engine_ops::Op> = first.iter().map(Op::to_engine).collect();
+        let then: Vec<engine_ops::Op> = then.iter().map(Op::to_engine).collect();
+        engine_ops::compose(&first, &then).iter().map(|op| Op::from_engine(op).ok_or(Error::InvalidArgument)).collect()
+    }
+
     fn to_engine(&self) -> engine_ops::Op {
         match self {
             Op::Retain(n) => engine_ops::Op::Retain(*n),
@@ -72,6 +101,22 @@ impl Op {
             engine_ops::Op::Delete(n) => Op::Delete(*n),
         })
     }
+}
+
+/// Whether `ops` fit `src`: they read no further than its end, and every
+/// position they reach lies between two characters.
+fn check_ops(src: &[u8], ops: &[Op]) -> Result<(), Error> {
+    let on_boundary = |at: usize| at == src.len() || (at < src.len() && src[at] & 0xC0 != 0x80);
+    let mut at = 0usize;
+    for op in ops {
+        if !on_boundary(at) {
+            return Err(Error::InvalidArgument);
+        }
+        if let Op::Retain(n) | Op::Delete(n) = op {
+            at = at.checked_add(*n).ok_or(Error::InvalidArgument)?;
+        }
+    }
+    if on_boundary(at) { Ok(()) } else { Err(Error::InvalidArgument) }
 }
 
 /// A span-splice editor over a document: lossless, in-place edits, reparsed
@@ -290,20 +335,7 @@ impl Editor {
     /// reparse-breaking edit is rolled back and returns
     /// [`Error::EditConflict`].
     pub fn apply(&mut self, ops: &[Op]) -> Result<Change, Error> {
-        let src = self.editor.source_bytes();
-        let on_boundary = |at: usize| at == src.len() || (at < src.len() && src[at] & 0xC0 != 0x80);
-        let mut at = 0;
-        for op in ops {
-            if !on_boundary(at) {
-                return Err(Error::InvalidArgument);
-            }
-            if let Op::Retain(n) | Op::Delete(n) = op {
-                at = at.checked_add(*n).ok_or(Error::InvalidArgument)?;
-            }
-        }
-        if !on_boundary(at) {
-            return Err(Error::InvalidArgument);
-        }
+        check_ops(self.editor.source_bytes(), ops)?;
         let ops: Vec<engine_ops::Op> = ops.iter().map(Op::to_engine).collect();
         self.splicer().apply(&ops).map_err(splicer_error)?;
         Ok(self.last_or_empty())

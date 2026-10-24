@@ -1185,6 +1185,31 @@ fn editor_with_history_off_keeps_no_steps() {
 }
 
 #[test]
+fn op_diff_apply_and_compose_work_on_text_alone() {
+    let ops = Op::diff("a word here", "a **word** here!");
+    assert_eq!(
+        ops,
+        vec![
+            Op::Retain(2),
+            Op::Insert("**".into()),
+            Op::Retain(4),
+            Op::Insert("**".into()),
+            Op::Retain(5),
+            Op::Insert("!".into())
+        ]
+    );
+    assert_eq!(Op::apply("a word here", &ops).unwrap(), "a **word** here!");
+    assert_eq!(Op::apply("é", &[Op::Retain(1)]), Err(Error::InvalidArgument));
+    assert_eq!(Op::apply("é", &[Op::Retain(3)]), Err(Error::InvalidArgument));
+
+    let then = [Op::Retain(4), Op::Delete(4)]; // "word" goes
+    let both = Op::compose(&ops, &then).unwrap();
+    assert_eq!(Op::apply("a word here", &both).unwrap(), "a **** here!");
+    // `then` deleting half of the é `first` inserted.
+    assert_eq!(Op::compose(&[Op::Insert("é".into())], &[Op::Retain(1), Op::Delete(1)]), Err(Error::InvalidArgument));
+}
+
+#[test]
 fn editor_last_change_reports_locator_ops_too() {
     let mut ed = Editor::new_str("# One\n\n## Two\n", common::markdown()).expect("editor");
     assert_eq!(ed.last_change(), None); // nothing edited yet
