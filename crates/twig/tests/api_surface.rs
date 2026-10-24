@@ -256,6 +256,7 @@ fn every_binding_item_exists_with_its_signature() {
     let _: fn(&mut Document, Target) -> R<Vec<u8>> = Document::serialize_to;
     let _: fn(&mut Document, Format) -> R<Vec<u8>> = Document::serialize;
     let _: fn(&mut Document) -> R<Vec<u8>> = Document::ast_json;
+    let _: fn(&mut Document) -> R<Vec<u8>> = Document::node_table;
     let _: fn(&mut Document, &str) -> R<Vec<QueryMatch>> = Document::query;
     let _: fn(&mut Document, NodeId) -> R<Range<usize>> = Document::span;
     let _: fn(&mut Document, NodeId) -> R<Option<Range<usize>>> = Document::content_span;

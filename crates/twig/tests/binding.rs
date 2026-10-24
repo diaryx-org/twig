@@ -176,6 +176,25 @@ fn ast_json_dumps_the_tree() {
 }
 
 #[test]
+fn node_table_is_what_lang_table_prints_spelling_included() {
+    let mut doc = Document::parse_str("* a\n", common::markdown()).expect("parse markdown");
+    let table = String::from_utf8(doc.node_table().expect("node table")).unwrap();
+    // `twig lang table` on the same file, byte for byte.
+    let expected = r#"{
+  "nodes": [
+    {"kind":"doc","parent":null,"span":[0,4],"content_span":[0,3]},
+    {"kind":"bullet_list","parent":0,"span":[0,3],"content_span":[0,3],"spelling":{"bullet":"star"},"tight":true},
+    {"kind":"list_item","parent":1,"span":[0,3],"content_span":[0,3],"marker_span":[0,2]},
+    {"kind":"para","parent":2,"span":[0,3],"content_span":[2,3]},
+    {"kind":"str","parent":3,"span":[2,3],"text":"a"}
+  ],
+  "labels": []
+}
+"#;
+    assert_eq!(table, expected);
+}
+
+#[test]
 fn query_finds_nodes_by_selector() {
     let source = "# One\n\n## Two\n";
     let mut doc = Document::parse_str(source, common::markdown()).expect("parse markdown");

@@ -33,6 +33,7 @@ pub(crate) struct DocumentHandle {
     rendered: Vec<u8>,
     serialized: Vec<u8>,
     ast_json: Vec<u8>,
+    node_table: Vec<u8>,
     query_matches: Vec<TwigQueryMatch>,
     flat_nodes: Vec<TwigFlatNode>,
     flat_attrs: Vec<TwigKeyVal>,
@@ -59,6 +60,7 @@ impl DocumentHandle {
             rendered: Vec::new(),
             serialized: Vec::new(),
             ast_json: Vec::new(),
+            node_table: Vec::new(),
             query_matches: Vec::new(),
             flat_nodes: Vec::new(),
             flat_attrs: Vec::new(),
@@ -380,6 +382,23 @@ pub unsafe extern "C" fn twig_document_ast_json(
         }
         h.ast_json = twig::ast::json::encode(h.doc());
         unsafe { emit(&h.ast_json, out_ptr, out_len) };
+        TWIG_STATUS_OK
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn twig_document_node_table(
+    doc: *mut TwigDocument,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> TwigStatus {
+    guard(|| {
+        let Some(h) = (unsafe { handle(doc) }) else { return TWIG_STATUS_INVALID_ARGUMENT };
+        if out_ptr.is_null() || out_len.is_null() {
+            return TWIG_STATUS_INVALID_ARGUMENT;
+        }
+        h.node_table = twig::ast::table::encode(h.doc(), Default::default());
+        unsafe { emit(&h.node_table, out_ptr, out_len) };
         TWIG_STATUS_OK
     })
 }
