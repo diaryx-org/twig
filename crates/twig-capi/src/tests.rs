@@ -79,6 +79,19 @@ fn parse_render_serialize_and_ast_json() {
 }
 
 #[test]
+fn node_table_is_what_lang_table_prints() {
+    let doc = parse("* a\n", TWIG_FORMAT_MARKDOWN, 0);
+    let (mut p, mut n) = (null(), 0);
+    assert_eq!(unsafe { twig_document_node_table(doc, &mut p, &mut n) }, TWIG_STATUS_OK);
+    let table = String::from_utf8(bytes(p, n).to_vec()).unwrap();
+    assert!(table.starts_with("{\n  \"nodes\": [\n"), "{table}");
+    assert!(table.contains("\"spelling\":{\"bullet\":\"star\"}"), "{table}");
+    assert_eq!(unsafe { twig_document_node_table(doc, null_mut(), &mut n) }, TWIG_STATUS_INVALID_ARGUMENT);
+    assert_eq!(unsafe { twig_document_node_table(null_mut(), &mut p, &mut n) }, TWIG_STATUS_INVALID_ARGUMENT);
+    unsafe { twig_document_destroy(doc) };
+}
+
+#[test]
 fn parse_refuses_unknown_codes_and_bad_arguments() {
     let src = "x";
     let mut doc = null_mut();

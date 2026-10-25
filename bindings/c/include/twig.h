@@ -491,6 +491,19 @@ TwigStatus twig_document_ast_json(
     size_t *out_len
 );
 
+// Encode the parsed document as its node table: the JSON `twig lang table`
+// prints, one pre-order row per node with its spans and `spelling`, then the
+// labels.
+//
+// The returned bytes are borrowed from `doc` and remain valid until the next
+// `twig_document_node_table` call on that same handle, or until the handle is
+// destroyed.
+TwigStatus twig_document_node_table(
+    TwigDocument *doc,
+    const uint8_t **out_ptr,
+    size_t *out_len
+);
+
 // Resolve a CSS-lite selector (e.g. "heading[level=2]", "link[dest^=\"http\"]",
 // "code", "list > item") against a parsed document, yielding one match per
 // node in document order. A malformed selector returns
@@ -1297,7 +1310,8 @@ TwigStatus twig_editor_caret_blob(
 
 // A read-only TwigDocument view of the editor's CURRENT tree, so an editor can
 // use the twig_document_* read surface (_nodes, _children, _subtree, _node_at,
-// _nodes_at, _query, _ast_json, _node_span, _node_content_span) directly.
+// _nodes_at, _query, _ast_json, _node_table, _node_span, _node_content_span)
+// directly.
 //
 // The handle is BORROWED from `editor`: do NOT pass it to
 // twig_document_destroy (which ignores it), it stays valid until

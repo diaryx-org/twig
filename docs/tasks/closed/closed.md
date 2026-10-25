@@ -28,6 +28,7 @@ contents:
 - '[The CLI writes stdout from offset 0, so `>>` overwrites what the file held](/docs/tasks/closed/cli-stdout-overwrites-an-appended-file.md)'
 - '[A gesture over an AsciiDoc paragraph admonition takes its label into the new block](/docs/tasks/closed/asciidoc-admonition-label-gestures.md)'
 - '[A djot directive written with a bare attribute or a label does not read back as one](/docs/tasks/closed/djot-insert-directive-round-trip.md)'
+- '[The Rust crate cannot write a document''s node table, or read its list spelling](/docs/tasks/closed/rust-node-table-encoder.md)'
 ---
 
 # Closed tasks
