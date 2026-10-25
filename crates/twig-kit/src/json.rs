@@ -7,6 +7,7 @@
 //! text a node carries. The writer passes bytes `>= 0x20` through unescaped
 //! (as Zig's does with `escape_unicode` off).
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 
 // ── Writer ──────────────────────────────────────────────────────────────────
@@ -295,6 +296,33 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Check that `text` is one JSON value, refusing exactly what [`parse`]
+/// refuses, and hand it back as a [`Raw`] to be read where it lies.
+pub fn check(text: &[u8]) -> Result<Raw<'_>, ParseError> {
+    let mut p = Parser { s: text, i: 0, depth: 0 };
+    p.ws();
+    let start = p.i;
+    p.skip_value(Gather::Nothing)?;
+    let end = p.i;
+    p.finish()?;
+    Ok(Raw(&text[start..end]))
+}
+
+/// [`check`] a text that should be an object whose `key` member is an
+/// array of objects — a node table and its `nodes` — gathering as it goes the
+/// top object's members and every element's, so that reading it is a walk
+/// down two lists rather than another pass over the text.
+pub fn check_rows<'a>(text: &'a [u8], key: &str) -> Result<Rows<'a>, ParseError> {
+    let mut p = Parser { s: text, i: 0, depth: 0 };
+    p.ws();
+    let object = p.peek() == Some(b'{');
+    let mut top = Vec::new();
+    let mut index = RowIndex { key, array: false, members: Vec::new(), rows: Vec::new() };
+    p.skip_value(Gather::Table(&mut top, &mut index))?;
+    p.finish()?;
+    Ok(Rows { top: object.then_some(RawObject { members: top }), array: index.array, members: index.members, rows: index.rows })
+}
+
 pub fn parse(text: &[u8]) -> Result<Value, ParseError> {
     let mut p = Parser { s: text, i: 0, depth: 0 };
     p.ws();
@@ -312,7 +340,7 @@ struct Parser<'a> {
     depth: usize,
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
     fn err(&self, what: &'static str) -> ParseError {
         ParseError { offset: self.i, what }
     }
@@ -412,6 +440,116 @@ impl Parser<'_> {
             _ => Err(self.err("unexpected character")),
         }
     }
+    fn finish(&mut self) -> Result<(), ParseError> {
+        self.ws();
+        if self.i != self.s.len() {
+            return Err(self.err("trailing characters after the value"));
+        }
+        Ok(())
+    }
+    /// [`value`](Self::value)'s twin that builds nothing: it accepts and
+    /// refuses the same texts, with the same errors. What it keeps of what it
+    /// steps over is `gather`'s to say.
+    fn skip_value(&mut self, mut gather: Gather<'_, '_, 'a>) -> Result<(), ParseError> {
+        match self.peek() {
+            None => Err(self.err("unexpected end of input")),
+            Some(b'n') => self.lit(b"null", Value::Null).map(drop),
+            Some(b't') => self.lit(b"true", Value::Null).map(drop),
+            Some(b'f') => self.lit(b"false", Value::Null).map(drop),
+            Some(b'"') => self.string_into::<false>(&mut Vec::new()),
+            Some(open @ (b'[' | b'{')) => {
+                let close = if open == b'[' { b']' } else { b'}' };
+                self.depth += 1;
+                if self.depth > 512 {
+                    return Err(self.err("nesting too deep"));
+                }
+                self.i += 1;
+                self.ws();
+                if self.peek() == Some(close) {
+                    self.i += 1;
+                    self.depth -= 1;
+                    return Ok(());
+                }
+                loop {
+                    self.ws();
+                    let mut key = Cow::Borrowed(&b""[..]);
+                    if open == b'{' {
+                        if self.peek() != Some(b'"') {
+                            return Err(self.err("expected a string key"));
+                        }
+                        let start = self.i;
+                        self.string_into::<false>(&mut Vec::new())?;
+                        if !matches!(gather, Gather::Nothing) {
+                            key = Raw(&self.s[start..self.i]).as_str().unwrap_or_default();
+                        }
+                        self.ws();
+                        if self.peek() != Some(b':') {
+                            return Err(self.err("expected ':'"));
+                        }
+                        self.i += 1;
+                        self.ws();
+                    }
+                    let start = self.i;
+                    match (&mut gather, open) {
+                        (Gather::Rows(index), b'[') => {
+                            if self.peek() == Some(b'{') {
+                                let first = index.members.len();
+                                self.skip_value(Gather::Members(&mut index.members))?;
+                                index.rows.push(Some(first..index.members.len()));
+                            } else {
+                                self.skip_value(Gather::Nothing)?;
+                                index.rows.push(None);
+                            }
+                        }
+                        (Gather::Table(top, index), b'{') if *key == *index.key.as_bytes() => {
+                            index.members.clear();
+                            index.rows.clear();
+                            index.array = self.peek() == Some(b'[');
+                            self.skip_value(if index.array { Gather::Rows(index) } else { Gather::Nothing })?;
+                            top.push((key, Raw(&self.s[start..self.i])));
+                        }
+                        (Gather::Members(top) | Gather::Table(top, _), b'{') => {
+                            self.skip_value(Gather::Nothing)?;
+                            top.push((key, Raw(&self.s[start..self.i])));
+                        }
+                        _ => self.skip_value(Gather::Nothing)?,
+                    }
+                    self.ws();
+                    match self.peek() {
+                        Some(b',') => self.i += 1,
+                        Some(c) if c == close => {
+                            self.i += 1;
+                            break;
+                        }
+                        _ if open == b'[' => return Err(self.err("expected ',' or ']'")),
+                        _ => return Err(self.err("expected ',' or '}'")),
+                    }
+                }
+                self.depth -= 1;
+                Ok(())
+            }
+            Some(c) if c == b'-' || c.is_ascii_digit() => self.skip_number(),
+            _ => Err(self.err("unexpected character")),
+        }
+    }
+    /// [`number`](Self::number) without the conversion where the text is
+    /// plainly an integer, which every integer is: a digit string always
+    /// reads, as an `i64` or else as an `f64`.
+    fn skip_number(&mut self) -> Result<(), ParseError> {
+        let start = self.i;
+        if self.peek() == Some(b'-') {
+            self.i += 1;
+        }
+        let digits = self.i;
+        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            self.i += 1;
+        }
+        if self.i > digits && !matches!(self.peek(), Some(b'.' | b'e' | b'E' | b'+' | b'-')) {
+            return Ok(());
+        }
+        self.i = start;
+        self.number().map(drop)
+    }
     fn number(&mut self) -> Result<Value, ParseError> {
         let start = self.i;
         if self.peek() == Some(b'-') {
@@ -446,25 +584,38 @@ impl Parser<'_> {
         Ok(v)
     }
     fn string(&mut self) -> Result<Vec<u8>, ParseError> {
-        self.i += 1; // opening quote
         let mut out = Vec::new();
+        self.string_into::<true>(&mut out)?;
+        Ok(out)
+    }
+    /// Read a string literal, unescaped onto `out` when `KEEP`; without, only
+    /// checked.
+    fn string_into<const KEEP: bool>(&mut self, out: &mut Vec<u8>) -> Result<(), ParseError> {
+        self.i += 1; // opening quote
         loop {
+            let run = self.i;
+            while self.s.get(self.i).is_some_and(|&c| c != b'"' && c != b'\\' && c >= 0x20) {
+                self.i += 1;
+            }
+            if KEEP {
+                out.extend_from_slice(&self.s[run..self.i]);
+            }
             let Some(c) = self.peek() else { return Err(self.err("unterminated string")) };
             self.i += 1;
-            match c {
-                b'"' => return Ok(out),
+            let unescaped = match c {
+                b'"' => return Ok(()),
                 b'\\' => {
                     let Some(e) = self.peek() else { return Err(self.err("unterminated string")) };
                     self.i += 1;
                     match e {
-                        b'"' => out.push(b'"'),
-                        b'\\' => out.push(b'\\'),
-                        b'/' => out.push(b'/'),
-                        b'b' => out.push(8),
-                        b'f' => out.push(12),
-                        b'n' => out.push(b'\n'),
-                        b'r' => out.push(b'\r'),
-                        b't' => out.push(b'\t'),
+                        b'"' => b'"',
+                        b'\\' => b'\\',
+                        b'/' => b'/',
+                        b'b' => 8,
+                        b'f' => 12,
+                        b'n' => b'\n',
+                        b'r' => b'\r',
+                        b't' => b'\t',
                         b'u' => {
                             let mut cp = self.hex4()?;
                             if (0xD800..0xDC00).contains(&cp) && self.s[self.i..].starts_with(b"\\u") {
@@ -477,17 +628,365 @@ impl Parser<'_> {
                                     self.i = save;
                                 }
                             }
-                            let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
-                            let mut buf = [0u8; 4];
-                            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            if KEEP {
+                                let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
+                                let mut buf = [0u8; 4];
+                                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            }
+                            continue;
                         }
                         _ => return Err(self.err("bad escape")),
                     }
                 }
                 0x00..=0x1F => return Err(self.err("control character in string")),
-                _ => out.push(c),
+                _ => c,
+            };
+            if KEEP {
+                out.push(unescaped);
             }
         }
+    }
+}
+
+type Member<'a> = (Cow<'a, [u8]>, Raw<'a>);
+
+/// What [`Parser::skip_value`] keeps of the value it steps over.
+enum Gather<'g, 'k, 'a> {
+    Nothing,
+    /// An object's members.
+    Members(&'g mut Vec<Member<'a>>),
+    /// An array's elements, each object's members.
+    Rows(&'g mut RowIndex<'k, 'a>),
+    /// An object's members, and its `key` member's elements as `Rows` does.
+    Table(&'g mut Vec<Member<'a>>, &'g mut RowIndex<'k, 'a>),
+}
+
+struct RowIndex<'k, 'a> {
+    key: &'k str,
+    array: bool,
+    members: Vec<Member<'a>>,
+    rows: Vec<Option<std::ops::Range<usize>>>,
+}
+
+/// What [`check_rows`] gathered.
+pub struct Rows<'a> {
+    /// The top object's members; `None` when the text is not an object.
+    pub top: Option<RawObject<'a>>,
+    array: bool,
+    members: Vec<Member<'a>>,
+    rows: Vec<Option<std::ops::Range<usize>>>,
+}
+
+impl<'a> Rows<'a> {
+    /// Each element of the last `key` member, as an object when it is one;
+    /// `None` when that member is not an array.
+    pub fn rows(&self) -> Option<impl Iterator<Item = Option<&[Member<'a>]>> + Clone> {
+        self.array.then(|| self.rows.iter().map(|r| r.clone().map(|r| &self.members[r])))
+    }
+}
+
+// ── Reading in place ────────────────────────────────────────────────────────
+
+/// One value of a text [`check`] accepted, still as its bytes. It is read
+/// where it lies, so reading a table out of it allocates for what the table
+/// keeps and nothing else; a [`Value`] is an allocation per string, key and
+/// container before anything is read.
+#[derive(Clone, Copy, Debug)]
+pub struct Raw<'a>(&'a [u8]);
+
+/// A cursor over bytes [`check`] has accepted. Nothing it reads can be
+/// malformed, so nothing it does fails.
+#[derive(Clone)]
+struct Cursor<'a> {
+    s: &'a [u8],
+    i: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn ws(&mut self) {
+        while self.i < self.s.len() && matches!(self.s[self.i], b' ' | b'\t' | b'\n' | b'\r') {
+            self.i += 1;
+        }
+    }
+    /// Step over the value at the cursor and return its bytes.
+    fn value(&mut self) -> Raw<'a> {
+        let start = self.i;
+        match self.s[self.i] {
+            b'"' => self.skip_string(),
+            b'[' | b'{' => {
+                let mut depth = 0usize;
+                loop {
+                    match self.s[self.i] {
+                        b'"' => {
+                            self.skip_string();
+                            continue;
+                        }
+                        b'[' | b'{' => depth += 1,
+                        b']' | b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                self.i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.i += 1;
+                }
+            }
+            _ => {
+                let rest = &self.s[self.i..];
+                self.i += rest
+                    .iter()
+                    .position(|c| matches!(c, b',' | b']' | b'}' | b' ' | b'\t' | b'\n' | b'\r'))
+                    .unwrap_or(rest.len());
+            }
+        }
+        Raw(&self.s[start..self.i])
+    }
+    fn skip_string(&mut self) {
+        self.i += 1;
+        loop {
+            self.i += self.s[self.i..].iter().position(|&c| c == b'"' || c == b'\\').unwrap_or(0);
+            if self.s[self.i] == b'"' {
+                break;
+            }
+            self.i += 2;
+        }
+        self.i += 1;
+    }
+    /// After an opening bracket or a value inside one: whether another
+    /// element follows, the cursor left on it.
+    fn more(&mut self) -> bool {
+        self.ws();
+        match self.s.get(self.i) {
+            Some(b',') => {
+                self.i += 1;
+                self.ws();
+                true
+            }
+            Some(b'[' | b'{') => {
+                self.i += 1;
+                self.ws();
+                !matches!(self.s[self.i], b']' | b'}')
+            }
+            _ => false,
+        }
+    }
+    /// The members of the object at the cursor, which is left after it.
+    fn members(&mut self) -> RawObject<'a> {
+        let mut members = Vec::new();
+        let mut open = self.more();
+        while open {
+            let key = self.value().as_str().unwrap_or_default();
+            self.ws();
+            self.i += 1; // ':'
+            self.ws();
+            members.push((key, self.value()));
+            open = self.more();
+        }
+        self.i += 1; // '}'
+        RawObject { members }
+    }
+}
+
+impl<'a> Raw<'a> {
+    pub fn is_null(self) -> bool {
+        self.0 == b"null"
+    }
+    pub fn as_bool(self) -> Option<bool> {
+        match self.0 {
+            b"true" => Some(true),
+            b"false" => Some(false),
+            _ => None,
+        }
+    }
+    /// What [`Value::as_int`] answers for the same text.
+    pub fn as_int(self) -> Option<i64> {
+        // Up to 18 digits cannot overflow, and are all a table's numbers.
+        let (neg, digits) = match self.0 {
+            [b'-', rest @ ..] => (true, rest),
+            all => (false, all),
+        };
+        if !digits.is_empty() && digits.len() <= 18 && digits.iter().all(u8::is_ascii_digit) {
+            let n = digits.iter().fold(0i64, |n, d| n * 10 + i64::from(d - b'0'));
+            return Some(if neg { -n } else { n });
+        }
+        match self.0.first() {
+            Some(c) if *c == b'-' || c.is_ascii_digit() => {
+                match (Parser { s: self.0, i: 0, depth: 0 }).number() {
+                    Ok(Value::Int(i)) => Some(i),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+    /// The string's bytes, unescaped: borrowed from the text unless it has an
+    /// escape to undo.
+    pub fn as_str(self) -> Option<Cow<'a, [u8]>> {
+        if self.0.first() != Some(&b'"') {
+            return None;
+        }
+        let inner = &self.0[1..self.0.len() - 1];
+        if !inner.contains(&b'\\') {
+            return Some(Cow::Borrowed(inner));
+        }
+        let mut out = Vec::with_capacity(inner.len());
+        let _ = (Parser { s: self.0, i: 0, depth: 0 }).string_into::<true>(&mut out);
+        Some(Cow::Owned(out))
+    }
+    /// An array's elements, in order.
+    pub fn items(self) -> Option<Items<'a>> {
+        if self.0.first() != Some(&b'[') {
+            return None;
+        }
+        let mut c = Cursor { s: self.0, i: 0 };
+        let open = c.more();
+        Some(Items { c, open })
+    }
+    /// An object's members, in order, duplicates kept.
+    pub fn object(self) -> Option<RawObject<'a>> {
+        if self.0.first() != Some(&b'{') {
+            return None;
+        }
+        Some(Cursor { s: self.0, i: 0 }.members())
+    }
+}
+
+#[derive(Clone)]
+pub struct Items<'a> {
+    c: Cursor<'a>,
+    open: bool,
+}
+
+impl<'a> Iterator for Items<'a> {
+    type Item = Raw<'a>;
+    fn next(&mut self) -> Option<Raw<'a>> {
+        if !self.open {
+            return None;
+        }
+        let v = self.c.value();
+        self.open = self.c.more();
+        Some(v)
+    }
+}
+
+/// What a reader of JSON asks of a value, answered alike by a parsed
+/// [`Value`] and by a [`Raw`] text, so one reader serves both.
+pub trait Json<'a>: Copy {
+    type Object: Object<'a, Json = Self>;
+    type Items: Iterator<Item = Self> + Clone;
+    fn object(self) -> Option<Self::Object>;
+    fn items(self) -> Option<Self::Items>;
+    fn is_null(self) -> bool;
+    fn as_int(self) -> Option<i64>;
+    fn as_bool(self) -> Option<bool>;
+    fn as_str(self) -> Option<Cow<'a, [u8]>>;
+}
+
+/// An object's members, as [`Value::get`] reads them: of two members with
+/// one key, the later.
+pub trait Object<'a> {
+    type Json: Json<'a>;
+    fn get(&self, key: &str) -> Option<Self::Json>;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// The `i`th member, in the order written.
+    fn member(&self, i: usize) -> (Cow<'a, [u8]>, Self::Json);
+}
+
+impl<'a> Json<'a> for &'a Value {
+    type Object = &'a [(Vec<u8>, Value)];
+    type Items = std::slice::Iter<'a, Value>;
+    fn object(self) -> Option<Self::Object> {
+        self.as_object()
+    }
+    fn items(self) -> Option<Self::Items> {
+        self.as_array().map(|a| a.iter())
+    }
+    fn is_null(self) -> bool {
+        Value::is_null(self)
+    }
+    fn as_int(self) -> Option<i64> {
+        Value::as_int(self)
+    }
+    fn as_bool(self) -> Option<bool> {
+        Value::as_bool(self)
+    }
+    fn as_str(self) -> Option<Cow<'a, [u8]>> {
+        Value::as_str(self).map(Cow::Borrowed)
+    }
+}
+
+impl<'a> Object<'a> for &'a [(Vec<u8>, Value)] {
+    type Json = &'a Value;
+    fn get(&self, key: &str) -> Option<&'a Value> {
+        self.iter().rev().find(|(k, _)| k == key.as_bytes()).map(|(_, v)| v)
+    }
+    fn len(&self) -> usize {
+        <[_]>::len(self)
+    }
+    fn member(&self, i: usize) -> (Cow<'a, [u8]>, &'a Value) {
+        let (k, v) = &self[i];
+        (Cow::Borrowed(k), v)
+    }
+}
+
+/// A [`Raw`] object's members, gathered once so that each `get` is a look
+/// down a short list rather than a scan of the text.
+pub struct RawObject<'a> {
+    members: Vec<(Cow<'a, [u8]>, Raw<'a>)>,
+}
+
+impl<'a> Json<'a> for Raw<'a> {
+    type Object = RawObject<'a>;
+    type Items = Items<'a>;
+    fn object(self) -> Option<RawObject<'a>> {
+        Raw::object(self)
+    }
+    fn items(self) -> Option<Items<'a>> {
+        Raw::items(self)
+    }
+    fn is_null(self) -> bool {
+        Raw::is_null(self)
+    }
+    fn as_int(self) -> Option<i64> {
+        Raw::as_int(self)
+    }
+    fn as_bool(self) -> Option<bool> {
+        Raw::as_bool(self)
+    }
+    fn as_str(self) -> Option<Cow<'a, [u8]>> {
+        Raw::as_str(self)
+    }
+}
+
+impl<'a> Object<'a> for RawObject<'a> {
+    type Json = Raw<'a>;
+    fn get(&self, key: &str) -> Option<Raw<'a>> {
+        Object::get(&self.members.as_slice(), key)
+    }
+    fn len(&self) -> usize {
+        self.members.len()
+    }
+    fn member(&self, i: usize) -> (Cow<'a, [u8]>, Raw<'a>) {
+        self.members[i].clone()
+    }
+}
+
+impl<'a> Object<'a> for &[Member<'a>] {
+    type Json = Raw<'a>;
+    fn get(&self, key: &str) -> Option<Raw<'a>> {
+        self.iter().rev().find(|(k, _)| **k == *key.as_bytes()).map(|(_, v)| *v)
+    }
+    fn len(&self) -> usize {
+        <[_]>::len(self)
+    }
+    fn member(&self, i: usize) -> (Cow<'a, [u8]>, Raw<'a>) {
+        self[i].clone()
     }
 }
 
