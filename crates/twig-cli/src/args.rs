@@ -747,6 +747,7 @@ mod tests {
 
     #[test]
     fn lang_flag_refuses_compiled_name() {
+        crate::format::register_languages();
         let e = Cli::try_parse_from(["twig", "convert", "--lang", "djot", "x.dj"]).unwrap_err();
         assert_eq!(e.kind(), ErrorKind::ValueValidation);
         assert!(e.to_string().contains("is compiled in; --lang names a runtime language"));
