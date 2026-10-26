@@ -7,7 +7,7 @@ use crate::ast::{
     Alignment, Cell, Container, Form, Kind, KindRef, Link, ListNumbering, NodeId, SmartPunctuationKind, Tag,
 };
 use crate::document::Document;
-use crate::json::{Stringify, Value};
+use crate::json::{Json, Object, Stringify, Value};
 
 /// Pretty-printed (2-space) JSON for `doc`, with a trailing newline.
 pub fn encode(doc: &Document) -> Vec<u8> {
@@ -208,25 +208,24 @@ pub struct FieldProblem {
     pub what: String,
 }
 
-struct Reader<'a> {
-    obj: &'a Value,
+struct Reader<'r, O> {
+    obj: &'r O,
 }
 
-impl Reader<'_> {
+impl<'a, O: Object<'a>> Reader<'_, O> {
     fn fail<T>(&self, field: &str, what: &str) -> Result<T, FieldProblem> {
         Err(FieldProblem { field: field.to_string(), what: what.to_string() })
     }
-    fn get(&self, field: &str) -> Option<&Value> {
-        match self.obj.get(field) {
-            Some(Value::Null) | None => None,
-            Some(v) => Some(v),
-        }
+    fn get(&self, field: &str) -> Option<O::Json> {
+        self.obj.get(field).filter(|v| !v.is_null())
     }
     fn opt_str(&self, field: &str) -> Result<Option<Vec<u8>>, FieldProblem> {
         match self.get(field) {
             None => Ok(None),
-            Some(Value::String(s)) => Ok(Some(s.clone())),
-            Some(_) => self.fail(field, "expected a string"),
+            Some(v) => match v.as_str() {
+                Some(s) => Ok(Some(s.into_owned())),
+                None => self.fail(field, "expected a string"),
+            },
         }
     }
     fn str(&self, field: &str) -> Result<Vec<u8>, FieldProblem> {
@@ -238,11 +237,13 @@ impl Reader<'_> {
     fn opt_int(&self, field: &str) -> Result<Option<u32>, FieldProblem> {
         match self.get(field) {
             None => Ok(None),
-            Some(Value::Int(i)) => match u32::try_from(*i) {
-                Ok(v) => Ok(Some(v)),
-                Err(_) => self.fail(field, "integer out of range"),
+            Some(v) => match v.as_int() {
+                Some(i) => match u32::try_from(i) {
+                    Ok(v) => Ok(Some(v)),
+                    Err(_) => self.fail(field, "integer out of range"),
+                },
+                None => self.fail(field, "expected an integer"),
             },
-            Some(_) => self.fail(field, "expected an integer"),
         }
     }
     fn int(&self, field: &str) -> Result<u32, FieldProblem> {
@@ -254,8 +255,10 @@ impl Reader<'_> {
     fn boolean(&self, field: &str) -> Result<bool, FieldProblem> {
         match self.get(field) {
             None => self.fail(field, "required boolean is missing"),
-            Some(Value::Bool(b)) => Ok(*b),
-            Some(_) => self.fail(field, "expected a boolean"),
+            Some(v) => match v.as_bool() {
+                Some(b) => Ok(b),
+                None => self.fail(field, "expected a boolean"),
+            },
         }
     }
     fn opt_enum<T>(&self, field: &str, f: impl Fn(&str) -> Option<T>) -> Result<Option<T>, FieldProblem> {
@@ -278,6 +281,11 @@ impl Reader<'_> {
 /// The kind `r` names, with its payload read from `obj` — the inverse of
 /// [`write_kind_payload`].
 pub fn read_kind(r: &KindRef, obj: &Value) -> Result<Kind, FieldProblem> {
+    read_kind_in(r, &obj.as_object().unwrap_or(&[]))
+}
+
+/// [`read_kind`] over the members of any [`Json`] object.
+pub fn read_kind_in<'a, O: Object<'a>>(r: &KindRef, obj: &O) -> Result<Kind, FieldProblem> {
     let rd = Reader { obj };
     Ok(match r {
         KindRef::Mark(m) => Kind::InlineMark(*m),
