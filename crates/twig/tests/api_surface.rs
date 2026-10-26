@@ -316,7 +316,7 @@ fn every_binding_item_exists_with_its_signature() {
     assert_traits::<Op>();
     let _: fn(&str, &str) -> Vec<Op> = Op::diff;
     let _: fn(&str, &[Op]) -> R<String> = Op::apply;
-    let _: fn(&[Op], &[Op]) -> R<Vec<Op>> = Op::compose;
+    let _: fn(&str, &[Op], &[Op]) -> R<Vec<Op>> = Op::compose;
     let _: for<'a> fn(&'a mut Editor) -> R<DocumentView<'a>> = Editor::document;
     let _: fn(&mut Editor) -> R<Vec<FlatNode>> = Editor::nodes;
     let _: fn(&mut Editor, Option<NodeId>) -> R<Vec<QueryMatch>> = Editor::child_spans;

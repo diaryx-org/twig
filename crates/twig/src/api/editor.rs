@@ -76,11 +76,14 @@ impl Op {
         String::from_utf8(out).map_err(|_| Error::InvalidArgument)
     }
 
-    /// The one list of ops, in their one spelling, that does `first` and then
-    /// `then`, where `then` reads the text `first` made — a run of edits sent
-    /// as one. [`Error::InvalidArgument`] when `then` puts a position inside
-    /// a character `first` inserted.
-    pub fn compose(first: &[Op], then: &[Op]) -> Result<Vec<Op>, Error> {
+    /// The one list of ops, in their one spelling, that does `first` to
+    /// `text` and then `then`, where `then` reads the text `first` made — a
+    /// run of edits sent as one. [`Error::InvalidArgument`] when either does
+    /// not fit the text it reads, as [`Op::apply`] would refuse it.
+    pub fn compose(text: &str, first: &[Op], then: &[Op]) -> Result<Vec<Op>, Error> {
+        // Only the text `first` made shows whether `then` cuts a character,
+        // whether `first` inserted it or kept it.
+        check_ops(Op::apply(text, first)?.as_bytes(), then)?;
         let first: Vec<engine_ops::Op> = first.iter().map(Op::to_engine).collect();
         let then: Vec<engine_ops::Op> = then.iter().map(Op::to_engine).collect();
         engine_ops::compose(&first, &then).iter().map(|op| Op::from_engine(op).ok_or(Error::InvalidArgument)).collect()

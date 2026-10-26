@@ -1222,10 +1222,16 @@ fn op_diff_apply_and_compose_work_on_text_alone() {
     assert_eq!(Op::apply("é", &[Op::Retain(3)]), Err(Error::InvalidArgument));
 
     let then = [Op::Retain(4), Op::Delete(4)]; // "word" goes
-    let both = Op::compose(&ops, &then).unwrap();
+    let both = Op::compose("a word here", &ops, &then).unwrap();
     assert_eq!(Op::apply("a word here", &both).unwrap(), "a **** here!");
     // `then` deleting half of the é `first` inserted.
-    assert_eq!(Op::compose(&[Op::Insert("é".into())], &[Op::Retain(1), Op::Delete(1)]), Err(Error::InvalidArgument));
+    assert_eq!(Op::compose("", &[Op::Insert("é".into())], &[Op::Retain(1), Op::Delete(1)]), Err(Error::InvalidArgument));
+    // ...or cutting inside one, with whole characters on either side.
+    assert_eq!(Op::compose("", &[Op::Insert("éé".into())], &[Op::Retain(1), Op::Delete(2)]), Err(Error::InvalidArgument));
+    // ...or inside a character `first` kept.
+    assert_eq!(Op::compose("é", &[Op::Insert("a".into())], &[Op::Retain(2), Op::Delete(1)]), Err(Error::InvalidArgument));
+    // `first` itself must fit the text.
+    assert_eq!(Op::compose("é", &[Op::Retain(1), Op::Insert("a".into())], &[]), Err(Error::InvalidArgument));
 }
 
 #[test]
