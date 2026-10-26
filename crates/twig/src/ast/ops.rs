@@ -31,30 +31,30 @@ pub enum Op {
     Delete(usize),
 }
 
-/// How many bytes of the source `ops` read: their retains and deletes.
+/// How many bytes of the source `ops` read: their retains and deletes. Held
+/// at `usize::MAX` rather than wrapping, since no source is that long.
 pub fn input_len(ops: &[Op]) -> usize {
-    ops.iter()
-        .map(|op| match op {
-            Op::Retain(n) | Op::Delete(n) => *n,
-            Op::Insert(_) => 0,
-        })
-        .sum()
+    ops.iter().fold(0, |sum, op| match op {
+        Op::Retain(n) | Op::Delete(n) => sum.saturating_add(*n),
+        Op::Insert(_) => sum,
+    })
 }
 
 /// `ops` in their one spelling. Between two retains, every insert is written
-/// first, as one, and every delete after it, as one.
+/// first, as one, and every delete after it, as one. A run that would pass
+/// `usize::MAX` is held there: it reads past any source either way.
 pub fn canonical(ops: impl IntoIterator<Item = Op>) -> Vec<Op> {
     let mut out = Vec::new();
-    let mut retain = 0;
+    let mut retain = 0usize;
     let mut insert: Vec<u8> = Vec::new();
-    let mut delete = 0;
+    let mut delete = 0usize;
     for op in ops {
         match op {
             Op::Retain(0) | Op::Delete(0) => {}
             Op::Insert(t) if t.is_empty() => {}
             Op::Retain(n) => {
                 flush_run(&mut out, &mut insert, &mut delete);
-                retain += n;
+                retain = retain.saturating_add(n);
             }
             Op::Insert(t) => {
                 flush_retain(&mut out, &mut retain);
@@ -62,7 +62,7 @@ pub fn canonical(ops: impl IntoIterator<Item = Op>) -> Vec<Op> {
             }
             Op::Delete(n) => {
                 flush_retain(&mut out, &mut retain);
-                delete += n;
+                delete = delete.saturating_add(n);
             }
         }
     }

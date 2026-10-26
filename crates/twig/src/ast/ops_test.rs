@@ -95,6 +95,15 @@ fn apply_reads_from_the_start_and_keeps_what_the_ops_do_not_reach() {
 }
 
 #[test]
+fn ops_whose_lengths_overflow_read_past_the_end() {
+    assert_eq!(input_len(&[Op::Retain(usize::MAX), Op::Retain(2)]), usize::MAX);
+    assert_eq!(apply(b"ab", &[Op::Retain(usize::MAX), Op::Retain(2)]), None);
+    assert_eq!(apply(b"abc", &[Op::Delete(usize::MAX), Op::Delete(2)]), None);
+    assert_eq!(canonical([Op::Retain(usize::MAX), Op::Retain(2), ins("x")]), vec![Op::Retain(usize::MAX), ins("x")]);
+    assert_eq!(canonical([Op::Delete(usize::MAX), Op::Delete(2)]), vec![Op::Delete(usize::MAX)]);
+}
+
+#[test]
 fn splice_deletes_the_whole_span_and_inserts_the_whole_text() {
     assert_eq!(splice(Span::new(2, 5), b"abc"), vec![Op::Retain(2), ins("abc"), Op::Delete(3)]);
     assert_eq!(splice(Span::new(4, 4), b""), Vec::<Op>::new());
