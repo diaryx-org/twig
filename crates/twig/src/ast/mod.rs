@@ -9,5 +9,6 @@ pub mod editor;
 pub mod filter;
 pub mod locate;
 pub mod locator;
+pub mod ops;
 pub mod splicer;
 pub mod table_edit;

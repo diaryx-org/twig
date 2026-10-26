@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::ops::Range;
 
 use crate::ast::editor::{self as engine_editor, Editor as EngineEditor};
+use crate::ast::ops as engine_ops;
 use crate::ast::splicer::{self, ParseError, Placement};
 use crate::ast::{filter, locator};
 use crate::error::Error;
@@ -40,6 +41,82 @@ impl Change {
     fn empty() -> Change {
         Change { old: 0..0, new: 0..0 }
     }
+}
+
+/// One step of an edit, read against the source from its start: an edit is a
+/// list of these over the whole text, rather than a span and the string that
+/// replaces it. Whatever the ops do not reach is kept.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum Op {
+    /// Keep the next `n` bytes.
+    Retain(usize),
+    /// Write this text here.
+    Insert(String),
+    /// Remove the next `n` bytes.
+    Delete(usize),
+}
+
+impl Op {
+    /// The fewest ops that turn `old` into `new`, cut between characters:
+    /// Myers' diff over characters, and past 512 edits one splice of what
+    /// lies between the two texts' common prefix and suffix.
+    pub fn diff(old: &str, new: &str) -> Vec<Op> {
+        engine_ops::diff(old.as_bytes(), new.as_bytes())
+            .iter()
+            .map(|op| Op::from_engine(op).expect("a diff of two strings cuts between characters"))
+            .collect()
+    }
+
+    /// `text` with `ops` applied. [`Error::InvalidArgument`] when they read
+    /// past its end or put a position inside a character.
+    pub fn apply(text: &str, ops: &[Op]) -> Result<String, Error> {
+        check_ops(text.as_bytes(), ops)?;
+        let ops: Vec<engine_ops::Op> = ops.iter().map(Op::to_engine).collect();
+        let out = engine_ops::apply(text.as_bytes(), &ops).ok_or(Error::InvalidArgument)?;
+        String::from_utf8(out).map_err(|_| Error::InvalidArgument)
+    }
+
+    /// The one list of ops, in their one spelling, that does `first` and then
+    /// `then`, where `then` reads the text `first` made — a run of edits sent
+    /// as one. [`Error::InvalidArgument`] when `then` puts a position inside
+    /// a character `first` inserted.
+    pub fn compose(first: &[Op], then: &[Op]) -> Result<Vec<Op>, Error> {
+        let first: Vec<engine_ops::Op> = first.iter().map(Op::to_engine).collect();
+        let then: Vec<engine_ops::Op> = then.iter().map(Op::to_engine).collect();
+        engine_ops::compose(&first, &then).iter().map(|op| Op::from_engine(op).ok_or(Error::InvalidArgument)).collect()
+    }
+
+    fn to_engine(&self) -> engine_ops::Op {
+        match self {
+            Op::Retain(n) => engine_ops::Op::Retain(*n),
+            Op::Insert(t) => engine_ops::Op::Insert(t.as_bytes().to_vec()),
+            Op::Delete(n) => engine_ops::Op::Delete(*n),
+        }
+    }
+
+    fn from_engine(op: &engine_ops::Op) -> Option<Op> {
+        Some(match op {
+            engine_ops::Op::Retain(n) => Op::Retain(*n),
+            engine_ops::Op::Insert(t) => Op::Insert(String::from_utf8(t.clone()).ok()?),
+            engine_ops::Op::Delete(n) => Op::Delete(*n),
+        })
+    }
+}
+
+/// Whether `ops` fit `src`: they read no further than its end, and every
+/// position they reach lies between two characters.
+fn check_ops(src: &[u8], ops: &[Op]) -> Result<(), Error> {
+    let on_boundary = |at: usize| at == src.len() || (at < src.len() && src[at] & 0xC0 != 0x80);
+    let mut at = 0usize;
+    for op in ops {
+        if !on_boundary(at) {
+            return Err(Error::InvalidArgument);
+        }
+        if let Op::Retain(n) | Op::Delete(n) = op {
+            at = at.checked_add(*n).ok_or(Error::InvalidArgument)?;
+        }
+    }
+    if on_boundary(at) { Ok(()) } else { Err(Error::InvalidArgument) }
 }
 
 /// A span-splice editor over a document: lossless, in-place edits, reparsed
@@ -135,7 +212,7 @@ impl Editor {
     }
 
     /// `applyEdit`: resolve `locator` against the current tree and run `op`.
-    fn apply(
+    fn apply_located(
         &mut self,
         locator: &str,
         op: impl FnOnce(&mut splicer::Splicer, crate::ast::NodeId) -> Result<(), splicer::Error>,
@@ -146,44 +223,44 @@ impl Editor {
 
     /// Replace the whole source of the located node with `text`.
     pub fn replace(&mut self, locator: &str, text: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.replace_node_by_id(id, text.as_bytes()))
+        self.apply_located(locator, |s, id| s.replace_node_by_id(id, text.as_bytes()))
     }
 
     /// Replace the interior of the located container.
     pub fn replace_content(&mut self, locator: &str, text: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.replace_content_by_id(id, text.as_bytes()))
+        self.apply_located(locator, |s, id| s.replace_content_by_id(id, text.as_bytes()))
     }
 
     /// Insert `text` immediately before the located node.
     pub fn insert_before(&mut self, locator: &str, text: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.insert_before_by_id(id, text.as_bytes()))
+        self.apply_located(locator, |s, id| s.insert_before_by_id(id, text.as_bytes()))
     }
 
     /// Insert `text` immediately after the located node.
     pub fn insert_after(&mut self, locator: &str, text: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.insert_after_by_id(id, text.as_bytes()))
+        self.apply_located(locator, |s, id| s.insert_after_by_id(id, text.as_bytes()))
     }
 
     /// Insert `text` as the `index`-th child of the located container (an
     /// index at or past the child count appends).
     pub fn insert_child(&mut self, locator: &str, index: usize, text: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.insert_child_by_id(id, index, text.as_bytes()))
+        self.apply_located(locator, |s, id| s.insert_child_by_id(id, index, text.as_bytes()))
     }
 
     /// Delete the located node (exactly its span).
     pub fn delete(&mut self, locator: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.delete_node_by_id(id))
+        self.apply_located(locator, |s, id| s.delete_node_by_id(id))
     }
 
     /// Delete the located node, tidying surrounding blank lines for a
     /// whole-line node.
     pub fn delete_smart(&mut self, locator: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.delete_node_smart_by_id(id))
+        self.apply_located(locator, |s, id| s.delete_node_smart_by_id(id))
     }
 
     /// Unwrap the located node: replace it with its interior.
     pub fn unwrap_node(&mut self, locator: &str) -> Result<(), Error> {
-        self.apply(locator, |s, id| s.unwrap_node_by_id(id))
+        self.apply_located(locator, |s, id| s.unwrap_node_by_id(id))
     }
 
     fn move_node(&mut self, locator: &str, anchor: &str, place: Placement) -> Result<(), Error> {
@@ -247,8 +324,32 @@ impl Editor {
         if start > end || end > self.editor.source_bytes().len() {
             return Err(Error::InvalidArgument);
         }
-        self.splicer().replace_at_span(Span::new(start, end), text.as_bytes()).map_err(|_| Error::EditConflict)?;
+        self.splicer().splice(Span::new(start, end), text.as_bytes()).map_err(|_| Error::EditConflict)?;
         Ok(self.last_or_empty())
+    }
+
+    /// Apply `ops` to the current source as one edit: one reparse and one
+    /// undo step, however many places they change. The [`Change`] spans the
+    /// first byte they touch to the last. Ops that read past the end, or put a
+    /// position inside a UTF-8 character, are [`Error::InvalidArgument`]; a
+    /// reparse-breaking edit is rolled back and returns
+    /// [`Error::EditConflict`].
+    pub fn apply(&mut self, ops: &[Op]) -> Result<Change, Error> {
+        check_ops(self.editor.source_bytes(), ops)?;
+        let ops: Vec<engine_ops::Op> = ops.iter().map(Op::to_engine).collect();
+        self.splicer().apply(&ops).map_err(splicer_error)?;
+        Ok(self.last_or_empty())
+    }
+
+    /// What the last successful edit, undo or redo did, as ops against the
+    /// source before it: the fewest that make a gesture's change, exactly the
+    /// span asked for [`Editor::edit_range`]. In one spelling: no op of zero
+    /// length, no two of a kind side by side, an insert before a delete at
+    /// one place, and no retain at the end. Empty before the first edit.
+    /// [`Error::Internal`] when the text they insert is not UTF-8, as
+    /// [`Editor::source_str`] reports.
+    pub fn last_ops(&mut self) -> Result<Vec<Op>, Error> {
+        self.editor.splicer.last_ops.iter().map(|op| Op::from_engine(op).ok_or(Error::Internal)).collect()
     }
 
     /// The byte effect of the last successful edit, or `None` before the
@@ -277,6 +378,19 @@ impl Editor {
     pub fn coalesce_last_undo(&mut self) -> Result<(), Error> {
         self.splicer().coalesce_last_undo();
         Ok(())
+    }
+
+    /// Turn the undo history on or off; it is on in a new editor. Off drops
+    /// every step, and edits record none: [`Editor::undo`] and
+    /// [`Editor::redo`] return `None`. For a host that keeps its own history
+    /// from [`Editor::last_ops`].
+    pub fn set_history(&mut self, keep: bool) {
+        self.splicer().set_history(keep);
+    }
+
+    /// Whether edits record undo steps.
+    pub fn keeps_history(&mut self) -> bool {
+        self.editor.splicer.keeps_history()
     }
 
     /// A monotonic change token, bumped once per successful mutation.

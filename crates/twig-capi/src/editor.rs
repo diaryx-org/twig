@@ -450,7 +450,7 @@ pub unsafe extern "C" fn twig_editor_edit_range(
             return TWIG_STATUS_INVALID_ARGUMENT;
         }
         // Any failure is the edited document not reparsing; rolled back.
-        if e.splicer.replace_at_span(Span::new(start, end), text).is_err() {
+        if e.splicer.splice(Span::new(start, end), text).is_err() {
             return TWIG_STATUS_EDIT_CONFLICT;
         }
         if let Some(c) = e.splicer.last_change {
