@@ -1,6 +1,6 @@
 {
   "name": "@diaryx/twig",
-  "version": "6.0.0",
+  "version": "7.0.0",
   "description": "Djot, Markdown, HTML, XML and AsciiDoc parsing, querying, lossless in-place editing, conversion, and frontmatter: twig's Rust core compiled to WebAssembly.",
   "type": "module",
   "publishConfig": {

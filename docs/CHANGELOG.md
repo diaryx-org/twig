@@ -90,6 +90,85 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 7.0.0
+
+### Breaking
+
+- **editor** — an edit is retain, insert and delete ops, and an undo step keeps their inverse ([`d81b0e6`](https://github.com/diaryx-org/twig/commit/d81b0e6035feda59b565573ed82bff0340b2990c))
+
+### Added
+
+- **meta** — read and edit a document's HTML `<script>` data island ([`3c8c9d5`](https://github.com/diaryx-org/twig/commit/3c8c9d529878e5223cc58fbe178ba47646dace3f))
+- **meta** — replace an embed's whole body, and open a new block on one ([`95137e9`](https://github.com/diaryx-org/twig/commit/95137e9523a815a03cb53a759d33764116e4e552))
+- **capi** — metadata and memory entry points, and a wasm build profile ([`cdd6860`](https://github.com/diaryx-org/twig/commit/cdd68608ae451d45103dc49b308d252c480f189a))
+- **typescript** — @diaryx/twig, twig compiled to WebAssembly for TypeScript and JavaScript ([`ad427ea`](https://github.com/diaryx-org/twig/commit/ad427eaa8820b95e2659559f6489642768c4e1bb))
+- a document's node table, through the crate and the C ABI ([`5747644`](https://github.com/diaryx-org/twig/commit/5747644df76d13d895c7c9d34780333a558ed638))
+- **editor** — Op::diff, Op::apply and Op::compose, for a host that keeps text and ops of its own ([`8f14298`](https://github.com/diaryx-org/twig/commit/8f14298a7d463647c2440f90d2a032b291227747))
+
+### Fixed
+
+- **editor** — keep an AsciiDoc paragraph admonition under a block gesture (#12) ([`bd2f0e8`](https://github.com/diaryx-org/twig/commit/bd2f0e862149a809ba7b501e5bd22b1b15da0f9d))
+- **editor** — refuse a directive attribute or label the format cannot read back ([`d4bcd44`](https://github.com/diaryx-org/twig/commit/d4bcd44c361dc1191c44f6c2979d002eef77c00e))
+- **docs** — write twig's prov views in CEL and mend two bad links ([`6d866b7`](https://github.com/diaryx-org/twig/commit/6d866b727a857470fbe2b8f7040514c97ac09f76))
+- **meta** — refuse an island body that closes it, and keep a new island past the doctype ([`98f852c`](https://github.com/diaryx-org/twig/commit/98f852c8e79c7aaad35801fc30ba95d5b3416c17))
+- **typescript** — keep the instance a synchronous call made while init() was pending ([`7be1751`](https://github.com/diaryx-org/twig/commit/7be1751ab84000e5c6b1218b17bca1d6dee34e09))
+- **meta** — refuse a body that closes its fence, and replace a body that does not parse ([`cd08b88`](https://github.com/diaryx-org/twig/commit/cd08b889bc8313d68bca22970ed409040597ab9c))
+- **ops** — ops whose lengths overflow read past the end, not wrap ([`6aa5b09`](https://github.com/diaryx-org/twig/commit/6aa5b097c4214d792e5073f92eaabc39ce3fc6f6))
+- **editor** — Op::compose takes the text first reads, and refuses ops that do not fit it ([`490528a`](https://github.com/diaryx-org/twig/commit/490528ad9ca8fb2466f275c21271d37e3016201c))
+- **table** — refuse an index or offset too large for usize, not truncate it ([`87ed1e3`](https://github.com/diaryx-org/twig/commit/87ed1e3c166502d96dd987944198050460deee1d))
+
+### Changed
+
+- **table** — read a node table where it lies, without a JSON value tree ([`ecd4563`](https://github.com/diaryx-org/twig/commit/ecd4563b6571d8f4cf0ea6702f31c3170285c52c))
+
+### Behavioural changes
+
+- toggle_block_container and toggle_code_block over the paragraph of an AsciiDoc paragraph admonition (`NOTE: text`) return NotEditable and leave the source unchanged, where they used to succeed and write the label into the new block as text.
+
+* fix(editor): keep an AsciiDoc paragraph admonition under a block gesture
+
+The previous commit refused toggle_block_container and toggle_code_block
+over a paragraph admonition. They now keep it instead: the container that
+spells itself on its paragraph's first line is rebuilt with the new block
+inside it and printed through the format's renderer, which writes
+AsciiDoc's admonition in its delimited form. So `NOTE: text` becomes
+`[NOTE]` over `====` holding the list, quote or listing. The admonition's
+title and id come with it, a listing takes the paragraph's source as its
+text, and a quote around the admonition keeps its prefix on every line.
+The editor names no format: what it rebuilds is any container whose marker
+sits on its first child's first line, and the spelling is the renderer's.
+
+The test now pins the kept form, and the task's resolution says so.
+
+- toggle_block_container and toggle_code_block over the paragraph of an AsciiDoc paragraph admonition (`NOTE: text`) rewrite it to the delimited form (`[NOTE]` over `====`) with the new block inside, where they used to write the label into the new block as text. This supersedes the previous commit's NotEditable refusal.
+
+- insert_directive refuses an attribute outside check_attr's grammar (a bare key, a value holding a quote or a line end) with InvalidAttribute, and a non-empty label in djot, AsciiDoc or a runtime language that does not claim labels_leaf_containers with InvalidLabel, where it used to write a document that read back as something else.
+
+- twig-html parses `<script type="application/yaml">`
+  (and json, toml, figl) with no other attribute as a `metadata` node,
+  not a generic `script` container, so converting such a page to
+  Markdown writes it as a metadata block.
+
+- twig::meta::find and Embed::open_in on an HTML host
+  find its data island; they found nothing before.
+
+- Embed::open_or_init on an HTML host with no island
+  writes `<script type="application/<lang>">` … `</script>` above the
+  first line, where it wrote a `---` fence.
+
+- Embed::render on an HTML island whose edited body
+  holds `</script` or `<!--` (any case) returns Error::UnsafeIslandBody.
+
+- An undo or redo whose restored text the parser refuses
+  now leaves its step on the stack, so it can be tried again. It used to drop
+  the step.
+
+- On 32-bit targets, decoding a node table whose
+  parent, label node, or span offset is 2^32 or more now fails. It used to
+  wrap the value and decode a different document. 64-bit builds are
+  unchanged.
+
+
 ## 6.0.0
 
 ### Breaking
