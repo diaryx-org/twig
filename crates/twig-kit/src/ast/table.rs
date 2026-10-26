@@ -321,8 +321,10 @@ fn opt_index<'a, O: Object<'a>>(
     len: impl FnOnce() -> usize,
 ) -> Result<Option<NodeId>, Problem> {
     let Some(v) = present(row, field) else { return Ok(None) };
-    match v.as_int() {
-        Some(n) if n >= 0 && ((n as usize) < i || (n as usize) < len()) => Ok(Some(n as NodeId)),
+    // `try_from`, not `as`: on a 32-bit target `as` would wrap a large index
+    // onto a row that exists.
+    match v.as_int().map(usize::try_from) {
+        Some(Ok(n)) if n < i || n < len() => Ok(Some(n as NodeId)),
         Some(_) => fail(Some(i), field, "not a row of this table"),
         None => fail(Some(i), field, "expected a row index or null"),
     }
@@ -338,7 +340,9 @@ fn opt_span<'a, O: Object<'a>>(i: usize, row: &O, field: &str) -> Result<Option<
         if n < 2 && bad.is_none() {
             bad = match x.as_int() {
                 Some(v) if v >= 0 => {
-                    ends[n] = v as usize;
+                    // An offset past `usize` is past any source, so it is
+                    // held at the top for `check_span` to refuse, not wrapped.
+                    ends[n] = usize::try_from(v).unwrap_or(usize::MAX);
                     None
                 }
                 Some(_) => Some("a byte offset is not negative"),
@@ -459,7 +463,7 @@ fn read_labels<'a, J: Json<'a>>(ast: &Ast, items: impl Iterator<Item = J>) -> Re
             _ => return fail(None, "labels", "registry is reference, auto_reference or footnote"),
         };
         let node = match item.get("node").and_then(|v| v.as_int()) {
-            Some(n) if n >= 0 && (n as usize) < ast.nodes.len() => n as NodeId,
+            Some(n) if usize::try_from(n).is_ok_and(|n| n < ast.nodes.len()) => n as NodeId,
             Some(_) => return fail(None, "labels", "node is not a row of this table"),
             None => return fail(None, "labels", "node is a row index"),
         };
