@@ -53,6 +53,24 @@ pub use serializer::{serialize, serialize_ast};
 
 /// Parse `source` (Djot markup) into a `Document`.
 pub fn parse(source: &[u8]) -> Document {
+    parse_noting_identifiers(source).0
+}
+
+/// [`parse`] of `fragment`, the text that replaced `replaced` in a document,
+/// for [`twig_kit::Language::parse_fragment`]: `None` when an attribute in
+/// either names an identifier, which every later heading's own identifier is
+/// made unique against, whether or not a node keeps it.
+pub fn parse_fragment(fragment: &[u8], replaced: &[u8]) -> Option<Document> {
+    let (doc, named) = parse_noting_identifiers(fragment);
+    // Only an attribute names one, and every attribute opens with a brace.
+    if named || (replaced.contains(&b'{') && parse_noting_identifiers(replaced).1) {
+        return None;
+    }
+    Some(doc)
+}
+
+/// [`parse`], and whether an attribute named an identifier.
+fn parse_noting_identifiers(source: &[u8]) -> (Document, bool) {
     // The scanner needs a trailing newline (djot.js's constructor appends
     // one). Positions must not include that synthetic byte.
     let owned;
@@ -69,7 +87,7 @@ pub fn parse(source: &[u8]) -> Document {
 
     let events = block::Parser::new(subject).scan();
     let tree_builder = parser::TreeBuilder::new(subject);
-    let mut doc = tree_builder.build(&events);
+    let (mut doc, named) = tree_builder.build_noting_identifiers(&events);
     doc.source = source.to_vec();
     if owns_subject {
         let len = source.len();
@@ -82,7 +100,7 @@ pub fn parse(source: &[u8]) -> Document {
         doc.node_marker_spans.iter_mut().flatten().for_each(clamp);
         doc.attrs_spans.iter_mut().flatten().for_each(clamp);
     }
-    doc
+    (doc, named)
 }
 
 /// Mirrors djot.js `ast.ts`'s `isBlock`, as a reading of `Kind::level`.

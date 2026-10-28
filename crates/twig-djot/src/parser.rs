@@ -336,6 +336,9 @@ pub struct TreeBuilder<'a> {
     auto_references: HashMap<Vec<u8>, NodeId>,
     footnotes: HashMap<Vec<u8>, NodeId>,
     identifiers: HashSet<Vec<u8>>,
+    /// Whether an attribute named an identifier: it joins `identifiers`
+    /// whether or not a node keeps it, and moves every later heading's.
+    named_identifier: bool,
     pending_block_attrs: PendingAttrs,
     list_depth: usize,
 }
@@ -399,6 +402,7 @@ impl<'a> TreeBuilder<'a> {
             auto_references: HashMap::new(),
             footnotes: HashMap::new(),
             identifiers: HashSet::new(),
+            named_identifier: false,
             pending_block_attrs: PendingAttrs::default(),
             list_depth: 0,
         }
@@ -557,7 +561,12 @@ impl<'a> TreeBuilder<'a> {
 
     // ── the big dispatch ──
 
-    pub fn build(mut self, events: &[Event]) -> Document {
+    pub fn build(self, events: &[Event]) -> Document {
+        self.build_noting_identifiers(events).0
+    }
+
+    /// [`TreeBuilder::build`], and whether an attribute named an identifier.
+    pub fn build_noting_identifiers(mut self, events: &[Event]) -> (Document, bool) {
         self.push_container(0);
         self.top().data.heading_level = Some(0);
 
@@ -601,7 +610,7 @@ impl<'a> TreeBuilder<'a> {
         // A `::: verse` div of paragraphs is a `line_block`. Before
         // compaction, which sweeps what it leaves.
         let versed = verse::run(raw);
-        compact::run(versed)
+        (compact::run(versed), self.named_identifier)
     }
 
     fn find_list_node(&mut self) -> Option<&mut TreeContainer> {
@@ -1066,6 +1075,7 @@ impl<'a> TreeBuilder<'a> {
         c.attrs.add_origin(attrs_block_origin(c.start, ev));
         if let Some(i) = c.attrs.get(b"id") {
             self.identifiers.insert(i.to_vec());
+            self.named_identifier = true;
         }
 
         let Some(mut tip_id) = self.get_tip() else { return };
@@ -1108,6 +1118,7 @@ impl<'a> TreeBuilder<'a> {
         }
         if let Some(i) = c.attrs.get(b"id") {
             self.identifiers.insert(i.to_vec());
+            self.named_identifier = true;
         }
         c.attrs.add_origin(attrs_block_origin(c.start, ev));
         self.pending_block_attrs.merge_from(&c.attrs);

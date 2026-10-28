@@ -74,6 +74,17 @@ impl Language for Markdown {
         Ok(crate::parse(source, options(row, features)))
     }
 
+    fn parse_fragment(
+        &self,
+        row: usize,
+        features: u32,
+        source: &[u8],
+        range: std::ops::Range<usize>,
+        doc: &Document,
+    ) -> Option<Document> {
+        crate::block::parse_fragment(source, range, options(row, features), doc)
+    }
+
     fn render_html(&self, row: usize, features: u32, doc: &Document) -> Result<Vec<u8>, PrintFailure> {
         let dialect = options(row, features).dialect;
         let opts = crate::html::RenderOptions { dialect, ..Default::default() };

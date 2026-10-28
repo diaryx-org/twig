@@ -538,6 +538,21 @@ pub fn parse_to_ast(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<Doc
     Err(unregistered(fmt))
 }
 
+/// Parse `source[range]` as the run of whole blocks it is inside `source`,
+/// the text of `doc` after an edit, under `fmt` and `cfg`
+/// ([`Language::parse_fragment`]). `None` when the row's language cannot, a
+/// runtime row's always, and the caller parses the whole document instead.
+pub fn parse_fragment(
+    fmt: Format,
+    cfg: &ParseConfig,
+    source: &[u8],
+    range: std::ops::Range<usize>,
+    doc: &Document,
+) -> Option<Document> {
+    let r = native(fmt.0)?;
+    r.lang.parse_fragment(r.index, effective(&r, cfg), source, range, doc)
+}
+
 /// Parse `source` as `fmt`, remembering the row and config.
 pub fn parse(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<ParsedDoc, ParseFailure> {
     Ok(ParsedDoc { format: fmt, config: *cfg, doc: parse_to_ast(fmt, cfg, source)? })

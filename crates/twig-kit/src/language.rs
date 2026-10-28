@@ -94,6 +94,34 @@ pub trait Language: Send + Sync + 'static {
     /// Parse `source` through `row`. The error is why, for a message.
     fn parse(&self, row: usize, features: u32, source: &[u8]) -> Result<Document, String>;
 
+    /// Parse `source[range]` through `row` as the run of whole blocks it is
+    /// inside `source`, the text of `doc` after an edit: with what it names
+    /// resolved against `doc`'s own definitions, as a parse of all of
+    /// `source` would resolve it, and its spans counted from `range.start`.
+    /// `range` holds the whole edit, so what it replaced is `doc.source` from
+    /// `range.start` to as far from its end as `range.end` is from the end
+    /// of `source`. An editor's reparse after a keystroke reads only the blocks around it
+    /// this way, and checks the result against the blocks either side before
+    /// it keeps it; what it cannot check is the language's to refuse: a
+    /// construct that reaches past `range` without changing those blocks (a
+    /// frontmatter whose close is further on), or a definition the whole
+    /// document can name. The parse must be compacted (`ast::compact`), as
+    /// [`Language::parse`]'s is.
+    ///
+    /// `None`, the default, when the language cannot or will not; the editor
+    /// then parses the whole document.
+    fn parse_fragment(
+        &self,
+        row: usize,
+        features: u32,
+        source: &[u8],
+        range: std::ops::Range<usize>,
+        doc: &Document,
+    ) -> Option<Document> {
+        let _ = (row, features, source, range, doc);
+        None
+    }
+
     /// Render a parse to HTML with the row's conventions. By default the
     /// kit's generic printer, without the document's labels.
     fn render_html(&self, row: usize, features: u32, doc: &Document) -> Result<Vec<u8>, PrintFailure> {

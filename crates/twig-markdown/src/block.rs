@@ -890,6 +890,11 @@ pub struct Parser<'s> {
     /// `process_line` no-ops for any index at or above this (endmatter).
     stop_at_line: usize,
     endmatter_id: Option<NodeId>,
+    /// The first `seeds` nodes are another document's reference definitions,
+    /// for a fragment to resolve against ([`parse_fragment`]).
+    seeds: NodeId,
+    /// Whether the source defined a reference of its own.
+    defined_reference: bool,
 }
 
 impl<'s> Parser<'s> {
@@ -934,10 +939,17 @@ impl<'s> Parser<'s> {
             skip_until_line: 0,
             stop_at_line: usize::MAX,
             endmatter_id: None,
+            seeds: 0,
+            defined_reference: false,
         }
     }
 
-    pub fn parse(mut self) -> Document {
+    pub fn parse(self) -> Document {
+        self.build().0
+    }
+
+    /// The parse, and whether the source defined a reference of its own.
+    fn build(mut self) -> (Document, bool) {
         if self.options.frontmatter {
             self.try_consume_frontmatter();
             self.try_consume_endmatter();
@@ -968,15 +980,18 @@ impl<'s> Parser<'s> {
         self.builder.set_span(doc_id, Span::new(0, self.source.len()));
         set_content_span_from_children(&mut self.builder, doc_id);
 
+        let mut references = std::mem::take(&mut self.link_references);
+        let seeds = self.seeds;
+        references.retain(|_, id| *id >= seeds);
         let mut raw = self.builder.finish_document(self.source, doc_id);
         raw.labels = Labels {
-            references: std::mem::take(&mut self.link_references),
+            references,
             auto_references: HashMap::new(),
             footnotes: std::mem::take(&mut self.footnotes),
         };
         // A `<div class="verse">` of paragraphs is a `line_block`.
         let raw = crate::ast::verse::run(raw);
-        crate::ast::compact::run(raw)
+        (crate::ast::compact::run(raw), self.defined_reference)
     }
 
     fn resolve_pending_inline(&mut self) {
@@ -2633,6 +2648,7 @@ impl<'s> Parser<'s> {
             self.builder.set_attrs(ref_id, Attrs { entries: vec![KeyVal::new(b"title", Some(&title_decoded))] });
         }
         self.link_references.entry(label_owned).or_insert(ref_id);
+        self.defined_reference = true;
         Some((end, ref_id))
     }
 }
@@ -2826,4 +2842,169 @@ fn map_buf_point(segs: &[Segment], local: usize, is_end: bool) -> Option<usize> 
 /// Parse `source` into a `Document`.
 pub fn parse(source: &[u8], options: ParseOptions) -> Document {
     Parser::new(source, options).parse()
+}
+
+/// [`parse`] of `source[range]` as the run of blocks it is inside `source`,
+/// the text of `doc` after an edit ([`twig_kit::Language::parse_fragment`]):
+/// a reference link resolves against `doc`'s definitions, as it does in the
+/// whole document, and spans count from `range.start`. `None` when the
+/// fragment defines a reference itself, which could change what the rest of
+/// the document resolves to and which definition wins, or when a
+/// frontmatter or endmatter reaches across the fragment's ends.
+pub fn parse_fragment(source: &[u8], range: std::ops::Range<usize>, options: ParseOptions, doc: &Document) -> Option<Document> {
+    if options.frontmatter && !matter_agrees(source, &range, doc) {
+        return None;
+    }
+    let mut p = Parser::new(&source[range], options);
+    for (label, &id) in &doc.labels.references {
+        let node = &doc.ast.nodes[id as usize];
+        let Kind::Reference { destination, .. } = &node.kind else { return None };
+        let seed = p.builder.add_leaf(Kind::Reference { label: label.clone(), destination: destination.clone() });
+        if let Some(a) = node.attrs {
+            p.builder.set_attrs(seed, doc.ast.attrs[a as usize].clone());
+        }
+        p.link_references.insert(label.clone(), seed);
+    }
+    p.seeds = p.builder.len() as NodeId;
+    // The seeds' titles head the attribute table; the seeds themselves are
+    // dropped, and their titles go with them.
+    let seed_attrs = p.builder.attrs.len();
+    let (mut parsed, defined_reference) = p.build();
+    if defined_reference {
+        return None;
+    }
+    if seed_attrs > 0 {
+        parsed.ast.attrs.drain(..seed_attrs);
+        let n = seed_attrs.min(parsed.attrs_spans.len());
+        parsed.attrs_spans.drain(..n);
+        for node in &mut parsed.ast.nodes {
+            if let Some(a) = &mut node.attrs {
+                *a = a.checked_sub(seed_attrs as u32)?;
+            }
+        }
+    }
+    Some(parsed)
+}
+
+/// Whether the frontmatter and endmatter of `source` are ones a parse of
+/// `source[range]` either reads whole or never meets: the frontmatter's close
+/// and the endmatter's opening fence are found by scanning the whole
+/// document, so an edit can move them without changing the blocks either
+/// side of it.
+fn matter_agrees(source: &[u8], range: &std::ops::Range<usize>, doc: &Document) -> bool {
+    let root = doc.ast.root;
+    let metadata_at = |id: Option<NodeId>| {
+        let id = id?;
+        matches!(doc.ast.nodes[id as usize].kind, Kind::Metadata { .. }).then(|| doc.node_spans[id as usize])
+    };
+    let first = doc.ast.nodes[root as usize].first_child;
+    let old_front = metadata_at(first).filter(|s| s.start == 0).map(|s| s.end);
+    let mut last = first;
+    while let Some(n) = last.and_then(|id| doc.ast.nodes[id as usize].next_sibling) {
+        last = Some(n);
+    }
+    let old_end = metadata_at(last).filter(|s| s.start > 0).map(|s| s.start);
+
+    let front = frontmatter_lines(source);
+    let front_ok = match front {
+        // The fragment opens the document: it must hold the close.
+        Some((end, _)) if range.start == 0 => end <= range.end,
+        // Else it lies wholly before the fragment, unchanged.
+        Some((end, _)) => old_front == Some(end) && end < range.start,
+        None => range.start == 0 || old_front.is_none(),
+    };
+    // Nor may a fragment further on open with what would read as one.
+    if !front_ok || (range.start > 0 && frontmatter_lines(&source[range.clone()]).is_some()) {
+        return false;
+    }
+    let delta = source.len() as isize - doc.source.len() as isize;
+    let whole_tail = range.end == source.len();
+    match endmatter_start(source, front.map_or(0, |(_, after)| after)) {
+        // Wholly after the fragment and the same one, or opened inside it
+        // where the fragment sees the line before its fence.
+        Some(at) => {
+            (range.end <= at && old_end.map(|o| o as isize + delta) == Some(at as isize)) || (whole_tail && at > range.start)
+        }
+        // None before either, or the old one inside the fragment, which
+        // reads its lines again.
+        None => old_end.is_none_or(|o| whole_tail && o > range.start),
+    }
+}
+
+/// The lines of `source` from byte `from`, as [`Parser::new`] splits them:
+/// each with its start, without its `\n` or a `\r` before that.
+fn lines_from(source: &[u8], from: usize) -> impl Iterator<Item = (usize, &[u8])> {
+    let mut at = from;
+    std::iter::from_fn(move || {
+        if at >= source.len() {
+            return None;
+        }
+        let start = at;
+        let end = index_of_scalar(source, at, b'\n').unwrap_or(source.len());
+        at = end + 1;
+        Some((start, trim_cr(&source[start..end])))
+    })
+}
+
+/// The lines of `source` at or after byte `lo`, a line start, last first.
+fn lines_back(source: &[u8], lo: usize) -> impl Iterator<Item = (usize, &[u8])> {
+    let mut end = if source.len() > lo && source[source.len() - 1] == b'\n' { Some(source.len() - 1) } else { None };
+    if end.is_none() && source.len() > lo {
+        end = Some(source.len());
+    }
+    std::iter::from_fn(move || {
+        let e = end?;
+        let start = source[lo..e].iter().rposition(|&c| c == b'\n').map_or(lo, |p| lo + p + 1);
+        end = if start > lo { Some(start - 1) } else { None };
+        Some((start, trim_cr(&source[start..e])))
+    })
+}
+
+fn trim_cr(line: &[u8]) -> &[u8] {
+    line.strip_suffix(b"\r").unwrap_or(line)
+}
+
+/// Where [`Parser::try_consume_frontmatter`] would find `source`'s
+/// frontmatter: the end of its closing line and the start of the line after.
+fn frontmatter_lines(source: &[u8]) -> Option<(usize, usize)> {
+    let mut lines = lines_from(source, 0);
+    let (_, first) = lines.next()?;
+    let first = trim_end(first, b" \t");
+    let delim: &[u8] = if first.starts_with(b"---") {
+        b"---"
+    } else if first.starts_with(b"+++") {
+        b"+++"
+    } else {
+        return None;
+    };
+    let rest = trim(&first[3..], b" \t");
+    if !rest.is_empty() && !is_lang_tag(rest) {
+        return None;
+    }
+    for (start, line) in lines {
+        if trim_end(line, b" \t") == delim {
+            let after = index_of_scalar(source, start, b'\n').map_or(source.len(), |p| p + 1);
+            return Some((start + line.len(), after));
+        }
+    }
+    None
+}
+
+/// Where [`Parser::try_consume_endmatter`] would open `source`'s endmatter,
+/// looking no further back than `lo`, the line after any frontmatter.
+fn endmatter_start(source: &[u8], lo: usize) -> Option<usize> {
+    let mut back = lines_back(source, lo);
+    let (_, last) = back.find(|(_, l)| !is_blank_line(l))?;
+    if trim_end(last, b" \t") != b"---" {
+        return None;
+    }
+    while let Some((start, line)) = back.next() {
+        let t = trim_end(line, b" \t");
+        if !t.starts_with(b"---") || !is_lang_tag(trim(&t[3..], b" \t")) {
+            continue;
+        }
+        let (_, before) = back.next()?;
+        return is_blank_line(before).then_some(start);
+    }
+    None
 }

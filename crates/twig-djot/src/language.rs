@@ -26,6 +26,21 @@ impl Language for Djot {
         Ok(crate::parse(source))
     }
 
+    /// Djot resolves no reference or footnote while it parses, and nothing
+    /// in it reads ahead past the next block, so a fragment reads the same
+    /// on its own as inside its document — unless it names an identifier.
+    fn parse_fragment(
+        &self,
+        _row: usize,
+        _features: u32,
+        source: &[u8],
+        range: std::ops::Range<usize>,
+        doc: &Document,
+    ) -> Option<Document> {
+        let old_end = (range.end + doc.source.len()).checked_sub(source.len())?;
+        crate::parse_fragment(&source[range.clone()], doc.source.get(range.start..old_end)?)
+    }
+
     fn render_html(&self, _row: usize, _features: u32, doc: &Document) -> Result<Vec<u8>, PrintFailure> {
         Ok(crate::html::render(doc, &Default::default())?)
     }
