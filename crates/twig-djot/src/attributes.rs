@@ -266,7 +266,14 @@ impl<'s> AttributeParser<'s> {
                 let begin = self.begin.unwrap();
                 if c == b'"' && self.lastpos.is_some() {
                     self.add_event(pos, pos, Annotation::AttrQuoteMarker);
-                    self.add_event(begin, self.lastpos.unwrap(), Annotation::Value);
+                    // A quote that opens its line closes the value with
+                    // nothing more of it on this line. The last position fed
+                    // may lie before this line's start, behind a container's
+                    // marker (`> `) the block parser fed past: no value then,
+                    // rather than one that ends before it begins.
+                    if begin < pos {
+                        self.add_event(begin, self.lastpos.unwrap(), Annotation::Value);
+                    }
                     self.begin = None;
                     State::Scanning
                 } else if c == b'\n' && self.lastpos.is_some() {
@@ -344,6 +351,19 @@ mod tests {
             .map(|m| &subject[m.start as usize..m.end as usize + 1])
             .collect();
         assert_eq!(values, vec![&b"a\n"[..], &b"b"[..]]);
+    }
+
+    /// A value continued onto a line whose first byte fed closes it, past a
+    /// marker the block parser fed around, has no piece on that line.
+    #[test]
+    fn a_value_closed_at_the_start_of_a_continued_line_is_not_inverted() {
+        let subject = b"> {y=\"\n>  \"}\n";
+        let mut p = AttributeParser::new(subject);
+        assert_eq!(p.feed(2, 6).status, Status::Continue);
+        assert_eq!(p.feed(10, 12).status, Status::Done);
+        for m in &p.matches {
+            assert!(m.start <= m.end + 1, "{m:?}");
+        }
     }
 
     #[test]

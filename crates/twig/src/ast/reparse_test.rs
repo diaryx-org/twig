@@ -304,9 +304,7 @@ fn differential(format: Format, src: &str, edits: usize, seed: u64) -> usize {
         next.extend_from_slice(&source[end..]);
         let edit = Edit { start, old_end: end, new_end: start + text.len() };
         let before = doc.clone();
-        // A source the language's own parser panics on is not this test's
-        // to judge: leave that edit out.
-        let Ok(full) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse(&next).unwrap())) else { continue };
+        let full = parse(&next).unwrap();
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut d = doc.clone();
             let mut dn = dense;

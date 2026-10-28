@@ -223,6 +223,14 @@ mod tests {
         assert_eq!(doc.ast.attrs_of(bq).get(b"attr"), Some(&b"long value spanning multiple lines"[..]));
     }
 
+    /// An attribute's quoted value continued onto a block quote's next line,
+    /// closed as that line's text begins, parses (it once panicked).
+    #[test]
+    fn a_quoted_value_closed_past_a_block_quote_marker_parses() {
+        parse(b"> {y=\"\n>  \"}");
+        parse(b"> {y=\"\n>  \"}\n> text\n");
+    }
+
     #[test]
     fn attributes_backslash_escapes_resolve() {
         let doc = parse(b"> {key=\"bar\n>    a\\$bim\"}\n> ou\n");
