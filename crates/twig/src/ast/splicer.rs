@@ -17,6 +17,15 @@
 //! caller who said exactly which bytes go. [`Splicer::last_ops`] is what the
 //! last edit did, as ops.
 //!
+//! ── The reparse ────────────────────────────────────────────────────────────
+//! A whole parse costs the size of the document, a keystroke the size of its
+//! block. With a fragment parser ([`Splicer::set_fragment_parser`], which the
+//! API's `Editor` sets for every format whose language has one) an unchecked
+//! edit reparses only the blocks it touched and splices them into the tree it
+//! had, wherever that is shown to give the tree a whole parse would
+//! ([`reparse`]); everywhere else, and for an edit a [`Check`] reads, it
+//! parses the whole document as before. Either way the tree is the same.
+//!
 //! ── History ────────────────────────────────────────────────────────────────
 //! An undo step is the inverse ops of its edit and the host's caret blob, not
 //! a copy of the source. History can be turned off (`set_history(false)`) for
@@ -40,6 +49,7 @@
 use std::fmt;
 
 use crate::ast::ops::{self, Op};
+use crate::ast::reparse::{self, FragmentFn};
 use crate::ast::{Ast, KindRef, NodeId, Tag};
 use crate::document::Document;
 use crate::span::Span;
@@ -165,6 +175,12 @@ pub struct Splicer {
     /// The parse of `source` as of the last successful edit.
     pub doc: Document,
     parse_fn: ParseFn,
+    /// Reparses only the blocks an edit touched, where the format can; see
+    /// [`Splicer::set_fragment_parser`].
+    fragment_fn: Option<FragmentFn>,
+    /// Whether every attribute of `doc` belongs to a node, once worked out
+    /// ([`reparse::attrs_dense`]); `None` after a whole parse.
+    attrs_dense: Option<bool>,
     /// The byte-level effect of the last successful splice (or undo/redo), or
     /// `None` before the first edit. A failed edit leaves it untouched.
     pub last_change: Option<Change>,
@@ -203,6 +219,8 @@ impl Splicer {
             source,
             doc,
             parse_fn,
+            fragment_fn: None,
+            attrs_dense: None,
             last_change: None,
             last_ops: Vec::new(),
             undo_stack: Vec::new(),
@@ -228,6 +246,24 @@ impl Splicer {
     /// checks a candidate print uses.
     pub fn reparse(&self, source: &[u8]) -> Result<Document, ParseError> {
         (self.parse_fn)(source)
+    }
+
+    /// Have an edit reparse only the blocks it touched, through `fragment`
+    /// (the format's [`twig_kit::Language::parse_fragment`] under this
+    /// splicer's parse configuration), and the whole document only where
+    /// that cannot be shown to give the same tree ([`reparse`]). `None`
+    /// reparses the whole document after every edit, as before.
+    pub fn set_fragment_parser(&mut self, fragment: Option<FragmentFn>) {
+        self.fragment_fn = fragment;
+    }
+
+    /// Bring `self.doc` up to date with `new_src` by reparsing only what
+    /// `change` touched. `false`, with nothing changed, when it cannot.
+    fn reparse_in_place(&mut self, new_src: &[u8], change: Change) -> bool {
+        let Some(fragment) = &self.fragment_fn else { return false };
+        let edit = reparse::Edit { start: change.old.start, old_end: change.old.end, new_end: change.new.end };
+        change.old.start == change.new.start
+            && reparse::reparse(&mut self.doc, new_src, edit, fragment.as_ref(), &mut self.attrs_dense)
     }
 
     /// Associate an opaque `blob` with the current document state. An empty
@@ -293,12 +329,19 @@ impl Splicer {
     /// then swap in and record.
     fn commit(&mut self, ops: &[Op], change: Change, check: Option<Check>) -> Result<(), Error> {
         let new_src = ops::apply(&self.source, ops).ok_or(Error::OutOfRange)?;
-        let new_doc = (self.parse_fn)(&new_src).map_err(Error::Parse)?;
-        if let Some(c) = check {
-            if !c(&new_doc) {
-                return Err(Error::Rejected);
+        // A check reads the reparse before it is kept, so only an unchecked
+        // edit reparses in place.
+        let new_doc = if check.is_none() && self.reparse_in_place(&new_src, change) {
+            None
+        } else {
+            let new_doc = (self.parse_fn)(&new_src).map_err(Error::Parse)?;
+            if let Some(c) = check {
+                if !c(&new_doc) {
+                    return Err(Error::Rejected);
+                }
             }
-        }
+            Some(new_doc)
+        };
 
         let ops = ops::canonical(ops.iter().cloned());
         if self.history {
@@ -309,7 +352,10 @@ impl Splicer {
             self.current_caret.clear();
         }
         self.redo_stack.clear();
-        self.doc = new_doc;
+        if let Some(d) = new_doc {
+            self.doc = d;
+            self.attrs_dense = None;
+        }
         self.source = new_src;
         self.last_ops = ops;
         self.note_change(change);
@@ -373,18 +419,22 @@ impl Splicer {
     /// other stack (redo when undoing). On failure `target` goes back where
     /// it came from.
     fn swap_to(&mut self, target: HistoryEntry, onto_redo: bool) -> Result<Change, ParseError> {
-        let restored = match ops::apply(&self.source, &target.ops) {
-            Some(s) => (self.parse_fn)(&s).map(|doc| (s, doc)),
-            None => Err(ParseError::new("OutOfRange")),
-        };
-        let (new_src, new_doc) = match restored {
-            Ok(r) => r,
-            Err(e) => {
-                if onto_redo { &mut self.undo_stack } else { &mut self.redo_stack }.push(target);
-                return Err(e);
-            }
+        let Some(new_src) = ops::apply(&self.source, &target.ops) else {
+            if onto_redo { &mut self.undo_stack } else { &mut self.redo_stack }.push(target);
+            return Err(ParseError::new("OutOfRange"));
         };
         let change = diff_change(&self.source, &new_src);
+        let new_doc = if self.reparse_in_place(&new_src, change) {
+            None
+        } else {
+            match (self.parse_fn)(&new_src) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    if onto_redo { &mut self.undo_stack } else { &mut self.redo_stack }.push(target);
+                    return Err(e);
+                }
+            }
+        };
         let outgoing = HistoryEntry {
             ops: ops::invert(&self.source, &target.ops),
             caret: std::mem::replace(&mut self.current_caret, target.caret),
@@ -394,7 +444,10 @@ impl Splicer {
         } else {
             self.undo_stack.push(outgoing);
         }
-        self.doc = new_doc;
+        if let Some(d) = new_doc {
+            self.doc = d;
+            self.attrs_dense = None;
+        }
         self.source = new_src;
         self.last_ops = target.ops;
         self.note_change(change);

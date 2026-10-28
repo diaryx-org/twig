@@ -206,7 +206,13 @@ impl Editor {
         let parse: splicer::ParseFn =
             Box::new(move |src: &[u8]| reg::parse_to_ast(fmt, &cfg, src).map_err(|e| ParseError::new(e.name())));
         let syntax = reg::syntax_for_config(fmt, &cfg);
-        let editor = EngineEditor::new(input, parse, syntax).map_err(|_| Error::ParseError)?;
+        let mut editor = EngineEditor::new(input, parse, syntax).map_err(|_| Error::ParseError)?;
+        // An edit reparses only the blocks it touched, where the format can.
+        editor
+            .splicer
+            .set_fragment_parser(Some(Box::new(move |src: &[u8], range: Range<usize>, doc: &crate::document::Document| {
+                reg::parse_fragment(fmt, &cfg, src, range, doc)
+            })));
         Ok(Editor { editor })
     }
 
