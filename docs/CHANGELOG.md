@@ -90,6 +90,25 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 7.0.1
+
+### Added
+
+- **kit** — Language::parse_fragment, a parse of the blocks an edit touched ([`4257524`](https://github.com/diaryx-org/twig/commit/42575247e4f8b56a3eea45dd5e7edf870efcc0e8))
+
+### Fixed
+
+- **djot** — an attribute value closed at the start of a block quote's next line parses ([`aa4e6a5`](https://github.com/diaryx-org/twig/commit/aa4e6a5a0e57e981acecc8fae5fd7edea12d83bb))
+
+### Changed
+
+- **editor** — an edit reparses only the blocks it touched ([`787c143`](https://github.com/diaryx-org/twig/commit/787c143d18b45470e5231c72f9a1bbb3729d1c47))
+
+### Behavioural changes
+
+- twig_djot::parse no longer panics on a quoted attribute value continued past a block quote's marker and closed as that line begins.
+
+
 ## 7.0.0
 
 ### Breaking

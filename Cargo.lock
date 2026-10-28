@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "twig-asciidoc"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "twig-doc",
  "twig-html",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "twig-capi"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "fig",
  "twig-asciidoc",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "twig-djot"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "fig",
  "fig-figl",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "twig-doc-cli"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "clap",
  "twig-asciidoc",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "twig-html"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "twig-doc",
  "twig-kit",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "twig-kit"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "twig-asciidoc",
  "twig-djot",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "twig-markdown"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "twig-djot",
  "twig-doc",
@@ -308,14 +308,14 @@ dependencies = [
 
 [[package]]
 name = "twig-rst"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "twig-kit",
 ]
 
 [[package]]
 name = "twig-xml"
-version = "7.0.0"
+version = "7.0.1"
 dependencies = [
  "twig-doc",
  "twig-kit",
