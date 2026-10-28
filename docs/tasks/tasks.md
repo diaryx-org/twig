@@ -9,6 +9,7 @@ contents:
 - '[Read a node table without building a JSON value tree first](/docs/tasks/table-decode-without-a-value-tree.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[The workspace''s views are not read, and its docs have three bad links](/docs/tasks/views-not-read-and-three-bad-links.md)'
+- '[Djot panics on an attribute block opened in a block quote and left unclosed](/docs/tasks/djot-panics-on-an-attribute-block-opened-in-a-block-quote-and-left-unclosed.md)'
 ---
 
 # Tasks
