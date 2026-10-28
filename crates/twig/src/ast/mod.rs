@@ -12,3 +12,6 @@ pub mod locator;
 pub mod ops;
 pub mod splicer;
 pub mod table_edit;
+
+#[cfg(test)]
+mod reparse_test;
