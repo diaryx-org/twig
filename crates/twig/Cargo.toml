@@ -48,3 +48,8 @@ twig-markdown = { path = "../twig-markdown" }
 twig-html = { path = "../twig-html" }
 twig-xml = { path = "../twig-xml" }
 twig-asciidoc = { path = "../twig-asciidoc" }
+
+# The corpus bench locates frontmatter through `twig::meta`.
+[[example]]
+name = "bench_corpus"
+required-features = ["fig"]
