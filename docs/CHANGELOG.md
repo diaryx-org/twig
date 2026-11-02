@@ -92,7 +92,17 @@ _No commits since the last tag._
 
 ## 7.1.0
 
-_No commits since the last tag._
+### Added
+
+- **kit** — Language::frontmatter_prefix, how much a parse must read to find the frontmatter ([`76ebc97`](https://github.com/diaryx-org/twig/commit/76ebc974a3dab336cffcacf79d213b10429e51bb))
+- **meta** — find_front, a document's frontmatter without a parse of its body ([`03624b7`](https://github.com/diaryx-org/twig/commit/03624b7bbd4b637a9c983270010213854463bdff))
+- **document** — Document::nodes_of_kind, the nodes of the kinds asked for ([`a5f498a`](https://github.com/diaryx-org/twig/commit/a5f498a612f2ce5de56295a236b789711d946f39))
+
+### Changed
+
+- **format** — a parse's row lookup and feature closure allocate nothing ([`9586612`](https://github.com/diaryx-org/twig/commit/9586612bab8295fdab2843665ab4a7e3d62fc811))
+- **markdown** — the inline scan buffers a run of plain text at once ([`c0b34c1`](https://github.com/diaryx-org/twig/commit/c0b34c1fb6f2dd4a794491ecdc0dea767f1213c8))
+- **markdown** — a parse moves what it built rather than copying it ([`901ce26`](https://github.com/diaryx-org/twig/commit/901ce26112affa2d7592ca11600f8f783f91b88d))
 
 
 ## 7.0.1
