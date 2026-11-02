@@ -367,6 +367,15 @@ impl Document {
         Ok(flat_nodes(self.doc()))
     }
 
+    /// Every node whose kind is one of `kinds`, in [`Document::nodes`]'s
+    /// order: the whole arena, so the definitions hanging off no parent are
+    /// in it, as a selector [`query`](Document::query) from the root never
+    /// is. What `nodes` filtered by kind would say of each, without copying
+    /// out the text and attributes of every node in the document.
+    pub fn nodes_of_kind(&mut self, kinds: &[Kind]) -> Result<Vec<QueryMatch>, Error> {
+        Ok(nodes_of_kind(self.doc(), kinds))
+    }
+
     /// The document-level **definitions**: every node that hangs off no
     /// parent and is not the document root, in arena order.
     pub fn definitions(&mut self) -> Result<Vec<QueryMatch>, Error> {
@@ -666,6 +675,15 @@ pub(crate) fn flat_nodes(d: &EngineDoc) -> Vec<FlatNode> {
         .iter()
         .enumerate()
         .map(|(i, node)| flat_node_of(d, i as u32, i as u32, parents[i], node.first_child, node.next_sibling))
+        .collect()
+}
+
+/// The nodes of the arena whose kind publishes as one of `kinds`'s names.
+pub(crate) fn nodes_of_kind(d: &EngineDoc, kinds: &[Kind]) -> Vec<QueryMatch> {
+    let names: Vec<&str> = kinds.iter().map(Kind::as_str).collect();
+    (0..d.ast.nodes.len() as EngineId)
+        .filter(|&id| names.contains(&d.ast.nodes[id as usize].kind.kind_name()))
+        .map(|id| flat_match(d, id))
         .collect()
 }
 

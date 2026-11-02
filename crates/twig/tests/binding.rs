@@ -408,6 +408,27 @@ fn definitions_finds_what_a_walk_from_the_root_cannot() {
 }
 
 #[test]
+fn nodes_of_kind_is_nodes_filtered_by_kind_definitions_included() {
+    // The code span and the link inside the footnote's body hang off no
+    // parent a walk from the root reaches.
+    let src = "a `b` [c](d.md) ![e](f.png)\n\n```\ng\n```\n\n<i>h</i>[^1]\n\n[^1]: `i` [j](k.md)\n";
+    let mut doc = Document::parse_str(src, common::markdown()).expect("parse markdown");
+    let kinds = [Kind::Link, Kind::Image, Kind::Verbatim, Kind::CodeBlock, Kind::RawInline];
+    let want: Vec<(Kind, std::ops::Range<usize>)> = doc
+        .nodes()
+        .expect("nodes")
+        .into_iter()
+        .filter(|n| kinds.contains(&n.kind))
+        .map(|n| (n.kind, n.span))
+        .collect();
+    let got = doc.nodes_of_kind(&kinds).expect("nodes_of_kind");
+    assert_eq!(got.iter().map(|m| (m.kind.clone(), m.span.clone())).collect::<Vec<_>>(), want);
+    let texts: Vec<&str> = got.iter().map(|m| &src[m.span.clone()]).collect();
+    assert_eq!(texts, ["`b`", "[c](d.md)", "![e](f.png)", "```\ng\n```", "<i>", "</i>", "`i`", "[j](k.md)"]);
+    assert_eq!(doc.nodes_of_kind(&[]).expect("nodes_of_kind"), Vec::new());
+}
+
+#[test]
 fn kind_round_trips_through_its_published_name() {
     // `as_str` is the wire vocabulary and `from` is its inverse, so any
     // variant whose spelling drifts from the C ABI's fails here rather

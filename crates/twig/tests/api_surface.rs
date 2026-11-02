@@ -267,6 +267,7 @@ fn every_binding_item_exists_with_its_signature() {
     let _: fn(&mut Document, usize) -> R<LinePrefix> = Document::blank_line_prefix;
     let _: fn(&mut Document, NodeId) -> R<Option<(u32, u32)>> = Document::cell_extent;
     let _: fn(&mut Document) -> R<Vec<FlatNode>> = Document::nodes;
+    let _: fn(&mut Document, &[Kind]) -> R<Vec<QueryMatch>> = Document::nodes_of_kind;
     let _: fn(&mut Document) -> R<Vec<QueryMatch>> = Document::definitions;
     let _: fn(&mut Document, Target) -> R<Vec<Warning>> = Document::diagnostics;
     let _: fn(&mut Document, Option<NodeId>) -> R<Vec<QueryMatch>> = Document::children;
