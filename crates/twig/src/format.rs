@@ -65,7 +65,8 @@ impl NativeRow {
 }
 
 struct Natives {
-    rows: Vec<NativeRow>,
+    /// In registration order.
+    rows: Vec<&'static NativeRow>,
     /// Each registered language's type, and its own row's code.
     types: Vec<(TypeId, u16)>,
     next: u16,
@@ -73,21 +74,28 @@ struct Natives {
 
 static NATIVES: RwLock<Natives> = RwLock::new(Natives { rows: Vec::new(), types: Vec::new(), next: NATIVE_BASE });
 
+/// Each native row by its code. A row is never unregistered, so it is leaked
+/// once and found here with one load: every parse looks its row up several
+/// times, and a lock or a reference count there is a write every thread
+/// parsing at once contends for.
+static BY_CODE: [OnceLock<&'static NativeRow>; runtime::BASE as usize] =
+    [const { OnceLock::new() }; runtime::BASE as usize];
+
 fn natives() -> std::sync::RwLockReadGuard<'static, Natives> {
     NATIVES.read().unwrap_or_else(|e| e.into_inner())
 }
 
-fn native(code: u16) -> Option<NativeRow> {
-    natives().rows.iter().find(|r| r.code == code).cloned()
+fn native(code: u16) -> Option<&'static NativeRow> {
+    BY_CODE.get(code as usize)?.get().copied()
 }
 
-fn native_rows() -> Vec<NativeRow> {
+fn native_rows() -> Vec<&'static NativeRow> {
     natives().rows.clone()
 }
 
 /// The compiled language whose own row `target` is.
 pub(crate) fn native_language(target: Target) -> Option<Arc<dyn Language>> {
-    native(target.0).map(|r| r.lang)
+    native(target.0).map(|r| r.lang.clone())
 }
 
 /// Why a language was not registered.
@@ -158,7 +166,10 @@ pub fn register<L: Language>(language: L) -> Result<Format, NativeRegisterError>
     let own = codes[0];
     let mut n = NATIVES.write().unwrap_or_else(|e| e.into_inner());
     for (index, code) in codes.into_iter().enumerate() {
-        n.rows.push(NativeRow { code, lang: lang.clone(), index, own });
+        let row: &'static NativeRow = Box::leak(Box::new(NativeRow { code, lang: lang.clone(), index, own }));
+        n.rows.push(row);
+        // The code was checked free above, under the registration lock.
+        let _ = BY_CODE[code as usize].set(row);
     }
     n.types.push((ty, own));
     n.next = next;
@@ -262,10 +273,9 @@ impl Format {
     /// [`Error::NotFound`] for a name the row does not declare.
     pub fn feature_flags(self, features: &[&str]) -> Result<u32, Error> {
         let fmt = self.resolve()?;
-        let declared = self::features(fmt);
         let mut flags = 0u32;
         for name in features {
-            if declared.is_empty() && !fmt.is_runtime() {
+            if !fmt.is_runtime() && native(fmt.0).is_some_and(|r| r.lang.features().is_empty()) {
                 return Err(Error::UnsupportedFormat);
             }
             flags |= feature_bit(fmt, name).ok_or(Error::NotFound)?;
@@ -407,22 +417,36 @@ pub fn features(fmt: Format) -> Vec<Feature> {
 }
 
 pub fn feature_bit(fmt: Format, name: &str) -> Option<u32> {
+    if let Some(r) = native(fmt.0) {
+        return r.lang.features().iter().position(|f| f.name == name).map(|i| 1u32 << i);
+    }
     features(fmt).iter().position(|f| f.name == name).map(|i| 1u32 << i)
 }
 
 /// `mask` restricted to the declared features and closed under `requires`.
+/// A native row's features are read where its language keeps them, so
+/// closing a mask allocates nothing: every parse closes one.
 pub fn close_features(fmt: Format, mask: u32) -> u32 {
+    if let Some(r) = native(fmt.0) {
+        let fs = r.lang.features();
+        let bit = |name: &str| fs.iter().position(|f| f.name == name).map_or(0, |i| 1u32 << i);
+        return close_mask(fs.len(), mask, |i| fs[i].requires.iter().fold(0, |acc, r| acc | bit(r)));
+    }
     let fs = features(fmt);
-    let declared: u32 = if fs.len() >= 32 { !0 } else { (1u32 << fs.len()) - 1 };
+    let bit = |name: &str| fs.iter().position(|f| f.name == name).map_or(0, |i| 1u32 << i);
+    close_mask(fs.len(), mask, |i| fs[i].requires.iter().fold(0, |acc, r| acc | bit(r)))
+}
+
+/// `mask` over `count` declared features, closed under `requires(i)`, the
+/// bits feature `i` requires.
+fn close_mask(count: usize, mask: u32, requires: impl Fn(usize) -> u32) -> u32 {
+    let declared: u32 = if count >= 32 { !0 } else { (1u32 << count) - 1 };
     let mut out = mask & declared;
     loop {
         let mut grown = out;
-        for (i, f) in fs.iter().enumerate() {
-            if out & (1 << i) == 0 {
-                continue;
-            }
-            for r in &f.requires {
-                grown |= feature_bit(fmt, r).unwrap_or(0);
+        for i in 0..count.min(32) {
+            if out & (1 << i) != 0 {
+                grown |= requires(i);
             }
         }
         if grown == out {
@@ -530,7 +554,7 @@ fn unregistered(fmt: Format) -> ParseFailure {
 /// Parse `source` as `fmt` into a bare `Document` — the splicer's reparse.
 pub fn parse_to_ast(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<Document, ParseFailure> {
     if let Some(r) = native(fmt.0) {
-        return r.lang.parse(r.index, effective(&r, cfg), source).map_err(ParseFailure);
+        return r.lang.parse(r.index, effective(r, cfg), source).map_err(ParseFailure);
     }
     if fmt.is_runtime() {
         return runtime::parse(fmt.0, cfg, source).map_err(ParseFailure);
@@ -550,7 +574,7 @@ pub fn parse_fragment(
     doc: &Document,
 ) -> Option<Document> {
     let r = native(fmt.0)?;
-    r.lang.parse_fragment(r.index, effective(&r, cfg), source, range, doc)
+    r.lang.parse_fragment(r.index, effective(r, cfg), source, range, doc)
 }
 
 /// Parse `source` as `fmt`, remembering the row and config.
@@ -599,7 +623,7 @@ pub fn resolve_as_asked(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> (Forma
 /// Render a parse to HTML with its row's renderer.
 pub fn render_html(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
     if let Some(r) = native(doc.format.0) {
-        return r.lang.render_html(r.index, effective(&r, &doc.config), &doc.doc);
+        return r.lang.render_html(r.index, effective(r, &doc.config), &doc.doc);
     }
     if doc.format.is_runtime() {
         return runtime::render_html(doc.format.0, doc);
@@ -610,7 +634,7 @@ pub fn render_html(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
 /// Serialize a parse back to its own format (`-o canonical`).
 pub fn serialize_canonical(doc: &ParsedDoc) -> Result<Vec<u8>, PrintFailure> {
     if let Some(r) = native(doc.format.0) {
-        return r.lang.serialize(r.index, effective(&r, &doc.config), &doc.doc);
+        return r.lang.serialize(r.index, effective(r, &doc.config), &doc.doc);
     }
     if doc.format.is_runtime() {
         return runtime::serialize_canonical(doc.format.0, doc);
@@ -674,7 +698,7 @@ pub fn syntax_for(fmt: Format) -> &'static Syntax {
 /// which extensions are on.
 pub fn syntax_for_config(fmt: Format, cfg: &ParseConfig) -> &'static Syntax {
     if let Some(r) = native(fmt.0) {
-        return r.lang.syntax(r.index, effective(&r, cfg));
+        return r.lang.syntax(r.index, effective(r, cfg));
     }
     if fmt.is_runtime() {
         return runtime::syntax_for(fmt.0, cfg);
