@@ -90,6 +90,11 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## 7.1.0
+
+_No commits since the last tag._
+
+
 ## 7.0.1
 
 ### Added
