@@ -278,6 +278,35 @@ struct MathMatch {
     content_end: usize,
 }
 
+/// The bytes [`run_scan`] has an arm for: every other byte is plain text.
+/// An arm that does not take its byte buffers it as plain text would be,
+/// so a byte here that need not be is only slower, never wrong.
+const SCAN_STOPS: [bool; 256] = {
+    let mut t = [false; 256];
+    let stops = b"\\\n`&<*_[!]~=$hfw@:";
+    let mut i = 0;
+    while i < stops.len() {
+        t[stops[i] as usize] = true;
+        i += 1;
+    }
+    t
+};
+
+/// The end of the plain text from `from` on: the first byte [`run_scan`]
+/// must look at. An `h`, `f` or `w` inside a word is plain, as an extended
+/// autolink starts no word's middle.
+fn plain_run_end(text: &[u8], from: usize) -> usize {
+    let mut j = from;
+    while j < text.len() {
+        let b = text[j];
+        if SCAN_STOPS[b as usize] && !(matches!(b, b'h' | b'f' | b'w') && is_word_char(text[j - 1])) {
+            break;
+        }
+        j += 1;
+    }
+    j
+}
+
 fn run_scan(sc: &mut Scanner<'_>, text: &[u8]) -> Vec<NodeId> {
     let mut i: usize = 0;
     while i < text.len() {
@@ -594,8 +623,9 @@ fn run_scan(sc: &mut Scanner<'_>, text: &[u8]) -> Vec<NodeId> {
                 if let Some(end) = auto_end {
                     i = end;
                 } else {
-                    sc.buf.push(c);
-                    i += 1;
+                    let run_end = plain_run_end(text, i + 1);
+                    sc.buf.extend_from_slice(&text[i..run_end]);
+                    i = run_end;
                 }
             }
             b'@' => {
@@ -627,8 +657,11 @@ fn run_scan(sc: &mut Scanner<'_>, text: &[u8]) -> Vec<NodeId> {
                 }
             }
             _ => {
-                sc.buf.push(c);
-                i += 1;
+                // Text no arm above reads goes to the buffer as it is, so a
+                // run of it goes in at once.
+                let run_end = plain_run_end(text, i + 1);
+                sc.buf.extend_from_slice(&text[i..run_end]);
+                i = run_end;
             }
         }
     }
