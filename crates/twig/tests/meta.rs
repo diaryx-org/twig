@@ -3,7 +3,7 @@
 
 #![cfg(feature = "fig")]
 
-use twig::meta::{Embed, Error, Where, find, parse_host, resolve};
+use twig::meta::{Embed, Error, Where, find, find_front, find_front_with, parse_host, parse_host_with, resolve};
 
 fn s(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).unwrap()
@@ -41,6 +41,48 @@ fn find_a_document_with_no_metadata_has_none() {
     let parsed = parse_host(b"# Body\n", twig_markdown::format()).unwrap();
     assert!(find(&parsed.doc, Where::Front).is_none());
     assert!(find(&parsed.doc, Where::End).is_none());
+}
+
+#[test]
+fn find_front_is_what_a_whole_parse_finds() {
+    let hosts: &[&[u8]] = &[
+        b"---\ntitle: Hi\n---\n# Body\n",
+        b"---\ntitle: Hi\n---",
+        b"---json\n{\"a\": 1}\n---  \t\nbody\n",
+        b"+++\nx = 1\n+++\r\nbody\r\n",
+        b"---\r\na: 1\r\n---\r\n",
+        b"---\n---\n",
+        b"--- not a tag!\na: 1\n---\n",
+        b"---\nnever closed\n",
+        b"----\na: 1\n----\n---\n",
+        b"# Body\n\ntext\n\n---toml\nx = 1\n---\n",
+        b"\n---yaml\na: 1\n---\n",
+        b"<script type=\"application/json\">{}</script>\n",
+        b"# Body\n\n<div>\n<script type=\"application/json\">{}</script>\n</div>\n",
+        b"",
+        b"---\n",
+    ];
+    let rows = [
+        twig_markdown::format(),
+        twig::Format::by_name("gfm").unwrap(),
+        twig::Format::by_name("commonmark").unwrap(),
+        twig_html::format(),
+    ];
+    for host in hosts {
+        for row in rows {
+            let whole = parse_host(host, row).map(|p| find(&p.doc, Where::Front));
+            assert_eq!(format!("{whole:?}"), format!("{:?}", find_front(host, row)), "{row} {:?}", s(host));
+        }
+        let md = twig_markdown::format();
+        let whole = parse_host_with(host, md, &["html_elements"]).map(|p| find(&p.doc, Where::Front));
+        let front = find_front_with(host, md, &["html_elements"]);
+        assert_eq!(format!("{whole:?}"), format!("{front:?}"), "html_elements {:?}", s(host));
+    }
+    assert!(find_front_with(b"", twig_markdown::format(), &["no_such_feature"]).is_err());
+    // Under `html_elements` an island further down is the front block, found
+    // only by reading the whole document.
+    let island = b"# Body\n\n<div>\n<script type=\"application/json\">{}</script>\n</div>\n";
+    assert!(find_front_with(island, twig_markdown::format(), &["html_elements"]).unwrap().is_some());
 }
 
 #[test]

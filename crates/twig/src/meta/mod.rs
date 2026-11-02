@@ -280,13 +280,36 @@ pub fn parse_host_with(
     format: crate::Format,
     features: &[&str],
 ) -> Result<ParsedDoc, Error> {
+    let cfg = host_config(format, features)?;
+    reg::parse(format, &cfg, host).map_err(|_| Error::Twig(crate::Error::ParseError))
+}
+
+/// The config [`parse_host_with`] parses `format` under.
+fn host_config(format: crate::Format, features: &[&str]) -> Result<reg::ParseConfig, Error> {
     let flags = format.feature_flags(features)?;
     if !format.is_registered() {
         return Err(Error::Twig(crate::Error::UnsupportedFormat));
     }
-    let fmt = format;
-    let cfg = reg::ParseConfig::for_features(fmt, flags);
-    reg::parse(fmt, &cfg, host).map_err(|_| Error::Twig(crate::Error::ParseError))
+    Ok(reg::ParseConfig::for_features(format, flags))
+}
+
+/// The front metadata block of `host`, as `format` reads it: what
+/// [`find`]`(&`[`parse_host`]`(host, format)?.doc, Where::Front)` gives,
+/// errors included, the block's `node` its id in that parse. A language
+/// that finds its frontmatter before it reads the rest of a document
+/// (Markdown, unless `html_elements` is on) is asked to parse only the
+/// lines up to the frontmatter's close, so locating it does not cost a
+/// parse of the body.
+pub fn find_front(host: &[u8], format: crate::Format) -> Result<Option<Block>, Error> {
+    find_front_with(host, format, &[])
+}
+
+/// [`find_front`] with `features` turned on, as [`parse_host_with`].
+pub fn find_front_with(host: &[u8], format: crate::Format, features: &[&str]) -> Result<Option<Block>, Error> {
+    let cfg = host_config(format, features)?;
+    let read = reg::frontmatter_prefix(format, &cfg, host).map_or(host, |n| &host[..n]);
+    let parsed = reg::parse(format, &cfg, read).map_err(|_| Error::Twig(crate::Error::ParseError))?;
+    Ok(find(&parsed.doc, Where::Front))
 }
 
 /// Read the document's metadata block at `at` as a fig [`fig::Document`], or
