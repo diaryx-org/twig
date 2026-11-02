@@ -8,8 +8,10 @@
 //! - `body`: `Document::parse_str` over each body, the frontmatter cut off;
 //! - `body+nodes`: that, then the spans of its links, images and code read
 //!   off `Document::nodes`, which is what prov's link scan does;
+//! - `body+nodes_of_kind`: the same spans read off `Document::nodes_of_kind`;
 //! - `parse_host+find`: `meta::parse_host` over each whole document, then
 //!   `meta::find(.., Where::Front)`, which is how prov located frontmatter;
+//! - `find_front`: the same block located by `meta::find_front`;
 //! - `body, threaded`: `body` split across `--threads` threads (all the
 //!   machine's by default), as prov's census parses on rayon's pool. Its
 //!   `µs/doc` is wall time over the corpus; it counts no allocations.
@@ -168,11 +170,34 @@ fn main() {
             }
             n
         }),
+        run("body+nodes_of_kind", rounds, docs, || {
+            let kinds = [
+                twig::Kind::Link,
+                twig::Kind::Image,
+                twig::Kind::Verbatim,
+                twig::Kind::CodeBlock,
+                twig::Kind::RawInline,
+                twig::Kind::RawBlock,
+            ];
+            let mut n = 0;
+            for (_, b) in &corpus {
+                let mut doc = twig::Document::parse_str(b, md).unwrap();
+                n += doc.nodes_of_kind(&kinds).unwrap().iter().map(|m| m.span.len()).sum::<usize>();
+            }
+            n
+        }),
         run("parse_host+find", rounds, docs, || {
             let mut n = 0;
             for w in &whole {
                 let parsed = twig::meta::parse_host(w.as_bytes(), md).unwrap();
                 n += twig::meta::find(&parsed.doc, twig::meta::Where::Front).unwrap().span.len();
+            }
+            n
+        }),
+        run("find_front", rounds, docs, || {
+            let mut n = 0;
+            for w in &whole {
+                n += twig::meta::find_front(w.as_bytes(), md).unwrap().unwrap().span.len();
             }
             n
         }),
