@@ -1,11 +1,11 @@
 //! Canonicalize a document's arena: renumber the nodes reachable from the root
 //! (and from the label tables) into pre-order, dropping everything else.
 
-use crate::ast::{Node, NodeId};
+use crate::ast::{Kind, Node, NodeId};
 use crate::document::Document;
 
 pub fn run(mut doc: Document) -> Document {
-    let old = std::mem::take(&mut doc.ast.nodes);
+    let mut old = std::mem::take(&mut doc.ast.nodes);
     let n = old.len();
     let mut map: Vec<Option<NodeId>> = vec![None; n];
 
@@ -34,23 +34,24 @@ pub fn run(mut doc: Document) -> Document {
             }
             let new_id = nodes.len() as NodeId;
             map[id as usize] = Some(new_id);
-            let mut node = old[id as usize].clone();
-            node.id = new_id;
-            nodes.push(node);
+            // A node is visited once, so its kind moves rather than clones;
+            // its links stay behind for the walk.
+            let o = &mut old[id as usize];
+            let kind = std::mem::replace(&mut o.kind, Kind::Para);
+            nodes.push(Node { id: new_id, kind, first_child: o.first_child, next_sibling: o.next_sibling, attrs: o.attrs });
             spans.push(doc.node_spans[id as usize]);
             content_spans.push(doc.node_content_spans[id as usize]);
             spellings.push(doc.spelling(id));
             marker_spans.push(doc.marker_span(id));
 
-            let mut kids = Vec::new();
+            // The children, pushed so the first pops first.
+            let base = stack.len();
             let mut c = old[id as usize].first_child;
             while let Some(cid) = c {
-                kids.push(cid);
+                stack.push(cid);
                 c = old[cid as usize].next_sibling;
             }
-            for &k in kids.iter().rev() {
-                stack.push(k);
-            }
+            stack[base..].reverse();
         }
     };
 

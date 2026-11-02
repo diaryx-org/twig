@@ -452,6 +452,33 @@ fn split_table_row(s: &[u8]) -> Vec<&[u8]> {
     cells
 }
 
+/// Call `f` with the offset of each `\n` in `source`, in order. Eight bytes
+/// are tested at a time, and only a word holding one is read bytewise.
+fn for_each_newline(source: &[u8], mut f: impl FnMut(usize)) {
+    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+    const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
+    const NEWLINES: u64 = u64::from_ne_bytes([b'\n'; 8]);
+    let mut words = source.chunks_exact(8);
+    let mut base = 0;
+    for word in &mut words {
+        let x = u64::from_ne_bytes(word.try_into().unwrap()) ^ NEWLINES;
+        // Nonzero exactly when some byte of `x` is zero, i.e. was a `\n`.
+        if x.wrapping_sub(ONES) & !x & HIGHS != 0 {
+            for (k, &b) in word.iter().enumerate() {
+                if b == b'\n' {
+                    f(base + k);
+                }
+            }
+        }
+        base += 8;
+    }
+    for (k, &b) in words.remainder().iter().enumerate() {
+        if b == b'\n' {
+            f(base + k);
+        }
+    }
+}
+
 fn offset_in(outer: &[u8], sub: &[u8]) -> usize {
     sub.as_ptr() as usize - outer.as_ptr() as usize
 }
@@ -899,37 +926,31 @@ pub struct Parser<'s> {
 
 impl<'s> Parser<'s> {
     pub fn new(source: &'s [u8], options: ParseOptions) -> Parser<'s> {
-        let mut lines = Vec::new();
-        let mut starts = Vec::new();
-        let mut start = 0;
-        let mut i = 0;
-        while i < source.len() {
-            if source[i] == b'\n' {
-                let mut end = i;
-                if end > start && source[end - 1] == b'\r' {
-                    end -= 1;
-                }
-                lines.push(&source[start..end]);
-                starts.push(start);
-                i += 1;
-                start = i;
-            } else {
-                i += 1;
-            }
+        // Each `\n` ends a line, and what follows the last one is a line if
+        // it is not empty; a line's trailing `\r` is not its text.
+        let mut starts = Vec::with_capacity(source.len() / 48 + 2);
+        starts.push(0);
+        for_each_newline(source, |i| starts.push(i + 1));
+        // The last line ends the source, or the `\n` that ends the source.
+        let mut last_end = source.len();
+        if starts.last() == Some(&source.len()) {
+            starts.pop();
+            last_end = source.len().saturating_sub(1);
         }
-        if start < source.len() {
-            let mut end = source.len();
-            if end > start && source[end - 1] == b'\r' {
-                end -= 1;
-            }
-            lines.push(&source[start..end]);
-            starts.push(start);
-        }
+        let count = starts.len();
+        let lines: Vec<&[u8]> = (0..count)
+            .map(|k| {
+                let end = starts.get(k + 1).map_or(last_end, |&next| next - 1);
+                let line = &source[starts[k]..end];
+                line.strip_suffix(b"\r").unwrap_or(line)
+            })
+            .collect();
         Parser {
             source,
             lines,
             line_starts: starts,
-            builder: Builder::new(),
+            // Prose makes about two nodes a line: its text and its break.
+            builder: Builder::with_capacity(2 * count + 8),
             stack: vec![Container::new(ContainerKind::Document, 0, 0)],
             leaf: None,
             link_references: HashMap::new(),
@@ -1205,7 +1226,15 @@ impl<'s> Parser<'s> {
             return;
         }
         let segs = rebase_segments(&lf.text_segs, text, trimmed);
-        self.emit_text_block(Kind::Para, trimmed, &segs, lf.start_line, lf.end_line);
+        // The paragraph's text is its leaf's, cut to what was kept: moved,
+        // not copied.
+        let start = offset_in(text, trimmed);
+        let end = start + trimmed.len();
+        let mut text = lf.text;
+        text.truncate(end);
+        text.drain(..start);
+        let id = self.add_deferred_text_node_owned(Kind::Para, text, segs, lf.start_line, lf.end_line);
+        self.append_to_top(id);
     }
 
     fn emit_text_block(&mut self, kind: Kind, text: &[u8], segs: &[Segment], start_line: usize, end_line: usize) {
@@ -1221,10 +1250,21 @@ impl<'s> Parser<'s> {
         start_line: usize,
         end_line: usize,
     ) -> NodeId {
+        self.add_deferred_text_node_owned(kind, text.to_vec(), segs.to_vec(), start_line, end_line)
+    }
+
+    fn add_deferred_text_node_owned(
+        &mut self,
+        kind: Kind,
+        text: Vec<u8>,
+        segments: Vec<Segment>,
+        start_line: usize,
+        end_line: usize,
+    ) -> NodeId {
         let id = self.builder.add_node(kind);
         let sp = Span::new(self.line_start(start_line), self.line_end(end_line));
         self.builder.set_span(id, sp);
-        self.pending_inline.push(PendingInline { id, text: text.to_vec(), segments: segs.to_vec() });
+        self.pending_inline.push(PendingInline { id, text, segments });
         id
     }
 
@@ -2774,7 +2814,7 @@ fn skip_lrd_ws(text: &[u8], start: usize) -> usize {
 /// Re-express `segs` (relative to `orig`) relative to `sub`, a sub-slice.
 fn rebase_segments(segs: &[Segment], orig: &[u8], sub: &[u8]) -> Vec<Segment> {
     let k = offset_in(orig, sub);
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(segs.len());
     for seg in segs {
         let seg_end = seg.buf_offset + seg.len;
         let lo = seg.buf_offset.max(k);
@@ -3007,4 +3047,55 @@ fn endmatter_start(source: &[u8], lo: usize) -> Option<usize> {
         return is_blank_line(before).then_some(start);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lines a parser reads, as the plain definition gives them.
+    fn lines_by_definition(source: &[u8]) -> (Vec<&[u8]>, Vec<usize>) {
+        let (mut lines, mut starts) = (Vec::new(), Vec::new());
+        let mut start = 0;
+        for (i, &b) in source.iter().enumerate() {
+            if b == b'\n' {
+                let line = &source[start..i];
+                lines.push(line.strip_suffix(b"\r").unwrap_or(line));
+                starts.push(start);
+                start = i + 1;
+            }
+        }
+        if start < source.len() {
+            let line = &source[start..];
+            lines.push(line.strip_suffix(b"\r").unwrap_or(line));
+            starts.push(start);
+        }
+        (lines, starts)
+    }
+
+    #[test]
+    fn lines_split_on_every_newline_across_word_boundaries() {
+        let mut cases: Vec<Vec<u8>> =
+            ["", "\n", "\n\n", "a", "a\n", "a\r\nb", "\r", "\r\n", "x\n\ny\r", "1234567\n", "12345678\n9"]
+                .iter()
+                .map(|s| s.as_bytes().to_vec())
+                .collect();
+        // Every placement of one and of two newlines in 0 to 24 bytes.
+        for len in 0..25 {
+            for i in 0..len {
+                for j in i..len {
+                    let mut s = vec![b'x'; len];
+                    s[i] = b'\n';
+                    s[j] = b'\n';
+                    cases.push(s);
+                }
+            }
+        }
+        for s in &cases {
+            let p = Parser::new(s, ParseOptions::default());
+            let (lines, starts) = lines_by_definition(s);
+            assert_eq!(p.lines, lines, "{s:?}");
+            assert_eq!(p.line_starts, starts, "{s:?}");
+        }
+    }
 }

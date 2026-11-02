@@ -20,6 +20,18 @@ impl Builder {
         Builder::default()
     }
 
+    /// A builder with room for `nodes` nodes before it grows.
+    pub fn with_capacity(nodes: usize) -> Builder {
+        Builder {
+            nodes: Vec::with_capacity(nodes),
+            spans: Vec::with_capacity(nodes),
+            content_spans: Vec::with_capacity(nodes),
+            spellings: Vec::with_capacity(nodes),
+            marker_spans: Vec::with_capacity(nodes),
+            ..Builder::default()
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
