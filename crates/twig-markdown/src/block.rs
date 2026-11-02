@@ -2926,6 +2926,22 @@ pub fn parse_fragment(source: &[u8], range: std::ops::Range<usize>, options: Par
     Some(parsed)
 }
 
+/// [`twig_kit::Language::frontmatter_prefix`] for Markdown under `options`:
+/// through the line that closes the frontmatter, which the parser consumes
+/// before it reads a line of anything else, and nothing when `source` has
+/// none: the only other metadata Markdown reads is endmatter, which never
+/// opens a document and is no island. Under `html_elements` an HTML block
+/// can hold a data island, which only a whole parse finds.
+pub fn frontmatter_prefix(source: &[u8], options: ParseOptions) -> Option<usize> {
+    if options.html_elements {
+        return None;
+    }
+    if !options.frontmatter {
+        return Some(0);
+    }
+    Some(frontmatter_lines(source).map_or(0, |(_, after)| after))
+}
+
 /// Whether the frontmatter and endmatter of `source` are ones a parse of
 /// `source[range]` either reads whole or never meets: the frontmatter's close
 /// and the endmatter's opening fence are found by scanning the whole

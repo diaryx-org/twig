@@ -85,6 +85,10 @@ impl Language for Markdown {
         crate::block::parse_fragment(source, range, options(row, features), doc)
     }
 
+    fn frontmatter_prefix(&self, row: usize, features: u32, source: &[u8]) -> Option<usize> {
+        crate::block::frontmatter_prefix(source, options(row, features))
+    }
+
     fn render_html(&self, row: usize, features: u32, doc: &Document) -> Result<Vec<u8>, PrintFailure> {
         let dialect = options(row, features).dialect;
         let opts = crate::html::RenderOptions { dialect, ..Default::default() };

@@ -122,6 +122,24 @@ pub trait Language: Send + Sync + 'static {
         None
     }
 
+    /// How much of `source` a parse through `row` must read to say which
+    /// metadata block the document opens with, its frontmatter: a length `n`
+    /// such that, when a parse of all of `source` opens with a metadata node
+    /// at byte 0, a parse of `source[..n]` opens with the same node, with the
+    /// same id, kind and spans; and when it does not, a parse of
+    /// `source[..n]` holds no metadata node at all, and nor does the whole's
+    /// hold one whose source opens a tag (an HTML data island, which a
+    /// reader of front metadata looks for anywhere). Either both parses
+    /// succeed or neither does. A program locating a document's frontmatter
+    /// parses only that much.
+    ///
+    /// `None`, the default, when the language cannot tell without parsing
+    /// the whole document.
+    fn frontmatter_prefix(&self, row: usize, features: u32, source: &[u8]) -> Option<usize> {
+        let _ = (row, features, source);
+        None
+    }
+
     /// Render a parse to HTML with the row's conventions. By default the
     /// kit's generic printer, without the document's labels.
     fn render_html(&self, row: usize, features: u32, doc: &Document) -> Result<Vec<u8>, PrintFailure> {

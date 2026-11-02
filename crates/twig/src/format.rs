@@ -577,6 +577,14 @@ pub fn parse_fragment(
     r.lang.parse_fragment(r.index, effective(r, cfg), source, range, doc)
 }
 
+/// How much of `source` a parse as `fmt` under `cfg` must read to say which
+/// metadata block it opens with ([`Language::frontmatter_prefix`]). `None`
+/// when the row's language cannot tell, a runtime row's always.
+pub fn frontmatter_prefix(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Option<usize> {
+    let r = native(fmt.0)?;
+    r.lang.frontmatter_prefix(r.index, effective(r, cfg), source).map(|n| n.min(source.len()))
+}
+
 /// Parse `source` as `fmt`, remembering the row and config.
 pub fn parse(fmt: Format, cfg: &ParseConfig, source: &[u8]) -> Result<ParsedDoc, ParseFailure> {
     Ok(ParsedDoc { format: fmt, config: *cfg, doc: parse_to_ast(fmt, cfg, source)? })
